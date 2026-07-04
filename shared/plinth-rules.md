@@ -19,7 +19,7 @@ this is overcomplicated? If yes, simplify. Tests and error handling are never
 ## Rule 3 — Surgical changes
 Touch only what you must. Clean up only your own mess. Don't "improve" adjacent
 code, comments, or formatting. Don't refactor what isn't broken. Match existing
-style. Log unrelated issues you notice under the `## Noticed` heading in `SPEC.md`
+style. Log unrelated issues you notice under the `## Noticed` heading of the canonical spec (or `NOTICED.md` at repo root if the spec is a directory tree)
 instead of fixing them.
 
 ## Rule 4 — Goal-driven execution

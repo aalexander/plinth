@@ -24,6 +24,10 @@ swapped freely; Plinth is the base that doesn't move. You own two things — the
 - `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth;
   review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
+- Per-project knobs live in `.plinth/`: `config` (spec_path — point it at your
+  spec file or tree), `protected-paths` (agent-immutable files), and
+  `AGENTS-project.md` (project-specific reviewer rules). None is ever overwritten
+  by `plinth update`.
 - `plinth migrate ~/Dev/<repo>` — one-shot migration of an old Forge-scaffolded
   repo (renames .forge/ -> .plinth/, fixes imports and the ci.yml floor line,
   preserves your per-project content)

@@ -18,7 +18,8 @@ first, then draft.
 - A coding agent (Claude Code) implements against SPEC.md as the single source of
   truth. A second model (Codex) adversarially reviews every diff before PR, and a
   deterministic CI floor (tests, security scanners) gates every merge.
-- SPEC.md is the contract. Requirements are written in EARS form ("The system
+- SPEC.md is the contract (large products may use a spec tree instead — declared
+  via spec_path in .plinth/config — in which case produce the tree's entry files). Requirements are written in EARS form ("The system
   shall...", "When <condition>, the system shall <response>") and every acceptance
   criterion must be expressible as a real automated test.
 - GOAL.md is an OPTIONAL auto-research mode used ONLY when the project has a

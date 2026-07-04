@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v3 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.2 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init    <project-path>  Copy templates (once) + shared files into a project.
 #   plinth update  <project-path>  Re-pull ONLY shared files (rules, MODELS, guard,
@@ -15,6 +15,8 @@
 set -euo pipefail
 
 # Resolve symlinks so PLINTH_ROOT is the real checkout, not the symlink's dir.
+# (A naive dirname "$BASH_SOURCE" resolves to /usr/local when invoked via the
+#  /usr/local/bin/plinth symlink, breaking every subcommand. Do not simplify.)
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -55,7 +57,9 @@ copy_templates_if_absent() {
   mkdir -p "$target/.claude" "$target/.github/workflows" "$target/.plinth"
   [ -f "$target/.claude/settings.json" ]     || cp "$PLINTH_ROOT/templates/.claude/settings.json" "$target/.claude/settings.json"
   [ -f "$target/.github/workflows/ci.yml" ]  || cp "$PLINTH_ROOT/templates/.github/workflows/ci.yml" "$target/.github/workflows/ci.yml"
-  [ -f "$target/.plinth/protected-paths" ]   || printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
+  [ -f "$target/.plinth/protected-paths" ]  || printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
+  [ -f "$target/.plinth/config" ]            || printf '# Plinth per-project config. Never overwritten by plinth update.\n# spec_path: the canonical spec location agents read and reviewers check against.\n# May be a single file (SPEC.md) or a directory tree (e.g. ARCH/ or spec/).\nspec_path = SPEC.md\n' > "$target/.plinth/config"
+  [ -f "$target/.plinth/AGENTS-project.md" ] || cp "$PLINTH_ROOT/templates/AGENTS-project.md" "$target/.plinth/AGENTS-project.md"
 }
 
 case "$cmd" in

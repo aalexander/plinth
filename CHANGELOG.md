@@ -1,12 +1,25 @@
 # Plinth changelog
 
+## v3.2 — July 5, 2026
+- NEW `.plinth/config` (per-project, never overwritten): `spec_path` declares the
+  canonical spec location — a file (SPEC.md) or a directory tree (ARCH/, spec/).
+  Kills the reserved-SPEC collision at the harness level instead of forcing every
+  project to work around it. review.sh, plinth-rules.md, AGENTS.md, and the
+  CLAUDE.md template now reference spec_path instead of hardcoding SPEC.md.
+- NEW `.plinth/AGENTS-project.md` (per-project, never overwritten): project-
+  specific reviewer blocking criteria that extend the shared AGENTS.md. Fixes the
+  defect where domain rules added to AGENTS.md were clobbered by plinth update.
+- Rules: "Noticed" logging goes to the canonical spec, or NOTICED.md at repo root
+  when the spec is a directory tree.
+
 ## v3.1 — July 4, 2026
-- Fix: bin/plinth resolved PLINTH_ROOT incorrectly when invoked through the
-  /usr/local/bin/plinth symlink — dirname "$BASH_SOURCE" returned /usr/local,
-  so every subcommand looked for templates/shared files under /usr/local and
-  failed with "No such file or directory". Replaced with a readlink loop that
-  follows the symlink chain (handling relative links) to the real checkout.
-  Affected init, update, goal, and migrate equally.
+- Fix: `bin/plinth` resolved PLINTH_ROOT via `dirname "$BASH_SOURCE"`, which
+  returned /usr/local when invoked through the /usr/local/bin/plinth symlink,
+  breaking init/update/goal/migrate. Now follows the symlink chain with a
+  readlink loop (handles relative and chained links). Regression cause: the CLI
+  had only ever been tested via `bash <path>`, never through the symlink. All
+  CLI changes must now be tested through the symlink.
+
 
 ## v3 — July 3, 2026
 - MODELS.md rewritten for the post-export-control landscape: Fable 5 suspended

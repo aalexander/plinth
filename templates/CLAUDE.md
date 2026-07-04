@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-You are the implementer for this repository. `SPEC.md` is the source of truth —
+You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —
 read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.
 
 @.plinth/plinth-rules.md
