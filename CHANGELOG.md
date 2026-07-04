@@ -1,5 +1,13 @@
 # Plinth changelog
 
+## v3.1 — July 4, 2026
+- Fix: bin/plinth resolved PLINTH_ROOT incorrectly when invoked through the
+  /usr/local/bin/plinth symlink — dirname "$BASH_SOURCE" returned /usr/local,
+  so every subcommand looked for templates/shared files under /usr/local and
+  failed with "No such file or directory". Replaced with a readlink loop that
+  follows the symlink chain (handling relative links) to the real checkout.
+  Affected init, update, goal, and migrate equally.
+
 ## v3 — July 3, 2026
 - MODELS.md rewritten for the post-export-control landscape: Fable 5 suspended
   June 12 -> relaunched July 1; plan-included (50% of weekly limits) through
