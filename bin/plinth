@@ -14,7 +14,14 @@
 # `git -C <plinth> pull` (or checkout a tag), then `plinth update <project>`.
 set -euo pipefail
 
-PLINTH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks so PLINTH_ROOT is the real checkout, not the symlink's dir.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [ "${SOURCE#/}" = "$SOURCE" ] && SOURCE="$DIR/$SOURCE"  # relative link -> absolute
+done
+PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
 usage() { echo "Usage: plinth {init|update|goal|migrate} <project-path>"; exit 1; }
