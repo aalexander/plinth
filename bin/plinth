@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Plinth CLI v3 — scaffold and update projects from a pinned Plinth release.
+#
+#   plinth init    <project-path>  Copy templates (once) + shared files into a project.
+#   plinth update  <project-path>  Re-pull ONLY shared files (rules, MODELS, guard,
+#                                  review, AGENTS). Per-project files never touched.
+#   plinth goal    <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
+#   plinth migrate <project-path>  Migrate a repo scaffolded under the old Forge name:
+#                                  .forge/ -> .plinth/, fixes CLAUDE.md import, ci.yml
+#                                  floor reference, GOAL.md paths; preserves your
+#                                  per-project content and protected-paths entries.
+#
+# Operates from the Plinth checkout it lives in. To adopt a new Plinth version:
+# `git -C <plinth> pull` (or checkout a tag), then `plinth update <project>`.
+set -euo pipefail
+
+PLINTH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
+
+usage() { echo "Usage: plinth {init|update|goal|migrate} <project-path>"; exit 1; }
+[ $# -eq 2 ] || usage
+cmd="$1"; target="$2"
+[ -d "$target" ] || { echo "No such directory: $target"; exit 1; }
+
+# Portable in-place edit (macOS + Linux): sed to temp file, then move.
+edit_file() {  # edit_file <file> <sed-expr>...
+  local f="$1"; shift
+  local tmp="${f}.plinth-tmp"
+  sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# SHARED (version-pinned, overwritten on update):
+copy_shared() {
+  mkdir -p "$target/.plinth" "$target/.claude/hooks"
+  cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
+  cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
+  cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
+  cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
+  cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
+  chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh"
+  echo "$PLINTH_VERSION" > "$target/.plinth-version"
+}
+
+# PER-PROJECT (templates, copied once, never overwritten):
+copy_templates_if_absent() {
+  [ -f "$target/CLAUDE.md" ]                 || cp "$PLINTH_ROOT/templates/CLAUDE.md" "$target/CLAUDE.md"
+  [ -f "$target/SPEC.md" ]                   || cp "$PLINTH_ROOT/templates/SPEC.md" "$target/SPEC.md"
+  mkdir -p "$target/.claude" "$target/.github/workflows" "$target/.plinth"
+  [ -f "$target/.claude/settings.json" ]     || cp "$PLINTH_ROOT/templates/.claude/settings.json" "$target/.claude/settings.json"
+  [ -f "$target/.github/workflows/ci.yml" ]  || cp "$PLINTH_ROOT/templates/.github/workflows/ci.yml" "$target/.github/workflows/ci.yml"
+  [ -f "$target/.plinth/protected-paths" ]   || printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
+}
+
+case "$cmd" in
+  init)
+    copy_templates_if_absent
+    copy_shared
+    echo "Plinth $PLINTH_VERSION initialized in $target"
+    echo "Next: edit SPEC.md; set OWNER + checks in .github/workflows/ci.yml; commit."
+    ;;
+  update)
+    [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }
+    old="$(cat "$target/.plinth-version")"
+    copy_shared
+    echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
+    echo "Review before committing: git -C \"$target\" diff"
+    ;;
+  goal)
+    if [ -f "$target/GOAL.md" ]; then
+      echo "GOAL.md already exists in $target — not overwriting."
+      exit 1
+    fi
+    cp "$PLINTH_ROOT/templates/GOAL.template.md" "$target/GOAL.md"
+    echo "GOAL.md draft created in $target."
+    echo "Workflow: have the driver draft the specifics -> YOU ratify (STATUS: RATIFIED)"
+    echo "-> add the eval script pattern to .plinth/protected-paths -> have Codex attack"
+    echo "the rubric for gameability -> then let the loop run."
+    ;;
+  migrate)
+    if [ ! -d "$target/.forge" ] && [ ! -f "$target/.forge-version" ]; then
+      echo "No Forge scaffold found in $target (no .forge/ or .forge-version). Nothing to migrate."
+      exit 1
+    fi
+    # 1. Carry over per-project protected-paths entries before removing .forge/
+    if [ -f "$target/.forge/protected-paths" ]; then
+      mkdir -p "$target/.plinth"
+      cp "$target/.forge/protected-paths" "$target/.plinth/protected-paths"
+      echo "  carried over: protected-paths entries"
+    fi
+    # 2. Fix references in per-project files. Order matters:
+    #    specific (forge-rules) before generic (.forge/ -> .plinth/).
+    for f in CLAUDE.md GOAL.md .github/workflows/ci.yml; do
+      if [ -f "$target/$f" ]; then
+        edit_file "$target/$f" \
+          -e 's|\.forge/forge-rules\.md|.plinth/plinth-rules.md|g' \
+          -e 's|\.forge/|.plinth/|g' \
+          -e "s|/forge/\.github/workflows/forge-floor\.yml@v[0-9]*|/plinth/.github/workflows/plinth-floor.yml@v${PLINTH_VERSION}|g"
+        echo "  updated references: $f"
+      fi
+    done
+    # 3. Remove old scaffold, lay down current one (won't clobber per-project files)
+    rm -rf "$target/.forge" "$target/.forge-version"
+    copy_templates_if_absent
+    copy_shared
+    echo "Migrated Forge -> Plinth $PLINTH_VERSION in $target"
+    echo "Review before committing: git -C \"$target\" diff"
+    echo "Check: CLAUDE.md import line, ci.yml 'uses:' line, .plinth/protected-paths."
+    ;;
+  *) usage ;;
+esac

@@ -1,0 +1,40 @@
+# Plinth deterministic floor — reusable workflow.
+# Called by project repos via:
+#   jobs:
+#     floor:
+#       uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3
+# checkout in a called workflow checks out the CALLER's repo, so scanners run
+# against the project's code.
+name: Plinth Floor
+
+on:
+  workflow_call:
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/security-audit
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action@v1
+        with:
+          scan-args: "--recursive ./"
