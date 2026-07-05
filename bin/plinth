@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.4 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.5 — scaffold and update projects from a pinned Plinth release.
 #
-#   plinth init    <project-path>  Copy templates (once) + shared files into a project.
-#   plinth update  <project-path>  Re-pull ONLY shared files (rules, MODELS, guard,
-#                                  review, AGENTS). Per-project files never touched.
-#   plinth goal    <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
-#   plinth migrate <project-path>  Migrate a repo scaffolded under the old Forge name:
-#                                  .forge/ -> .plinth/, fixes CLAUDE.md import, ci.yml
-#                                  floor reference, GOAL.md paths; preserves your
-#                                  per-project content and protected-paths entries.
+#   plinth init   <project-path>  Bootstrap: create per-project files (only where
+#                                 absent) + copy shared files. Idempotent.
+#   plinth update <project-path>  Propagate a Plinth version to an existing project:
+#                                 refresh shared files (always overwritten), backfill
+#                                 any per-project files new to this Plinth version
+#                                 (created only if absent — yours are never touched),
+#                                 report the version transition. Refuses to run on a
+#                                 directory that isn't already a Plinth project.
+#   plinth goal   <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
 #
 # Operates from the Plinth checkout it lives in. To adopt a new Plinth version:
 # `git -C <plinth> pull` (or checkout a tag), then `plinth update <project>`.
@@ -26,7 +27,7 @@ done
 PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-usage() { echo "Usage: plinth {init|update|goal|migrate} <project-path>"; exit 1; }
+usage() { echo "Usage: plinth {init|update|goal} <project-path>"; exit 1; }
 [ $# -eq 2 ] || usage
 cmd="$1"; target="$2"
 [ -d "$target" ] || { echo "No such directory: $target"; exit 1; }
@@ -119,6 +120,7 @@ case "$cmd" in
   update)
     [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }
     old="$(cat "$target/.plinth-version")"
+    copy_templates_if_absent
     copy_shared
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
     echo "Review before committing: git -C \"$target\" diff"
@@ -133,36 +135,6 @@ case "$cmd" in
     echo "Workflow: have the driver draft the specifics -> YOU ratify (STATUS: RATIFIED)"
     echo "-> add the eval script pattern to .plinth/protected-paths -> have Codex attack"
     echo "the rubric for gameability -> then let the loop run."
-    ;;
-  migrate)
-    if [ ! -d "$target/.forge" ] && [ ! -f "$target/.forge-version" ]; then
-      echo "No Forge scaffold found in $target (no .forge/ or .forge-version). Nothing to migrate."
-      exit 1
-    fi
-    # 1. Carry over per-project protected-paths entries before removing .forge/
-    if [ -f "$target/.forge/protected-paths" ]; then
-      mkdir -p "$target/.plinth"
-      cp "$target/.forge/protected-paths" "$target/.plinth/protected-paths"
-      echo "  carried over: protected-paths entries"
-    fi
-    # 2. Fix references in per-project files. Order matters:
-    #    specific (forge-rules) before generic (.forge/ -> .plinth/).
-    for f in CLAUDE.md GOAL.md .github/workflows/ci.yml; do
-      if [ -f "$target/$f" ]; then
-        edit_file "$target/$f" \
-          -e 's|\.forge/forge-rules\.md|.plinth/plinth-rules.md|g' \
-          -e 's|\.forge/|.plinth/|g' \
-          -e "s|/forge/\.github/workflows/forge-floor\.yml@v[0-9]*|/plinth/.github/workflows/plinth-floor.yml@v${PLINTH_VERSION}|g"
-        echo "  updated references: $f"
-      fi
-    done
-    # 3. Remove old scaffold, lay down current one (won't clobber per-project files)
-    rm -rf "$target/.forge" "$target/.forge-version"
-    copy_templates_if_absent
-    copy_shared
-    echo "Migrated Forge -> Plinth $PLINTH_VERSION in $target"
-    echo "Review before committing: git -C \"$target\" diff"
-    echo "Check: CLAUDE.md import line, ci.yml 'uses:' line, .plinth/protected-paths."
     ;;
   *) usage ;;
 esac

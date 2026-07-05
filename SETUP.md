@@ -11,12 +11,7 @@
        model = "gpt-5.5"
        model_reasoning_effort = "high"
 4. Connect Codex Security to your repos once (chatgpt.com -> Codex).
-5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; set OWNER + checks in
-   ci.yml; commit; protect `main` requiring the `floor` and `checks` checks.
+5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
+   zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
+   requiring the `floor` and `checks` status checks.
 6. In Claude Code: `/model` -> Fable 5; `/effort` -> ultracode for big tasks.
-
-## Migrating a repo scaffolded under the old Forge name
-In the project repo: delete `.forge/`, `.forge-version`, and the old
-`.github/workflows/ci.yml` floor reference, then run `plinth init <repo>` and
-re-apply your per-project CLAUDE.md notes / SPEC.md (init won't overwrite them if
-they exist). Update ci.yml's `uses:` line to OWNER/plinth/...@v2.

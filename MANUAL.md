@@ -21,16 +21,14 @@ swapped freely; Plinth is the base that doesn't move. You own two things — the
 
 ## Commands
 - `plinth init ~/Dev/<repo>`    — scaffold a project (templates once + shared pinned)
-- `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth;
+- `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth
+  and backfill any per-project files new to this version (never touches yours);
   review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - Per-project knobs live in `.plinth/`: `config` (spec_path — point it at your
   spec file or tree), `protected-paths` (agent-immutable files), and
   `AGENTS-project.md` (project-specific reviewer rules). None is ever overwritten
   by `plinth update`.
-- `plinth migrate ~/Dev/<repo>` — one-shot migration of an old Forge-scaffolded
-  repo (renames .forge/ -> .plinth/, fixes imports and the ci.yml floor line,
-  preserves your per-project content)
 
 ## Starting a new project
 Use PLANNING-PROMPT.md (in this repo) in a fresh chat to produce SPEC.md, the

@@ -1,0 +1,17 @@
+# Plinth repo's own .gitignore (repo housekeeping — not the project template,
+# which lives at templates/.gitignore). Kept minimal on purpose: broad patterns
+# here could mask files under templates/.
+
+# macOS / OS junk
+.DS_Store
+Thumbs.db
+
+# Delivered archives — never commit build zips into the source repo
+*.zip
+
+# Temp files from bin/plinth's portable in-place edits
+*.plinth-tmp
+
+# Editor droppings
+*.swp
+*~

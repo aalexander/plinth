@@ -1,5 +1,16 @@
 # Plinth changelog
 
+## v3.5 — July 5, 2026
+- REMOVED `plinth migrate`: no Forge-era repos remain; the rename map lives in
+  the v2 changelog entry if one ever surfaces from a backup.
+- `plinth update` now also backfills per-project files introduced by newer
+  Plinth versions (created only if absent, with created/kept reporting) — so
+  picking up e.g. the v3.4 .gitignore no longer requires re-running init. The
+  init/update distinction is now exactly its names: init bootstraps anywhere;
+  update refuses non-Plinth directories and reports the version transition.
+- Added the Plinth repo's own root .gitignore (.DS_Store, *.zip, *.plinth-tmp)
+  — the harness shipped ignore protection to projects while lacking its own.
+
 ## v3.4 — July 5, 2026
 - NEW templates/.gitignore (per-project, copied once): secrets, model weights
   (*.gguf/*.safetensors/etc.), OS junk, and build artifacts for the four
