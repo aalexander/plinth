@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.2 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.4 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init    <project-path>  Copy templates (once) + shared files into a project.
 #   plinth update  <project-path>  Re-pull ONLY shared files (rules, MODELS, guard,
@@ -38,6 +38,23 @@ edit_file() {  # edit_file <file> <sed-expr>...
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# Detect the GitHub owner for ci.yml injection. Chain: target repo's origin ->
+# this Plinth checkout's origin -> git config github.user -> empty (warn).
+# Parses both git@github.com:owner/repo.git and https://github.com/owner/repo(.git).
+detect_owner() {
+  local url owner
+  for repo in "$target" "$PLINTH_ROOT"; do
+    url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$url" ]; then
+      owner="$(printf '%s' "$url" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*#\2#')"
+      if [ -n "$owner" ] && [ "$owner" != "$url" ]; then printf '%s' "$owner"; return 0; fi
+    fi
+  done
+  owner="$(git config github.user 2>/dev/null || true)"
+  [ -n "$owner" ] && { printf '%s' "$owner"; return 0; }
+  printf ''
+}
+
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
   mkdir -p "$target/.plinth" "$target/.claude/hooks"
@@ -52,14 +69,44 @@ copy_shared() {
 
 # PER-PROJECT (templates, copied once, never overwritten):
 copy_templates_if_absent() {
-  [ -f "$target/CLAUDE.md" ]                 || cp "$PLINTH_ROOT/templates/CLAUDE.md" "$target/CLAUDE.md"
-  [ -f "$target/SPEC.md" ]                   || cp "$PLINTH_ROOT/templates/SPEC.md" "$target/SPEC.md"
+  place() {  # place <template-rel-path> <dest-rel-path>
+    if [ -f "$target/$2" ]; then
+      echo "  kept (yours):  $2"
+    else
+      cp "$PLINTH_ROOT/templates/$1" "$target/$2"
+      echo "  created:       $2"
+    fi
+  }
   mkdir -p "$target/.claude" "$target/.github/workflows" "$target/.plinth"
-  [ -f "$target/.claude/settings.json" ]     || cp "$PLINTH_ROOT/templates/.claude/settings.json" "$target/.claude/settings.json"
-  [ -f "$target/.github/workflows/ci.yml" ]  || cp "$PLINTH_ROOT/templates/.github/workflows/ci.yml" "$target/.github/workflows/ci.yml"
-  [ -f "$target/.plinth/protected-paths" ]  || printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
-  [ -f "$target/.plinth/config" ]            || printf '# Plinth per-project config. Never overwritten by plinth update.\n# spec_path: the canonical spec location agents read and reviewers check against.\n# May be a single file (SPEC.md) or a directory tree (e.g. ARCH/ or spec/).\nspec_path = SPEC.md\n' > "$target/.plinth/config"
-  [ -f "$target/.plinth/AGENTS-project.md" ] || cp "$PLINTH_ROOT/templates/AGENTS-project.md" "$target/.plinth/AGENTS-project.md"
+  place CLAUDE.md CLAUDE.md
+  place SPEC.md SPEC.md
+  place .gitignore .gitignore
+  place .claude/settings.json .claude/settings.json
+  place AGENTS-project.md .plinth/AGENTS-project.md
+  if [ -f "$target/.plinth/protected-paths" ]; then
+    echo "  kept (yours):  .plinth/protected-paths"
+  else
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
+    echo "  created:       .plinth/protected-paths"
+  fi
+  if [ -f "$target/.plinth/config" ]; then
+    echo "  kept (yours):  .plinth/config"
+  else
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# spec_path: the canonical spec location agents read and reviewers check against.\n# May be a single file (SPEC.md) or a directory tree (e.g. ARCH/ or spec/).\nspec_path = SPEC.md\n' > "$target/.plinth/config"
+    echo "  created:       .plinth/config"
+  fi
+  if [ -f "$target/.github/workflows/ci.yml" ]; then
+    echo "  kept (yours):  .github/workflows/ci.yml"
+  else
+    cp "$PLINTH_ROOT/templates/.github/workflows/ci.yml" "$target/.github/workflows/ci.yml"
+    owner="$(detect_owner)"
+    if [ -n "$owner" ]; then
+      edit_file "$target/.github/workflows/ci.yml" -e "s|OWNER/plinth/|${owner}/plinth/|g"
+      echo "  created:       .github/workflows/ci.yml (OWNER='$owner' auto-detected)"
+    else
+      echo "  created:       .github/workflows/ci.yml — WARNING: owner undetected, edit OWNER manually"
+    fi
+  fi
 }
 
 case "$cmd" in
@@ -67,7 +114,7 @@ case "$cmd" in
     copy_templates_if_absent
     copy_shared
     echo "Plinth $PLINTH_VERSION initialized in $target"
-    echo "Next: edit SPEC.md; set OWNER + checks in .github/workflows/ci.yml; commit."
+    echo "Next: edit SPEC.md; commit. (ci.yml is zero-edit: owner auto-injected, checks auto-detect the stack at CI time.)"
     ;;
   update)
     [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }

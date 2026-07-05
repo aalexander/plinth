@@ -1,5 +1,10 @@
 name: CI
 
+# Zero-edit by default: OWNER is auto-injected by `plinth init`; checks
+# auto-detect the stack at runtime (see plinth-checks.yml in the Plinth repo).
+# To customize: replace the `checks` job with explicit steps — this file is
+# per-project and never overwritten by plinth update.
+
 on:
   pull_request:
     branches: [main]
@@ -7,27 +12,11 @@ on:
     branches: [main]
 
 jobs:
-  # Shared deterministic floor (secrets, SAST, dependency scan) lives in Plinth.
-  # Pinned to a Plinth release tag — bump deliberately. Replace OWNER.
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.3
 
-  # Project-specific checks. Fill in YOUR stack's commands; this part is yours.
   checks:
-    runs-on: ubuntu-latest   # macos-latest for Apple-Silicon parity
-    steps:
-      - uses: actions/checkout@v4
-      # --- Rust ---
-      # - run: cargo fmt --check
-      # - run: cargo clippy -- -D warnings
-      # - run: cargo test
-      # - run: cargo build --release
-      # --- Node ---
-      # - uses: actions/setup-node@v4
-      #   with: { node-version: '24' }
-      # - run: npm ci
-      # - run: npm run typecheck
-      # - run: npm run lint
-      # - run: npm test
-      # - run: npm run build
-      - run: echo "Add your stack's commands above, then delete this line."
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.3
+    # For Apple-Silicon parity (e.g. Anvil), uncomment:
+    # with:
+    #   runner: macos-latest

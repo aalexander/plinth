@@ -2,7 +2,7 @@
 # Called by project repos via:
 #   jobs:
 #     floor:
-#       uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3
+#       uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.3
 # checkout in a called workflow checks out the CALLER's repo, so scanners run
 # against the project's code.
 name: Plinth Floor

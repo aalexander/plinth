@@ -1,5 +1,31 @@
 # Plinth changelog
 
+## v3.4 — July 5, 2026
+- NEW templates/.gitignore (per-project, copied once): secrets, model weights
+  (*.gguf/*.safetensors/etc.), OS junk, and build artifacts for the four
+  detected stacks. Closes the gap where `git add -A` could commit weights or a
+  stray .env — the guard blocks edits, not adds, and gitleaks fires post-commit.
+- `plinth init` now reports every per-project file as "created" or
+  "kept (yours)" — replaces manual post-init verification. (Note: init never
+  rewrote existing files; the [ -f ] || guard predates this. The reporting
+  makes that visible instead of trusted.)
+- PLANNING-PROMPT: project notes must pin exact toolchain versions;
+  requirements must be dependency-ordered (each testable using only its
+  predecessors).
+
+## v3.3 — July 5, 2026
+- Zero-edit scaffolding: `plinth init` auto-detects the GitHub owner (target
+  origin -> Plinth checkout origin -> git config github.user) and injects it
+  into ci.yml; warns if undetectable.
+- NEW reusable `plinth-checks.yml`: runtime stack detection (Rust/Node/Python/Go)
+  runs conventional check commands at CI time — works for greenfield repos where
+  nothing exists at scaffold time. Template ci.yml is now two `uses:` lines with
+  an optional macos-latest runner input. Nonstandard stacks: replace the checks
+  job locally (ci.yml is per-project, never overwritten).
+- Tradeoff, stated: auto-detected checks run conventional commands, not
+  project-specific ones. The driver still runs the project's real checks locally
+  (Rule 10); CI detection is the backstop.
+
 ## v3.2 — July 5, 2026
 - NEW `.plinth/config` (per-project, never overwritten): `spec_path` declares the
   canonical spec location — a file (SPEC.md) or a directory tree (ARCH/, spec/).

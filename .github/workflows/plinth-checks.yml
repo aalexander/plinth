@@ -1,0 +1,72 @@
+# Plinth checks — reusable workflow with runtime stack detection.
+# Called by project repos via:
+#   jobs:
+#     checks:
+#       uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.3
+#       # optional: with: { runner: macos-latest }   # Apple-Silicon parity
+#
+# Detects the stack at CI time (works for greenfield repos where nothing exists
+# at scaffold time) and runs conventional commands. Projects with nonstandard
+# checks should replace this job with explicit steps in their own ci.yml —
+# ci.yml is per-project and never overwritten by plinth update.
+name: Plinth Checks
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  checks:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect stack and run checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f Cargo.toml ]; then
+            echo "::notice::Detected Rust"
+            rustup component add clippy rustfmt 2>/dev/null || true
+            cargo fmt --check
+            cargo clippy -- -D warnings
+            cargo test
+            cargo build --release
+
+          elif [ -f package.json ]; then
+            echo "::notice::Detected Node"
+            npm ci
+            npm run --if-present typecheck
+            npm run --if-present lint
+            if grep -q '"test"' package.json; then npm test; fi
+            npm run --if-present build
+
+          elif [ -f pyproject.toml ] || [ -f requirements.txt ] || [ -f setup.py ]; then
+            echo "::notice::Detected Python"
+            python3 -m pip install --quiet ruff pytest
+            [ -f requirements.txt ] && python3 -m pip install --quiet -r requirements.txt
+            [ -f pyproject.toml ] && python3 -m pip install --quiet -e . 2>/dev/null || true
+            ruff check .
+            if [ -d tests ] || [ -n "$(find . -name 'test_*.py' -not -path './.git/*' -print -quit)" ]; then
+              pytest
+            else
+              echo "::warning::No tests found — pytest skipped. Rule 7 says every behavior change needs a test."
+            fi
+
+          elif [ -f go.mod ]; then
+            echo "::notice::Detected Go"
+            go vet ./...
+            go test ./...
+            go build ./...
+
+          else
+            src=$(find . -path ./.git -prune -o -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.js' -o -name '*.py' -o -name '*.go' -o -name '*.swift' \) -print -quit)
+            if [ -n "$src" ]; then
+              echo "::error::Source files exist but no recognized manifest (Cargo.toml/package.json/pyproject.toml/go.mod). Replace the checks job in ci.yml with explicit commands."
+              exit 1
+            fi
+            echo "::warning::No stack detected (scaffold-only repo) — checks pass vacuously until code exists."
+          fi

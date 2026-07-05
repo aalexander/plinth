@@ -1,0 +1,45 @@
+# Plinth starter .gitignore (per-project, copied once, never overwritten).
+# EXTEND for your stack/domain. Do NOT ignore your project's committed output
+# data (e.g. results/, manifests/) — only artifacts and secrets.
+
+# Secrets — belt and suspenders alongside the guard hook and gitleaks
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+secrets/
+credentials/
+
+# Model weights / large binaries — commit pointers or use LFS, never raw weights
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.onnx
+*.mlx
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+
+# Rust
+target/
+
+# Node
+node_modules/
+*.tsbuildinfo
+
+# Go
+/bin/

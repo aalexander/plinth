@@ -56,7 +56,9 @@ Use exactly this structure:
 Just the section, not a whole file — it gets pasted under "## Project-specific
 notes" in an existing CLAUDE.md. Include: domain constraints, hard "never do"
 rules (e.g., "never add network calls", "never log PII"), stack/version pins, and
-anything an agent would plausibly get wrong without being told.
+anything an agent would plausibly get wrong without being told. Pin exact
+  toolchain versions (language minor version, package manager) — a mismatched
+  minor version fights hash-pinned dependencies later.
 
 ### 3. GOAL.md (only if step 1 surfaced a genuine scalar metric — otherwise state
 plainly that no GOAL.md is warranted and why)
@@ -81,7 +83,10 @@ Use exactly this structure:
 The exact lines to append to .plinth/protected-paths.
 
 ## Quality bar
-Terse and unambiguous beats thorough and vague. Every requirement either maps to
+Order requirements and acceptance criteria in dependency order: each must be
+testable using only requirements that precede it, so the build surfaces spec
+gaps layer by layer instead of at integration. Terse and unambiguous beats
+thorough and vague. Every requirement either maps to
 a test or gets cut. If I give you a fuzzy goal, push back and make me sharpen it
 before you draft. Do not pad any file with content I didn't ask for.
 
