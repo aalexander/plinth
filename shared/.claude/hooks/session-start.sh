@@ -22,6 +22,10 @@ if [ ! -f "$SDIR/start-head-$sid" ]; then
     || echo "none" > "$SDIR/start-head-$sid"
 fi
 
-# Hygiene: session-scoped files older than 7 days.
+# Hygiene: session-scoped files older than 7 days; cap the event log.
 find "$SDIR" -maxdepth 1 \( -name 'start-head-*' -o -name 'gate-blocks-*' \) -mtime +7 -delete 2>/dev/null || true
+EV="$SDIR/events.jsonl"
+if [ -f "$EV" ] && [ "$(wc -c < "$EV" | tr -d ' ')" -gt 5000000 ]; then
+  tail -n 2000 "$EV" > "$EV.tmp" && mv "$EV.tmp" "$EV"
+fi
 exit 0

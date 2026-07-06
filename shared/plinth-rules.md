@@ -68,12 +68,16 @@ When the work is complete: commit, then run `./.plinth/review.sh` (allow up to 1
 minutes). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
-(re-runs resume the same reviewer session and re-verify each finding). Exit 2 = the
+(re-runs resume the same reviewer session when feasible; oversized or dead
+threads fall back to a fresh full review automatically). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
 pass. Never edit files under `.plinth/session/`. Then open the PR; CI and the
 security agent run automatically. Keep the session quiet until then.
-This is enforced: a Stop gate refuses to end the turn of any session that
-created commits until the verdict at HEAD is APPROVED.
+This is enforced on feature branches: a Stop gate refuses to end the turn of a
+session that created commits until the verdict at HEAD is APPROVED. The gate has
+two pressure valves — a recent mechanical review failure, and a per-session block
+cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
+logged to the session event feed, where `plinth watch` shows it in red.
 
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it

@@ -1,5 +1,93 @@
 # Plinth changelog
 
+## v3.11 — July 6, 2026
+- Gate honesty + hardening (found by the Anvil adversarial review, round 9,
+  reviewing the Plinth tooling commit itself — the reviewer caught the rules
+  doc overclaiming what review-gate.sh enforces, and the driver correctly
+  refused to patch the harness from inside a reviewed session):
+  - plinth-rules.md now states the real enforcement boundary (feature
+    branches; two pressure valves) instead of an absolute.
+  - EVERY release of provably-unreviewed commits is now logged as a
+    `gate_release` event in the session feed — base-branch commits, the infra
+    escape, and the block cap all previously released to an unstored stderr.
+    `plinth watch` shows a red GATE RELEASES count.
+  - Block cap is configurable: PLINTH_GATE_MAX_BLOCKS, default raised 5 -> 10
+    (each block costs a full model turn).
+- watch: change-detection refresh — 1s poll on event-feed/verdict file stamps,
+  re-render only on change plus a 10s heartbeat for the clocks. Sub-second
+  responsiveness without re-parsing megabytes of idle transcript every cycle.
+
+## v3.10 — July 6, 2026
+- `plinth init`/`update` now run a GitHub preflight: local `git init` happens
+  automatically when missing (Plinth's review, gates, and dashboard are inert
+  without git — the certeus lesson); creating the GitHub remote is offered
+  interactively and never assumed (`gh repo create`, public suggested since
+  free-plan private repos can't enable branch protection); branch protection
+  is PROBED and reported (configured / available-but-unset / impossible on
+  plan) but deliberately not configured — required-check names only exist
+  after the first CI run, and guessing them can block merging forever behind
+  checks that never report.
+- watch polish: the task header now picks the first human prompt (skipping
+  harness notification payloads that start with markup); refresh interval
+  10s (was 2s); repaint is now in-place (cursor home + per-line erase)
+  instead of clearing the screen each cycle — no more blink.
+- MANUAL rewritten as an operator guide: quick start with exact commands, the
+  daily loop annotated with what each hook does in the background, an
+  annotated dashboard frame with "what to act on", a who-acts table for every
+  blocking state, and the your-role summary. Written to be followable by an
+  engineer new to the system.
+
+## v3.9 — July 6, 2026
+- FIXED the big-diff review deadlock (hit by anvil round 7): v3.8 resumed
+  fix-verification rounds by re-sending the FULL diff into the same reviewer
+  thread, which overflows on large diffs — and the retry path could only ever
+  resume that same dead thread. Three changes:
+  1. Resumed rounds now send only the INCREMENTAL diff (last-reviewed SHA ->
+     HEAD); the thread already holds the prior context. Binding approval is
+     unchanged — the clean-slate confirmation round still reviews the full diff.
+  2. If `codex exec resume` fails for any reason, the round automatically
+     falls back to a clean-slate full review in a fresh session (which binds
+     directly — it IS the clean-slate pass). No more die-on-resume.
+  3. Resume is skipped preemptively when the prior round processed more than
+     PLINTH_RESUME_MAX input tokens (default 650000 ≈ 65% of GPT-5.5's
+     1,005,000-token window — a model-layer fact; revisit on reviewer swap,
+     checklist in MODELS.md), or when the last reviewed commit no longer
+     exists (rebase).
+  Protected session state never needs manual deletion to recover — by design.
+- Honest-docs fix: "CI floor + Codex Security fire automatically" overstated
+  it. Codex Security is the cloud-side integration connected per-repo
+  (chatgpt.com -> Codex, SETUP step 4), distinct from the codex CLI reviewer;
+  MANUAL now says to verify it on the first PR. Watch list gained: private
+  repos on GitHub Free cannot enable branch protection at all — floor/checks
+  are not required checks until the repo is public or the plan is Pro.
+
+## v3.8 — July 6, 2026
+- NEW `plinth watch <repo>` [--once]: live session dashboard (2s refresh, alt
+  screen). Shows the task (first prompt), a PLAN→IMPLEMENT→VERIFY→REVIEW→PR
+  stage pipeline with accumulated time and tokens per stage, cumulative tokens
+  split fresh-in/cache-write/cache-read/out, burn rate with a 12-minute
+  sparkline, the model actually answering (a silent Fable→Opus fallback is
+  visible immediately), review verdict + whether it matches HEAD, reviewer
+  token spend, last test-runner command with exit code and age, guard blocks,
+  compactions, subagent completions, and the last tool call.
+- NEW shared hook `pulse.sh`: appends one raw JSONL event per hook firing to
+  .plinth/session/events.jsonl (SessionStart, UserPromptSubmit, PostToolUse,
+  SubagentStop, PreCompact, Stop). Events are facts; ALL interpretation (stage
+  classification, rates) lives in the renderer, so heuristics can improve
+  without invalidating old logs. Never blocks; always exits 0.
+- guard.sh now logs each block to the same feed (best-effort) so `watch` can
+  show the base defending itself. session-start.sh rotates events.jsonl at
+  5 MB. Token/model data comes from the Claude Code transcript referenced in
+  the events — nothing new is recorded on the driver side.
+- Stage semantics, stated: REVIEW/PR transitions are hard events (review.sh,
+  gh pr create); PLAN/IMPLEMENT/VERIFY are heuristics from tool traffic and
+  can bounce — the pipeline accumulates time per stage rather than pretending
+  a one-way ratchet.
+- EXISTING PROJECTS: `plinth update`, then add pulse.sh wiring to
+  .claude/settings.json — copy the template's SessionStart / UserPromptSubmit /
+  PostToolUse / SubagentStop / PreCompact / Stop entries. init/update now warn
+  when pulse wiring is missing, same as the review gate.
+
 ## v3.7 — July 6, 2026
 - The review loop's trigger is now mechanical, not conventional. NEW shared
   hooks: `session-start.sh` (records HEAD per session under .plinth/session/)

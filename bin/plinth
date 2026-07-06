@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.7 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.11 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
+#   plinth watch  <project-path>  Live session dashboard (task, stage pipeline,
+#                                 tokens, burn, review/gate state). --once for a
+#                                 single frame.
 #   plinth update <project-path>  Propagate a Plinth version to an existing project:
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
@@ -27,9 +30,9 @@ done
 PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-usage() { echo "Usage: plinth {init|update|goal} <project-path>"; exit 1; }
-[ $# -eq 2 ] || usage
-cmd="$1"; target="$2"
+usage() { echo "Usage: plinth {init|update|goal|watch} <project-path> [--once]"; exit 1; }
+[ $# -ge 2 ] || usage
+cmd="$1"; target="$2"; opt="${3:-}"
 [ -d "$target" ] || { echo "No such directory: $target"; exit 1; }
 
 # Portable in-place edit (macOS + Linux): sed to temp file, then move.
@@ -66,10 +69,68 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
+  cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
   cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
   chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh" \
-           "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh"
+           "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
+           "$target/.claude/hooks/pulse.sh"
   echo "$PLINTH_VERSION" > "$target/.plinth-version"
+}
+
+# GitHub preflight: verify the layers underneath the gates actually exist.
+# Automates what is safe (local git init), asks consent for what is outward
+# (creating a GitHub repo), and only REPORTS on branch protection — required-
+# check names exist only after the first CI run; configuring them blind can
+# block merging forever behind checks that never report.
+github_preflight() {
+  if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$target" init -b main >/dev/null 2>&1 || git -C "$target" init >/dev/null 2>&1
+    echo "  git:           initialized repository — Plinth's review, gates, and dashboard were inert without it"
+  fi
+  command -v gh >/dev/null 2>&1 || { echo "  github:        gh CLI not found — install it to verify/create the remote and check protection"; return 0; }
+  gh auth status >/dev/null 2>&1 || { echo "  github:        gh not authenticated (run: gh auth login) — skipping remote/protection checks"; return 0; }
+
+  local url name slug defb out
+  url="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
+  if [ -z "$url" ]; then
+    name="$(basename "$target")"
+    if [ -t 0 ]; then
+      printf '  github:        no origin remote. Create GitHub repo "%s" now? [y/N] ' "$name"
+      read -r ans || ans=""
+      if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+        printf '  visibility:    public gets branch protection on the free plan; private needs Pro. [public/private] (public): '
+        read -r vis || vis=""
+        [ "$vis" = "private" ] || vis="public"
+        if (cd "$target" && gh repo create "$name" "--$vis" --source . --push); then
+          echo "  github:        created and pushed ($vis)"
+          url="$(git -C "$target" remote get-url origin 2>/dev/null || true)"
+        else
+          echo "  github:        creation failed — run manually: gh repo create $name --$vis --source \"$target\" --push"
+          return 0
+        fi
+      else
+        echo "  github:        skipped. When ready: gh repo create $name --public --source \"$target\" --push"
+        return 0
+      fi
+    else
+      echo "  github:        no origin remote. When ready: gh repo create $name --public --source \"$target\" --push"
+      return 0
+    fi
+  fi
+
+  slug="$(printf '%s' "$url" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')"
+  defb="$(gh api "repos/$slug" -q .default_branch 2>/dev/null || echo main)"
+  if out="$(gh api "repos/$slug/branches/$defb/protection" 2>&1)"; then
+    echo "  protection:    configured on $defb"
+  elif printf '%s' "$out" | grep -q "Upgrade to GitHub Pro"; then
+    echo "  protection:    IMPOSSIBLE on this plan (private repo, GitHub Free) — floor/checks are"
+    echo "                 NOT required to merge. Make the repo public or upgrade to Pro."
+  elif printf '%s' "$out" | grep -qi "not protected"; then
+    echo "  protection:    available but NOT configured on $defb. After the first PR shows the"
+    echo "                 check names, require them: repo Settings -> Branches -> protect $defb."
+  else
+    echo "  protection:    could not determine: $(printf '%s' "$out" | tr '\n' ' ' | head -c 90)"
+  fi
 }
 
 # settings.json is per-project (never overwritten), so new hook wiring cannot
@@ -79,6 +140,10 @@ warn_missing_gate_wiring() {
     echo "NOTE: .claude/settings.json (yours, never overwritten) lacks the review-gate"
     echo "wiring — the review Stop gate is NOT enforced in this project. Add the"
     echo "SessionStart and Stop hook entries from CHANGELOG v3.7."
+  fi
+  if ! grep -q 'pulse.sh' "$target/.claude/settings.json" 2>/dev/null; then
+    echo "NOTE: .claude/settings.json lacks pulse.sh wiring — 'plinth watch' will"
+    echo "have no event feed for this project. See CHANGELOG v3.8."
   fi
 }
 
@@ -124,10 +189,174 @@ copy_templates_if_absent() {
   fi
 }
 
+# ── plinth watch ──────────────────────────────────────────────────────────────
+# Live session dashboard. Reads the raw event feed (.plinth/session/events.jsonl,
+# written by pulse.sh) + the Claude Code transcript it points at + the review
+# verdict, and renders task / stage pipeline / tokens / burn / gates every 2s.
+# All interpretation lives here in one jq program — events stay raw facts.
+render_frame() {
+  local EV="$target/.plinth/session/events.jsonl"
+  local VD="$target/.plinth/session/review/verdict.json"
+  if [ ! -f "$EV" ]; then
+    echo "plinth watch: no event feed at $EV"
+    echo "Is pulse.sh wired in .claude/settings.json? (see CHANGELOG v3.8)"
+    return 0
+  fi
+  local transcript head branch
+  transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' "$EV" 2>/dev/null)"
+  [ -f "$transcript" ] || transcript=/dev/null
+  head="$(git -C "$target" rev-parse --short HEAD 2>/dev/null || echo '-')"
+  branch="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+  local vfile="$VD"; [ -f "$vfile" ] || vfile=/dev/null
+
+  jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
+        --arg head "$head" --arg branch "$branch" '
+    # ---------- helpers ----------
+    def B: "[1m";  def D: "[2m";  def R: "[0m";
+    def CY: "[36m"; def GR: "[32m"; def YE: "[33m";
+    def RD: "[31m"; def MG: "[35m"; def RV: "[7m";
+    def rpad(n): (. + (" " * n))[0:n];
+    def hum_t: if . == null or . < 0 then "—"
+      elif . < 60 then "\(. | floor)s"
+      elif . < 3600 then "\((. / 60) | floor)m \((. % 60) | floor)s"
+      else "\((. / 3600) | floor)h \(((. % 3600) / 60) | floor)m" end;
+    def hum_k: if . == null then "—"
+      elif . >= 1000000 then "\(. / 1000000 * 10 | floor / 10)M"
+      elif . >= 1000 then "\(. / 1000 * 10 | floor / 10)k"
+      else "\(.)" end;
+    def ago($now): ($now - .) | hum_t + " ago";
+
+    ($ev | map(select(type == "object"))) as $all
+    | (now | floor) as $NOW
+    # focus: the session of the most recent session_start (else last event with a sid)
+    | (([$all[] | select(.event == "SessionStart")] | .[-1].sid) //
+       ([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
+    | ($all | map(select(.sid == $sid))) as $sev
+    | if ($sev | length) == 0 then "plinth watch: event feed has no session events yet." else
+
+    ($sev[0].epoch) as $t0
+    # ---------- stage classification (facts -> stages, renderer-side only) ----------
+    | def stage_of:
+        if .event == "PostToolUse" and (.tool == "Edit" or .tool == "Write" or .tool == "MultiEdit" or .tool == "NotebookEdit")
+        then "IMPLEMENT"
+        elif .event == "PostToolUse" and .tool == "Bash" then
+          ((.detail // "") |
+            if test("review\\.sh") then "REVIEW"
+            elif test("gh pr (create|merge)") then "PR"
+            elif test("(^|[;&|(\\s])(pytest|go test|cargo (test|nextest|check)|npm (test|run test)|yarn test|pnpm test|python3? -m (pytest|unittest)|make (test|check)|mix test|rspec|jest|vitest|tox|swift test)")
+            then "VERIFY" else null end)
+        else null end;
+    ([{e: $t0, s: "PLAN"}] + [$sev[] | (stage_of) as $s | select($s != null) | {e: .epoch, s: $s}]) as $marks
+    # collapse consecutive same-stage marks, then close segments
+    | ($marks | reduce .[] as $m ([]; if ((.[-1].s) // "") == $m.s then . else . + [$m] end)) as $tx
+    | [range(0; $tx | length) | {s: $tx[.].s, a: $tx[.].e, b: (if . + 1 < ($tx | length) then $tx[. + 1].e else $NOW end)}] as $segs
+    | ($segs[-1].s) as $cur
+    # ---------- tokens from the transcript ----------
+    | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
+        | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
+           i: (.message.usage.input_tokens // 0), cc: (.message.usage.cache_creation_input_tokens // 0),
+           cr: (.message.usage.cache_read_input_tokens // 0), o: (.message.usage.output_tokens // 0),
+           m: (.message.model // null)}
+        | select(.e != null))) as $use
+    | {i: ($use | map(.i) | add // 0), cc: ($use | map(.cc) | add // 0),
+       cr: ($use | map(.cr) | add // 0), o: ($use | map(.o) | add // 0)} as $tot
+    | ([$segs | group_by(.s)[] | {s: .[0].s,
+         t: (map(.b - .a) | add),
+         k: (map(. as $g | [$use[] | select(.e >= $g.a and .e < $g.b) | .i + .cc + .o] | add // 0) | add)}]) as $per
+    | ([$use[] | select(.e > $NOW - 300) | .i + .cc + .o] | add // 0) as $last5
+    # sparkline: 12 one-minute buckets
+    | (["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]) as $bars
+    | ([range(0; 12) | . as $b | [$use[] | select(.e > $NOW - (12 - $b) * 60 and .e <= $NOW - (11 - $b) * 60) | .i + .cc + .o] | add // 0]) as $bkt
+    | (($bkt | max) // 0) as $bmax
+    | ($bkt | map(if $bmax == 0 then "▁" else $bars[(. / $bmax * 7) | floor] end) | join("")) as $spark
+    # ---------- signals ----------
+    | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $blocks
+    | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $releases
+    | ([$sev[] | select(.event == "PreCompact")] | length) as $compacts
+    | ([$sev[] | select(.event == "SubagentStop")] | length) as $subs
+    | (([$sev[] | select(.event == "UserPromptSubmit") | .detail // ""
+         | select((test("^\\s*<") | not) and length > 0)] | .[0]) // "(no prompt recorded)") as $task
+    | ([$sev[] | select((stage_of) == "VERIFY")] | .[-1]) as $evd
+    | ([$sev[] | select(.event == "PostToolUse")] | .[-1]) as $lastact
+    | (($use | map(.m) | map(select(. != null)) | .[-1]) // "—") as $model
+    | ($vd[0] // null) as $V
+    # ---------- frame ----------
+    | (["PLAN", "IMPLEMENT", "VERIFY", "REVIEW", "PR"]) as $ORDER
+    | ([ $ORDER[] | . as $s | ($per | map(select(.s == $s)) | .[0]) as $p
+        | if $p == null then D + "   " + ($s | rpad(10)) + ("—" | rpad(10)) + "—" + R
+          elif $s == $cur then RV + B + " ▶ " + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + (($p.k | hum_k) + " tok") + R
+          else GR + " ✓ " + R + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + D + (($p.k | hum_k) + " tok") + R
+          end ] | join("\n")) as $pipe
+    | (if $V == null then D + "no review round yet — ./.plinth/review.sh" + R
+       else ((if $V.verdict == "APPROVED" then GR else YE end) + $V.verdict + R
+         + D + " · round " + ($V.round | tostring) + " @ " + ($V.sha[0:7]) + R
+         + (if ($V.sha[0:7]) == $head then GR + " = HEAD ✓" + R else RD + " ≠ HEAD " + $head + " — stale, re-run review" + R end)
+         + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end))
+       end) as $review
+    | (if $evd == null then D + "no test runner seen this session" + R
+       else ($evd.detail[0:56])
+         + (if $evd.rc == 0 then GR + " → exit 0" + R
+            elif $evd.rc != null then RD + " → exit \($evd.rc)" + R
+            else D + " → ran" + R end)
+         + D + " · " + ($evd.epoch | ago($NOW)) + R
+       end) as $evidence
+    | (if $lastact == null then D + "—" + R
+       else ($lastact.tool // "?") + D + " " + (($lastact.detail // "")[0:56]) + " · " + ($lastact.epoch | ago($NOW)) + R end) as $nowline
+
+    | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
+    + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
+    + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
+    + $pipe + "\n"
+    + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
+    + B + " tokens   " + R + (($tot.i + $tot.cc + $tot.cr + $tot.o) | hum_k)
+      + D + "  (in " + ($tot.i | hum_k) + " · cache-write " + ($tot.cc | hum_k) + " · cache-read " + ($tot.cr | hum_k) + " · out " + ($tot.o | hum_k) + ")" + R + "\n"
+    + B + " burn     " + R + (($last5 / 5 | floor) | hum_k) + "/min  " + MG + $spark + R + D + "  (last 12 min, fresh+out)" + R + "\n"
+    + B + " review   " + R + $review + "\n"
+    + B + " evidence " + R + $evidence + "\n"
+    + B + " signals  " + R
+      + (if $blocks > 0 then RD + "guard blocks \($blocks)" + R else D + "guard blocks 0" + R end)
+      + (if $releases > 0 then RD + " · GATE RELEASES \($releases) — unreviewed work escaped the session gate" + R
+         else D + " · gate releases 0" + R end)
+      + D + " · compactions \($compacts) · subagent runs \($subs)" + R + "\n"
+    + B + " now      " + R + $nowline
+    end
+  ' 2>/dev/null || echo "plinth watch: render error (malformed event or transcript line?)"
+}
+
+watch_project() {
+  if [ "$opt" = "--once" ]; then render_frame; exit 0; fi
+  local EV="$target/.plinth/session/events.jsonl"
+  local VD="$target/.plinth/session/review/verdict.json"
+  # mtime+size stamp, BSD then GNU stat.
+  fstamp() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
+  # Alt screen + hidden cursor; restore on exit. Clear once at startup only.
+  printf '\033[?1049h\033[?25l\033[2J'
+  trap 'printf "\033[?25h\033[?1049l"; exit 0' INT TERM
+  local last="" beat=10 stamp frame
+  while :; do
+    # Cheap 1s poll on file stamps; re-render (jq over feed + transcript) only
+    # on change, plus a 10s heartbeat so elapsed/ago clocks stay live.
+    stamp="$(fstamp "$EV") $(fstamp "$VD")"
+    if [ "$stamp" != "$last" ] || [ "$beat" -ge 10 ]; then
+      last="$stamp"; beat=0
+      # Repaint in place: home cursor, overwrite each line erasing its tail
+      # (ESC[K), then erase below the frame (ESC[J). No full clear, no blink.
+      frame="$(render_frame; printf '\n\033[2m  live — repaints on activity (1s poll, 10s heartbeat) · ctrl-c to quit\033[0m')"
+      printf '\033[H'
+      printf '%s\n' "$frame" | sed $'s/$/\033[K/'
+      printf '\033[J'
+    fi
+    beat=$((beat + 1))
+    sleep 1
+  done
+}
+
 case "$cmd" in
+  watch) watch_project ;;
   init)
     copy_templates_if_absent
     copy_shared
+    github_preflight
     warn_missing_gate_wiring
     echo "Plinth $PLINTH_VERSION initialized in $target"
     echo "Next: edit SPEC.md; commit. (ci.yml is zero-edit: owner auto-injected, checks auto-detect the stack at CI time.)"
@@ -137,6 +366,7 @@ case "$cmd" in
     old="$(cat "$target/.plinth-version")"
     copy_templates_if_absent
     copy_shared
+    github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
     echo "Review before committing: git -C \"$target\" diff"

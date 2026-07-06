@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# Plinth adversarial review v2 (shared, version-pinned). Read-only review of
+# Plinth adversarial review (shared, version-pinned; v3.9). Read-only review of
 # committed work on the current branch vs base, by the second model, recording
 # a SHA-bound structured verdict that hooks/CI/humans can consume.
 # Reviewer model is set in ~/.codex/config.toml — swap it there.
+#
+# Fix-verification rounds resume the prior reviewer session with the
+# INCREMENTAL diff only. If the thread is too large to resume safely
+# (PLINTH_RESUME_MAX input tokens; default 650000 ≈ 65% of GPT-5.5's 1,005,000
+# window — revisit on reviewer swap, see MODELS.md), the anchor commit is gone,
+# or the resume itself fails, the round falls back to a clean-slate full
+# review in a fresh session — the loop can never deadlock on a dead thread.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -75,6 +82,18 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
   if [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ -n "$prev_sid" ] && [ "$prev_base" = "$baseref" ]; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
+    # Resume only when it can plausibly work; otherwise fresh (same task, no wipe).
+    if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
+      echo "Plinth review: last reviewed commit ${prev_sha} no longer exists (rebase?) — running a fresh full round."
+      mode="fresh"
+    else
+      prev_in="$(jq -r '.usage.input_tokens // 0' "$SDIR/verdict.json")"
+      case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
+      if [ "$prev_in" -gt "${PLINTH_RESUME_MAX:-650000}" ]; then
+        echo "Plinth review: prior round processed ${prev_in} input tokens (> ${PLINTH_RESUME_MAX:-650000}) — thread too large to resume safely; running a fresh full round."
+        mode="fresh"
+      fi
+    fi
   else
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json
   fi
@@ -98,17 +117,24 @@ concrete findings (use line 0 for file-level findings; status \"open\").
 DIFF:
 ${diff}"
   else
+    # Incremental only: the thread already holds the prior full diff. Re-sending
+    # everything is what overflowed large threads (the anvil deadlock).
+    local inc
+    inc="$(git diff "${prev_sha}..HEAD" 2>/dev/null || true)"
+    [ -n "$inc" ] || inc="$diff"
     prompt="Fix-verification round ${r}. The driver has committed changes since your last
-review; HEAD is now ${sha}. Below is the full current diff vs ${baseref}.
-1) Re-check each finding you previously reported against this diff and mark its
-   status \"resolved\" or \"open\" — resolved requires evidence in the diff, not
-   the driver's claim.
-2) Review everything that changed since your last round with the same rigor as
-   a first pass; report new findings with status \"open\".
-Verdict is APPROVED only if no finding remains open.
+review; HEAD is now ${sha}. Below is the INCREMENTAL diff from the commit you
+last reviewed (${prev_sha}) to the new HEAD — you already hold the prior full
+diff in this conversation.
+1) Re-check each finding you previously reported and mark its status \"resolved\"
+   or \"open\" — resolved requires evidence in the changes, not the driver's claim.
+2) Review the new changes below with the same rigor as a first pass; report new
+   findings with status \"open\".
+Verdict is APPROVED only if no finding remains open. (A clean-slate full review
+still confirms before approval binds.)
 
-DIFF:
-${diff}"
+INCREMENTAL DIFF (${prev_sha}..${sha}):
+${inc}"
   fi
 
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
@@ -124,9 +150,11 @@ ${diff}"
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
       || die_infra "codex exec failed (round $r): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   else
-    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' --json \
-      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
-      || die_infra "codex exec resume failed (round $r): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+    if ! printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' --json \
+      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog"; then
+      echo "Plinth review: resume of the reviewer session failed ($(tail -1 "$errlog" 2>/dev/null | cut -c1-100)) — falling back to a clean-slate full round."
+      return 1
+    fi
   fi
 
   RSID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$evfile" | head -1)"
@@ -148,11 +176,19 @@ ${diff}"
   rm -f "$SDIR/last-error"   # pipeline recovered — close the gate's infra escape
 }
 
-run_round "$mode" "$round" "$sid"
+RMODE="$mode"
+if [ "$mode" = "resume" ]; then
+  if ! run_round "resume" "$round" "$sid"; then
+    RMODE="fresh"
+    run_round "fresh" "$round" ""
+  fi
+else
+  run_round "fresh" "$round" ""
+fi
 
 # A resumed approval only says "my findings were addressed". Bind APPROVED via a
 # clean-slate confirmation pass so continuity can't soften the adversarial read.
-if [ "$mode" = "resume" ] && [ "$RVERDICT" = "APPROVED" ]; then
+if [ "$RMODE" = "resume" ] && [ "$RVERDICT" = "APPROVED" ]; then
   echo "Plinth review: round ${round} findings resolved — running clean-slate confirmation review..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
@@ -166,5 +202,5 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
   exit 1
 fi
-echo "APPROVED recorded in $SDIR/verdict.json — open the PR; CI and the security agent run automatically."
+echo "APPROVED recorded in $SDIR/verdict.json — open the PR. The CI floor runs automatically; verify Codex Security commented (it requires the per-repo connection, SETUP step 4)."
 exit 0

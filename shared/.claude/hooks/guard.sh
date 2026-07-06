@@ -10,7 +10,14 @@
 set -euo pipefail
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
-block() { echo "PLINTH BLOCKED: $1" >&2; exit 2; }
+proj="${CLAUDE_PROJECT_DIR:-.}"
+block() {
+  # Log the block for `plinth watch` (best-effort; never affects the verdict).
+  { mkdir -p "$proj/.plinth/session" && jq -cn --arg tool "$tool" --arg detail "$1" \
+      '{ts:(now|todate), epoch:(now|floor), event:"guard_block", sid:null, tool:$tool, detail:($detail|.[0:160])}' \
+      >> "$proj/.plinth/session/events.jsonl"; } 2>/dev/null || true
+  echo "PLINTH BLOCKED: $1" >&2; exit 2
+}
 
 case "$tool" in
   Bash)
@@ -23,7 +30,6 @@ case "$tool" in
     if printf '%s' "$path" | grep -Eq '(^|/)\.env|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
-    proj="${CLAUDE_PROJECT_DIR:-.}"
     if [ -f "$proj/.plinth/protected-paths" ]; then
       while IFS= read -r pattern; do
         case "$pattern" in ''|'#'*) continue ;; esac

@@ -45,6 +45,11 @@ only (API + Codex), gated by a June 2 executive order requiring federal
 benchmarking; general availability expected mid-July at earliest. When it reaches
 ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. Codex
 Security stays connected to repos for PR threat review.
+Reviewer-swap checklist: review.sh's resume-skip threshold assumes the reviewer's
+context window — PLINTH_RESUME_MAX defaults to 650000 (~65% of GPT-5.5's
+1,005,000). On a reviewer with a different window, set PLINTH_RESUME_MAX to
+~65% of it (env var or wrapper); staying well under the window matters because a
+near-full thread silently auto-compacts away the original diff context.
 
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —
