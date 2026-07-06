@@ -13,10 +13,10 @@ on:
 
 jobs:
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.14
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.15
 
   checks:
-    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.14
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.15
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest

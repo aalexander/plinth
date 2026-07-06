@@ -10,6 +10,9 @@ name: Plinth Floor
 on:
   workflow_call:
 
+# Pin policy (learned the hard way — osv retired its v1 tag mid-flight and
+# broke every floor run): third-party actions are pinned to EXACT released
+# versions, never floating majors. Bump deliberately via a plinth release.
 jobs:
   secrets:
     runs-on: ubuntu-latest
@@ -17,27 +20,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # semgrep/semgrep-action is archived; the supported path is semgrep's own
+  # container image. :latest is a deliberate exception to the pin policy —
+  # the image tag always exists, whereas a pinned archived action can vanish.
   sast:
     runs-on: ubuntu-latest
+    container: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      - uses: semgrep/semgrep-action@v1
-        with:
-          config: >-
-            p/owasp-top-ten
-            p/security-audit
+      - run: semgrep scan --metrics=off --error --config p/owasp-top-ten --config p/security-audit .
 
+  # osv v2 dropped the configurable root action; the documented usage is its
+  # reusable workflow (nested reusable calls are fine: ci.yml -> floor -> osv).
+  # upload-sarif off: Code Scanning upload requires Advanced Security on
+  # private repos and would fail the job for reasons unrelated to vulns.
   dependencies:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google/osv-scanner-action@v1
-        with:
-          scan-args: "--recursive ./"
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    with:
+      scan-args: "-r ./"
+      upload-sarif: false
 
   # The hard guarantee behind guard.sh's heuristics: version-pinned tooling in
   # the project must be byte-identical to the pinned Plinth release. Local

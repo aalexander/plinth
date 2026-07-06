@@ -1,5 +1,22 @@
 # Plinth changelog
 
+## v3.15 — July 6, 2026
+Hotfix: the first real PR (anvil) caught the floor referencing a retired
+action tag — google/osv-scanner-action@v1 no longer resolves. Root cause was
+floating-major pins, so all three scanners were hardened, not just the one
+that broke (each reference verified against the live repos, not memory):
+- osv: v2 dropped the configurable root action; now called the documented
+  way — its reusable workflow @v2.3.8 (nested reusable: ci -> floor -> osv),
+  scan-args "-r ./", upload-sarif OFF (Code Scanning upload needs Advanced
+  Security on private repos and would fail unrelated to vulns).
+- gitleaks: pinned exact @v2.3.9 (was floating @v2).
+- semgrep: semgrep/semgrep-action is ARCHIVED — replaced with semgrep's own
+  container image running `semgrep scan --error` (registry rulesets, no
+  token). :latest image is a stated exception to the pin policy: the tag
+  always exists; a pinned archived action can vanish.
+- Pin policy comment added to the floor. Template + project ci.yml pins
+  bumped @v3.15. TAG v3.15 when pushing — the harness job clones by tag.
+
 ## v3.14 — July 6, 2026
 Fixes anvil round 12: the reviewer applied the v3.12 policy's taxonomy
 (labeled the tooling finding "UPSTREAM:", marked all project findings
