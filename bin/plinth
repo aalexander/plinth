@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.12 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.14 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -30,10 +30,16 @@ done
 PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-usage() { echo "Usage: plinth {init|update|goal|watch} <project-path> [--once]"; exit 1; }
-[ $# -ge 2 ] || usage
-cmd="$1"; target="$2"; opt="${3:-}"
-[ -d "$target" ] || { echo "No such directory: $target"; exit 1; }
+usage() { echo "Usage: plinth {init|update|goal|watch|statusline} <project-path> [--once]"; exit 1; }
+[ $# -ge 1 ] || usage
+cmd="$1"; target="${2:-}"; opt="${3:-}"
+if [ "$cmd" = "statusline" ]; then
+  :  # project path optional — falls back to the statusLine JSON on stdin
+elif [ -z "$target" ]; then
+  usage
+elif [ ! -d "$target" ]; then
+  echo "No such directory: $target"; exit 1
+fi
 
 # Portable in-place edit (macOS + Linux): sed to temp file, then move.
 edit_file() {  # edit_file <file> <sed-expr>...
@@ -209,8 +215,21 @@ render_frame() {
   branch="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
   local vfile="$VD"; [ -f "$vfile" ] || vfile=/dev/null
 
+  # Live CI row once the feed shows a PR: pull the check rollup from GitHub.
+  # PLINTH_CI_STATUS ('{"pass":N,"fail":N,"pending":N}') overrides for non-gh CIs.
+  local ci="null"
+  if [ -n "${PLINTH_CI_STATUS:-}" ]; then
+    ci="$PLINTH_CI_STATUS"
+  elif grep -qE 'gh pr (create|merge)' "$EV" 2>/dev/null && command -v gh >/dev/null 2>&1; then
+    ci="$( (cd "$target" && gh pr view --json statusCheckRollup 2>/dev/null) | jq -c '
+      {pass:    ([.statusCheckRollup[]? | select(.conclusion=="SUCCESS" or .state=="SUCCESS")] | length),
+       fail:    ([.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="ERROR" or .conclusion=="CANCELLED" or .state=="FAILURE" or .state=="ERROR")] | length),
+       pending: ([.statusCheckRollup[]? | select(.status=="IN_PROGRESS" or .status=="QUEUED" or .status=="PENDING" or .state=="PENDING")] | length)}' 2>/dev/null)"
+    [ -n "$ci" ] || ci="null"
+  fi
+
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
-        --arg head "$head" --arg branch "$branch" '
+        --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
     def CY: "[36m"; def GR: "[32m"; def YE: "[33m";
@@ -286,7 +305,10 @@ render_frame() {
         | if $p == null then D + "   " + ($s | rpad(10)) + ("—" | rpad(10)) + "—" + R
           elif $s == $cur then RV + B + " ▶ " + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + (($p.k | hum_k) + " tok") + R
           else GR + " ✓ " + R + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + D + (($p.k | hum_k) + " tok") + R
-          end ] | join("\n")) as $pipe
+          end ] | join("\n")) as $pipe0
+    | ($pipe0 + (if $ci == null then "" else "\n"
+        + (if ($ci.fail // 0) > 0 then RD elif ($ci.pending // 0) > 0 then YE else GR end)
+        + "   CI        " + "✓\($ci.pass // 0)  ✗\($ci.fail // 0)  ◌\($ci.pending // 0)" + R end)) as $pipe
     | (if $V == null then D + "no review round yet — ./.plinth/review.sh" + R
        else ((if $V.verdict == "APPROVED" then GR else YE end) + $V.verdict + R
          + D + " · round " + ($V.round | tostring) + " @ " + ($V.sha[0:7]) + R
@@ -323,6 +345,56 @@ render_frame() {
   ' 2>/dev/null || echo "plinth watch: render error (malformed event or transcript line?)"
 }
 
+# One-line renderer for Claude Code's statusLine setting. Reads the statusLine
+# JSON on stdin (workspace dir), or takes an explicit project path. Consults
+# only the event feed + verdict — no transcript parse, cheap at statusline
+# cadence. Token economics stay on `plinth watch`.
+statusline_render() {
+  local in dir
+  in="$(cat 2>/dev/null || true)"
+  dir="$target"
+  [ -n "$dir" ] || dir="$(printf '%s' "$in" | jq -r '.workspace.current_dir // .cwd // empty' 2>/dev/null)"
+  { [ -n "$dir" ] && [ -d "$dir" ]; } || exit 0
+  local EV="$dir/.plinth/session/events.jsonl"
+  [ -f "$EV" ] || { printf 'plinth: no session feed'; exit 0; }
+  local head vfile
+  head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
+  vfile="$dir/.plinth/session/review/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" '
+    def hum_t: if . < 60 then "\(. | floor)s" elif . < 3600 then "\((. / 60) | floor)m"
+      else "\((. / 3600) | floor)h\(((. % 3600) / 60) | floor)m" end;
+    ($ev | map(select(type == "object"))) as $all
+    | (now | floor) as $NOW
+    | (([$all[] | select(.event == "SessionStart")] | .[-1].sid) //
+       ([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
+    | ($all | map(select(.sid == $sid))) as $sev
+    | if ($sev | length) == 0 then "plinth: no session" else
+      ($sev[0].epoch) as $t0
+      | def stage_of:
+          if .event == "PostToolUse" and (.tool == "Edit" or .tool == "Write" or .tool == "MultiEdit" or .tool == "NotebookEdit")
+          then "IMPLEMENT"
+          elif .event == "PostToolUse" and .tool == "Bash" then
+            ((.detail // "") |
+              if test("review\\.sh") then "REVIEW"
+              elif test("gh pr (create|merge)") then "PR"
+              elif test("(^|[;&|(\\s])(pytest|go test|cargo (test|nextest|check)|npm (test|run test)|yarn test|pnpm test|python3? -m (pytest|unittest)|make (test|check)|mix test|rspec|jest|vitest|tox|swift test)")
+              then "VERIFY" else null end)
+          else null end;
+      (([{e: $t0, s: "PLAN"}] + [$sev[] | (stage_of) as $s | select($s != null) | {e: .epoch, s: $s}])
+        | reduce .[] as $m ([]; if ((.[-1].s) // "") == $m.s then . else . + [$m] end) | .[-1]) as $cur
+      | ($vd[0] // null) as $V
+      | (if $V == null then "no review"
+         elif $V.verdict == "APPROVED" and ($V.sha[0:7]) == $head then "APPROVED ✓"
+         elif $V.verdict == "APPROVED" then "APPROVED (stale)"
+         else "CHANGES r\($V.round)" end) as $rv
+      | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
+      | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
+      | "◆ " + $cur.s + " " + (($NOW - $cur.e) | hum_t) + " · " + $rv
+        + (if $b > 0 then " · guard⛔\($b)" else "" end)
+        + (if $r > 0 then " · RELEASED \($r)" else "" end)
+      end'
+}
+
 watch_project() {
   if [ "$opt" = "--once" ]; then render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
@@ -352,6 +424,7 @@ watch_project() {
 }
 
 case "$cmd" in
+  statusline) statusline_render ;;
   watch) watch_project ;;
   init)
     copy_templates_if_absent

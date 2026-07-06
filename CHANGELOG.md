@@ -1,5 +1,41 @@
 # Plinth changelog
 
+## v3.14 — July 6, 2026
+Fixes anvil round 12: the reviewer applied the v3.12 policy's taxonomy
+(labeled the tooling finding "UPSTREAM:", marked all project findings
+resolved) and then blocked on it anyway. Verdict arithmetic was the last
+piece still delegated to model judgment; now it's the instrument's:
+- review.sh computes the EFFECTIVE verdict deterministically from the
+  structured findings: open blocker/major findings on project paths block;
+  harness-path findings never block; a mechanical tamper check (commits
+  touching version-pinned tooling without 'plinth' in the subject) always
+  blocks. Works in both directions — a reviewer APPROVED with open project
+  blockers is forced back to CHANGES_NEEDED. The reviewer's raw verdict is
+  recorded in verdict.json as reviewer_verdict; AGENTS.md now tells the
+  reviewer its verdict field is advisory and its labels are load-bearing.
+- NEW `harness` job in plinth-floor.yml (the hard guarantee guard.sh's
+  header promises): clones plinth at the project's pinned version tag and
+  byte-compares every version-pinned tooling file; any local modification —
+  however it was made — fails the PR. Requires the plinth repo readable
+  from Actions (public or PAT) and release tags (v<VERSION>). Known limit:
+  a .plinth-version downgrade pins to an older-but-valid release; reviewers
+  treat .plinth-version changes outside plinth-update commits as tampering.
+- Template ci.yml now pins the reusable workflows @v3.14. EXISTING
+  PROJECTS: bump the two `uses:` refs in .github/workflows/ci.yml (yours,
+  never overwritten) and tag plinth releases going forward.
+
+## v3.13 — July 6, 2026
+- watch: live CI row — once the feed shows `gh pr create`, each repaint pulls
+  the PR's check rollup (`gh pr view --json statusCheckRollup`) and renders
+  ✓/✗/◌ counts colored by state. PLINTH_CI_STATUS overrides for non-gh CIs.
+- NEW `plinth statusline`: one-line renderer for Claude Code's statusLine
+  setting (stage + time-in-stage, verdict vs HEAD, red guard/gate alerts).
+  Opt-in wiring documented in the MANUAL; reads only the event feed, so it is
+  cheap at statusline cadence — token economics stay on `plinth watch`.
+- MANUAL: branch protection explained for operators — why checks are advisory
+  without it, why it must wait for the first PR (check names don't exist until
+  they've reported), and exact UI + gh-api steps with verification.
+
 ## v3.12 — July 6, 2026
 Fixes the anvil round-15 structural deadlock: the branch diff contained
 version-pinned tooling the session may not fix, and the verdict policy had no

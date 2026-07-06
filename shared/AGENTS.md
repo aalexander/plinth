@@ -31,6 +31,10 @@ the diff, not the driver's claim.
   blocker, stated bluntly, regardless of what the change does.
 - APPROVED therefore means: no open blockers/majors in project scope, and no
   tooling tampering. Not "nothing left to say."
+- The harness computes the EFFECTIVE verdict deterministically from your
+  findings: file paths decide project-vs-tooling scope, severity and status
+  decide blocking. Your verdict field is recorded but advisory — label files,
+  severities, and statuses accurately; they are the load-bearing data.
 
 ## Block on
 - Any acceptance criterion in the canonical spec not implemented by the diff.

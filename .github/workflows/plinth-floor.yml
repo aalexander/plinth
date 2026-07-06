@@ -38,3 +38,40 @@ jobs:
       - uses: google/osv-scanner-action@v1
         with:
           scan-args: "--recursive ./"
+
+  # The hard guarantee behind guard.sh's heuristics: version-pinned tooling in
+  # the project must be byte-identical to the pinned Plinth release. Local
+  # forgery (however obfuscated) is caught here, at the merge boundary.
+  # Requires the plinth repo to be readable by this runner (public, or same
+  # owner + PAT) and release tags (v<VERSION>). Known limit: a .plinth-version
+  # downgrade pins to an older-but-valid release — reviewers should treat any
+  # .plinth-version change outside a plinth-update commit as tampering.
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version-pinned Plinth tooling matches the pinned release
+        run: |
+          set -euo pipefail
+          ver="$(cat .plinth-version 2>/dev/null || true)"
+          [ -n "$ver" ] || { echo "::error::no .plinth-version — not a Plinth project?"; exit 1; }
+          git clone --depth 1 --branch "v${ver}" \
+            "https://github.com/${{ github.repository_owner }}/plinth" /tmp/plinth \
+            || { echo "::error::cannot fetch plinth@v${ver} — missing tag, or plinth repo not readable from Actions"; exit 1; }
+          fail=0
+          check() {  # check <plinth-shared-path> <project-path>
+            if ! cmp -s "/tmp/plinth/$1" "$2"; then
+              echo "::error file=$2::differs from plinth v${ver} ($1) — version-pinned tooling was modified"
+              fail=1
+            fi
+          }
+          check shared/plinth-rules.md            .plinth/plinth-rules.md
+          check shared/MODELS.md                  .plinth/MODELS.md
+          check shared/AGENTS.md                  AGENTS.md
+          check shared/.plinth/review.sh          .plinth/review.sh
+          check shared/.plinth/review-schema.json .plinth/review-schema.json
+          check shared/.claude/hooks/guard.sh         .claude/hooks/guard.sh
+          check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
+          check shared/.claude/hooks/review-gate.sh   .claude/hooks/review-gate.sh
+          check shared/.claude/hooks/pulse.sh         .claude/hooks/pulse.sh
+          exit "$fail"

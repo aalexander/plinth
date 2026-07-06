@@ -49,9 +49,10 @@ Everything between is the model's call.
    commit, push.
 3. Connect Codex Security once: chatgpt.com -> Codex -> connect the repo.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
-   jobs appeared and that Codex Security commented. Then repo Settings ->
-   Branches -> protect main, requiring those two checks. From then on the
-   merge gate is real. Until you've SEEN both fire, treat them as absent.
+   jobs appeared and that Codex Security commented. Then enable branch
+   protection requiring those checks — exact steps in "Branch protection"
+   below. From then on the merge gate is real. Until you've SEEN both fire,
+   treat them as absent.
 
 ## Daily loop — what you do, and what happens underneath
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
@@ -118,6 +119,19 @@ re-review is required and the gate will insist); **guard blocks** going red
 Stage caveat: REVIEW/PR transitions are hard events; PLAN/IMPLEMENT/VERIFY are
 heuristics from tool traffic and legitimately bounce.
 
+Once the session opens a PR, a **CI row** appears under the pipeline with the
+live check rollup (`✓ passed  ✗ failed  ◌ pending`, red/yellow/green) pulled
+from GitHub each repaint. `PLINTH_CI_STATUS='{"pass":N,"fail":N,"pending":N}'`
+overrides the source for non-GitHub CIs.
+
+Prefer one line inside Claude Code instead of a second pane? Wire the
+statusline (opt-in, in project or user settings.json):
+
+    "statusLine": { "type": "command", "command": "plinth statusline" }
+
+It shows the current stage + time in stage, the verdict vs HEAD, and red
+guard/gate alerts. Token economics stay on `plinth watch`.
+
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
 - Exit 2, "working tree is dirty" / "HEAD unchanged" / "empty diff": loop
@@ -136,6 +150,38 @@ heuristics from tool traffic and legitimately bounce.
 - **Never edit or delete anything under `.plinth/session/`** — not to unblock,
   not to tidy. If the loop appears wedged, that is a Plinth bug: fix Plinth,
   not the instrument (see CHANGELOG v3.9 for the precedent).
+
+## Branch protection (the merge gate) — what it is and how to enable it
+Without branch protection, CI is advisory: checks run, turn red, and the merge
+button still works — for you and for any agent with push access. Branch
+protection is the GitHub setting that makes named checks MANDATORY: a PR into
+`main` cannot merge until those exact checks report green. It is the one
+enforcement layer that survives anything done on a laptop, which is why Plinth
+treats it as the floor of the whole system. (Private repos need GitHub Pro;
+public repos get it free — `plinth init` probes and reports your state.)
+
+Enable it AFTER the first PR, not before: GitHub identifies checks by the names
+they report, and those names exist only once they've run. Configuring guessed
+names that never report leaves every future PR blocked forever.
+
+UI route, once the first PR shows its checks:
+1. Repo -> Settings -> Branches -> "Add branch protection rule".
+2. Branch name pattern: `main`.
+3. Tick "Require status checks to pass before merging" (add "Require branches
+   to be up to date" if you want rebase-before-merge discipline).
+4. In the search box, pick the floor and checks jobs EXACTLY as they appeared
+   on the PR (e.g. "CI / floor / secrets", "CI / checks / ...").
+5. Create. From then on red = unmergeable, for humans and agents alike.
+
+CLI route (same timing; paste the names the PR showed):
+
+    gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
+    {"required_status_checks":{"strict":false,"contexts":["CHECK NAME 1","CHECK NAME 2"]},
+     "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
+    JSON
+
+Verify either route the same way: open a trivial PR and confirm the merge
+button is disabled until everything is green.
 
 ## Auto-research mode (GOAL.md) — for numeric rubrics only (e.g. Anvil scores)
 1. `plinth goal <repo>`; have the driver draft the metric, constraints, action

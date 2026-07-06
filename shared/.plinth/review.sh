@@ -190,13 +190,39 @@ ${inc}"
   RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
 
+  # Verdict arithmetic is the instrument's job, not the reviewer's judgment
+  # (anvil round 12: the reviewer labeled a tooling finding UPSTREAM per policy,
+  # then blocked on it anyway). Effective verdict, computed from findings:
+  # open blocker/major findings on PROJECT paths block; harness-path findings
+  # never do; commits touching harness paths without 'plinth' in the subject
+  # are treated as tampering and always block. Raw verdict recorded alongside.
+  local HARNESS_RE='(^|/)\.claude/hooks/|(^|/)\.claude/settings\.json$|(^|/)\.plinth/(review\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|(^|/)AGENTS\.md$'
+  local blocking tamper RRAW
+  blocking="$(jq -r --arg re "$HARNESS_RE" \
+    '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major")) | select((.file | test($re)) | not)] | length' \
+    "$SDIR/findings-$r.json")"
+  tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
+      .plinth/review.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md \
+      .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
+  RRAW="$RVERDICT"
+  if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
+    RVERDICT="CHANGES_NEEDED"
+    echo "Plinth review: ${tamper} commit(s) touch version-pinned tooling without 'plinth' in the subject — treated as tampering; effective verdict CHANGES_NEEDED."
+  elif [ "$blocking" -eq 0 ] && [ "$RRAW" = "CHANGES_NEEDED" ]; then
+    RVERDICT="APPROVED"
+    echo "Plinth review: reviewer said CHANGES_NEEDED but no open blocker/major finding is in project scope — effective verdict APPROVED per policy (non-blocking findings listed below)."
+  elif [ "$blocking" -gt 0 ] && [ "$RRAW" = "APPROVED" ]; then
+    RVERDICT="CHANGES_NEEDED"
+    echo "Plinth review: reviewer said APPROVED but ${blocking} open blocker/major project finding(s) exist — effective verdict CHANGES_NEEDED."
+  fi
+
   local usage
   usage="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"
   [ -n "$usage" ] || usage="null"
-  jq -n --arg verdict "$RVERDICT" --arg sha "$sha" --arg base "$baseref" \
+  jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --argjson usage "$usage" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, sha:$sha, base_ref:$base, round:$round, session_id:$sid, usage:$usage, ts:$ts}' \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error"   # pipeline recovered — close the gate's infra escape
 }
