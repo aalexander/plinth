@@ -9,7 +9,12 @@ ALSO read `.plinth/AGENTS-project.md` and apply every rule in it. Those are
 project-specific blocking criteria and carry the same force as this file.
 
 ## Verdict
-Return CHANGES_NEEDED with concrete file:line findings, or APPROVED if it's clean.
+Your final message is machine-parsed against a schema: verdict (APPROVED |
+CHANGES_NEEDED), summary, findings[{file, line, severity, description, status}].
+Use line 0 for file-level findings. CHANGES_NEEDED if any finding is open;
+APPROVED only if clean. On fix-verification rounds, re-check each of your prior
+findings and mark it resolved or open — resolved requires evidence in the diff,
+not the driver's claim.
 
 ## Block on
 - Any acceptance criterion in the canonical spec not implemented by the diff.

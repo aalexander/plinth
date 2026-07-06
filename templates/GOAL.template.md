@@ -28,5 +28,6 @@ The eval/scoring path(s) below are agent-immutable. They MUST also be added to
   OR constraint violation (stop and report).
 
 ## Exit
-On stop: run ./.plinth/review.sh (reviewer checks metric integrity), then open a PR.
+On stop: commit, run ./.plinth/review.sh until it exits 0 = APPROVED (reviewer
+checks metric integrity), then open a PR.
 Normal Plinth gates apply.

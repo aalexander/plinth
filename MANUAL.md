@@ -40,7 +40,9 @@ paste the outputs in, commit.
 2. `cd ~/Dev/<repo> && claude` — state the task; the model orchestrates itself.
 3. It implements, writes real tests, runs checks, pastes real output (Rule 10:
    commentary is not evidence; only runner output counts).
-4. Its last step: `./.plinth/review.sh` (Codex, read-only) — it fixes findings.
+4. Its last step: commit, then `./.plinth/review.sh` (Codex, read-only, SHA-bound).
+   Exit 1 returns structured findings; it fixes, commits, re-runs until exit 0
+   (APPROVED — recorded in `.plinth/session/review/verdict.json`).
 5. Open the PR. CI floor + Codex Security fire automatically.
 6. Glance at the consolidated checks. Merge. GitHub is the audit trail.
 
@@ -55,6 +57,10 @@ paste the outputs in, commit.
 ## Hard blocks (don't rely on the model behaving)
 - Guard hook: destructive commands, secret paths, and anything matching
   `.plinth/protected-paths` are blocked at the tool level — for every subagent too.
+- Review gate (Stop hook): a session that created commits cannot end its turn
+  until review.sh records APPROVED at HEAD. Scoped to feature branches and
+  commit-making sessions; releases loudly on review infrastructure failure or
+  after 5 blocks, so it can't trap a session on a broken pipeline.
 - Branch protection: `floor` + `checks` required to merge.
 
 ## When models change (they will)
@@ -69,5 +75,6 @@ paste the outputs in, commit.
 - **GPT-5.6 GA** (mid-July earliest): evaluate as reviewer; one-line swap.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
-- Verify on first run: `codex exec --sandbox read-only` flags; the hooks schema;
-  scanner action tags in `plinth-floor.yml`.
+- Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
+  (`codex exec` flags — sandbox, --json, resume, --output-schema — verified
+  against codex-cli 0.142.5 in v3.6.)

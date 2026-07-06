@@ -77,7 +77,8 @@ Use exactly this structure:
 - ## Action catalog — what kinds of changes are in bounds
 - ## Stop conditions — target score, N attempts without improvement, or any
   constraint violation
-- ## Exit — run ./.plinth/review.sh, then open a PR; normal gates apply
+- ## Exit — commit, run ./.plinth/review.sh until it exits 0 (APPROVED), then
+  open a PR; normal gates apply
 
 ### 4. protected-paths additions (only if GOAL.md exists)
 The exact lines to append to .plinth/protected-paths.

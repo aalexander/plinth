@@ -1,5 +1,67 @@
 # Plinth changelog
 
+## v3.7 — July 6, 2026
+- The review loop's trigger is now mechanical, not conventional. NEW shared
+  hooks: `session-start.sh` (records HEAD per session under .plinth/session/)
+  and `review-gate.sh` (Stop hook — a session that created commits cannot end
+  its turn until verdict.json says APPROVED at HEAD).
+- The gate is deliberately narrow: it never fires outside a git repo, without
+  a SessionStart baseline, on sessions that made no commits, or on main/master.
+  Q&A and planning sessions are untouched.
+- Anti-trap releases, both loud: a review.sh *infrastructure* failure within
+  30 min (codex/jq missing or broken, bad schema, unparseable verdict — now
+  recorded to .plinth/session/review/last-error and cleared on the next
+  successful round) opens the gate so breakage reaches the human instead of
+  wedging the session; and a 5-block cap per session backstops everything else.
+  Loop-discipline refusals (dirty tree, empty diff, unchanged HEAD) do NOT
+  open the gate.
+- `plinth init`/`update` now warn when .claude/settings.json (yours, never
+  overwritten) lacks the gate wiring — enforcement must never be silently
+  absent. EXISTING PROJECTS: run `plinth update`, then add to settings.json
+  "hooks":
+      "SessionStart": [
+        { "hooks": [ { "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh" } ] }
+      ],
+      "Stop": [
+        { "hooks": [ { "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.sh" } ] }
+      ]
+- Known limits, stated: the gate scopes by HEAD movement, so a session that
+  edits but never commits can still stop (the work is visible locally and
+  can't reach a PR); and verdict.json remains forgeable via bash redirection.
+  Merge-level backstops (CI floor + Codex Security) still cover both; the CI
+  verdict-receipt gate remains the deferred hard fix.
+
+## v3.6 — July 5, 2026
+- review.sh v2: the review/fix loop is now a file protocol, not prose over
+  stdout. Verdicts are SHA-bound and schema-forced (`--output-schema`); state
+  lives in `.plinth/session/review/` (request-<n>/findings-<n>/verdict.json +
+  raw codex event streams, self-gitignored). Exit codes carry the signal:
+  0 APPROVED, 1 CHANGES_NEEDED (fix, commit, re-run), 2 the review DID NOT RUN.
+- Closed two false-pass paths: a dirty tree is now refused (uncommitted work
+  was invisible to `git diff base...HEAD`, so fixes were reviewed stale or not
+  at all), and empty/failed diffs exit 2 instead of "nothing to review" exit 0
+  (the gate failed open on any git error).
+- Fix rounds have memory: re-runs resume the reviewer's codex session
+  (`codex exec resume`), re-verify each prior finding as resolved/open, and
+  review new changes at first-pass rigor. A resumed APPROVED does not bind —
+  a clean-slate confirmation review runs first, so session continuity can't
+  soften the adversarial read. Re-running at an unchanged HEAD after
+  CHANGES_NEEDED is refused; at an APPROVED HEAD it short-circuits (exit 0).
+- Prompt now passes via stdin (ARG_MAX-safe for large diffs). Reviewer token
+  usage per round is recorded in verdict.json.
+- NEW shared file `.plinth/review-schema.json` (propagates via `plinth update`).
+- New projects get `(^|/)\.plinth/session/` seeded in protected-paths so agents
+  can't Edit/Write verdict state; add that line manually to existing projects.
+- Verified against codex-cli 0.142.5: `--sandbox read-only`, `--json` thread
+  ids, `exec resume` memory, `--output-schema` + `-o` interplay.
+- Still convention-tier: nothing yet *forces* review.sh to run before a PR, and
+  verdict.json remains writable via bash redirection (the guard covers
+  Edit/Write only). The Stop-hook and CI verdict-gate are the follow-up that
+  makes the trigger mechanical; verdict.json is now shaped for them (SHA-bound,
+  machine-readable).
+
 ## v3.5 — July 5, 2026
 - REMOVED `plinth migrate`: no Forge-era repos remain; the rename map lives in
   the v2 changelog entry if one ever surfaces from a backup.

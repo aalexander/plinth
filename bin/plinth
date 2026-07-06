@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.5 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v3.7 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -62,10 +62,24 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
   cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
   cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
+  cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
+  cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
+  cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
-  chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh"
+  chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh" \
+           "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh"
   echo "$PLINTH_VERSION" > "$target/.plinth-version"
+}
+
+# settings.json is per-project (never overwritten), so new hook wiring cannot
+# propagate silently. Warn when the shared hooks exist but aren't wired.
+warn_missing_gate_wiring() {
+  if ! grep -q 'review-gate.sh' "$target/.claude/settings.json" 2>/dev/null; then
+    echo "NOTE: .claude/settings.json (yours, never overwritten) lacks the review-gate"
+    echo "wiring — the review Stop gate is NOT enforced in this project. Add the"
+    echo "SessionStart and Stop hook entries from CHANGELOG v3.7."
+  fi
 }
 
 # PER-PROJECT (templates, copied once, never overwritten):
@@ -87,7 +101,7 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n(^|/)\\.plinth/session/\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
@@ -114,6 +128,7 @@ case "$cmd" in
   init)
     copy_templates_if_absent
     copy_shared
+    warn_missing_gate_wiring
     echo "Plinth $PLINTH_VERSION initialized in $target"
     echo "Next: edit SPEC.md; commit. (ci.yml is zero-edit: owner auto-injected, checks auto-detect the stack at CI time.)"
     ;;
@@ -122,6 +137,7 @@ case "$cmd" in
     old="$(cat "$target/.plinth-version")"
     copy_templates_if_absent
     copy_shared
+    warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
     echo "Review before committing: git -C \"$target\" diff"
     ;;

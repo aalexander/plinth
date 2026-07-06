@@ -64,10 +64,16 @@ approved; use your judgment. Every subagent you spawn is subject to the same gua
 hooks and gates.
 
 ## Review before PR (required)
-When the work is complete, run `./.plinth/review.sh` — adversarial review by the
-second model — and address its findings before opening the PR. Then open the PR; CI
-and the security agent run automatically. That is the review checkpoint. Keep the
-session quiet until then.
+When the work is complete: commit, then run `./.plinth/review.sh` (allow up to 10
+minutes). It reviews committed work only and refuses a dirty tree or an empty diff.
+Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
+CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
+(re-runs resume the same reviewer session and re-verify each finding). Exit 2 = the
+review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
+pass. Never edit files under `.plinth/session/`. Then open the PR; CI and the
+security agent run automatically. Keep the session quiet until then.
+This is enforced: a Stop gate refuses to end the turn of any session that
+created commits until the verdict at HEAD is APPROVED.
 
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it
