@@ -11,10 +11,26 @@ project-specific blocking criteria and carry the same force as this file.
 ## Verdict
 Your final message is machine-parsed against a schema: verdict (APPROVED |
 CHANGES_NEEDED), summary, findings[{file, line, severity, description, status}].
-Use line 0 for file-level findings. CHANGES_NEEDED if any finding is open;
-APPROVED only if clean. On fix-verification rounds, re-check each of your prior
-findings and mark it resolved or open — resolved requires evidence in the diff,
-not the driver's claim.
+Use line 0 for file-level findings. On fix-verification rounds, re-check each of
+your prior findings and mark it resolved or open — resolved requires evidence in
+the diff, not the driver's claim.
+
+## Verdict policy — what blocks and what doesn't
+- Open blocker or major findings in PROJECT code: CHANGES_NEEDED.
+- Minor findings: report them (severity "minor", status open) but they do NOT
+  block. The driver must append open minors to the spec's `## Noticed` section
+  before the PR; they ride to CI and the human from there.
+- Findings in version-pinned Plinth tooling (.claude/hooks/, .claude/settings.json,
+  AGENTS.md at repo root, and .plinth/ except AGENTS-project.md, config,
+  protected-paths, GOAL.md): prefix the description "UPSTREAM:" — real findings,
+  reported at observed severity, but they do NOT block this repo's verdict. The
+  session cannot fix the instrument that judges it; the human routes them to the
+  Plinth repo.
+- EXCEPTION — tampering always blocks: if the diff modifies any version-pinned
+  tooling file outside a commit clearly labeled as a Plinth update, that is a
+  blocker, stated bluntly, regardless of what the change does.
+- APPROVED therefore means: no open blockers/majors in project scope, and no
+  tooling tampering. Not "nothing left to say."
 
 ## Block on
 - Any acceptance criterion in the canonical spec not implemented by the diff.

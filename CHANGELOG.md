@@ -1,5 +1,37 @@
 # Plinth changelog
 
+## v3.12 — July 6, 2026
+Fixes the anvil round-15 structural deadlock: the branch diff contained
+version-pinned tooling the session may not fix, and the verdict policy had no
+category for that — an honest reviewer re-flags it forever, so APPROVED was
+unreachable by fixing the project. Three changes:
+- guard v3 closes the actual flagged gap: bash-level WRITES to protected paths
+  (redirections and mutating commands naming a protected pattern) are now
+  blocked, with `.plinth/session/` protected as a BUILTIN (no per-project
+  config needed). Heuristic by design — obfuscated writes can evade text
+  matching; the CI hash-manifest job remains the planned hard guarantee.
+  Reads (cat/jq/grep) stay allowed.
+- Verdict policy learns scope and severity (AGENTS.md): blockers/majors in
+  project code block; minors are reported but non-blocking and MUST be
+  appended to the spec's `## Noticed` before the PR; findings in version-
+  pinned tooling are "UPSTREAM:" — reported, never blocking, routed to the
+  Plinth repo by the human. Tampering (tooling modified outside a labeled
+  plinth-update commit) always blocks. APPROVED = nothing blocking ships,
+  not "nothing left to say" — ends the 5M-token nit treadmill.
+- Cheap verify fallback: when the reviewer thread can't be resumed, the round
+  is now a fresh-session VERIFICATION (prior findings + incremental diff,
+  O(delta) cost, non-binding) instead of a full re-read; the clean-slate full
+  review runs once per milestone, to bind. Full-diff cost drops from
+  once-per-round to once-per-approval.
+- protected-paths template now seeds the harness paths (.claude/hooks/,
+  settings.json, review.sh, schema, rules, MODELS.md, AGENTS.md, and
+  protected-paths itself). EXISTING PROJECTS: append those lines manually
+  (session/ needs nothing — it's builtin in guard v3).
+- New rule: the PR body is the audit summary of the review loop, derived from
+  .plinth/session/review/ artifacts (rounds, final verdict + SHA, real check
+  output, Noticed minors, labeled tooling commits, UPSTREAM handoffs) — not
+  narrated. A `plinth pr-body` generator is a candidate follow-up.
+
 ## v3.11 — July 6, 2026
 - Gate honesty + hardening (found by the Anvil adversarial review, round 9,
   reviewing the Plinth tooling commit itself — the reviewer caught the rules

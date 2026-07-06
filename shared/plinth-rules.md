@@ -71,8 +71,16 @@ CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer session when feasible; oversized or dead
 threads fall back to a fresh full review automatically). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
-pass. Never edit files under `.plinth/session/`. Then open the PR; CI and the
-security agent run automatically. Keep the session quiet until then.
+pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
+(the guard enforces both). Verdict policy: blockers/majors in project code block;
+minor findings don't block but MUST be appended to the spec's `## Noticed` before
+the PR; findings in Plinth tooling are UPSTREAM — surface them to the human,
+never fix the instrument in-session. Then open the PR; CI and the security agent
+run automatically. The PR body is the audit summary of the loop, derived from
+.plinth/session/review/ — not narrated: rounds and modes, final verdict + SHA,
+real check output, open minors with their `## Noticed` entries, tooling-update
+commits labeled as such, and any UPSTREAM handoffs. Keep the session quiet
+until then.
 This is enforced on feature branches: a Stop gate refuses to end the turn of a
 session that created commits until the verdict at HEAD is APPROVED. The gate has
 two pressure valves — a recent mechanical review failure, and a per-session block
