@@ -22,8 +22,10 @@
 set -euo pipefail
 
 base="${1:-main}"
-SDIR=".plinth/session/review"
 SCHEMA=".plinth/review-schema.json"
+# Session state is keyed by branch so parallel branches/sessions don't fight
+# over verdicts. SDIR is set after the git checks below.
+SDIR=""
 die() { echo "PLINTH REVIEW FAILED: $*" >&2; exit 2; }
 # Infrastructure failure (broken pipeline, NOT loop discipline): recorded so the
 # review gate releases the session instead of trapping it on something only the
@@ -40,8 +42,11 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
 
 # Reviews are SHA-bound. A dirty tree means the diff below would not match the
-# work — the old silent-false-pass path. Refuse instead.
-[ -z "$(git status --porcelain)" ] || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
+# work — the old silent-false-pass path. Refuse instead. Exemption: the
+# NEEDS-HUMAN queue (this script appends to it; it is a human channel, not
+# reviewable code — the driver commits it with its next real commit).
+[ -z "$(git status --porcelain | grep -vE '\.plinth/NEEDS-HUMAN\.md$')" ] \
+  || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
 sha="$(git rev-parse HEAD)"
 
@@ -54,12 +59,25 @@ fi
 diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
 [ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
 
-# Canonical spec location: .plinth/config spec_path (file or directory).
-SPEC_PATH="SPEC.md"
-if [ -f ".plinth/config" ]; then
-  v="$(sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' .plinth/config | head -1)"
-  [ -n "$v" ] && SPEC_PATH="$v"
-fi
+# Per-project config (.plinth/config — agent-immutable via protected-paths):
+#   spec_path    canonical spec (file or directory)
+#   exec_gated   grep -E patterns (space-separated) for execution-gated paths;
+#                RUNTIME: findings on these don't block — they join the run gate
+#   round_budget advisory warning threshold for per-round input tokens
+#                (default 4000000; warns and continues — never blocks)
+#   audit_model  optional second model; every 5th binding approval gets a cold
+#                cross-model audit round (disagreement reported, not adjudicated)
+cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
+SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
+EXEC_GATED="$(cfg exec_gated || true)"
+ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
+AUDIT_MODEL="$(cfg audit_model || true)"
+EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+SDIR=".plinth/session/review/${slug}"
+RECEIPT=".plinth/session/run/${slug}/receipt.json"
 
 mkdir -p "$SDIR"
 [ -f ".plinth/session/.gitignore" ] || printf '*\n' > ".plinth/session/.gitignore"
@@ -73,6 +91,14 @@ if [ -f "$SDIR/verdict.json" ]; then
   prev_base="$(jq -r '.base_ref // empty'      "$SDIR/verdict.json")"
   prev_sid="$(jq -r '.session_id // empty'     "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
+  prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
+  case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
+  # Budget is ADVISORY: warn loudly and continue — never park the loop on a
+  # human. Runaway protection is the verdict arithmetic (v3.14) plus the
+  # spend being visible in plinth watch; the human can always interrupt.
+  if [ "$prev_in" -gt "$ROUND_BUDGET" ]; then
+    echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
+  fi
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
     echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
     exit 0
@@ -107,7 +133,23 @@ fi
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
   local evfile="$SDIR/events-$r.jsonl" raw="$SDIR/raw-$r.json" errlog="$SDIR/stderr-$r.log"
-  local prompt
+  local prompt evidence="" specatk=""
+
+  # Execution evidence: the latest run receipt turns runtime guessing into
+  # observation — RUNTIME findings get verified against it.
+  if [ -f "$RECEIPT" ]; then
+    evidence="
+
+LATEST RUN RECEIPT (execution evidence — verify RUNTIME findings against it):
+$(cat "$RECEIPT")"
+  fi
+  # The spec is an instrument too: when the diff changes it, attack it.
+  if git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${SPEC_PATH}"; then
+    specatk="
+The canonical spec itself changed in this diff: additionally ATTACK the spec
+changes for ambiguity, untestability, and internal contradiction; report such
+findings against the spec file at observed severity."
+  fi
 
   if [ "$m" = "fresh" ]; then
     prompt="You are an independent adversarial reviewer. Follow the rules in AGENTS.md
@@ -119,9 +161,12 @@ Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
 metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
+Findings on execution-gated paths whose truth depends on real libraries or
+hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
+they route to the run gate instead of blocking.${specatk}
 
 DIFF:
-${diff}"
+${diff}${evidence}"
   elif [ "$m" = "verify" ]; then
     local prior
     prior="$(cat "$SDIR/findings-$((r - 1)).json")"
@@ -140,7 +185,7 @@ PRIOR FINDINGS:
 ${prior}
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
-$(git diff "${prev_sha}..HEAD" 2>/dev/null || printf '%s' "$diff")"
+$(git diff "${prev_sha}..HEAD" 2>/dev/null || printf '%s' "$diff")${evidence}"
   else
     # Incremental only: the thread already holds the prior full diff. Re-sending
     # everything is what overflowed large threads (the anvil deadlock).
@@ -159,7 +204,7 @@ Verdict is APPROVED only if no finding remains open. (A clean-slate full review
 still confirms before approval binds.)
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
-${inc}"
+${inc}${evidence}"
   fi
 
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
@@ -198,8 +243,13 @@ ${inc}"
   # are treated as tampering and always block. Raw verdict recorded alongside.
   local HARNESS_RE='(^|/)\.claude/hooks/|(^|/)\.claude/settings\.json$|(^|/)\.plinth/(review\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|(^|/)AGENTS\.md$'
   local blocking tamper RRAW
-  blocking="$(jq -r --arg re "$HARNESS_RE" \
-    '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major")) | select((.file | test($re)) | not)] | length' \
+  # RUNTIME: findings on declared exec-gated paths don't block (dual-keyed:
+  # reviewer prefix AND config path match) — they join the run gate instead.
+  blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+    '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
+       | select((.file | test($re)) | not)
+       | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
+     ] | length' \
     "$SDIR/findings-$r.json")"
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
       .plinth/review.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md \
@@ -224,6 +274,8 @@ ${inc}"
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
+  jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
+    '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true
   rm -f "$SDIR/last-error"   # pipeline recovered — close the gate's infra escape
 }
 
@@ -257,8 +309,47 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
 fi
 nonblocking="$(jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' "$SDIR/findings-$round.json")"
 if [ -n "$nonblocking" ]; then
-  echo "Non-blocking findings (append minors to the spec's '## Noticed'; UPSTREAM items are the human's to route to the Plinth repo):"
+  echo "Non-blocking findings (minors -> '## Noticed'; UPSTREAM -> Plinth repo; RUNTIME -> the run gate, burn down with 'plinth smoke'):"
   printf '%s\n' "$nonblocking"
+fi
+
+# Reviewer error bar: every 5th binding approval gets a cold cross-model audit
+# (config: audit_model). Disagreement is reported, never adjudicated here.
+if [ -n "$AUDIT_MODEL" ]; then
+  ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
+  case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
+  ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count
+  if [ $((ac % 5)) -eq 0 ]; then
+    echo "Plinth review: cross-model audit due (approval #$ac) — cold audit by ${AUDIT_MODEL}..."
+    araw="$SDIR/raw-audit-$round.json"
+    aprompt="You are a cold AUDIT reviewer (a different model from the primary). Follow
+AGENTS.md and .plinth/AGENTS-project.md, including the Verdict policy. Review
+this diff (${baseref}...HEAD at ${sha}) against the spec at ${SPEC_PATH} from
+scratch. Your job is to catch what the primary reviewer systematically misses.
+
+DIFF:
+$(git diff "${baseref}...HEAD")"
+    if printf '%s' "$aprompt" | codex exec -m "$AUDIT_MODEL" --sandbox read-only --json \
+         --output-schema "$SCHEMA" -o "$araw" - > "$SDIR/events-audit-$round.jsonl" 2> "$SDIR/stderr-audit-$round.log" \
+       && jq . "$araw" > "$SDIR/findings-audit-$round.json" 2>/dev/null; then
+      ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+        '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
+           | select((.file | test($re)) | not)
+           | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
+         ] | length' "$SDIR/findings-audit-$round.json")"
+      averd="$(jq -r '.verdict // "?"' "$SDIR/findings-audit-$round.json")"
+      jq --arg m "$AUDIT_MODEL" --arg v "$averd" --argjson b "$ablk" \
+        '. + {audit: {model: $m, verdict: $v, blocking: $b}}' "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
+        && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      if [ "$ablk" -gt 0 ]; then
+        echo "PLINTH AUDIT DISAGREEMENT: ${AUDIT_MODEL} found ${ablk} blocking project finding(s) the primary reviewer did not — see $SDIR/findings-audit-$round.json. Verdict unchanged; adjudication is the human's."
+      else
+        echo "Plinth review: audit concurs (${averd}, 0 blocking)."
+      fi
+    else
+      echo "Plinth review: audit round failed (non-fatal) — see $SDIR/stderr-audit-$round.log"
+    fi
+  fi
 fi
 echo "APPROVED recorded in $SDIR/verdict.json — open the PR. The CI floor runs automatically; verify Codex Security commented (it requires the per-repo connection, SETUP step 4)."
 exit 0

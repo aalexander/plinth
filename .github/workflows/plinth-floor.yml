@@ -2,13 +2,21 @@
 # Called by project repos via:
 #   jobs:
 #     floor:
-#       uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.3
+#       uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.0
 # checkout in a called workflow checks out the CALLER's repo, so scanners run
 # against the project's code.
 name: Plinth Floor
 
 on:
   workflow_call:
+
+# gitleaks' PR scan calls the GitHub API on the PR (anvil PR #1 failure:
+# "Resource not accessible by integration") — it needs pull-requests: write.
+# The CALLER must grant these too (template ci.yml does); called workflows
+# can only narrow, never escalate.
+permissions:
+  contents: read
+  pull-requests: write
 
 # Pin policy (learned the hard way — osv retired its v1 tag mid-flight and
 # broke every floor run): third-party actions are pinned to EXACT released

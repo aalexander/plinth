@@ -1,0 +1,45 @@
+# Plinth canary — external-drift detector. The world moves under pinned
+# references (action tags retire, images change, runners update); this makes
+# rot surface on a schedule instead of inside someone's real PR (the way
+# osv-scanner-action@v1's retirement broke anvil PR #1 mid-merge).
+name: Plinth Canary
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"   # Mondays 14:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+  security-events: write
+
+jobs:
+  # Do all pinned floor actions still resolve and run?
+  floor:
+    uses: ./.github/workflows/plinth-floor.yml
+
+  # Does the harness itself still scaffold and fail loud correctly?
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check every shipped script
+        run: |
+          set -euo pipefail
+          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh bin/plinth; do bash -n "$f"; done
+      - name: Scaffold a fixture project and exercise the free paths
+        run: |
+          set -euo pipefail
+          mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
+          "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx
+          git add -A && git commit -qm "plinth canary scaffold"
+          git checkout -qb feat && echo x > f.txt && git add -A && git commit -qm "canary work"
+          # review.sh must fail LOUD (exit 2), never fail open, without codex:
+          rc=0; ./.plinth/review.sh nosuchbase >/dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] || { echo "::error::review.sh bad-base path exited $rc (want 2)"; exit 1; }
+          echo dirty > f.txt
+          rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] || { echo "::error::review.sh dirty-tree path exited $rc (want 2)"; exit 1; }
+          echo "canary: scaffold + fail-loud paths OK"

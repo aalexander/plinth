@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v3.15 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.0 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -30,7 +30,8 @@ done
 PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-usage() { echo "Usage: plinth {init|update|goal|watch|statusline} <project-path> [--once]"; exit 1; }
+usage() { echo "Usage: plinth {init|update|goal|watch|statusline} <project-path> [--once]
+       plinth smoke <project-path> -- <command...>   (run + write execution receipt)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 if [ "$cmd" = "statusline" ]; then
@@ -172,15 +173,16 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# spec_path: the canonical spec location agents read and reviewers check against.\n# May be a single file (SPEC.md) or a directory tree (e.g. ARCH/ or spec/).\nspec_path = SPEC.md\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Three knobs, all set-once:\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# Everything else has working defaults.\nspec_path = SPEC.md\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
+  place .github/workflows/smoke.yml .github/workflows/smoke.yml
   if [ -f "$target/.github/workflows/ci.yml" ]; then
     echo "  kept (yours):  .github/workflows/ci.yml"
   else
@@ -202,18 +204,22 @@ copy_templates_if_absent() {
 # All interpretation lives here in one jq program — events stay raw facts.
 render_frame() {
   local EV="$target/.plinth/session/events.jsonl"
-  local VD="$target/.plinth/session/review/verdict.json"
   if [ ! -f "$EV" ]; then
     echo "plinth watch: no event feed at $EV"
     echo "Is pulse.sh wired in .claude/settings.json? (see CHANGELOG v3.8)"
     return 0
   fi
-  local transcript head branch
+  local transcript head branch slug
   transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' "$EV" 2>/dev/null)"
   [ -f "$transcript" ] || transcript=/dev/null
   head="$(git -C "$target" rev-parse --short HEAD 2>/dev/null || echo '-')"
   branch="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
-  local vfile="$VD"; [ -f "$vfile" ] || vfile=/dev/null
+  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+  local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
+  local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
+  local nh=""
+  [ -s "$target/.plinth/NEEDS-HUMAN.md" ] && nh="$(grep -m1 -v '^\s*$' "$target/.plinth/NEEDS-HUMAN.md" | cut -c1-70)"
 
   # Live CI row once the feed shows a PR: pull the check rollup from GitHub.
   # PLINTH_CI_STATUS ('{"pass":N,"fail":N,"pending":N}') overrides for non-gh CIs.
@@ -229,6 +235,7 @@ render_frame() {
   fi
 
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
+        --slurpfile us "$ufile" --slurpfile rc "$rfile" --arg nh "$nh" \
         --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
@@ -313,8 +320,16 @@ render_frame() {
        else ((if $V.verdict == "APPROVED" then GR else YE end) + $V.verdict + R
          + D + " · round " + ($V.round | tostring) + " @ " + ($V.sha[0:7]) + R
          + (if ($V.sha[0:7]) == $head then GR + " = HEAD ✓" + R else RD + " ≠ HEAD " + $head + " — stale, re-run review" + R end)
-         + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end))
+         + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end)
+         + (($us | map(.usage.input_tokens // 0) | add // 0) as $rtot
+            | if $rtot > 0 then D + " · Σ " + ($rtot | hum_k) + " in" + R else "" end)
+         + (if $V.audit then (if ($V.audit.blocking // 0) > 0 then RD + " · AUDIT DISAGREES (\($V.audit.blocking))" + R else D + " · audit ✓" + R end) else "" end))
        end) as $review
+    | (if ($rc | length) == 0 then D + "no run receipt — RUNTIME findings await plinth smoke" + R
+       else ($rc[0]) as $R
+         | (if ($R.exit // 1) == 0 then GR + "exit 0" + R else RD + "exit \($R.exit)" + R end)
+           + D + " · " + (($R.cmd // "?")[0:44]) + " · " + (($R.ended // $NOW) | ago($NOW)) + " @ " + (($R.sha // "")[0:7]) + R
+       end) as $runline
     | (if $evd == null then D + "no test runner seen this session" + R
        else ($evd.detail[0:56])
          + (if $evd.rc == 0 then GR + " → exit 0" + R
@@ -326,6 +341,7 @@ render_frame() {
        else ($lastact.tool // "?") + D + " " + (($lastact.detail // "")[0:56]) + " · " + ($lastact.epoch | ago($NOW)) + R end) as $nowline
 
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
+    + (if $nh != "" then RD + RV + " ⏸ NEEDS HUMAN " + R + RD + " " + $nh + R + "\n" else "" end)
     + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
     + $pipe + "\n"
@@ -334,6 +350,7 @@ render_frame() {
       + D + "  (in " + ($tot.i | hum_k) + " · cache-write " + ($tot.cc | hum_k) + " · cache-read " + ($tot.cr | hum_k) + " · out " + ($tot.o | hum_k) + ")" + R + "\n"
     + B + " burn     " + R + (($last5 / 5 | floor) | hum_k) + "/min  " + MG + $spark + R + D + "  (last 12 min, fresh+out)" + R + "\n"
     + B + " review   " + R + $review + "\n"
+    + B + " run      " + R + $runline + "\n"
     + B + " evidence " + R + $evidence + "\n"
     + B + " signals  " + R
       + (if $blocks > 0 then RD + "guard blocks \($blocks)" + R else D + "guard blocks 0" + R end)
@@ -343,6 +360,36 @@ render_frame() {
     + B + " now      " + R + $nowline
     end
   ' 2>/dev/null || echo "plinth watch: render error (malformed event or transcript line?)"
+}
+
+# Execution evidence: run a real command and write a SHA-bound receipt the
+# review loop consumes (RUNTIME findings get verified against observation,
+# not guesses). Failures are data — the receipt records them the same way.
+run_smoke() {
+  shift 2   # drop 'smoke' <path>
+  [ "${1:-}" = "--" ] && shift
+  [ $# -ge 1 ] || usage
+  local br rslug rdir ts log start end rc=0
+  br="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+  rslug="$(printf '%s' "$br" | tr '/ ' '--')"
+  rdir="$target/.plinth/session/run/$rslug"
+  mkdir -p "$rdir"
+  [ -f "$target/.plinth/session/.gitignore" ] || printf '*\n' > "$target/.plinth/session/.gitignore"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"; log="$rdir/smoke-$ts.log"
+  echo "plinth smoke [$br]: $*"
+  start="$(date +%s)"
+  ( cd "$target" && "$@" ) 2>&1 | tee "$log" || rc=$?
+  end="$(date +%s)"
+  jq -n --arg sha "$(git -C "$target" rev-parse HEAD 2>/dev/null || echo none)" \
+        --arg branch "$br" --arg cmd "$*" --argjson exit "${rc:-0}" \
+        --argjson started "$start" --argjson ended "$end" \
+        --arg hw "$(uname -m) · $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -s)" \
+        --arg log "$log" --arg tail "$(tail -n 40 "$log" 2>/dev/null)" \
+        '{sha: $sha, branch: $branch, cmd: $cmd, exit: $exit, started: $started, ended: $ended,
+          secs: ($ended - $started), hw: $hw, log: $log, log_tail: $tail}' \
+        > "$rdir/receipt.json"
+  echo "plinth smoke: exit ${rc:-0} in $((end - start))s · receipt: $rdir/receipt.json"
+  exit "${rc:-0}"
 }
 
 # One-line renderer for Claude Code's statusLine setting. Reads the statusLine
@@ -359,8 +406,11 @@ statusline_render() {
   [ -f "$EV" ] || { printf 'plinth: no session feed'; exit 0; }
   local head vfile
   head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
-  vfile="$dir/.plinth/session/review/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
-  jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" '
+  local sslug nh=""
+  sslug="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/ ' '--')"
+  vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  [ -s "$dir/.plinth/NEEDS-HUMAN.md" ] && nh="1"
+  jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
     def hum_t: if . < 60 then "\(. | floor)s" elif . < 3600 then "\((. / 60) | floor)m"
       else "\((. / 3600) | floor)h\(((. % 3600) / 60) | floor)m" end;
     ($ev | map(select(type == "object"))) as $all
@@ -390,6 +440,7 @@ statusline_render() {
       | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
       | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
       | "◆ " + $cur.s + " " + (($NOW - $cur.e) | hum_t) + " · " + $rv
+        + (if $nh != "" then " · ⏸ HUMAN" else "" end)
         + (if $b > 0 then " · guard⛔\($b)" else "" end)
         + (if $r > 0 then " · RELEASED \($r)" else "" end)
       end'
@@ -398,7 +449,9 @@ statusline_render() {
 watch_project() {
   if [ "$opt" = "--once" ]; then render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
-  local VD="$target/.plinth/session/review/verdict.json"
+  local wslug VD
+  wslug="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/ ' '--')"
+  VD="$target/.plinth/session/review/${wslug:-detached}/verdict.json"
   # mtime+size stamp, BSD then GNU stat.
   fstamp() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
   # Alt screen + hidden cursor; restore on exit. Clear once at startup only.
@@ -425,6 +478,7 @@ watch_project() {
 
 case "$cmd" in
   statusline) statusline_render ;;
+  smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   init)
     copy_templates_if_absent

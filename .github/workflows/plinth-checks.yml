@@ -2,7 +2,7 @@
 # Called by project repos via:
 #   jobs:
 #     checks:
-#       uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.3
+#       uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.0
 #       # optional: with: { runner: macos-latest }   # Apple-Silicon parity
 #
 # Detects the stack at CI time (works for greenfield repos where nothing exists

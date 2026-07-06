@@ -11,12 +11,21 @@ on:
   push:
     branches: [main]
 
+# The floor's scanners need these (gitleaks comments on PRs; osv's reusable
+# workflow declares security-events even with SARIF upload off). Called
+# workflows can only narrow permissions, so the grant must live here.
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+  security-events: write
+
 jobs:
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v3.15
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.0
 
   checks:
-    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v3.15
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.0
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest

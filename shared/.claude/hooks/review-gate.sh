@@ -38,10 +38,11 @@ case "$branch" in
     log_release "commits landed directly on '$branch' — base branch is never gated"
     exit 0 ;;
 esac
+slug=$(printf '%s' "$branch" | tr '/ ' '--')   # review state is branch-keyed (v4)
 
 # Infra escape: a recent mechanical review failure needs the human, not a trap
 # that hides the breakage behind a session that can't end.
-err="$SDIR/review/last-error"
+err="$SDIR/review/$slug/last-error"
 if [ -f "$err" ] && [ -n "$(find "$err" -mmin -30 2>/dev/null)" ]; then
   log_release "infra escape: $(cat "$err" 2>/dev/null | head -c 120)"
   echo "PLINTH REVIEW GATE: allowing stop despite missing approval — review.sh failed mechanically: $(cat "$err")" >&2
@@ -57,7 +58,7 @@ if [ "$cnt" -ge "$maxblocks" ]; then
   exit 0
 fi
 
-vfile="$SDIR/review/verdict.json"
+vfile="$SDIR/review/$slug/verdict.json"
 if [ -f "$vfile" ]; then
   v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || echo "")
   vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || echo "")

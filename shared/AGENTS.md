@@ -26,6 +26,12 @@ the diff, not the driver's claim.
   reported at observed severity, but they do NOT block this repo's verdict. The
   session cannot fix the instrument that judges it; the human routes them to the
   Plinth repo.
+- RUNTIME findings: on execution-gated paths (the project declares them in
+  .plinth/config exec_gated), a finding whose truth depends on real libraries
+  or hardware you cannot observe statically gets the description prefix
+  "RUNTIME:". Reported at observed severity, non-blocking — it joins the run
+  gate. When a run receipt is included in your prompt, VERIFY prior RUNTIME
+  findings against the observed behavior instead of re-guessing.
 - EXCEPTION — tampering always blocks: if the diff modifies any version-pinned
   tooling file outside a commit clearly labeled as a Plinth update, that is a
   blocker, stated bluntly, regardless of what the change does.
@@ -44,6 +50,8 @@ the diff, not the driver's claim.
 - Scope creep: unrelated refactors mixed into a feature change.
 - New dependencies that aren't justified.
 - Silent fallbacks or swallowed errors.
+- When the diff changes the canonical spec: ambiguity, untestability, or
+  internal contradiction introduced by the spec change (attack the spec too).
 - Any violation of a rule in `.plinth/AGENTS-project.md`.
 
 ## Security review (always)

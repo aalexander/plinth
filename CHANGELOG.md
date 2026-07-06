@@ -1,5 +1,70 @@
 # Plinth changelog
 
+## v4.0 — July 6, 2026
+The blind-spot release: every truth source the two instruments (CI, review)
+could not see gets its own instrument. Plus the fixes surfaced by anvil PR #1.
+
+Execution evidence (ends the static-guessing treadmill):
+- NEW per-project Smoke workflow (smoke.yml, copied once): runs the set-once
+  `smoke_cmd` from .plinth/config on a self-hosted runner on every PR and
+  uploads the receipt — the run gate's supply side stops waiting on a human.
+  No-ops green until smoke_cmd is set; make it a required check once real.
+  Runner setup is a one-time block in the MANUAL ("The smoke runner").
+- NEW `plinth smoke <repo> -- <cmd>`: runs the real thing, writes a SHA-bound
+  receipt (.plinth/session/run/<branch>/receipt.json — cmd, exit, duration,
+  hardware, log tail). Failures are data.
+- Projects declare execution-gated paths in .plinth/config (`exec_gated`).
+  Reviewer marks runtime-truth findings "RUNTIME:"; the effective verdict
+  treats them as non-blocking ONLY when both keys agree (prefix + path match).
+  They join the run gate; receipts are fed into review prompts so the next
+  round verifies against observation.
+
+Human-in-the-loop protocol:
+- `.plinth/NEEDS-HUMAN.md` is the blocked-on-human queue (rules tell the
+  driver to use it and keep working). watch shows a red NEEDS-HUMAN banner;
+  statusline shows ⏸ HUMAN.
+
+Budget visibility (advisory by principle — the system continues loudly, it
+never parks the loop waiting for a human; hard stops are reserved for
+irreversibles like deps/secrets/merges):
+- Rounds costlier than round_budget (default 4000000 input tokens) print a
+  loud NOTE and keep going. Per-round usage ledger (usage.jsonl) feeds a
+  reviewer-total Σ in watch — the human interrupts if it looks wrong.
+  Config is agent-immutable (protected-paths); its knob surface is
+  deliberately two set-once keys: spec_path and exec_gated.
+
+External-drift canary:
+- NEW plinth-canary.yml (weekly cron + manual): runs the floor against this
+  repo (do all pinned actions still resolve/run?) and scaffolds a fixture
+  project exercising review.sh's fail-loud paths without codex. Rot surfaces
+  on a schedule, not inside a real PR.
+
+Spec attack:
+- When a diff changes the canonical spec, the review round explicitly attacks
+  the spec changes for ambiguity/untestability/contradiction (AGENTS.md).
+
+Reviewer error bar:
+- `audit_model` in .plinth/config: every 5th binding approval triggers a cold
+  cross-model audit round; disagreement is recorded in verdict.json and
+  reported loudly — never auto-adjudicated. Off until you pick a model.
+
+Concurrency:
+- Review/run session state is now branch-keyed (.plinth/session/review/<slug>/,
+  .plinth/session/run/<slug>/); gate, watch, statusline follow. Parallel
+  branches no longer fight over verdict.json. Existing mid-loop state at the
+  old path is ignored — the next review starts a fresh round 1 (one-time cost).
+
+Anvil PR #1 fixes (merge-gate shakedown):
+- gitleaks "Resource not accessible by integration": the floor and template
+  ci.yml now carry the permissions chain (contents: read, pull-requests:
+  write, + actions: read / security-events: write for osv's reusable
+  workflow). Called workflows can't escalate, so callers must grant.
+- osv v1-tag retirement was fixed in v3.15 (reusable workflow @v2.3.8);
+  carried forward unchanged.
+- Template ci.yml pins @v4.0. EXISTING PROJECTS: replace/patch ci.yml
+  (permissions block + pins), add `(^|/)\.plinth/config$` to protected-paths,
+  and tag plinth v4.0 on push (the harness job clones by tag).
+
 ## v3.15 — July 6, 2026
 Hotfix: the first real PR (anvil) caught the floor referencing a retired
 action tag — google/osv-scanner-action@v1 no longer resolves. Root cause was

@@ -29,9 +29,18 @@ Everything between is the model's call.
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
-- Per-project knobs live in `.plinth/`: `config` (spec_path), `protected-paths`
-  (agent-immutable files), `AGENTS-project.md` (project-specific reviewer rules).
-  None is ever overwritten by `plinth update`.
+- `plinth smoke ~/Dev/<repo> -- <command>` — run the real thing on real
+  hardware; writes a SHA-bound execution receipt that the next review round
+  verifies RUNTIME findings against. Failures are data — receipts record them
+  identically.
+- Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
+  round_budget, audit_model — the config itself is agent-immutable, so these
+  are yours alone), `protected-paths` (agent-immutable files),
+  `AGENTS-project.md` (project-specific reviewer rules). None is ever
+  overwritten by `plinth update`.
+- `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
+  what only you can supply (hashes, credentials, smoke runs, budget acks);
+  the dashboard shows a red banner while it's non-empty.
 
 ## Quick start (first time on a project — follow exactly)
 0. Once per machine (SETUP.md has details): install Claude Code, Codex CLI
@@ -141,6 +150,12 @@ guard/gate alerts. Token economics stay on `plinth watch`.
   missing): **yours.** Fix the pipeline (usually `codex` login or `plinth
   update`), then tell the model to re-run. The session gate opens automatically
   after an infra failure so the session is never trapped by a broken reviewer.
+- "NOTE — last round cost N input tokens": the budget warning. Advisory only —
+  the loop continues; spend is on the dashboard (`review` line's Σ). Interrupt
+  if it looks wrong; nothing waits for you.
+- "AUDIT DISAGREEMENT" after an approval: the cross-model audit (config
+  `audit_model`, every 5th approval) found blocking issues the primary
+  reviewer missed. The verdict stands; adjudication is yours.
 - "PLINTH REVIEW GATE:" when the model tries to stop: the gate working. It runs
   the review or it doesn't finish. (Anti-trap: releases after
   PLINTH_GATE_MAX_BLOCKS blocks, default 10 — and every release is a red
@@ -182,6 +197,27 @@ CLI route (same timing; paste the names the PR showed):
 
 Verify either route the same way: open a trivial PR and confirm the merge
 button is disabled until everything is green.
+
+## The smoke runner — execution evidence without waiting on a human
+The Smoke workflow (per-project smoke.yml) runs the set-once `smoke_cmd` from
+`.plinth/config` on YOUR hardware via a self-hosted GitHub runner, on every PR.
+Receipts upload as artifacts; RUNTIME findings get burned down automatically
+instead of queuing on you. One-time setup per machine+repo (run as yourself,
+not root):
+
+    mkdir -p ~/actions-runner-<repo> && cd ~/actions-runner-<repo>
+    ver=$(gh api repos/actions/runner/releases/latest -q .tag_name | tr -d v)
+    curl -sL -o r.tar.gz "https://github.com/actions/runner/releases/download/v${ver}/actions-runner-osx-arm64-${ver}.tar.gz"
+    tar xzf r.tar.gz && rm r.tar.gz
+    ./config.sh --url https://github.com/<owner>/<repo> \
+      --token "$(gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token -q .token)" \
+      --name "$(hostname -s)" --labels plinth-smoke --unattended
+    ./svc.sh install && ./svc.sh start    # launchd service; survives reboots
+
+Security: a self-hosted runner executes PR code on your machine. Keep the repo
+private (no fork PRs can reach it), and remember the guard/review/floor already
+gate what lands on branches. Make the smoke job a required check only after
+it has run green with a real smoke_cmd.
 
 ## Auto-research mode (GOAL.md) — for numeric rubrics only (e.g. Anvil scores)
 1. `plinth goal <repo>`; have the driver draft the metric, constraints, action

@@ -1,0 +1,45 @@
+name: Smoke
+
+# Real-run layer validation on the project's own hardware — the automated
+# supply side of the run gate. Runs the set-once smoke_cmd from .plinth/config
+# on a self-hosted runner (MANUAL: "The smoke runner"), so execution receipts
+# generate on every PR without waiting on a human.
+# Per-project file (never overwritten). Not a required check by default —
+# make it required in branch protection once it has run green.
+# SECURITY: self-hosted runners execute PR code on your machine. Keep the
+# repo private (no fork PRs), or restrict who can trigger workflows.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, plinth-smoke]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke_cmd (execution evidence, not narration)
+        run: |
+          set -euo pipefail
+          cmd="$(sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' .plinth/config | head -1)"
+          if [ -z "$cmd" ]; then
+            echo "no smoke_cmd in .plinth/config — nothing to run (green no-op)"
+            exit 0
+          fi
+          echo "smoke: $cmd"
+          if command -v plinth >/dev/null 2>&1; then
+            plinth smoke . -- sh -c "$cmd"
+          else
+            sh -c "$cmd"
+          fi
+      - name: Upload receipt + log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-receipt
+          path: |
+            .plinth/session/run/**/receipt.json
+            .plinth/session/run/**/smoke-*.log
+          if-no-files-found: ignore
