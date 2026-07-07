@@ -1,5 +1,28 @@
 # Plinth changelog
 
+## v4.0.1 — July 7, 2026
+- FIX anvil PR #1 "CI didn't fire": v4.0 placed the gitleaks permissions at
+  the floor's WORKFLOW level, narrowing every job — the nested osv reusable
+  workflow then requested security-events/actions permissions its caller no
+  longer held, and GitHub refuses to START such a workflow (startup_failure,
+  no check runs on the PR — only Smoke, a separate workflow, reported).
+  Permissions now live at job level; the caller ci.yml grants the union.
+- Dogfood: the Plinth repo is now a Plinth project (init on itself). The
+  sources (shared/, templates/, bin/, workflow files) are the product, fully
+  reviewable; the installed copies are the pinned previous release acting as
+  the instrument. Custom protected-paths ((^|plinth/) anchoring) and
+  AGENTS-project.md encode the split; SPEC.md points at MANUAL.md +
+  CHANGELOG.md; this repo's smoke.yml scaffolds a fixture on ubuntu instead
+  of targeting self-hosted hardware. Harness changes now pass through the
+  same review loop, Stop gate, and floor as every other project.
+- review.sh: HARNESS_RE is root-anchored (^ not (^|/)) so subdirectory
+  copies — e.g. this repo's shared/ sources — are never mis-routed as
+  UPSTREAM tooling; and hoisted to global scope, fixing the cross-model
+  audit's blocking count (it previously tested against an empty regex, so
+  audits always reported agreement).
+- Pins @v4.0.1 (template + projects). Tag v4.0.1 on push — v4.0 was never
+  a working release for callers; leave its tag be, nothing should pin it.
+
 ## v4.0 — July 6, 2026
 The blind-spot release: every truth source the two instruments (CI, review)
 could not see gets its own instrument. Plus the fixes surfaced by anvil PR #1.

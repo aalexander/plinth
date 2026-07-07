@@ -1,0 +1,9 @@
+# Plinth per-project config. Never overwritten by plinth update.
+# Agent-immutable (protected-paths). Three knobs, all set-once:
+# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).
+# exec_gated: space-separated grep -E patterns for execution-gated paths;
+#   RUNTIME: review findings there route to the run gate instead of blocking.
+# smoke_cmd: the real-run command the Smoke workflow executes on the
+#   self-hosted runner (empty = smoke job no-ops green).
+# Everything else has working defaults.
+spec_path = MANUAL.md

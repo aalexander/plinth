@@ -10,13 +10,11 @@ name: Plinth Floor
 on:
   workflow_call:
 
-# gitleaks' PR scan calls the GitHub API on the PR (anvil PR #1 failure:
-# "Resource not accessible by integration") — it needs pull-requests: write.
-# The CALLER must grant these too (template ci.yml does); called workflows
-# can only narrow, never escalate.
-permissions:
-  contents: read
-  pull-requests: write
+# Permissions live at JOB level, deliberately: a workflow-level block here
+# narrows every job, and the nested osv reusable workflow then requests
+# security-events/actions permissions its caller no longer holds — GitHub
+# refuses to start the whole workflow (anvil PR #1: CI startup_failure).
+# The CALLER (template ci.yml) must grant the union; jobs narrow from there.
 
 # Pin policy (learned the hard way — osv retired its v1 tag mid-flight and
 # broke every floor run): third-party actions are pinned to EXACT released
@@ -24,6 +22,11 @@ permissions:
 jobs:
   secrets:
     runs-on: ubuntu-latest
+    # gitleaks' PR scan calls the GitHub API on the PR (anvil PR #1:
+    # "Resource not accessible by integration") — needs pull-requests: write.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +50,10 @@ jobs:
   # upload-sarif off: Code Scanning upload requires Advanced Security on
   # private repos and would fail the job for reasons unrelated to vulns.
   dependencies:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
     with:
       scan-args: "-r ./"

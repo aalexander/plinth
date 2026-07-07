@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["APPROVED", "CHANGES_NEEDED"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "resolved"] }
+        },
+        "required": ["file", "line", "severity", "description", "status"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["verdict", "summary", "findings"],
+  "additionalProperties": false
+}

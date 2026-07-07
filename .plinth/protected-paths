@@ -1,0 +1,16 @@
+# Plinth-on-plinth: shared/, templates/, and bin/ are the PRODUCT here —
+# fully agent-editable. Only the INSTALLED previous-release copies (the
+# instrument judging this repo) are immutable. Patterns use (^|plinth/)
+# anchoring so absolute paths match the installed copies but never the
+# shared/ sources. (Bash-write matching is weaker for bare relative
+# mentions here; the reviewer's tamper rule and the harness CI job are the
+# deeper layers.)
+(^|plinth/)\.claude/hooks/
+(^|plinth/)\.claude/settings\.json$
+(^|plinth/)\.plinth/review\.sh$
+(^|plinth/)\.plinth/review-schema\.json$
+(^|plinth/)\.plinth/plinth-rules\.md$
+(^|plinth/)\.plinth/MODELS\.md$
+(^|plinth/)\.plinth/protected-paths$
+(^|plinth/)\.plinth/config$
+(^|plinth/)AGENTS\.md$

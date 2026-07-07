@@ -1,0 +1,31 @@
+name: Smoke
+
+# Plinth's real-run layer is the CLI itself, so this per-project copy runs on
+# a stock runner instead of self-hosted hardware: scaffold a fixture project
+# and prove the fail-loud paths actually fail loud.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scaffold fixture and exercise fail-loud paths
+        run: |
+          set -euo pipefail
+          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh bin/plinth; do bash -n "$f"; done
+          mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
+          "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx
+          git add -A && git commit -qm "smoke scaffold"
+          git checkout -qb feat && echo x > f.txt && git add -A && git commit -qm work
+          rc=0; ./.plinth/review.sh nosuchbase >/dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] || { echo "::error::bad-base path exited $rc (want 2 — fail-loud broken)"; exit 1; }
+          echo dirty > f.txt
+          rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] || { echo "::error::dirty-tree path exited $rc (want 2 — fail-loud broken)"; exit 1; }
+          echo "plinth smoke OK"
