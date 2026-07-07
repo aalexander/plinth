@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.6 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.7 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -426,8 +426,12 @@ render_frame() {
     | (if $lastact == null then D + "—" + R
        else ($lastact.tool // "?") + D + " " + (($lastact.detail // "")[0:56]) + " · " + ($lastact.epoch | ago($NOW)) + R end) as $nowline
 
+    | ($V.model // null) as $rmodel
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
-    + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
+    + D + "   " + $branch + " @ " + $head + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
+    + B + " models   " + R + "driver " + CY + $model + R
+      + "  ·  reviewer " + CY + ($rmodel // "—") + R
+      + (if $rmodel == null then D + " (no review yet)" + R else "" end) + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
     + $pipe + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
@@ -547,6 +551,10 @@ statusline_render() {
 # hand it down via the PLINTH_WATCH_* overrides (honoring any the user set).
 capture_tty_size() {
   local _sz
+  # Test that the controlling tty can actually be OPENED (a device node may
+  # exist but be unconfigured, e.g. a headless/background context) — the
+  # subshell swallows the open error instead of leaking it to stderr.
+  ( : </dev/tty ) 2>/dev/null || return 0   # no controlling tty: keep default sizing
   if _sz="$(stty size </dev/tty 2>/dev/null)"; then
     [ -n "${PLINTH_WATCH_ROWS_USER:-}" ] || export PLINTH_WATCH_ROWS="${_sz% *}"
     [ -n "${PLINTH_WATCH_COLS_USER:-}" ] || export PLINTH_WATCH_COLS="${_sz#* }"

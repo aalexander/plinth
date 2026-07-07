@@ -1,5 +1,18 @@
 # Plinth changelog
 
+## v4.1.7 — July 7, 2026
+- watch: models are now a dedicated, bright line showing BOTH — "models
+  driver <model> · reviewer <model>" — instead of the driver model buried in
+  the dim metadata line (easy to miss; the reviewer model was never shown at
+  all). Driver model from the transcript as before; reviewer model newly
+  recorded in verdict.json by review.sh (the `model` from ~/.codex/config.toml
+  — what codex actually runs). Existing verdicts predate this and show "—"
+  until the next review round; run `plinth update` to record it going forward.
+- watch: fixed a v4.1.5 regression — capture_tty_size leaked
+  "/dev/tty: Device not configured" to stderr in headless/background contexts
+  (a device node can exist but not be openable). Now tested by actually
+  opening it in an error-swallowing subshell; real terminals are unaffected.
+
 ## v4.1.6 — July 7, 2026
 - guard hardening from upstream issue #1 (first driver-filed report through
   the v4.1 channel — certeus reviewer flagged it as a nonblocking UPSTREAM

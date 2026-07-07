@@ -68,6 +68,11 @@ diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD 
 #   audit_model  optional second model; every 5th binding approval gets a cold
 #                cross-model audit round (disagreement reported, not adjudicated)
 cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
+# Reviewer model (for the dashboard): whatever codex actually runs — the model
+# line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
+# alongside the driver model without reading the user's codex config.
+REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1)"
+[ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
 SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(cfg exec_gated || true)"
 ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
@@ -281,8 +286,8 @@ ${inc}${evidence}${commits}"
   [ -n "$usage" ] || usage="null"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --argjson usage "$usage" \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, usage:$usage, ts:$ts}' \
+        --arg model "$REVIEWER_MODEL" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, model:$model, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
   jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
     '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true
