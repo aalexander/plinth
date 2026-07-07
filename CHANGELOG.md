@@ -1,5 +1,31 @@
 # Plinth changelog
 
+## v4.2 — July 7, 2026
+First increment of the multi-model-panel-converged improvement plan: **risk-based
+review routing** (P1) — the top speed/efficiency win that also closes the worst
+trust hole, with NO new human bottleneck (a deterministic mechanism holds the
+pen, not a human).
+- NEW `shared/.plinth/risk-classify.sh` (version-pinned, agent-immutable): a
+  deterministic classifier that assigns each change a risk Tier from the diff
+  alone — no model, no human, and the driver cannot de-escalate it (guard-
+  protected, in HARNESS_RE, in the CI byte-compare).
+  - Tier 0 (inert docs/text only) → APPROVED by the deterministic floor with
+    ZERO model rounds. A docs change no longer costs reviewer tokens.
+  - Tier 1 (ordinary code) → standard adversarial review (unchanged).
+  - Tier 2 (tooling, spec, security/auth/crypto/secrets, migrations/schema,
+    public API, dependency manifests, DELETED or WEAKENED tests) → full review.
+    Conservative: unknown → Tier 1; Tier 0 only when EVERY file is inert.
+  - Implements the panel's "loosen hides in the test diff" catch mechanically:
+    a test whose diff removes more assertions than it adds is floored to Tier 2.
+- review.sh routes depth by tier and records `risk` + a `diff_digest` (sha256 of
+  the reviewed diff) in verdict.json, binding the verdict to the exact diff it
+  reviewed — groundwork for CI-side verdict verification (a later increment).
+- `.plinth/config` gains `tier2_extra` (project paths that must always get full
+  review). Classifier + config are agent-immutable.
+- NOT yet done (follow-ups): reviewer tiering by model (P2, cheap model for
+  Tier 1); CI-side recompute-and-verify of tier+digest at merge; cross-vendor
+  review wiring for Tier 2.
+
 ## v4.1.9 — July 7, 2026
 - watch + queue: [BLOCKING] items are sorted to the TOP of the human list
   (order preserved within each group) and rendered in bold red; non-blocking

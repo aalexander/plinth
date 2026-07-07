@@ -82,7 +82,7 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
-HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|^AGENTS\.md$'
+HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|^AGENTS\.md$'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"
@@ -91,6 +91,35 @@ RECEIPT=".plinth/session/run/${slug}/receipt.json"
 
 mkdir -p "$SDIR"
 [ -f ".plinth/session/.gitignore" ] || printf '*\n' > ".plinth/session/.gitignore"
+
+# ── Risk routing ────────────────────────────────────────────────────────────
+# The tier is computed deterministically from the diff by version-pinned tooling
+# the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
+# docs/text) is granted by the deterministic floor without a model round; Tier
+# 1/2 get adversarial review. diff_digest binds the verdict to the reviewed diff.
+diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+[ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+RISK=1; RISK_JSON='{"tier":1,"reasons":["classifier unavailable"]}'
+if [ -x ".plinth/risk-classify.sh" ]; then
+  RISK_JSON="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || echo "$RISK_JSON")"
+  RISK="$(printf '%s' "$RISK_JSON" | jq -r '.tier // 1' 2>/dev/null || echo 1)"
+  case "$RISK" in 0|1|2) ;; *) RISK=1 ;; esac
+fi
+echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
+
+# Tier 0: granted by the floor, no model round. Records a bound verdict so the
+# Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
+# still run at PR; any code file would have bumped the tier above 0.
+if [ "$RISK" = "0" ]; then
+  jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
+        --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
+          round:0, session_id:"", model:"deterministic-floor", risk:$risk,
+          diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
+  rm -f "$SDIR/last-error"
+  echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
+  exit 0
+fi
 
 # Round bookkeeping. A CHANGES_NEEDED verdict with a live session continues the
 # thread (fix-verification round); anything else starts a fresh task.
@@ -286,8 +315,9 @@ ${inc}${evidence}${commits}"
   [ -n "$usage" ] || usage="null"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --argjson usage "$usage" \
-        --arg model "$REVIEWER_MODEL" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, model:$model, usage:$usage, ts:$ts}' \
+        --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, model:$model, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
   jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
     '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true

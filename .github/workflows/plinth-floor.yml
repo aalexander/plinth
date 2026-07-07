@@ -89,6 +89,7 @@ jobs:
           check shared/MODELS.md                  .plinth/MODELS.md
           check shared/AGENTS.md                  AGENTS.md
           check shared/.plinth/review.sh          .plinth/review.sh
+          check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
           check shared/.claude/hooks/guard.sh         .claude/hooks/guard.sh
           check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.9 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.2 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -73,13 +73,15 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
   cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
   cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
+  cp "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
   cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
   cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
-  chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh" \
+  chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
+           "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
            "$target/.claude/hooks/pulse.sh"
   echo "$PLINTH_VERSION" > "$target/.plinth-version"
@@ -179,13 +181,13 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Three knobs, all set-once:\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# Everything else has working defaults.\nspec_path = SPEC.md\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Three knobs, all set-once:\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# Everything else has working defaults.\nspec_path = SPEC.md\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
