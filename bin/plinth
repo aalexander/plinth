@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.7 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.8 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -279,8 +279,9 @@ render_frame() {
     # COMPLETE items as fit, then point at `plinth queue` for the rest.
     rows="${PLINTH_WATCH_ROWS:-$(tput lines 2>/dev/null || echo 40)}"
     [ "$rows" -ge 24 ] 2>/dev/null || rows=40
-    # Reserve = fixed frame (~19 rows incl. CI + banner header) + live footer.
-    budget=$((rows - 21)); [ "$budget" -ge 3 ] || budget=3
+    # Reserve = fixed frame (~18 rows: banner, branch, models, pipeline+Σ, CI,
+    # tokens/burn/review/run/evidence/signals/now) + queue sep/header + footer.
+    budget=$((rows - 23)); [ "$budget" -ge 2 ] || budget=2
     while IFS= read -r item; do
       [ -n "$item" ] || continue
       folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
@@ -585,9 +586,15 @@ watch_project() {
       capture_tty_size   # per repaint: window resizes tracked
       # Repaint in place: home cursor, overwrite each line erasing its tail
       # (ESC[K), then erase below the frame (ESC[J). No full clear, no blink.
-      frame="$(render_frame; printf '\n\033[2m  live — repaints on activity (1s poll, 10s heartbeat) · ctrl-c to quit\033[0m')"
+      frame="$(render_frame; printf '\n\033[2m  live — repaints on activity · plinth queue for the full list · ctrl-c to quit\033[0m')"
+      # HARD CAP: never emit more lines than the viewport. One extra line
+      # scrolls the terminal, and the next cursor-home lands mid-frame — the
+      # top (identity, models) rolls off. Capping preserves the top always;
+      # the queue budget already keeps the important rows above the cut.
+      local trows="${PLINTH_WATCH_ROWS:-$(tput lines 2>/dev/null || echo 40)}"
+      [ "$trows" -ge 10 ] 2>/dev/null || trows=40
       printf '\033[H'
-      printf '%s\n' "$frame" | sed $'s/$/\033[K/'
+      printf '%s\n' "$frame" | head -n $((trows - 1)) | sed $'s/$/\033[K/'
       printf '\033[J'
     fi
     beat=$((beat + 1))

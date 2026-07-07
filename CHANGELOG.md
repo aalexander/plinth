@@ -1,6 +1,15 @@
 # Plinth changelog
 
-## v4.1.7 — July 7, 2026
+## v4.1.8 — July 7, 2026
+- watch: the frame can no longer scroll its own top off-screen — which was
+  hiding the header, branch, and (newly added) models line. The repaint is
+  cursor-home, not full-clear; one line taller than the viewport scrolls
+  everything up and the next home lands mid-frame, permanently losing the
+  top. Now the emitted frame is HARD-CAPPED to (terminal rows − 1) lines, so
+  the top is always preserved; the queue (bottom) is what yields, and it
+  already points at `plinth queue` for the remainder. Queue reserve
+  recalibrated for the taller fixed frame (the v4.1.7 models line).
+  Restart any running watch pane to pick this up.
 - watch: models are now a dedicated, bright line showing BOTH — "models
   driver <model> · reviewer <model>" — instead of the driver model buried in
   the dim metadata line (easy to miss; the reviewer model was never shown at
