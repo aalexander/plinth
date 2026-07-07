@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.0.1 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.0.2 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -218,8 +218,14 @@ render_frame() {
   local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
-  local nh=""
-  [ -s "$target/.plinth/NEEDS-HUMAN.md" ] && nh="$(grep -m1 -v '^\s*$' "$target/.plinth/NEEDS-HUMAN.md" | cut -c1-70)"
+  local nh="" nhn=0
+  if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
+    # Open items = unchecked boxes; fall back to any non-blank line.
+    nh="$(grep -E '^- \[ \]' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null | cut -c7- | cut -c1-64)"
+    [ -n "$nh" ] || nh="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md" | cut -c1-64)"
+    nhn="$(printf '%s\n' "$nh" | grep -c . || true)"
+    nh="$(printf '%s\n' "$nh" | head -3)"
+  fi
 
   # Live CI row once the feed shows a PR: pull the check rollup from GitHub.
   # PLINTH_CI_STATUS ('{"pass":N,"fail":N,"pending":N}') overrides for non-gh CIs.
@@ -235,7 +241,7 @@ render_frame() {
   fi
 
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
-        --slurpfile us "$ufile" --slurpfile rc "$rfile" --arg nh "$nh" \
+        --slurpfile us "$ufile" --slurpfile rc "$rfile" --arg nh "$nh" --argjson nhn "${nhn:-0}" \
         --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
@@ -301,7 +307,7 @@ render_frame() {
     | ([$sev[] | select(.event == "PreCompact")] | length) as $compacts
     | ([$sev[] | select(.event == "SubagentStop")] | length) as $subs
     | (([$sev[] | select(.event == "UserPromptSubmit") | .detail // ""
-         | select((test("^\\s*<") | not) and length > 0)] | .[0]) // "(no prompt recorded)") as $task
+         | select((test("^\\s*<") | not) and length > 0)] | .[-1]) // "(no prompt recorded)") as $task
     | ([$sev[] | select((stage_of) == "VERIFY")] | .[-1]) as $evd
     | ([$sev[] | select(.event == "PostToolUse")] | .[-1]) as $lastact
     | (($use | map(.m) | map(select(. != null)) | .[-1]) // "—") as $model
@@ -341,7 +347,11 @@ render_frame() {
        else ($lastact.tool // "?") + D + " " + (($lastact.detail // "")[0:56]) + " · " + ($lastact.epoch | ago($NOW)) + R end) as $nowline
 
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
-    + (if $nh != "" then RD + RV + " ⏸ NEEDS HUMAN " + R + RD + " " + $nh + R + "\n" else "" end)
+    + (if $nh != "" then
+         (RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open) " + R + "\n"
+          + ([$nh | split("\n")[] | RD + "   · " + . + R] | join("\n")) + "\n"
+          + (if $nhn > 3 then RD + "   · … +\($nhn - 3) more in .plinth/NEEDS-HUMAN.md" + R + "\n" else "" end))
+       else "" end)
     + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
     + $pipe + "\n"
@@ -409,7 +419,7 @@ statusline_render() {
   local sslug nh=""
   sslug="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/ ' '--')"
   vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
-  [ -s "$dir/.plinth/NEEDS-HUMAN.md" ] && nh="1"
+  [ -s "$dir/.plinth/NEEDS-HUMAN.md" ] && nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
     def hum_t: if . < 60 then "\(. | floor)s" elif . < 3600 then "\((. / 60) | floor)m"
       else "\((. / 3600) | floor)h\(((. % 3600) / 60) | floor)m" end;
@@ -440,7 +450,7 @@ statusline_render() {
       | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
       | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
       | "◆ " + $cur.s + " " + (($NOW - $cur.e) | hum_t) + " · " + $rv
-        + (if $nh != "" then " · ⏸ HUMAN" else "" end)
+        + (if $nh != "" and $nh != "0" then " · ⏸ HUMAN×" + $nh else "" end)
         + (if $b > 0 then " · guard⛔\($b)" else "" end)
         + (if $r > 0 then " · RELEASED \($r)" else "" end)
       end'

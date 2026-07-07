@@ -1,5 +1,26 @@
 # Plinth changelog
 
+## v4.0.2 — July 7, 2026
+- Security fixes from the first manual Codex security review (run via CLI
+  against anvil PR #1):
+  - smoke.yml read smoke_cmd from the PR checkout — a PR could choose what
+    executes on the self-hosted host. The command now comes from the BASE
+    branch config only. Residual stated in the workflow: PR code still runs
+    under that command; self-hosted smoke assumes a private, no-fork repo.
+  - pulse.sh now redacts common credential shapes (API keys, gh/AWS/slack
+    tokens, JWTs) before prompt/command text persists to the event feed.
+- Docs honesty pass: "Codex Security" does not exist as a separate product —
+  what exists is Codex cloud code review (GitHub App, fires on PR open,
+  per-repo), which reads AGENTS.md and therefore arrives security-briefed via
+  its standing "Security review (always)" section. SETUP/MANUAL/MODELS/rules/
+  review.sh all renamed accordingly; PR-time security = floor scanners +
+  security-briefed cloud review + the manual security-scoped CLI pass.
+- watch: NEEDS-HUMAN renders as a real list (open-checkbox count, first three
+  items, +N overflow; checked items drop off); statusline shows ⏸ HUMAN×N.
+  Task header now shows the session's LATEST human prompt — on long-lived
+  driver sessions the first prompt stops being "the task" within hours.
+- Pins @v4.0.2. Tag v4.0.2 on push.
+
 ## v4.0.1 — July 7, 2026
 - FIX anvil PR #1 "CI didn't fire": v4.0 placed the gitleaks permissions at
   the floor's WORKFLOW level, narrowing every job — the nested osv reusable

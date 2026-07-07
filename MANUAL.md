@@ -3,7 +3,7 @@
 ## What Plinth is
 A subscription-funded, multi-model dev environment: a frontier Claude model drives,
 Codex/GPT-5.5 adversarially reviews, and a deterministic CI floor (tests + scanners,
-plus Codex Security once connected) gates every merge. The name is the design:
+plus Codex cloud review once connected — security-briefed via AGENTS.md) gates every merge. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -56,9 +56,11 @@ Everything between is the model's call.
 2. Write the spec: open a fresh claude.ai chat, paste PLANNING-PROMPT.md (from
    the Plinth repo), work it into a SPEC.md. Paste that into the project,
    commit, push.
-3. Connect Codex Security once: chatgpt.com -> Codex -> connect the repo.
+3. Connect Codex cloud review once: chatgpt.com -> Codex (GitHub App with repo
+   access + review on PR open). It reads AGENTS.md, so it arrives
+   security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
-   jobs appeared and that Codex Security commented. Then enable branch
+   jobs appeared and that the Codex review commented. Then enable branch
    protection requiring those checks — exact steps in "Branch protection"
    below. From then on the merge gate is real. Until you've SEEN both fire,
    treat them as absent.
@@ -96,7 +98,7 @@ Everything between is the model's call.
    refuses and sends it back with instructions. It cannot skip the review.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
-   stack-detected checks; Codex Security reviews the PR if the repo is
+   stack-detected checks; Codex cloud review posts on the PR if the repo is
    connected (SETUP step 4).
 6. **You:** glance at the consolidated checks, merge. GitHub is the audit trail.
 
@@ -107,7 +109,7 @@ ctrl-c to quit; `--once` prints a single frame). If it says "no event feed", the
 hook isn't wired — `plinth update` will say so too.
 
 ```
- ◤ PLINTH WATCH fix auth token refresh on 401          <- the task (your first prompt)
+ ◤ PLINTH WATCH fix auth token refresh on 401          <- the task (latest human prompt)
    feat @ c74d472 · claude-fable-5 · session 46m       <- branch @ commit · model · elapsed
  ✓ PLAN      6m 58s    175.5k tok                      <- finished stages: time + tokens
  ▶ REVIEW    11m 40s   351.9k tok                      <- ▶ = current stage
@@ -248,7 +250,7 @@ it has run green with a real smoke_cmd.
   `plinth update` each project when YOU choose. Nothing propagates silently.
 
 ## Watch list
-- **First PR per repo**: confirm Codex Security actually reviews it (connection
+- **First PR per repo**: confirm the Codex review actually posts (connection
   is per-repo, SETUP step 4) and enable branch protection once the check names
   are visible.
 - **July 7**: last day Fable 5 is plan-included. Decide: Opus 4.8 default (free) vs

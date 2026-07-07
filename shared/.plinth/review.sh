@@ -355,5 +355,5 @@ $(git diff "${baseref}...HEAD")"
     fi
   fi
 fi
-echo "APPROVED recorded in $SDIR/verdict.json — open the PR. The CI floor runs automatically; verify Codex Security commented (it requires the per-repo connection, SETUP step 4)."
+echo "APPROVED recorded in $SDIR/verdict.json — open the PR. The CI floor runs automatically; verify the Codex cloud review posted (requires the per-repo connection, SETUP step 4)."
 exit 0

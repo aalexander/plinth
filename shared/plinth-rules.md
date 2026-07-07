@@ -75,7 +75,7 @@ pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (the guard enforces both). Verdict policy: blockers/majors in project code block;
 minor findings don't block but MUST be appended to the spec's `## Noticed` before
 the PR; findings in Plinth tooling are UPSTREAM — surface them to the human,
-never fix the instrument in-session. Then open the PR; CI and the security agent
+never fix the instrument in-session. Then open the PR; CI and the Codex cloud review
 run automatically. The PR body is the audit summary of the loop, derived from
 .plinth/session/review/ — not narrated: rounds and modes, final verdict + SHA,
 real check output, open minors with their `## Noticed` entries, tooling-update

@@ -10,7 +10,11 @@
    and `~/.codex/config.toml`:
        model = "gpt-5.5"
        model_reasoning_effort = "high"
-4. Connect Codex Security to your repos once (chatgpt.com -> Codex).
+4. Connect Codex cloud code review once (chatgpt.com -> Codex): install the
+   GitHub App with repo access and enable review-on-PR-open. Note: this is the
+   GENERALIST reviewer — its security coverage comes from the standing
+   "Security review (always)" section of AGENTS.md, which it reads and applies;
+   no separate "Codex Security" product is assumed to exist.
 5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
    zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
    requiring the `floor` and `checks` status checks.

@@ -43,8 +43,10 @@ Set in `~/.codex/config.toml` (`model = "gpt-5.5"`, `model_reasoning_effort =
 "high"`). GPT-5.6 launched June 26 to ~20 US-government-approved organizations
 only (API + Codex), gated by a June 2 executive order requiring federal
 benchmarking; general availability expected mid-July at earliest. When it reaches
-ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. Codex
-Security stays connected to repos for PR threat review.
+ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. The Codex
+cloud review (GitHub App) posts on every PR — a generalist review that arrives
+security-briefed because it reads AGENTS.md; no separate "Codex Security"
+product exists or is assumed.
 Reviewer-swap checklist: review.sh's resume-skip threshold assumes the reviewer's
 context window — PLINTH_RESUME_MAX defaults to 650000 (~65% of GPT-5.5's
 1,005,000). On a reviewer with a different window, set PLINTH_RESUME_MAX to

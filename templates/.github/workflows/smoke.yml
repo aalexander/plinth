@@ -23,9 +23,16 @@ jobs:
       - name: Run smoke_cmd (execution evidence, not narration)
         run: |
           set -euo pipefail
-          cmd="$(sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' .plinth/config | head -1)"
+          # SECURITY (manual security review of anvil PR #1): the command is
+          # read from the BASE branch, never the PR — a PR must not choose
+          # what executes on this host. PR code still runs UNDER that command;
+          # self-hosted smoke assumes a private, no-fork repo where every PR
+          # already passed the gated loop.
+          git fetch --depth 1 origin "${GITHUB_BASE_REF:-main}" 2>/dev/null || true
+          cmd="$(git show "origin/${GITHUB_BASE_REF:-main}:.plinth/config" 2>/dev/null \
+                 | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -z "$cmd" ]; then
-            echo "no smoke_cmd in .plinth/config — nothing to run (green no-op)"
+            echo "no smoke_cmd in the BASE branch's .plinth/config — nothing to run (green no-op)"
             exit 0
           fi
           echo "smoke: $cmd"
