@@ -1,5 +1,11 @@
 # Plinth changelog
 
+## v4.1.1 — July 7, 2026
+- watch: NEEDS-HUMAN items render in FULL — no 64-char truncation, no
+  3-item cap. The queue exists to be read, not sampled; certeus's driver
+  writes multi-line actionable handoffs and the operator must see all of
+  each one. Long items wrap in the terminal.
+
 ## v4.1 — July 7, 2026
 Field-feedback release: every fix below was reported by a driver (certeus)
 or observed live. The upstream channel this release formalizes is how the

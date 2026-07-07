@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -230,10 +230,10 @@ render_frame() {
   local nh="" nhn=0
   if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
-    nh="$(grep -E '^- \[ \]' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null | cut -c7- | cut -c1-64)"
-    [ -n "$nh" ] || nh="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md" | cut -c1-64)"
+    # Full text, every item — the queue exists to be read, not sampled.
+    nh="$(grep -E '^- \[ \]' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null | cut -c7-)"
+    [ -n "$nh" ] || nh="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
     nhn="$(printf '%s\n' "$nh" | grep -c . || true)"
-    nh="$(printf '%s\n' "$nh" | head -3)"
   fi
 
   # Live CI row once the feed shows a PR: pull the check rollup from GitHub.
@@ -370,8 +370,7 @@ render_frame() {
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
     + (if $nh != "" then
          (RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open) " + R + "\n"
-          + ([$nh | split("\n")[] | RD + "   · " + . + R] | join("\n")) + "\n"
-          + (if $nhn > 3 then RD + "   · … +\($nhn - 3) more in .plinth/NEEDS-HUMAN.md" + R + "\n" else "" end))
+          + ([$nh | split("\n")[] | select(length > 0) | RD + "   · " + . + R] | join("\n")) + "\n")
        else "" end)
     + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
