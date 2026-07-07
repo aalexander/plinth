@@ -29,6 +29,8 @@ Everything between is the model's call.
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
+- `plinth queue ~/Dev/<repo>`   — the full NEEDS-HUMAN queue, every item
+  untruncated (the watch banner shows what fits the screen and points here).
 - `plinth smoke ~/Dev/<repo> -- <command>` — run the real thing on real
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them

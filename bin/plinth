@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.2 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.3 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -30,8 +30,9 @@ done
 PLINTH_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-usage() { echo "Usage: plinth {init|update|goal|watch|statusline} <project-path> [--once]
-       plinth smoke <project-path> -- <command...>   (run + write execution receipt)"; exit 1; }
+usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project-path> [--once]
+       plinth smoke <project-path> -- <command...>   (run + write execution receipt)
+       plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 if [ "$cmd" = "statusline" ]; then
@@ -202,6 +203,38 @@ copy_templates_if_absent() {
   fi
 }
 
+# NEEDS-HUMAN items are often multi-line markdown: emit one LOGICAL item per
+# line (continuations joined), open ("- [ ]") items only, falling back to any
+# non-blank content. Shared by watch and `plinth queue`.
+open_items() {  # open_items <needs-human-file>
+  awk '
+    /^- \[ \]/ { if (cur != "") print cur; cur = substr($0, 7); next }
+    /^- \[/    { if (cur != "") print cur; cur = ""; next }
+    /^#/       { if (cur != "") print cur; cur = ""; next }
+    cur != ""  { line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);
+                 if (line != "") cur = cur " " line; next }
+    END        { if (cur != "") print cur }
+  ' "$1" 2>/dev/null
+}
+
+# Full queue, every item, folded to terminal width — the readable, scrollable
+# home for long queues (the watch banner caps to what fits the screen).
+run_queue() {
+  local f="$target/.plinth/NEEDS-HUMAN.md"
+  [ -s "$f" ] || { echo "plinth queue: nothing pending in $f"; exit 0; }
+  local cols wrapw items
+  cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
+  [ "$cols" -ge 40 ] 2>/dev/null || cols=100
+  wrapw=$((cols - 4))
+  items="$(open_items "$f")"
+  [ -n "$items" ] || items="$(grep -v '^[[:space:]]*$' "$f")"
+  echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open)"
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+  done <<< "$items"
+}
+
 # ── plinth watch ──────────────────────────────────────────────────────────────
 # Live session dashboard. Reads the raw event feed (.plinth/session/events.jsonl,
 # written by pulse.sh) + the Claude Code transcript it points at + the review
@@ -233,26 +266,29 @@ render_frame() {
     # Full text, every item, SOFTWARE-WRAPPED to the terminal width with a
     # hanging indent: the in-place repaint assumes one logical line per
     # physical row, so we must never rely on the terminal to wrap.
-    local raw cols wrapw item
-    # Items are often MULTI-LINE markdown: gather each "- [ ]" plus its
-    # continuation lines (until the next item/heading) into one logical item.
-    raw="$(awk '
-      /^- \[ \]/ { if (cur != "") print cur; cur = substr($0, 7); next }
-      /^- \[/    { if (cur != "") print cur; cur = ""; next }
-      /^#/       { if (cur != "") print cur; cur = ""; next }
-      cur != ""  { line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);
-                   if (line != "") cur = cur " " line; next }
-      END        { if (cur != "") print cur }
-    ' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null)"
+    local raw cols wrapw item rows budget used=0 shown=0 folded flines
+    raw="$(open_items "$target/.plinth/NEEDS-HUMAN.md")"
     [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
     cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
     [ "$cols" -ge 40 ] 2>/dev/null || cols=100
     wrapw=$((cols - 6))
+    # The frame must fit the screen or the repaint loses its top: show as many
+    # COMPLETE items as fit, then point at `plinth queue` for the rest.
+    rows="${PLINTH_WATCH_ROWS:-$(tput lines 2>/dev/null || echo 40)}"
+    [ "$rows" -ge 24 ] 2>/dev/null || rows=40
+    budget=$((rows - 18)); [ "$budget" -ge 3 ] || budget=3
     while IFS= read -r item; do
       [ -n "$item" ] || continue
-      nh+="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"$'\n'
+      folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
+      flines="$(printf '%s\n' "$folded" | wc -l | tr -d ' ')"
+      if [ $((used + flines)) -gt "$budget" ] && [ "$shown" -gt 0 ]; then break; fi
+      nh+="$folded"$'\n'; used=$((used + flines)); shown=$((shown + 1))
+      [ "$used" -ge "$budget" ] && break
     done <<< "$raw"
+    if [ "$shown" -lt "$nhn" ]; then
+      nh+="… +$((nhn - shown)) more — full queue: plinth queue $target"$'\n'
+    fi
     nh="${nh%$'\n'}"
   fi
 
@@ -527,6 +563,7 @@ watch_project() {
 
 case "$cmd" in
   statusline) statusline_render ;;
+  queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   init)

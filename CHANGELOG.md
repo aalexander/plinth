@@ -1,5 +1,16 @@
 # Plinth changelog
 
+## v4.1.3 — July 7, 2026
+- watch: the frame now always fits the screen. v4.1.2's full-item banner
+  could exceed terminal height, scrolling the dashboard's top off (the
+  repaint homes to a top that no longer exists). The banner shows as many
+  COMPLETE items as fit (height-aware; PLINTH_WATCH_ROWS overrides), then
+  "… +N more — full queue: plinth queue <repo>".
+- NEW `plinth queue <repo>`: the whole NEEDS-HUMAN queue, every item in
+  full, folded to terminal width, ordinary scrollable output. A fixed
+  dashboard and an unbounded queue can't both win — reading long queues
+  happens here; the dashboard signals.
+
 ## v4.1.2 — July 7, 2026
 - watch: NEEDS-HUMAN truncation actually fixed — three stacked causes:
   1. items are often MULTI-LINE markdown; the extractor took only the first
