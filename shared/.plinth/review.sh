@@ -138,7 +138,13 @@ fi
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
   local evfile="$SDIR/events-$r.jsonl" raw="$SDIR/raw-$r.json" errlog="$SDIR/stderr-$r.log"
-  local prompt evidence="" specatk=""
+  local prompt evidence="" specatk="" commits=""
+  # Clean-slate rounds can't run git themselves reliably — give them the commit
+  # labels the tooling-tamper policy needs (certeus driver feedback).
+  commits="
+
+COMMITS IN RANGE (${baseref}..HEAD — for the tooling-tamper policy):
+$(git log --format='%h %s' "${baseref}..HEAD" 2>/dev/null | head -50)"
 
   # Execution evidence: the latest run receipt turns runtime guessing into
   # observation — RUNTIME findings get verified against it.
@@ -171,7 +177,7 @@ hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
 they route to the run gate instead of blocking.${specatk}
 
 DIFF:
-${diff}${evidence}"
+${diff}${evidence}${commits}"
   elif [ "$m" = "verify" ]; then
     local prior
     prior="$(cat "$SDIR/findings-$((r - 1)).json")"
@@ -190,7 +196,7 @@ PRIOR FINDINGS:
 ${prior}
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
-$(git diff "${prev_sha}..HEAD" 2>/dev/null || printf '%s' "$diff")${evidence}"
+$(git diff "${prev_sha}..HEAD" 2>/dev/null || printf '%s' "$diff")${evidence}${commits}"
   else
     # Incremental only: the thread already holds the prior full diff. Re-sending
     # everything is what overflowed large threads (the anvil deadlock).
@@ -209,7 +215,7 @@ Verdict is APPROVED only if no finding remains open. (A clean-slate full review
 still confirms before approval binds.)
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
-${inc}${evidence}"
+${inc}${evidence}${commits}"
   fi
 
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \

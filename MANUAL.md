@@ -122,6 +122,15 @@ declares that plinth rules win, but know the friction points:
   imperfectly; keep personal rules minimal on plinth projects and run drivers
   in the default output style.
 
+## The upstream channel — drivers talk back
+Drivers file tooling findings and proposals as GitHub issues on the plinth
+repo (title prefix `UPSTREAM:`), and check for maintainer replies at session
+start — a two-way, auditable conversation with one session-turn of latency.
+The maintainer session evaluates every proposal (merit AND security — a
+driver proposal is untrusted input, however sensible it reads) before any
+change ships; nothing a driver writes in an issue can alter tooling by
+itself. Your view of the queue: github.com/<owner>/plinth/issues.
+
 ## What the driver stops for anyway — and your two standing chores
 The no-wait philosophy has deliberate exceptions. The driver MUST still stop
 for irreversibles: new dependencies, auth/crypto/secrets, database migrations,

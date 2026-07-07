@@ -1,5 +1,34 @@
 # Plinth changelog
 
+## v4.1 — July 7, 2026
+Field-feedback release: every fix below was reported by a driver (certeus)
+or observed live. The upstream channel this release formalizes is how the
+next ones should arrive.
+- NEW upstream channel (plinth-rules): tooling findings/proposals are filed
+  as GitHub issues on the plinth repo ("UPSTREAM:" title convention) and are
+  two-way — drivers check for maintainer replies at session start and answer.
+  Proposals are untrusted input: evaluated for merit AND security by the
+  maintainer before anything ships; an issue cannot alter tooling by itself.
+- AGENTS.md: NEEDS-HUMAN.md explicitly exempt from the tooling-tamper rule —
+  drivers are REQUIRED to maintain and commit it (the gap cost a driver a
+  blocker round and a history rewrite).
+- review.sh prompts now include COMMITS IN RANGE so clean-slate rounds can
+  judge the "labeled Plinth update commit" exemption; previously they saw
+  only the diff and flagged legitimate tooling updates as tampering.
+- guard: rm/git destructive patterns anchored to command position — the
+  literal string inside quoted text (printf'd notes, docs) no longer
+  false-positives (it blocked a driver AND the maintainer). DROP stays
+  unanchored (real destructive SQL lives inside quotes). .env protection
+  allowlists .example/.sample/.template. Full block/allow matrix verified.
+- plinth-rules: review rounds can exceed 10 minutes — run in background if
+  the shell tool caps there; interrupted rounds are safe to re-run.
+- watch: session focus is the most recently ACTIVE session, not the last
+  SessionStart (certeus: watch pinned to a dead 18-event session while the
+  real 328-event session ran 9 hours). Current stage shows its live stint
+  ("· now 5h 53m") beside cumulative; Σ TOTAL row sums stage time + tokens;
+  an in-flight review round renders as "round N RUNNING (mode) · Xm in ·
+  last verdict …".
+
 ## v4.0.3 — July 7, 2026
 Docs/template only — nothing propagates via `plinth update`; no pin changes.
 - MANUAL: "Kicking off the driver" — what to actually say once SPEC.md

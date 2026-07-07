@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.0.3 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -222,6 +222,10 @@ render_frame() {
   slug="$(printf '%s' "$branch" | tr '/ ' '--')"
   local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
+  # A round in flight: the newest request-N.json outruns verdict.json.
+  local rqfile
+  rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1)"
+  [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
   local nh="" nhn=0
   if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
@@ -246,7 +250,8 @@ render_frame() {
   fi
 
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
-        --slurpfile us "$ufile" --slurpfile rc "$rfile" --arg nh "$nh" --argjson nhn "${nhn:-0}" \
+        --slurpfile us "$ufile" --slurpfile rc "$rfile" --slurpfile rq "$rqfile" \
+        --arg nh "$nh" --argjson nhn "${nhn:-0}" \
         --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
@@ -265,9 +270,9 @@ render_frame() {
 
     ($ev | map(select(type == "object"))) as $all
     | (now | floor) as $NOW
-    # focus: the session of the most recent session_start (else last event with a sid)
-    | (([$all[] | select(.event == "SessionStart")] | .[-1].sid) //
-       ([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
+    # focus: the most recently ACTIVE session — not the last SessionStart;
+    # sessions that predate their own wiring have no start event (certeus bug)
+    | (([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
     | ($all | map(select(.sid == $sid))) as $sev
     | if ($sev | length) == 0 then "plinth watch: event feed has no session events yet." else
 
@@ -321,13 +326,24 @@ render_frame() {
     | (["PLAN", "IMPLEMENT", "VERIFY", "REVIEW", "PR"]) as $ORDER
     | ([ $ORDER[] | . as $s | ($per | map(select(.s == $s)) | .[0]) as $p
         | if $p == null then D + "   " + ($s | rpad(10)) + ("—" | rpad(10)) + "—" + R
-          elif $s == $cur then RV + B + " ▶ " + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + (($p.k | hum_k) + " tok") + R
+          elif $s == $cur then RV + B + " ▶ " + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + (($p.k | hum_k) + " tok")
+               + "  · now " + ((($NOW - $segs[-1].a) | hum_t)) + R
           else GR + " ✓ " + R + ($s | rpad(10)) + (($p.t | hum_t) | rpad(10)) + D + (($p.k | hum_k) + " tok") + R
           end ] | join("\n")) as $pipe0
+    | ($pipe0 + "\n" + D + " Σ TOTAL    " + ((($per | map(.t) | add) // 0 | hum_t) | rpad(10))
+        + ((($per | map(.k) | add) // 0 | hum_k) + " tok") + R) as $pipe0
     | ($pipe0 + (if $ci == null then "" else "\n"
         + (if ($ci.fail // 0) > 0 then RD elif ($ci.pending // 0) > 0 then YE else GR end)
         + "   CI        " + "✓\($ci.pass // 0)  ✗\($ci.fail // 0)  ◌\($ci.pending // 0)" + R end)) as $pipe
-    | (if $V == null then D + "no review round yet — ./.plinth/review.sh" + R
+    | (($rq[0] // null) as $RQ
+       | if $RQ != null and ($RQ.round // 0) > (($V.round // 0)) then
+           YE + "round \($RQ.round) RUNNING (\($RQ.mode))" + R
+           + (($RQ.ts // "" | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null) as $rs
+              | if $rs != null then D + " · " + (($NOW - $rs) | hum_t) + " in" + R else "" end)
+           + D + " · last verdict: " + ($V.verdict // "none") + " r\($V.round // 0)" + R
+         else null end) as $running
+    | (if $running != null then $running
+       elif $V == null then D + "no review round yet — ./.plinth/review.sh" + R
        else ((if $V.verdict == "APPROVED" then GR else YE end) + $V.verdict + R
          + D + " · round " + ($V.round | tostring) + " @ " + ($V.sha[0:7]) + R
          + (if ($V.sha[0:7]) == $head then GR + " = HEAD ✓" + R else RD + " ≠ HEAD " + $head + " — stale, re-run review" + R end)
@@ -430,8 +446,7 @@ statusline_render() {
       else "\((. / 3600) | floor)h\(((. % 3600) / 60) | floor)m" end;
     ($ev | map(select(type == "object"))) as $all
     | (now | floor) as $NOW
-    | (([$all[] | select(.event == "SessionStart")] | .[-1].sid) //
-       ([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
+    | (([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
     | ($all | map(select(.sid == $sid))) as $sev
     | if ($sev | length) == 0 then "plinth: no session" else
       ($sev[0].epoch) as $t0

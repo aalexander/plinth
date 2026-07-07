@@ -67,8 +67,10 @@ hooks and gates.
 Work on a feature branch — never commit directly to the base branch. The Stop
 gate deliberately does not guard base branches (it logs and releases), and the
 PR needs a branch to exist. Branch first, then build.
-When the work is complete: commit, then run `./.plinth/review.sh` (allow up to 10
-minutes). It reviews committed work only and refuses a dirty tree or an empty diff.
+When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
+large diffs can exceed 10 minutes — if your shell tool caps there, run it in
+the background and read the result; an interrupted round is safe to re-run
+(resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer session when feasible; oversized or dead
@@ -89,6 +91,17 @@ session that created commits until the verdict at HEAD is APPROVED. The gate has
 two pressure valves — a recent mechanical review failure, and a per-session block
 cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red.
+
+## Upstream channel — two-way, with the Plinth maintainer
+Tooling findings and improvement proposals are never fixed in-project (that is
+tampering). File them upstream as a GitHub issue:
+  gh issue create -R aalexander/plinth --title "UPSTREAM: <symptom>" \
+    --body "<symptom / root-cause hypothesis / proposed fix / session+round refs>"
+This is a conversation, not a drop-box: at session start, check your open
+upstream issues for maintainer replies (gh issue list -R aalexander/plinth
+--search "UPSTREAM in:title") and answer what was asked. Proposals are
+evaluated — including for security — before anything ships; never assume one
+landed until `plinth update` delivers it.
 
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it

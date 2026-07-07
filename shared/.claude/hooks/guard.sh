@@ -36,7 +36,12 @@ each_protected() {  # builtin pattern + project patterns, one per line
 case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
-    if printf '%s' "$cmd" | grep -Eq 'rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin|DROP[[:space:]]+(TABLE|DATABASE)'; then
+    # rm/git patterns are anchored to command position (start or after ;&|( )
+    # so the literal STRING "rm -rf" inside quoted text — a printf'd comment,
+    # a queue note — no longer false-positives. DROP stays unanchored: real
+    # destructive SQL almost always sits inside quotes (psql -c "...").
+    if printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+       || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
     while IFS= read -r pattern; do
@@ -55,7 +60,13 @@ PATTERNS
     ;;
   Edit|Write|MultiEdit)
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
-    if printf '%s' "$path" | grep -Eq '(^|/)\.env|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
+    if printf '%s' "$path" | grep -Eq '(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
+      block "attempt to edit a protected/secret path: $path. Needs explicit human action."
+    fi
+    # .env* is secret — but .env.example/.sample/.template are conventionally
+    # committed documentation, not secrets.
+    if printf '%s' "$path" | grep -Eq '(^|/)\.env' \
+       && ! printf '%s' "$path" | grep -Eq '\.(example|sample|template)$'; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
     while IFS= read -r pattern; do

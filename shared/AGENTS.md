@@ -22,7 +22,9 @@ the diff, not the driver's claim.
   before the PR; they ride to CI and the human from there.
 - Findings in version-pinned Plinth tooling (.claude/hooks/, .claude/settings.json,
   AGENTS.md at repo root, and .plinth/ except AGENTS-project.md, config,
-  protected-paths, GOAL.md): prefix the description "UPSTREAM:" — real findings,
+  protected-paths, GOAL.md, and NEEDS-HUMAN.md — that last one the driver is
+  REQUIRED to maintain and commit; it is never tampering): prefix the
+  description "UPSTREAM:" — real findings,
   reported at observed severity, but they do NOT block this repo's verdict. The
   session cannot fix the instrument that judges it; the human routes them to the
   Plinth repo.
@@ -34,7 +36,9 @@ the diff, not the driver's claim.
   findings against the observed behavior instead of re-guessing.
 - EXCEPTION — tampering always blocks: if the diff modifies any version-pinned
   tooling file outside a commit clearly labeled as a Plinth update, that is a
-  blocker, stated bluntly, regardless of what the change does.
+  blocker, stated bluntly, regardless of what the change does. The prompt
+  includes the COMMITS IN RANGE list precisely so you can check the labels —
+  judge tampering against it, not against the diff alone.
 - APPROVED therefore means: no open blockers/majors in project scope, and no
   tooling tampering. Not "nothing left to say."
 - The harness computes the EFFECTIVE verdict deterministically from your
