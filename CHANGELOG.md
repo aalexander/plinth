@@ -1,5 +1,15 @@
 # Plinth changelog
 
+## v4.1.5 — July 7, 2026
+- watch: the queue budget now uses your REAL window height. Inside the
+  repaint's command substitution, tput talks to a pipe and reports the
+  terminfo default (24×80) no matter how tall the window is — every user
+  saw ~8 queue lines. The watch loop now reads `stty size </dev/tty` per
+  repaint (resize-aware) and hands it down via the PLINTH_WATCH_* overrides,
+  which still win if set by hand. Reserve tightened to include the live
+  footer so a full queue can never push the frame top off-screen.
+  (Restart any running watch pane to pick this up.)
+
 ## v4.1.4 — July 7, 2026
 - watch layout: fixed dashboard (cycle/pipeline/review/signals) anchored at
   the TOP; the variable-height NEEDS-HUMAN queue moved to the BOTTOM where

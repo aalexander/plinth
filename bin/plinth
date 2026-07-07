@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.4 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.5 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -279,7 +279,8 @@ render_frame() {
     # COMPLETE items as fit, then point at `plinth queue` for the rest.
     rows="${PLINTH_WATCH_ROWS:-$(tput lines 2>/dev/null || echo 40)}"
     [ "$rows" -ge 24 ] 2>/dev/null || rows=40
-    budget=$((rows - 18)); [ "$budget" -ge 3 ] || budget=3
+    # Reserve = fixed frame (~19 rows incl. CI + banner header) + live footer.
+    budget=$((rows - 21)); [ "$budget" -ge 3 ] || budget=3
     while IFS= read -r item; do
       [ -n "$item" ] || continue
       folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
@@ -541,8 +542,22 @@ statusline_render() {
       end'
 }
 
+# Inside $(render_frame) tput talks to a pipe and reports 24×80 regardless of
+# the real window, starving the queue budget. Read the size from the TTY and
+# hand it down via the PLINTH_WATCH_* overrides (honoring any the user set).
+capture_tty_size() {
+  local _sz
+  if _sz="$(stty size </dev/tty 2>/dev/null)"; then
+    [ -n "${PLINTH_WATCH_ROWS_USER:-}" ] || export PLINTH_WATCH_ROWS="${_sz% *}"
+    [ -n "${PLINTH_WATCH_COLS_USER:-}" ] || export PLINTH_WATCH_COLS="${_sz#* }"
+  fi
+}
+
 watch_project() {
-  if [ "$opt" = "--once" ]; then render_frame; exit 0; fi
+  # User-provided sizes win permanently; otherwise track the TTY per repaint.
+  [ -n "${PLINTH_WATCH_ROWS:-}" ] && export PLINTH_WATCH_ROWS_USER=1
+  [ -n "${PLINTH_WATCH_COLS:-}" ] && export PLINTH_WATCH_COLS_USER=1
+  if [ "$opt" = "--once" ]; then capture_tty_size; render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
   local wslug VD
   wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
@@ -559,6 +574,7 @@ watch_project() {
     stamp="$(fstamp "$EV") $(fstamp "$VD")"
     if [ "$stamp" != "$last" ] || [ "$beat" -ge 10 ]; then
       last="$stamp"; beat=0
+      capture_tty_size   # per repaint: window resizes tracked
       # Repaint in place: home cursor, overwrite each line erasing its tail
       # (ESC[K), then erase below the frame (ESC[J). No full clear, no blink.
       frame="$(render_frame; printf '\n\033[2m  live — repaints on activity (1s poll, 10s heartbeat) · ctrl-c to quit\033[0m')"
