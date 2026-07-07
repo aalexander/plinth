@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.1 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.2 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -224,16 +224,36 @@ render_frame() {
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
   # A round in flight: the newest request-N.json outruns verdict.json.
   local rqfile
-  rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1)"
+  rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
   local nh="" nhn=0
   if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
-    # Full text, every item — the queue exists to be read, not sampled.
-    nh="$(grep -E '^- \[ \]' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null | cut -c7-)"
-    [ -n "$nh" ] || nh="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
-    nhn="$(printf '%s\n' "$nh" | grep -c . || true)"
+    # Full text, every item, SOFTWARE-WRAPPED to the terminal width with a
+    # hanging indent: the in-place repaint assumes one logical line per
+    # physical row, so we must never rely on the terminal to wrap.
+    local raw cols wrapw item
+    # Items are often MULTI-LINE markdown: gather each "- [ ]" plus its
+    # continuation lines (until the next item/heading) into one logical item.
+    raw="$(awk '
+      /^- \[ \]/ { if (cur != "") print cur; cur = substr($0, 7); next }
+      /^- \[/    { if (cur != "") print cur; cur = ""; next }
+      /^#/       { if (cur != "") print cur; cur = ""; next }
+      cur != ""  { line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);
+                   if (line != "") cur = cur " " line; next }
+      END        { if (cur != "") print cur }
+    ' "$target/.plinth/NEEDS-HUMAN.md" 2>/dev/null)"
+    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
+    nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
+    cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
+    [ "$cols" -ge 40 ] 2>/dev/null || cols=100
+    wrapw=$((cols - 6))
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      nh+="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"$'\n'
+    done <<< "$raw"
+    nh="${nh%$'\n'}"
   fi
 
   # Live CI row once the feed shows a PR: pull the check rollup from GitHub.
@@ -370,7 +390,7 @@ render_frame() {
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
     + (if $nh != "" then
          (RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open) " + R + "\n"
-          + ([$nh | split("\n")[] | select(length > 0) | RD + "   · " + . + R] | join("\n")) + "\n")
+          + ([$nh | split("\n")[] | select(length > 0) | RD + "   " + . + R] | join("\n")) + "\n")
        else "" end)
     + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"

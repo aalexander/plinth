@@ -1,5 +1,20 @@
 # Plinth changelog
 
+## v4.1.2 — July 7, 2026
+- watch: NEEDS-HUMAN truncation actually fixed — three stacked causes:
+  1. items are often MULTI-LINE markdown; the extractor took only the first
+     line of each (this was the visible "truncation"). Items are now
+     gathered whole (continuation lines joined until the next item/heading).
+  2. display wrapping is now SOFTWARE folding to terminal width with a
+     hanging indent — the in-place repaint assumes one logical line per
+     physical row, so terminal wrap can't be relied on. PLINTH_WATCH_COLS
+     overrides width for tests.
+  3. latent pipefail bomb: on a branch with no request-*.json, the ls
+     pipeline killed render_frame silently (set -e) — first trip on
+     certeus/main. Guarded.
+  NOTE: a running `plinth watch` executes its in-process code — restart the
+  pane to pick up any update.
+
 ## v4.1.1 — July 7, 2026
 - watch: NEEDS-HUMAN items render in FULL — no 64-char truncation, no
   3-item cap. The queue exists to be read, not sampled; certeus's driver
