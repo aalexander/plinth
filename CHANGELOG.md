@@ -30,9 +30,28 @@ pen, not a human).
     fix. No human in this path; a different isolated model is the authority.
 - `.plinth/config` gains `tier2_extra`, `reviewer_model_tier1/tier2`. Classifier
   + config are agent-immutable; per-tier model routing (P2) is now real.
-- NOT yet done (follow-ups): CI-side recompute-and-verify of tier+digest at
-  merge (closes local forgery); reviewer_model defaults ship unset (opt-in
-  until the user picks cheap/frontier models).
+- HARDENED against a cross-vendor red-team (GPT + Grok + Gemini — all three
+  independently flagged the same Tier-0 bypasses as "critical"):
+  - No global `.txt` in Tier 0 (CMakeLists.txt / constraints.txt were shipping
+    as inert docs). NEW `BUILD` Tier-2 block (Makefile, CMakeLists, Dockerfile,
+    setup.py, gradle, bazel, cmake, release/deploy scripts).
+  - Metadata names (LICENSE/NOTICE/…) anchored — `LICENSE.py` is no longer docs.
+  - Classifier now reads `git diff --raw`: renames classify BOTH paths (moving
+    code/tests into a doc name no longer laundered), and mode is checked —
+    symlinks, submodules, executables, and type-changes can never be Tier 0.
+  - Test heuristic replaced: net assertion counting was gameable by padding.
+    Now ANY modification of an existing test (removed content), a deleted test,
+    a test moved out of the test tree, or an added skip/ignore → Tier 2. Pure
+    new/addition-only tests stay Tier 1. Test surface widened to fixtures,
+    golden, snapshots, testdata, helpers.
+  - Tier-2 path triggers broadened (security synonyms: access/policy/identity/
+    sso/mfa/csrf/cors/cert/tls/…; ORM/model schema; API routes/controllers/
+    *.graphql; more dependency ecosystems; CI/build files).
+- NOT yet done — the one gap all three flagged and confirmed: `diff_digest` is
+  recorded but not VERIFIED at merge (TOCTOU: approve a benign diff, swap the
+  payload before merge). The digest is forensic-only until a CI job recomputes
+  the tier + digest against the real merge SHA and hard-fails on mismatch. That
+  CI verification is the next increment.
 
 ## v4.1.9 — July 7, 2026
 - watch + queue: [BLOCKING] items are sorted to the TOP of the human list
