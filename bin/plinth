@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.8 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.9 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -217,6 +217,17 @@ open_items() {  # open_items <needs-human-file>
   ' "$1" 2>/dev/null
 }
 
+# Blocking items first (order preserved within each group), so the human sees
+# what's stalling work RIGHT NOW at the top. Reads logical items on stdin.
+sort_blocking_first() {
+  local all blk non
+  all="$(cat)"
+  blk="$(printf '%s\n' "$all" | grep '^\[BLOCKING\]' || true)"
+  non="$(printf '%s\n' "$all" | grep -v '^\[BLOCKING\]' || true)"
+  [ -n "$blk" ] && printf '%s\n' "$blk"
+  [ -n "$non" ] && printf '%s\n' "$non"
+}
+
 # Full queue, every item, folded to terminal width — the readable, scrollable
 # home for long queues (the watch banner caps to what fits the screen).
 run_queue() {
@@ -229,10 +240,15 @@ run_queue() {
   items="$(open_items "$f")"
   [ -n "$items" ] || items="$(grep -v '^[[:space:]]*$' "$f")"
   local qb; qb="$(printf '%s\n' "$items" | grep -c '^\[BLOCKING\]' || true)"
-  echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open, $qb blocking)"
+  items="$(printf '%s\n' "$items" | sort_blocking_first)"
+  echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open, $qb blocking; blocking first)"
+  local RD=$'\033[1;31m' Z=$'\033[0m'
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+    case "$item" in
+      '[BLOCKING]'*) printf '%s· %s%s\n' "$RD" "$item" "$Z" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
+      *)             printf '· %s\n' "$item" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
+    esac
   done <<< "$items"
 }
 
@@ -272,6 +288,7 @@ render_frame() {
     [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
     nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    raw="$(printf '%s\n' "$raw" | sort_blocking_first)"   # blocking to the top
     cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
     [ "$cols" -ge 40 ] 2>/dev/null || cols=100
     wrapw=$((cols - 6))
@@ -282,16 +299,21 @@ render_frame() {
     # Reserve = fixed frame (~18 rows: banner, branch, models, pipeline+Σ, CI,
     # tokens/burn/review/run/evidence/signals/now) + queue sep/header + footer.
     budget=$((rows - 23)); [ "$budget" -ge 2 ] || budget=2
+    # Each physical line carries a 1-char tag jq reads for color: "!" blocking,
+    # " " normal. Blocking items are already partitioned to the top.
+    local tag
     while IFS= read -r item; do
       [ -n "$item" ] || continue
+      case "$item" in '[BLOCKING]'*) tag='!' ;; *) tag=' ' ;; esac
       folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
       flines="$(printf '%s\n' "$folded" | wc -l | tr -d ' ')"
       if [ $((used + flines)) -gt "$budget" ] && [ "$shown" -gt 0 ]; then break; fi
-      nh+="$folded"$'\n'; used=$((used + flines)); shown=$((shown + 1))
+      while IFS= read -r pl; do nh+="${tag}${pl}"$'\n'; done <<< "$folded"
+      used=$((used + flines)); shown=$((shown + 1))
       [ "$used" -ge "$budget" ] && break
     done <<< "$raw"
     if [ "$shown" -lt "$nhn" ]; then
-      nh+="… +$((nhn - shown)) more — full queue: plinth queue $target"$'\n'
+      nh+=" … +$((nhn - shown)) more — full queue: plinth queue $target"$'\n'
     fi
     nh="${nh%$'\n'}"
   fi
@@ -452,8 +474,12 @@ render_frame() {
     # stable screen position; the queue grows downward where it displaces nothing.
     + (if $nh != "" then
          "\n" + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
-         + RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open\(if $nhb > 0 then " · \($nhb) BLOCKING" else "" end)) " + R + "\n"
-         + ([$nh | split("\n")[] | select(length > 0) | RD + "   " + . + R] | join("\n"))
+         + (if $nhb > 0 then B + RD + RV else RD + RV end)
+           + " ⏸ NEEDS HUMAN (\($nhn) open\(if $nhb > 0 then " · \($nhb) BLOCKING" else "" end)) " + R + "\n"
+         # Per-line tag: "!" blocking -> bold bright red; " " normal -> dim.
+         + ([$nh | split("\n")[] | select(length > 0)
+             | if (.[0:1]) == "!" then B + RD + "   " + (.[1:]) + R
+               else D + "   " + (.[1:]) + R end] | join("\n"))
        else "" end)
     end
   ' 2>/dev/null || echo "plinth watch: render error (malformed event or transcript line?)"

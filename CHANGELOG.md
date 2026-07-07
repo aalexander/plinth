@@ -1,5 +1,12 @@
 # Plinth changelog
 
+## v4.1.9 — July 7, 2026
+- watch + queue: [BLOCKING] items are sorted to the TOP of the human list
+  (order preserved within each group) and rendered in bold red; non-blocking
+  items are dim below. The banner already carried the blocking count; now the
+  ordering and color make "what's stalling work right now" unmissable. Applies
+  to `plinth watch` and `plinth queue` identically.
+
 ## v4.1.8 — July 7, 2026
 - watch: the frame can no longer scroll its own top off-screen — which was
   hiding the header, branch, and (newly added) models line. The repaint is
