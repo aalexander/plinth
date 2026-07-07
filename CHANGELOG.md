@@ -1,5 +1,14 @@
 # Plinth changelog
 
+## v4.1.4 — July 7, 2026
+- watch layout: fixed dashboard (cycle/pipeline/review/signals) anchored at
+  the TOP; the variable-height NEEDS-HUMAN queue moved to the BOTTOM where
+  growth displaces nothing.
+- Queue prioritization: plinth-rules now direct drivers to prefix items that
+  stall work RIGHT NOW with [BLOCKING] and keep them at the top. The counts
+  surface everywhere: watch banner "(N open · B BLOCKING)", `plinth queue`
+  header, statusline "⏸ HUMAN×N⛔B".
+
 ## v4.1.3 — July 7, 2026
 - watch: the frame now always fits the screen. v4.1.2's full-item banner
   could exceed terminal height, scrolling the dashboard's top off (the

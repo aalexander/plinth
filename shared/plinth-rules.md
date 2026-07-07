@@ -116,7 +116,10 @@ API changes, or adding a dependency. Otherwise proceed on your own judgment.
 When blocked on something only the human can supply (credentials, artifact
 hashes, hardware runs, spend approvals), add a checkbox line to
 `.plinth/NEEDS-HUMAN.md` — what, why, and the exact format needed — and keep
-working on whatever isn't blocked. The dashboard surfaces the file; clear each
-line once supplied. RUNTIME review findings are burned down the same way: ask
+working on whatever isn't blocked. Prioritize the queue by blocking impact:
+prefix any item that stalls work RIGHT NOW with `[BLOCKING]` and keep those at
+the top; everything else (needed eventually, nice-to-have) goes below. The
+dashboard surfaces the file and the blocking count; check items off the moment
+they're supplied. RUNTIME review findings are burned down the same way: ask
 the human for a `plinth smoke` run (execution receipts feed the next review
 round), not more review rounds.

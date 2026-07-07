@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.3 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.1.4 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -228,7 +228,8 @@ run_queue() {
   wrapw=$((cols - 4))
   items="$(open_items "$f")"
   [ -n "$items" ] || items="$(grep -v '^[[:space:]]*$' "$f")"
-  echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open)"
+  local qb; qb="$(printf '%s\n' "$items" | grep -c '^\[BLOCKING\]' || true)"
+  echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open, $qb blocking)"
   while IFS= read -r item; do
     [ -n "$item" ] || continue
     printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
@@ -260,7 +261,7 @@ render_frame() {
   rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
-  local nh="" nhn=0
+  local nh="" nhn=0 nhb=0
   if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
     # Full text, every item, SOFTWARE-WRAPPED to the terminal width with a
@@ -270,6 +271,7 @@ render_frame() {
     raw="$(open_items "$target/.plinth/NEEDS-HUMAN.md")"
     [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
+    nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
     cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
     [ "$cols" -ge 40 ] 2>/dev/null || cols=100
     wrapw=$((cols - 6))
@@ -307,7 +309,7 @@ render_frame() {
 
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
         --slurpfile us "$ufile" --slurpfile rc "$rfile" --slurpfile rq "$rqfile" \
-        --arg nh "$nh" --argjson nhn "${nhn:-0}" \
+        --arg nh "$nh" --argjson nhn "${nhn:-0}" --argjson nhb "${nhb:-0}" \
         --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
@@ -424,10 +426,6 @@ render_frame() {
        else ($lastact.tool // "?") + D + " " + (($lastact.detail // "")[0:56]) + " · " + ($lastact.epoch | ago($NOW)) + R end) as $nowline
 
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
-    + (if $nh != "" then
-         (RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open) " + R + "\n"
-          + ([$nh | split("\n")[] | select(length > 0) | RD + "   " + . + R] | join("\n")) + "\n")
-       else "" end)
     + D + "   " + $branch + " @ " + $head + " · " + $model + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
     + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
     + $pipe + "\n"
@@ -444,6 +442,13 @@ render_frame() {
          else D + " · gate releases 0" + R end)
       + D + " · compactions \($compacts) · subagent runs \($subs)" + R + "\n"
     + B + " now      " + R + $nowline
+    # Variable-height content lives at the BOTTOM: the fixed dashboard keeps a
+    # stable screen position; the queue grows downward where it displaces nothing.
+    + (if $nh != "" then
+         "\n" + D + " ─────────────────────────────────────────────────────────────────" + R + "\n"
+         + RD + RV + " ⏸ NEEDS HUMAN (\($nhn) open\(if $nhb > 0 then " · \($nhb) BLOCKING" else "" end)) " + R + "\n"
+         + ([$nh | split("\n")[] | select(length > 0) | RD + "   " + . + R] | join("\n"))
+       else "" end)
     end
   ' 2>/dev/null || echo "plinth watch: render error (malformed event or transcript line?)"
 }
@@ -495,7 +500,12 @@ statusline_render() {
   local sslug nh=""
   sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
   vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
-  [ -s "$dir/.plinth/NEEDS-HUMAN.md" ] && nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
+  local nhblk=""
+  if [ -s "$dir/.plinth/NEEDS-HUMAN.md" ]; then
+    nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
+    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || true)"
+    [ "$nhblk" != "0" ] && [ -n "$nhblk" ] && nh="${nh}⛔${nhblk}"
+  fi
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
     def hum_t: if . < 60 then "\(. | floor)s" elif . < 3600 then "\((. / 60) | floor)m"
       else "\((. / 3600) | floor)h\(((. % 3600) / 60) | floor)m" end;
