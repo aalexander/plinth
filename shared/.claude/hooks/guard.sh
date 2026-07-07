@@ -36,11 +36,19 @@ each_protected() {  # builtin pattern + project patterns, one per line
 case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
-    # rm/git patterns are anchored to command position (start or after ;&|( )
-    # so the literal STRING "rm -rf" inside quoted text — a printf'd comment,
-    # a queue note — no longer false-positives. DROP stays unanchored: real
-    # destructive SQL almost always sits inside quotes (psql -c "...").
-    if printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+    # rm/git patterns are anchored to command position. Upstream issue #1
+    # hardenings (driver-reported): backticks open command substitutions —
+    # they are boundaries too; and QUOTED spans are stripped before matching,
+    # so prose that merely mentions these commands (printf'd notes, issue
+    # bodies) no longer false-positives. A destructive command hidden INSIDE
+    # quotes that reach a shell (bash -c "...") was never caught by anchoring
+    # and stays out of scope — the CI harness check is the hard layer.
+    # Newlines need no handling: grep matches per line, so ^ anchors every
+    # line of a multiline command. DROP stays unanchored and UNstripped:
+    # real destructive SQL sits inside quotes (psql -c "..."); prose naming
+    # DROP TABLE still trips it — use a --body-file / heredoc for such text.
+    stripped="$(printf '%s' "$cmd" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi

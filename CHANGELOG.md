@@ -1,5 +1,24 @@
 # Plinth changelog
 
+## v4.1.6 — July 7, 2026
+- guard hardening from upstream issue #1 (first driver-filed report through
+  the v4.1 channel — certeus reviewer flagged it as a nonblocking UPSTREAM
+  major):
+  - backtick added to the command-boundary class, so `` `rm -rf x` `` and
+    `$(rm -rf x)` command substitutions are caught (they were bypasses).
+  - multiline: no code change needed — grep matches per line, so ^ already
+    anchors every line of a multiline command; verified the second-line
+    bypass now blocks.
+  - prose false-positives eliminated: single/double-quoted spans are
+    stripped before matching the rm/git patterns, so a printf'd note or a
+    `gh issue --body` that merely NAMES the commands passes. (The reporter
+    had to file #1 with --body-file to get past the old guard.)
+  - stated non-goals: a destructive command hidden inside quotes that reach
+    a shell (`bash -c "rm -rf x"`) was never caught by anchoring and remains
+    out of scope — the CI harness byte-check is the hard layer. DROP stays
+    unstripped (real destructive SQL lives in quotes); prose naming DROP
+    TABLE still trips it — use --body-file/heredoc.
+
 ## v4.1.5 — July 7, 2026
 - watch: the queue budget now uses your REAL window height. Inside the
   repaint's command substitution, tput talks to a pipe and reports the
