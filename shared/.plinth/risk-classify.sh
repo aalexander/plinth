@@ -55,6 +55,9 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
+  # The review receipt is the classifier's OWN artifact, not a reviewable change
+  # — skip it, or committing it would (wrongly) self-classify as a tooling edit.
+  case "$path" in .plinth/review-receipt.json) continue ;; esac
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,

@@ -22,10 +22,13 @@ permissions:
 
 jobs:
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.1
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.2
 
   checks:
-    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.1
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.2
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest
+
+  receipt:
+    uses: OWNER/plinth/.github/workflows/plinth-review-receipt.yml@v4.2
