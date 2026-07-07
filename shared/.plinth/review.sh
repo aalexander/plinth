@@ -77,7 +77,37 @@ SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(cfg exec_gated || true)"
 ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
 AUDIT_MODEL="$(cfg audit_model || true)"
+# Cross-vendor auditor: which subscription-authenticated CLI runs the Tier-2
+# second opinion. codex (OpenAI), grok (xAI), agy (Google Antigravity). Default
+# codex. Using a DIFFERENT vendor here is what makes the second opinion a real
+# cross-vendor check rather than same-vendor-different-model.
+AUDIT_VENDOR="$(cfg audit_vendor || true)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
 EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
+
+# Runs the audit prompt through the configured vendor's CLI (read-only,
+# subscription-auth, no per-use cost) and writes a schema-shaped findings JSON
+# to $2. Returns nonzero on failure. grok/agy emit free-form text, so we extract
+# the JSON object; codex forces the schema directly.
+run_auditor() {  # run_auditor <prompt> <out-findings-json>
+  local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
+  printf '%s' "$prompt" > "$pf"
+  case "$AUDIT_VENDOR" in
+    grok)
+      grok --prompt-file "$pf" --output-format json --disallowed-tools 'Bash,Edit,Write' \
+        ${AUDIT_MODEL:+-m "$AUDIT_MODEL"} > "$raw" 2>/dev/null || return 1
+      jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' > "${out}.j" 2>/dev/null || return 1 ;;
+    agy|gemini)
+      agy -p "$prompt" --sandbox ${AUDIT_MODEL:+--model "$AUDIT_MODEL"} > "$raw" 2>/dev/null || return 1
+      perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
+    codex|*)
+      printf '%s' "$prompt" | codex exec ${AUDIT_MODEL:+-m "$AUDIT_MODEL"} --sandbox read-only --json \
+        --output-schema "$SCHEMA" -o "${out}.j" - > /dev/null 2>&1 || return 1 ;;
+  esac
+  jq . "${out}.j" > "$out" 2>/dev/null || return 1
+  # Fail loud, not open: an unparseable/incomplete audit must NOT be treated as
+  # a concurrence. Require a real verdict + findings array.
+  jq -e '(.verdict=="APPROVED" or .verdict=="CHANGES_NEEDED") and (.findings|type=="array")' "$out" >/dev/null 2>&1
+}
 
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
@@ -373,44 +403,53 @@ if [ -n "$nonblocking" ]; then
   printf '%s\n' "$nonblocking"
 fi
 
-# Reviewer error bar (cross-vendor second opinion, config: audit_model). Fires
-# on EVERY Tier 2 approval (high-consequence -> always a second, different-model
-# adversary), and on every 5th approval otherwise. Disagreement is reported,
-# never adjudicated here — a different, isolated model is the authority, not a
+# Reviewer error bar (cross-vendor second opinion). Fires on EVERY Tier 2
+# approval (high-consequence -> always a second, DIFFERENT-VENDOR adversary), and
+# on every 5th approval otherwise. Runs when a cross-vendor auditor is configured
+# (audit_vendor != codex) or an audit_model is set. Disagreement is reported,
+# never adjudicated here — a different isolated model is the authority, not a
 # human.
-if [ -n "$AUDIT_MODEL" ]; then
+if [ -n "$AUDIT_MODEL" ] || [ "$AUDIT_VENDOR" != "codex" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count
   if [ "$RISK" = "2" ] || [ $((ac % 5)) -eq 0 ]; then
-    echo "Plinth review: cross-vendor audit (Tier ${RISK}, approval #$ac) — cold audit by ${AUDIT_MODEL}..."
-    araw="$SDIR/raw-audit-$round.json"
-    aprompt="You are a cold AUDIT reviewer (a different model from the primary). Follow
-AGENTS.md and .plinth/AGENTS-project.md, including the Verdict policy. Review
-this diff (${baseref}...HEAD at ${sha}) against the spec at ${SPEC_PATH} from
-scratch. Your job is to catch what the primary reviewer systematically misses.
+    echo "Plinth review: cross-vendor audit (Tier ${RISK}, approval #$ac) — ${AUDIT_VENDOR}${AUDIT_MODEL:+ / $AUDIT_MODEL}..."
+    afind="$SDIR/findings-audit-$round.json"
+    # Self-contained: agentic auditor CLIs (grok/agy) would otherwise try to
+    # READ the spec/rules as tool calls. Everything is inlined; tools forbidden.
+    aprompt="You are a cold AUDIT reviewer from a DIFFERENT vendor than the primary
+reviewer. Everything you need is INLINE below. Do NOT use any tools, do NOT try
+to read files or gather more context — output your verdict directly and NOW.
+Apply the reviewer Verdict policy: open blocker/major findings in PROJECT code
+block; findings in version-pinned tooling are UPSTREAM (non-blocking). Catch
+what the primary reviewer systematically misses.
+Output ONLY a JSON object (no prose, no markdown fences):
+{\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
 
-DIFF:
+=== CANONICAL SPEC (${SPEC_PATH}) ===
+$( [ -f "$SPEC_PATH" ] && cat "$SPEC_PATH" || echo "(spec is a directory tree; not inlined)" )
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"
-    if printf '%s' "$aprompt" | codex exec -m "$AUDIT_MODEL" --sandbox read-only --json \
-         --output-schema "$SCHEMA" -o "$araw" - > "$SDIR/events-audit-$round.jsonl" 2> "$SDIR/stderr-audit-$round.log" \
-       && jq . "$araw" > "$SDIR/findings-audit-$round.json" 2>/dev/null; then
+    if run_auditor "$aprompt" "$afind"; then
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
-         ] | length' "$SDIR/findings-audit-$round.json")"
-      averd="$(jq -r '.verdict // "?"' "$SDIR/findings-audit-$round.json")"
-      jq --arg m "$AUDIT_MODEL" --arg v "$averd" --argjson b "$ablk" \
-        '. + {audit: {model: $m, verdict: $v, blocking: $b}}' "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
+         ] | length' "$afind" 2>/dev/null || echo 0)"
+      case "$ablk" in ''|*[!0-9]*) ablk=0 ;; esac
+      averd="$(jq -r '.verdict // "?"' "$afind" 2>/dev/null || echo '?')"
+      jq --arg vn "$AUDIT_VENDOR" --arg m "${AUDIT_MODEL:-default}" --arg v "$averd" --argjson b "$ablk" \
+        '. + {audit: {vendor: $vn, model: $m, verdict: $v, blocking: $b}}' "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
         && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
       if [ "$ablk" -gt 0 ]; then
-        echo "PLINTH AUDIT DISAGREEMENT: ${AUDIT_MODEL} found ${ablk} blocking project finding(s) the primary reviewer did not — see $SDIR/findings-audit-$round.json. Verdict unchanged; adjudication is the human's."
+        echo "PLINTH AUDIT DISAGREEMENT: cross-vendor ${AUDIT_VENDOR} found ${ablk} blocking project finding(s) the primary reviewer did not — see $afind. Verdict unchanged; a different isolated model flagged it; adjudicate."
       else
-        echo "Plinth review: audit concurs (${averd}, 0 blocking)."
+        echo "Plinth review: cross-vendor audit concurs (${averd}, 0 blocking)."
       fi
     else
-      echo "Plinth review: audit round failed (non-fatal) — see $SDIR/stderr-audit-$round.log"
+      echo "Plinth review: cross-vendor audit failed (non-fatal) — is '${AUDIT_VENDOR}' signed in? see $SDIR/*.raw"
     fi
   fi
 fi

@@ -47,6 +47,16 @@ pen, not a human).
   - Tier-2 path triggers broadened (security synonyms: access/policy/identity/
     sso/mfa/csrf/cors/cert/tls/…; ORM/model schema; API routes/controllers/
     *.graphql; more dependency ecosystems; CI/build files).
+- NEW cross-vendor auditor adapters: the Tier-2 second opinion can now run on a
+  GENUINELY DIFFERENT VENDOR, not just a different OpenAI model — closing the
+  reviewer-collusion risk (the reviewer is otherwise a sibling of the driver).
+  `audit_vendor = codex|grok|agy` selects a subscription-authenticated CLI
+  (OpenAI / xAI Grok Build / Google Antigravity) — all no-per-use-cost, same
+  pattern as codex. Agentic auditor CLIs are driven with a self-contained,
+  tools-forbidden prompt (spec + diff inlined) so they answer directly; an
+  unparseable audit FAILS LOUD (never a silent concur). Verified end-to-end
+  with real grok: it independently caught 3 blocking findings a passing primary
+  reviewer missed and recorded the disagreement in verdict.audit.
 - NOT yet done — the one gap all three flagged and confirmed: `diff_digest` is
   recorded but not VERIFIED at merge (TOCTOU: approve a benign diff, swap the
   payload before merge). The digest is forensic-only until a CI job recomputes
