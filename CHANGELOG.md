@@ -17,14 +17,22 @@ pen, not a human).
     Conservative: unknown → Tier 1; Tier 0 only when EVERY file is inert.
   - Implements the panel's "loosen hides in the test diff" catch mechanically:
     a test whose diff removes more assertions than it adds is floored to Tier 2.
-- review.sh routes depth by tier and records `risk` + a `diff_digest` (sha256 of
-  the reviewed diff) in verdict.json, binding the verdict to the exact diff it
-  reviewed — groundwork for CI-side verdict verification (a later increment).
-- `.plinth/config` gains `tier2_extra` (project paths that must always get full
-  review). Classifier + config are agent-immutable.
-- NOT yet done (follow-ups): reviewer tiering by model (P2, cheap model for
-  Tier 1); CI-side recompute-and-verify of tier+digest at merge; cross-vendor
-  review wiring for Tier 2.
+- review.sh routes depth AND treatment by tier, recording `risk` + a
+  `diff_digest` (sha256 of the reviewed diff) in verdict.json:
+  - **Tier 1** (ordinary code): may use a cheaper reviewer model
+    (`reviewer_model_tier1`), and a resumed APPROVED binds directly — the
+    clean-slate confirmation round is SKIPPED (faster iterative convergence;
+    the digest binds it). No cross-vendor audit.
+  - **Tier 2** (high-consequence): the frontier model
+    (`reviewer_model_tier2`), ALWAYS a clean-slate confirmation, and a
+    cross-vendor second opinion on EVERY approval when `audit_model` is set
+    (a different-vendor model, not just every 5th) — the reviewer-collusion
+    fix. No human in this path; a different isolated model is the authority.
+- `.plinth/config` gains `tier2_extra`, `reviewer_model_tier1/tier2`. Classifier
+  + config are agent-immutable; per-tier model routing (P2) is now real.
+- NOT yet done (follow-ups): CI-side recompute-and-verify of tier+digest at
+  merge (closes local forgery); reviewer_model defaults ship unset (opt-in
+  until the user picks cheap/frontier models).
 
 ## v4.1.9 — July 7, 2026
 - watch + queue: [BLOCKING] items are sorted to the TOP of the human list

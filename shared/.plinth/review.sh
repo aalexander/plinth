@@ -121,6 +121,19 @@ if [ "$RISK" = "0" ]; then
   exit 0
 fi
 
+# ── Tier 1 vs Tier 2 treatment ──────────────────────────────────────────────
+# Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed
+#   APPROVED binds directly (skip the clean-slate confirmation) — faster
+#   iterative convergence, acceptable for ordinary code with a bound digest.
+# Tier 2 (high-consequence): the frontier reviewer, ALWAYS a clean-slate
+#   confirmation, and a cross-vendor second opinion every time audit_model is set
+#   (not just every 5th). Config knobs reviewer_model_tier1/tier2 select models;
+#   unset => whatever ~/.codex/config.toml runs (no behavioral change).
+MODEL_ARGS=()
+if [ "$RISK" = "2" ]; then tmodel="$(cfg reviewer_model_tier2 || true)"
+else tmodel="$(cfg reviewer_model_tier1 || true)"; fi
+if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel"; fi
+
 # Round bookkeeping. A CHANGES_NEEDED verdict with a live session continues the
 # thread (fix-verification round); anything else starts a fresh task.
 mode="fresh"; round=1; sid=""
@@ -266,8 +279,8 @@ ${inc}${evidence}${commits}"
       echo "Plinth review: resume of the reviewer session failed ($(tail -1 "$errlog" 2>/dev/null | cut -c1-100)) — falling back."
       return 1
     fi
-  else  # fresh and verify both start a new session
-    printf '%s' "$prompt" | codex exec --sandbox read-only --json \
+  else  # fresh and verify both start a new session (per-tier model if configured)
+    printf '%s' "$prompt" | codex exec ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --sandbox read-only --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
       || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   fi
@@ -336,10 +349,12 @@ case "$mode" in
 esac
 
 # A warm (resume) or delta-scoped (verify) approval only says "my findings were
-# addressed". Bind APPROVED via a clean-slate full pass so neither continuity
-# nor a narrow view can soften the adversarial read.
-if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ]; then
-  echo "Plinth review: round ${round} findings resolved — running clean-slate confirmation review..."
+# addressed". For TIER 2, bind APPROVED via a clean-slate full pass so neither
+# continuity nor a narrow view can soften the adversarial read. TIER 1 (ordinary
+# code) binds a resumed approval directly — the digest binds it and the speed of
+# iterative convergence is worth more than the second full read here.
+if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ] && [ "$RISK" = "2" ]; then
+  echo "Plinth review: Tier 2 — round ${round} findings resolved; running clean-slate confirmation review..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
 fi
@@ -358,14 +373,17 @@ if [ -n "$nonblocking" ]; then
   printf '%s\n' "$nonblocking"
 fi
 
-# Reviewer error bar: every 5th binding approval gets a cold cross-model audit
-# (config: audit_model). Disagreement is reported, never adjudicated here.
+# Reviewer error bar (cross-vendor second opinion, config: audit_model). Fires
+# on EVERY Tier 2 approval (high-consequence -> always a second, different-model
+# adversary), and on every 5th approval otherwise. Disagreement is reported,
+# never adjudicated here — a different, isolated model is the authority, not a
+# human.
 if [ -n "$AUDIT_MODEL" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count
-  if [ $((ac % 5)) -eq 0 ]; then
-    echo "Plinth review: cross-model audit due (approval #$ac) — cold audit by ${AUDIT_MODEL}..."
+  if [ "$RISK" = "2" ] || [ $((ac % 5)) -eq 0 ]; then
+    echo "Plinth review: cross-vendor audit (Tier ${RISK}, approval #$ac) — cold audit by ${AUDIT_MODEL}..."
     araw="$SDIR/raw-audit-$round.json"
     aprompt="You are a cold AUDIT reviewer (a different model from the primary). Follow
 AGENTS.md and .plinth/AGENTS-project.md, including the Verdict policy. Review
