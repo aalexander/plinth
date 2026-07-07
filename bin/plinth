@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.0.2 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.0.3 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -93,6 +93,11 @@ github_preflight() {
   if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$target" init -b main >/dev/null 2>&1 || git -C "$target" init >/dev/null 2>&1
     echo "  git:           initialized repository — Plinth's review, gates, and dashboard were inert without it"
+  fi
+  if ! git -C "$target" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    echo "  git:           NO COMMITS yet — commit the scaffold + spec BEFORE starting a"
+    echo "                 driver. Verdicts and gates bind to commits; on an unborn branch"
+    echo "                 the review loop cannot run."
   fi
   command -v gh >/dev/null 2>&1 || { echo "  github:        gh CLI not found — install it to verify/create the remote and check protection"; return 0; }
   gh auth status >/dev/null 2>&1 || { echo "  github:        gh not authenticated (run: gh auth login) — skipping remote/protection checks"; return 0; }
@@ -213,7 +218,7 @@ render_frame() {
   transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' "$EV" 2>/dev/null)"
   [ -f "$transcript" ] || transcript=/dev/null
   head="$(git -C "$target" rev-parse --short HEAD 2>/dev/null || echo '-')"
-  branch="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+  branch="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo '-')"
   slug="$(printf '%s' "$branch" | tr '/ ' '--')"
   local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
@@ -380,7 +385,7 @@ run_smoke() {
   [ "${1:-}" = "--" ] && shift
   [ $# -ge 1 ] || usage
   local br rslug rdir ts log start end rc=0
-  br="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+  br="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
   rslug="$(printf '%s' "$br" | tr '/ ' '--')"
   rdir="$target/.plinth/session/run/$rslug"
   mkdir -p "$rdir"
@@ -417,7 +422,7 @@ statusline_render() {
   local head vfile
   head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
   local sslug nh=""
-  sslug="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/ ' '--')"
+  sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
   vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
   [ -s "$dir/.plinth/NEEDS-HUMAN.md" ] && nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
@@ -460,7 +465,7 @@ watch_project() {
   if [ "$opt" = "--once" ]; then render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
   local wslug VD
-  wslug="$(git -C "$target" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/ ' '--')"
+  wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
   VD="$target/.plinth/session/review/${wslug:-detached}/verdict.json"
   # mtime+size stamp, BSD then GNU stat.
   fstamp() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }

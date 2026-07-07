@@ -64,6 +64,9 @@ approved; use your judgment. Every subagent you spawn is subject to the same gua
 hooks and gates.
 
 ## Review before PR (required)
+Work on a feature branch — never commit directly to the base branch. The Stop
+gate deliberately does not guard base branches (it logs and releases), and the
+PR needs a branch to exist. Branch first, then build.
 When the work is complete: commit, then run `./.plinth/review.sh` (allow up to 10
 minutes). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =

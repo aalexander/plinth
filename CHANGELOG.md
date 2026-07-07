@@ -1,5 +1,37 @@
 # Plinth changelog
 
+## v4.0.3 — July 7, 2026
+Docs/template only — nothing propagates via `plinth update`; no pin changes.
+- MANUAL: "Kicking off the driver" — what to actually say once SPEC.md
+  exists (scoped start / full run / continuation), what good first minutes
+  look like, what NOT to do (paste the spec, micro-instruct, answer design
+  questions the spec already answers), and session hygiene (fresh session
+  per slice beats a compacted 20-hour resume).
+- MANUAL: "Precedence" — the known conflicts between plinth rules and the
+  driver's harness defaults / personal globals. The sharpest one is real
+  and load-bearing: the harness default is "commit only when asked," while
+  the loop REQUIRES unprompted commits (verdicts bind to SHAs; the Stop
+  gate demands APPROVED-at-HEAD) — a driver obeying the default deadlocks.
+- templates/CLAUDE.md (and appended to existing projects' CLAUDE.md, which
+  is created-once): an explicit Precedence section instructing drivers that
+  plinth rules override defaults and personal/global preferences — commit
+  without being asked, evidence over brevity, and declare (never silently
+  blend) any conflict with personal instructions.
+- NEW RULE (plinth-rules.md, found by the certeus bootstrap): work on a
+  feature branch, never commit directly to base — the gate deliberately
+  doesn't guard base branches and the PR needs a branch. This was always
+  assumed, never stated; anvil's driver did it by taste.
+- FIX unborn-branch rendering (certeus, zero commits): `git rev-parse
+  --abbrev-ref HEAD` prints "HEAD" AND fails on an unborn branch, so
+  `|| echo` fallbacks produced two-line branch strings across watch,
+  statusline, smoke, review.sh, and the gate. All six capture sites now use
+  `git symbolic-ref --short -q HEAD`. Preflight also warns loudly when a
+  repo has no commits: commit the scaffold BEFORE starting a driver.
+- MANUAL: kickoff section restores the Rule 1→4 plan-approval beat (plan
+  approved once, then autonomy); new section on the deliberate stops
+  (irreversibles) and the two operator chores (triage `## Noticed`; demand
+  Rule 8 checkpoints from lost sessions).
+
 ## v4.0.2 — July 7, 2026
 - Security fixes from the first manual Codex security review (run via CLI
   against anvil PR #1):

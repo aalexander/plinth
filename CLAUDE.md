@@ -15,3 +15,16 @@ the pinned previous release judging your work: never edit them; they refresh
 only via the release flow. Every `shared/` or `bin/` change needs a CHANGELOG
 entry and VERSION bump. Work on branches — the Stop gate and review loop apply
 here like any project.
+
+## Precedence — these rules override defaults
+Where this file or the plinth rules conflict with harness defaults, output
+styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
+you must apply without being asked:
+- COMMIT your work on feature branches as part of the loop — do not wait for
+  permission. Verdicts bind to commit SHAs and the Stop gate requires an
+  APPROVED review at HEAD; a driver that waits to be asked deadlocks itself.
+  (Opening the PR follows review; pushing follows the rules, not impulse.)
+- Rule 10 evidence — pasted runner output — overrides any brevity or style
+  preference, always.
+- If a personal or global instruction conflicts with the plinth rules, follow
+  the plinth rules and SAY you did; never silently blend the two.

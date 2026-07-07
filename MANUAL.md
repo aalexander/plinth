@@ -65,6 +65,84 @@ Everything between is the model's call.
    below. From then on the merge gate is real. Until you've SEEN both fire,
    treat them as absent.
 
+## Kicking off the driver — you have SPEC.md; now what?
+Claude Code loads CLAUDE.md automatically, and CLAUDE.md pulls in the plinth
+rules and points at the spec — the driver knows the whole contract before your
+first word. Your kickoff prompt only selects the work:
+
+- **Scoped start (recommended):** "Implement R1–R4 from SPEC.md." Small slices
+  keep review rounds cheap and PRs reviewable.
+- **Full run:** "Work through SPEC.md top to bottom; stop at anything
+  irreversible." Fine for small specs; expect a long session.
+- **Continuation:** "Continue: R5–R7." State the next goal, nothing more —
+  verdict and gate state live on disk, so the driver needs no recap.
+
+Planning happens twice, at different altitudes — don't conflate them:
+- **WHAT to build** was planned in Claude.ai and frozen into SPEC.md before
+  any driver session. The driver never re-litigates it.
+- **HOW to build this slice** is planned by the driver, in-session, and
+  approved by you ONCE before code. That is Rule 1 and Rule 4's boundary:
+  "loop until verified" explicitly applies only *after the plan is approved*.
+
+First minutes, what good looks like: it reads the spec and project notes,
+then — Rule 1 — states its assumptions and a brief plan of attack (often via
+plan mode) and waits for your approval. That approval is the one built-in
+check-in. After your nod, Rule 4 governs: it loops until verified without
+asking permission per step. Two failure modes, two citations: starts coding
+without ever showing a plan → cite Rule 1; keeps asking permission after the
+plan was approved → cite Rule 4.
+
+Don't: paste the spec into the prompt (it reads the file); micro-instruct
+after approving the plan (shape the work AT the approval, not during the
+loop); answer design questions it should resolve against the spec — redirect
+it there instead.
+
+Session hygiene: prefer a fresh session per requirement slice over resuming a
+compacted 20-hour one. The dashboard's model line and compaction counter tell
+you when a long session has degraded — fresh is cheaper than drift.
+
+## Precedence — plinth rules vs the driver's built-in defaults
+Claude Code ships behavioral defaults, and your personal globals
+(~/.claude/CLAUDE.md, output styles, saved memories) apply to every session —
+including drivers. Some of these conflict with the loop; the project CLAUDE.md
+declares that plinth rules win, but know the friction points:
+
+- **Committing.** Harness default: commit only when asked. Plinth REQUIRES
+  unprompted commits on feature branches — verdicts bind to SHAs, the Stop
+  gate demands APPROVED-at-HEAD. Expect commits you didn't ask for; that is
+  the loop working. (PRs and pushes remain scripted by the rules.)
+- **Brevity vs evidence.** Default styles favor concision; Rule 10 requires
+  pasted runner output. Evidence wins — expect verbose check output.
+- **Autonomy vs check-ins.** Defaults ask "should I…?" mid-task; Rule 4 says
+  loop until verified once success criteria are agreed. Driver keeps asking →
+  cite Rule 4. Driver never surfaces uncertainty → cite Rule 1.
+- **Personal globals and memories.** If a driver behaves oddly — refuses to
+  commit, over-summarizes, skips checkpoints — check what your global
+  CLAUDE.md and saved memories inject. Models blend conflicting instructions
+  imperfectly; keep personal rules minimal on plinth projects and run drivers
+  in the default output style.
+
+## What the driver stops for anyway — and your two standing chores
+The no-wait philosophy has deliberate exceptions. The driver MUST still stop
+for irreversibles: new dependencies, auth/crypto/secrets, database migrations,
+data deletion, public API changes (and ratifying a GOAL.md is always yours).
+These stops are rule-mandated, not timidity — answer them quickly rather than
+training the driver out of asking. (Anvil's driver asking approval to add
+`ruff` was this rule working.) Everything else lands in NEEDS-HUMAN and keeps
+moving.
+
+Two operator chores the rules generate:
+- **Triage `## Noticed`** (in the spec): review minors and the driver's
+  drive-by observations accumulate there instead of blocking. Sweep it when
+  you plan the next spec update — it is your backlog inbox, and ignoring it
+  silently forever defeats the reason minors don't block.
+- **Demand a checkpoint when a session looks lost** (Rule 8): "restate where
+  you are — done, verified, remaining." A driver that can't answer crisply
+  should be restarted on a fresh session; on long tasks it also keeps a
+  progress file precisely so a restart is cheap. The first commands of a
+  fresh slice should include a feature branch (rule) — a driver committing
+  to main is misbehaving unless you're bootstrapping the repo itself.
+
 ## Daily loop — what you do, and what happens underneath
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.

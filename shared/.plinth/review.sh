@@ -79,7 +79,7 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
 HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|^AGENTS\.md$'
 
-branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"
 SDIR=".plinth/session/review/${slug}"
 RECEIPT=".plinth/session/run/${slug}/receipt.json"
