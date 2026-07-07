@@ -17,12 +17,20 @@ set -euo pipefail
 base="${1:-main}"
 
 cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
-TIER2_EXTRA="$(cfg tier2_extra || true)"
-SPEC_PATH="$(cfg spec_path || true)"; [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
+TIER2_EXTRA="$(cfg tier2_extra || true)"   # working-tree ok: can only ADD Tier 2
 
 if git rev-parse --verify --quiet "origin/${base}" >/dev/null 2>&1; then baseref="origin/${base}"
 elif git rev-parse --verify --quiet "${base}" >/dev/null 2>&1; then baseref="${base}"
 else printf '{"tier":1,"reasons":["base ref not found; defaulting Tier 1"],"files":0,"base_ref":"%s"}\n' "$base"; exit 0; fi
+
+# spec_path is read from the BASE config, not the working tree: repointing
+# spec_path in the same PR must not downgrade that PR's own spec edits. The
+# canonical spec paths are ALWAYS Tier 2 regardless of config (defense in depth).
+SPEC_PATH="$(git show "${baseref}:.plinth/config" 2>/dev/null | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
+SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
+is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -Eq "$SPECRE"; }
 
 raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
 [ -n "$raw" ] || { printf '{"tier":0,"reasons":["empty diff"],"files":0,"base_ref":"%s"}\n' "$baseref"; exit 0; }
@@ -65,15 +73,18 @@ while IFS=$'\t' read -r meta p2 p3; do
   case "$newmode" in
     120000) bump 2; add_reason "symlink: $path"; continue ;;
     160000) bump 2; add_reason "submodule: $path"; continue ;;
-    100755) bump 1; add_reason "executable: $path" ;;   # not continue: still check path
   esac
+  # Any execute bit (owner/group/other) disqualifies Tier 0 — a "docs" name with
+  # an exec bit is not inert. Last 3 mode digits are the perms; odd = exec bit.
+  case "${newmode: -3}" in *[1357]*) bump 1; add_reason "executable: $path" ;; esac
   [ "$status" = "T" ] && { bump 1; add_reason "type change: $path"; }
 
   # Renames/copies: the OLD path matters too — moving a test or sensitive file
   # out of its tree must not launder it into an inert destination.
   if [ -n "$oldpath" ]; then
     if is_test "$oldpath" && ! is_test "$path"; then bump 2; add_reason "test moved out of test tree: $oldpath -> $path"; continue; fi
-    if printf '%s' "$oldpath" | grep -Eiq "$SECURITY|$MIGRATION"; then bump 2; add_reason "sensitive source moved: $oldpath -> $path"; continue; fi
+    if is_spec "$oldpath"; then bump 2; add_reason "spec moved: $oldpath -> $path"; continue; fi
+    if printf '%s' "$oldpath" | grep -Eiq "$SECURITY|$MIGRATION|$TOOLING|$BUILD"; then bump 2; add_reason "sensitive/tooling source moved: $oldpath -> $path"; continue; fi
     # Renaming real content (non-doc source) into an inert destination is the
     # "relabel code as docs" bypass — it can never be Tier 0. Floor to Tier 1,
     # then let the destination-path rules escalate further if they match.
@@ -81,9 +92,9 @@ while IFS=$'\t' read -r meta p2 p3; do
   fi
 
   # Tier 2 — high-consequence surfaces (case-insensitive; tier is the max).
-  if printf '%s' "$path" | grep -Eq "$TOOLING"; then bump 2; add_reason "tooling: $path"; continue; fi
+  if printf '%s' "$path" | grep -Eiq "$TOOLING"; then bump 2; add_reason "tooling: $path"; continue; fi
   if printf '%s' "$path" | grep -Eq "$BUILD"; then bump 2; add_reason "build system: $path"; continue; fi
-  if [ "$path" = "$SPEC_PATH" ] || [ "${path#"$SPEC_PATH"/}" != "$path" ]; then bump 2; add_reason "spec: $path"; continue; fi
+  if is_spec "$path"; then bump 2; add_reason "spec: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$SECURITY"; then bump 2; add_reason "security-sensitive: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$MIGRATION"; then bump 2; add_reason "migration/schema: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$PUBAPI"; then bump 2; add_reason "public API/schema: $path"; continue; fi
