@@ -34,11 +34,14 @@ jobs:
       - id: decide
         run: |
           set -euo pipefail
+          # Read ONLY the BASE branch config — never the PR checkout. The smoke
+          # job itself reads the base config, so a PR that adds smoke_cmd must NOT
+          # be able to make precheck request the self-hosted runner (which would
+          # re-queue forever in a repo without one, and no-op anyway).
           base="${GITHUB_BASE_REF:-main}"
           git fetch --depth 1 origin "$base" 2>/dev/null || true
           cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
                  | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
-          [ -n "$cmd" ] || cmd="$(sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' .plinth/config 2>/dev/null | head -1)"
           if [ -n "$cmd" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "smoke_cmd is set — dispatching the self-hosted smoke job."

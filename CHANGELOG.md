@@ -6,8 +6,11 @@
   requested. Previously the self-hosted `smoke` job was queued unconditionally,
   so a repo with no `plinth-smoke` runner (and/or no smoke_cmd) left the job
   `queued` forever — blocking PR merges. With the gate, no-smoke_cmd repos skip
-  the self-hosted job entirely (green no-op, no runner needed). Found in the
-  field: certeus PRs hung 2h+ on a queued smoke with no runner and no smoke_cmd.
+  the self-hosted job entirely (green no-op, no runner needed). The precheck
+  reads ONLY the base config (never the PR checkout), so a PR cannot add
+  smoke_cmd to re-trigger the self-hosted job (which reads base and would no-op
+  anyway). Found in the field: certeus PRs hung 2h+ on a queued smoke with no
+  runner and no smoke_cmd.
   NOTE: smoke.yml is a per-project file (never overwritten by update) — existing
   projects must copy the new template in.
 
