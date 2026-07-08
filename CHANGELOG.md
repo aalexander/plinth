@@ -32,9 +32,15 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   directory-tree specs so a tools-forbidden auditor applies mandatory blocking
   policy; MANUAL.md rewritten to describe the tiered model (Tier 0 floor-approved,
   Tier 1 warm-binds, Tier 2 clean-slate + cross-vendor); and the classifier
-  canary now exercises 11 bypass
+  canary now exercises 12 bypass
   classes (deps, security, symlink, build, spec, tier2_extra, executable,
   skip/delete/weaken tests, submodule, rename-to-doc, type-change).
+- More dogfood fixes: the codex CLI is required only for a model round, so a
+  Tier-0 docs approval genuinely needs no model infrastructure (verified: Tier-0
+  approves with codex off PATH, Tier-1 still fails loud); BUILD classification is
+  case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
+  update`'s protected-paths backfill is documented as the one managed exception
+  to "update never touches your per-project files."
 - DEFERRED (removed before merge): a CI review-receipt verifier that would
   recompute tier+digest at merge to close a hypothesized approve-then-swap
   TOCTOU. Built, but it generated every dogfood-review finding (a gate deadlock,

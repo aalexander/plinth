@@ -36,7 +36,9 @@ die_infra() {
   die "$@"
 }
 
-command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
+# NB: the codex CLI is required only for a model round (Tier 1/2); the check is
+# deferred to just before the first round so a Tier-0 (deterministic-floor)
+# approval genuinely needs no model infrastructure.
 command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
@@ -154,6 +156,9 @@ if [ "$RISK" = "0" ]; then
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
 fi
+
+# Past here a model round WILL run (Tier 1/2) — now the codex CLI is required.
+command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
 
 # ── Tier 1 vs Tier 2 treatment ──────────────────────────────────────────────
 # Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed

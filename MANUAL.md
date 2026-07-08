@@ -26,8 +26,10 @@ Everything between is the model's call.
 - `plinth init ~/Dev/<repo>`    — scaffold a project (templates once + shared pinned),
   git-init if needed, offer GitHub repo creation, probe branch protection
 - `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth,
-  backfill per-project files new to this version (never touches yours), re-run
-  the GitHub preflight; review the diff, then commit
+  backfill per-project files new to this version (never touches yours, with ONE
+  managed exception: it appends any missing Plinth-managed security patterns to
+  `.plinth/protected-paths`, since those must propagate — your own added lines
+  are left intact), re-run the GitHub preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below

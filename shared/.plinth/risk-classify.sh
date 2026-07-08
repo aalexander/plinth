@@ -90,7 +90,7 @@ while IFS=$'\t' read -r meta p2 p3; do
 
   # Tier 2 — high-consequence surfaces (case-insensitive; tier is the max).
   if printf '%s' "$path" | grep -Eiq "$TOOLING"; then bump 2; add_reason "tooling: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eq "$BUILD"; then bump 2; add_reason "build system: $path"; continue; fi
+  if printf '%s' "$path" | grep -Eiq "$BUILD"; then bump 2; add_reason "build system: $path"; continue; fi
   if is_spec "$path"; then bump 2; add_reason "spec: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$SECURITY"; then bump 2; add_reason "security-sensitive: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$MIGRATION"; then bump 2; add_reason "migration/schema: $path"; continue; fi
