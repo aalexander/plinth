@@ -246,10 +246,18 @@ copy_templates_if_absent() {
         -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
         -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned by plinth init from this checkout)|g"
     else
+      # Fail LOUD, never silently-stale: if we can't resolve the release commit,
+      # replace the shipped fallback SHA with an UNPINNED sentinel so CI errors on
+      # the unresolved ref until the operator pins it — rather than quietly running
+      # a prior release's floor/checks. BRE-portable sed (backref, no alternation).
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|\(plinth-floor\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|\(plinth-checks\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# UNPINNED — set to your Plinth release commit SHA|g"
       echo "  ci.yml:        WARNING — could not resolve the Plinth commit SHA (PLINTH_ROOT is not a"
-      echo "                 git checkout?). The reusable-workflow refs keep the shipped FALLBACK"
-      echo "                 release, which lags this Plinth version — pin them to this version's"
-      echo "                 commit SHA before relying on CI."
+      echo "                 git checkout?). Left the reusable-workflow refs UNPINNED"
+      echo "                 (PIN_TO_YOUR_PLINTH_RELEASE_COMMIT) so CI fails loudly until you set"
+      echo "                 them to this Plinth version's commit SHA — no silently-stale floor."
     fi
   fi
 }
