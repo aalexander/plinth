@@ -1,6 +1,13 @@
 # Plinth changelog
 
 ## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
+- review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
+  `~/.codex/config.toml` was absent**. The REVIEWER_MODEL sed read exits non-zero on
+  a missing config, and under `set -o pipefail` that aborted the whole review —
+  BEFORE the Tier-0 gate, which needs no codex config at all. Real users have codex
+  configured so never hit it; a fresh CI/non-codex environment did. Added `|| true`
+  (absent → falls back to "codex"). Canary now asserts a Tier-0 review approves with
+  no codex config present.
 - plinth-canary.yml now runs on `pull_request` too, so the ~30 regression probes
   (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
   init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only

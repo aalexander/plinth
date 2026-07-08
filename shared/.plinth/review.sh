@@ -76,7 +76,10 @@ cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | 
 # Reviewer model (for the dashboard): whatever codex actually runs — the model
 # line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
 # alongside the driver model without reading the user's codex config.
-REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1)"
+# `|| true`: sed exits non-zero when the config is ABSENT, and under
+# `set -o pipefail` that would abort the whole review here — before the Tier-0
+# gate, which needs no codex config at all. Absent/unset just falls back to "codex".
+REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 || true)"
 [ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
 SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(cfg exec_gated || true)"
