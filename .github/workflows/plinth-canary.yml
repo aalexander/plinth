@@ -148,6 +148,31 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # Unknown audit_vendor (a config typo) must be recorded UNAVAILABLE, never
+          # silently fall through to codex — the primary reviewer's OWN vendor, which
+          # would be a false cross-vendor guarantee. With the bug the codex auditor
+          # APPROVES, so this reads APPROVED instead of UNAVAILABLE.
+          git checkout -q main; git checkout -qB audbogus main >/dev/null 2>&1
+          sed -i 's/^audit_vendor = .*/audit_vendor = zzznotreal/' .plinth/config
+          echo "vendor typo probe" >> SPEC.md; git add -A; git commit -qm audbogus >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
+          [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
+          # The resume/verify prompt's binding note must match the tier: Tier 2 gets
+          # a clean-slate confirmation before binding; Tier 1 binds directly. Run the
+          # REAL helper extracted from source (not a copied predicate).
+          BN="$(sed -n '/^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          bash -c "$BN; bind_note 2" | grep -qi 'clean-slate' || { echo "::error::bind_note Tier 2 must promise a clean-slate confirmation before binding"; exit 1; }
+          bash -c "$BN; bind_note 1" | grep -qi 'binds directly' || { echo "::error::bind_note Tier 1 must tell the reviewer its verdict binds directly"; exit 1; }
+          # The dashboard must show an UNAVAILABLE audit distinctly, never as
+          # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
+          AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"
+          [ -n "$AUDEXPR" ] || { echo "::error::dashboard audit-badge (UNAVAILABLE handling) not found in bin/plinth"; exit 1; }
+          badge() { jq -rn --argjson V "{\"audit\":$1}" "def R:\"\"; def RD:\"\"; def D:\"\"; def YE:\"\"; $AUDEXPR"; }
+          badge '{"verdict":"UNAVAILABLE","blocking":0}' | grep -qi 'audit unavailable' || { echo "::error::UNAVAILABLE audit not shown distinctly on the dashboard"; exit 1; }
+          badge '{"verdict":"UNAVAILABLE","blocking":0}' | grep -q 'audit ✓' && { echo "::error::UNAVAILABLE audit rendered as 'audit ✓'"; exit 1; } || true
+          badge '{"verdict":"APPROVED","blocking":0}'    | grep -q 'audit ✓' || { echo "::error::concurring audit not shown as 'audit ✓'"; exit 1; }
+          badge '{"verdict":"CHANGES_NEEDED","blocking":2}' | grep -q 'DISAGREES (2)' || { echo "::error::disagreeing audit not shown as AUDIT DISAGREES"; exit 1; }
           # Smoke no-hang WIRING: the shipped template must gate the self-hosted
           # job behind a github-hosted precheck (assert the actual structure, not
           # a copied predicate — so removing the wiring fails the canary).

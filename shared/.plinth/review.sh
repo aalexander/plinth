@@ -106,9 +106,15 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
     agy|gemini)
       agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
       perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
-    codex|*)
+    codex)
       printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
         --output-schema "$SCHEMA" -o "${out}.j" - > /dev/null 2>&1 || return 1 ;;
+    *)
+      # Unknown vendor (a config typo like audit_vendor=gork). Do NOT fall
+      # through to codex: that would silently run the SAME vendor as the primary
+      # reviewer and record it under the bogus name — a false cross-vendor
+      # guarantee AND a fail-open. Fail so the caller records it UNAVAILABLE.
+      return 1 ;;
   esac
   jq . "${out}.j" > "$out" 2>/dev/null || return 1
   # Fail loud, not open: an unparseable/incomplete audit must NOT be treated as
@@ -230,6 +236,19 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
 fi
 
+# The stakes a resumed/verify APPROVED carries depend on the risk tier, and the
+# reviewer must be told the truth so it doesn't relax rigor expecting a later
+# pass that won't come. Tier 2 always gets an independent clean-slate confirmation
+# before binding (see the post-round block); Tier 1 binds a resumed/verify verdict
+# directly. Pure fn of the tier -> testable in isolation.
+bind_note() {  # bind_note <risk-tier>
+  if [ "${1:-}" = "2" ]; then
+    printf '%s' "This is a Tier-2 change: if everything blocking is resolved, a separate clean-slate full review still confirms before anything binds."
+  else
+    printf '%s' "This is a Tier-1 (ordinary-code) change: your verdict BINDS DIRECTLY — there is NO separate clean-slate confirmation pass, so apply full first-pass rigor now."
+  fi
+}
+
 # Runs one review round. Sets RVERDICT/RSID; writes the round's protocol files.
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
@@ -285,8 +304,7 @@ previous round, (2) the INCREMENTAL diff from the commit that round reviewed
    evidence in the incremental diff, not the driver's claim.
 2) Review the incremental diff itself with first-pass rigor; new findings status
    \"open\".
-This round is verification only — if everything blocking is resolved, a separate
-clean-slate full review will confirm before anything binds.
+$(bind_note "$RISK")
 
 PRIOR FINDINGS:
 ${prior}
@@ -307,8 +325,7 @@ diff in this conversation.
    or \"open\" — resolved requires evidence in the changes, not the driver's claim.
 2) Review the new changes below with the same rigor as a first pass; report new
    findings with status \"open\".
-Verdict is APPROVED only if no finding remains open. (A clean-slate full review
-still confirms before approval binds.)
+Verdict is APPROVED only if no finding remains open. $(bind_note "$RISK")
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
@@ -483,7 +500,7 @@ $(git diff "${baseref}...HEAD")"
       # no-bottleneck axiom forbids. The primary review remains the gate.
       jq --arg vn "$AUDIT_VENDOR" '. + {audit: {vendor: $vn, verdict: "UNAVAILABLE", blocking: 0}}' \
         "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
-      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' signed in? see $SDIR/*.raw"
+      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' a supported vendor (codex|grok|agy) and signed in? see $SDIR/*.raw"
     fi
   fi
 fi

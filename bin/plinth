@@ -464,7 +464,7 @@ render_frame() {
          + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end)
          + (($us | map(.usage.input_tokens // 0) | add // 0) as $rtot
             | if $rtot > 0 then D + " · Σ " + ($rtot | hum_k) + " in" + R else "" end)
-         + (if $V.audit then (if ($V.audit.blocking // 0) > 0 then RD + " · AUDIT DISAGREES (\($V.audit.blocking))" + R else D + " · audit ✓" + R end) else "" end))
+         + (if $V.audit then (if ($V.audit.verdict // "") == "UNAVAILABLE" then YE + " · audit unavailable" + R elif ($V.audit.blocking // 0) > 0 then RD + " · AUDIT DISAGREES (\($V.audit.blocking))" + R else D + " · audit ✓" + R end) else "" end))
        end) as $review
     | (if ($rc | length) == 0 then D + "no run receipt — RUNTIME findings await plinth smoke" + R
        else ($rc[0]) as $R

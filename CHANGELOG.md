@@ -1,5 +1,26 @@
 # Plinth changelog
 
+## v4.2 (continued) — audit/tier review-integrity fixes — July 8, 2026
+Surfaced by the clean-slate confirmation reviewing this branch:
+- review.sh: an unknown `audit_vendor` (a config typo like `gork`) no longer
+  silently falls through to codex. Falling through ran the SAME vendor as the
+  primary reviewer and recorded it under the bogus name — a false cross-vendor
+  guarantee AND a fail-open. `run_auditor` now returns nonzero for any vendor
+  outside {codex, grok, agy}, so the audit is recorded UNAVAILABLE (non-blocking,
+  primary review still stands) and the message names the misconfiguration.
+- review.sh: the resume/verify reviewer prompts no longer tell the reviewer that a
+  clean-slate full review will confirm before its approval binds — that is true
+  only for Tier 2. Tier 1 binds a resumed/verify approval DIRECTLY, so a new
+  `bind_note()` tells the reviewer the truth per tier ("your verdict BINDS
+  DIRECTLY … apply full first-pass rigor now" for Tier 1), closing a rigor gap for
+  ordinary-code fixes.
+- plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
+  blocking==0 matched the concur branch). The dashboard now shows "audit
+  unavailable" distinctly, so a failed auditor is not mistaken for a passing one.
+- Canary: three regression probes — unknown `audit_vendor` => UNAVAILABLE (not a
+  codex fallthrough); `bind_note` wording per tier; and the dashboard audit badge's
+  three-way discrimination (unavailable / ✓ / DISAGREES).
+
 ## v4.2 (continued) — explicit driver model routing — July 7, 2026
 - MODELS.md + MANUAL.md: the DRIVER now gets the same explicit routing the reviewer
   already had. A task-shape → risk-tier → model table replaces the stale two-phase
