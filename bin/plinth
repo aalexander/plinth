@@ -150,6 +150,34 @@ github_preflight() {
 
 # settings.json is per-project (never overwritten), so new hook wiring cannot
 # propagate silently. Warn when the shared hooks exist but aren't wired.
+# protected-paths is per-project (never overwritten), so security-critical
+# patterns plinth ships in newer versions do not reach upgraded projects on
+# their own. Append any missing plinth-managed patterns (idempotent); user-added
+# lines are left untouched.
+ensure_protected_paths() {
+  local f="$target/.plinth/protected-paths"; [ -f "$f" ] || return 0
+  local added=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -qxF "$line" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
+  done <<'PATTERNS'
+(^|/)\.plinth/session/
+(^|/)\.plinth/config$
+(^|/)\.claude/hooks/
+(^|/)\.claude/settings\.json$
+(^|/)\.plinth/review\.sh$
+(^|/)\.plinth/risk-classify\.sh$
+(^|/)\.plinth/review-schema\.json$
+(^|/)\.plinth/plinth-rules\.md$
+(^|/)\.plinth/MODELS\.md$
+(^|/)\.plinth/protected-paths$
+(^|/)\.plinth/review-receipt\.json$
+(^|/)AGENTS\.md$
+PATTERNS
+  [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
+  return 0
+}
+
 warn_missing_gate_wiring() {
   if ! grep -q 'review-gate.sh' "$target/.claude/settings.json" 2>/dev/null; then
     echo "NOTE: .claude/settings.json (yours, never overwritten) lacks the review-gate"
@@ -648,6 +676,7 @@ case "$cmd" in
     old="$(cat "$target/.plinth-version")"
     copy_templates_if_absent
     copy_shared
+    ensure_protected_paths
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"

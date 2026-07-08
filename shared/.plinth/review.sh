@@ -372,8 +372,8 @@ ${inc}${evidence}${commits}"
      ] | length' \
     "$SDIR/findings-$r.json")"
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
-      .plinth/review.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md \
-      .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
+      .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \
+      .plinth/MODELS.md .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
   RRAW="$RVERDICT"
   if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
     RVERDICT="CHANGES_NEEDED"

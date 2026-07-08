@@ -28,7 +28,7 @@ jobs:
       - name: Syntax-check every shipped script
         run: |
           set -euo pipefail
-          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh bin/plinth; do bash -n "$f"; done
+          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh shared/.plinth/risk-classify.sh bin/plinth; do bash -n "$f"; done
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -42,4 +42,11 @@ jobs:
           echo dirty > f.txt
           rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
           [ "$rc" -eq 2 ] || { echo "::error::review.sh dirty-tree path exited $rc (want 2)"; exit 1; }
-          echo "canary: scaffold + fail-loud paths OK"
+          # Risk classifier smoke: docs => Tier 0, code => Tier 1, tooling => Tier 2.
+          git checkout -q main
+          git checkout -qb t0 && echo "# doc" > R.md && git add -A && git commit -qm d
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "0" ] || { echo "::error::classifier: docs not Tier 0"; exit 1; }
+          git checkout -q main
+          git checkout -qb t2 && mkdir -p .claude/hooks && echo x > .claude/hooks/z.sh && git add -A && git commit -qm t
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: tooling not Tier 2"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers OK"

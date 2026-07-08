@@ -22,6 +22,9 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          # Defensive: this check is meaningful only on a PR (needs a base_ref).
+          # On push/other events, skip rather than diff against an empty base.
+          if [ -z "${BASE_REF:-}" ]; then echo "No base_ref (not a PR event) — skipping receipt verification."; exit 0; fi
           receipt=.plinth/review-receipt.json
           base="origin/${BASE_REF:-main}"
           git rev-parse --verify --quiet "$base" >/dev/null || base="${BASE_REF:-main}"
