@@ -22,8 +22,19 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
   the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional
   fast tier1 reviewer; agy/Gemini kept as a third option (refuses adversarial
-  framing, so audit-only). New projects default to audit_vendor=grok +
-  verify_sample_rate=10.
+  framing, so audit-only). New projects default to audit_vendor=grok; plinth
+  update reminds upgraded projects to add it.
+- Hardening from the dogfood-review loop (plinth reviewing its own risk-routing
+  change — 14 rounds, every finding real): classifier now fails CLOSED (a
+  non-empty diff that processes 0 files emits Tier 2, never Tier 0; switched off
+  the here-string that could fail on temp-file creation); the cross-vendor audit
+  prompt inlines the reviewer rules (AGENTS.md + AGENTS-project.md) and
+  directory-tree specs so a tools-forbidden auditor applies mandatory blocking
+  policy; the Stop gate accepts nothing it didn't review; MANUAL.md rewritten to
+  describe the tiered model (Tier 0 floor-approved, Tier 1 warm-binds, Tier 2
+  clean-slate + cross-vendor); and the classifier canary now exercises 11 bypass
+  classes (deps, security, symlink, build, spec, tier2_extra, executable,
+  skip/delete/weaken tests, submodule, rename-to-doc, type-change).
 - DEFERRED (removed before merge): a CI review-receipt verifier that would
   recompute tier+digest at merge to close a hypothesized approve-then-swap
   TOCTOU. Built, but it generated every dogfood-review finding (a gate deadlock,
