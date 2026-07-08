@@ -232,6 +232,17 @@ copy_templates_if_absent() {
     else
       echo "  created:       .github/workflows/ci.yml — WARNING: owner undetected, edit OWNER manually"
     fi
+    # Pin the reusable-workflow refs to the SHA of the Plinth release being
+    # installed (immutable — no mutable tag to trust or suppress). If HEAD can't be
+    # resolved (odd checkout), the shipped release SHA stays. BRE-portable sed
+    # (no alternation) so it works with macOS BSD sed too.
+    psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "$psha" ]; then
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|plinth-floor\.yml@[0-9a-f]*|plinth-floor.yml@${psha}|g" \
+        -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned by plinth init from this checkout)|g"
+    fi
   fi
 }
 

@@ -8,10 +8,12 @@ APPROVED, so it ships as v4.2.1. Reusable-workflow references:
   (`./.github/workflows/...`) instead of an external release tag — a PR is gated by
   the floor/checks in that PR (was pinned to the stale v4.0.1 floor), and there is
   no external mutable ref to pin or suppress.
-- The template still references Plinth by RELEASE TAG (downstream can't use a local
-  ref); the comment is now honest — reusable refs CAN be SHA-pinned and projects
-  SHOULD for max hardening, but a template can't hardcode its own release's SHA, so
-  it ships a tag (nosemgrep only on those lines).
+- The template now pins Plinth's reusable workflows by IMMUTABLE COMMIT SHA (no
+  mutable tag, no `nosemgrep` anywhere): the shipped file carries the latest release
+  SHA, and `plinth init` repins it to the exact Plinth checkout it installed from
+  (alongside the existing OWNER substitution). This closes the reviewer's finding
+  that the old tag+suppression shipped mutable-tag trust to every new project —
+  downstream now gets an immutable SHA their own floor scans clean.
 
 Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
