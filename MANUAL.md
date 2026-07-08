@@ -10,16 +10,18 @@ models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
 
-## Current models (July 3, 2026 — see .plinth/MODELS.md, updated via `plinth update`)
-- Driver through July 7: **Fable 5** (included on Max up to 50% of weekly limits;
-  spend the window on the heaviest long-context work; it burns limits faster than
-  Opus and its new classifier occasionally falls back to Opus 4.8 on coding).
-- Driver from July 8: **Opus 4.8** default. Fable 5 becomes usage-credits-only with
-  NO automatic fallback — if you'll rely on it at all, enable credits with a
-  monthly cap now as insurance. Anthropic intends to restore it to plans later.
-- Mechanical tier: **Sonnet 5** for refactors, test fixes, dep bumps.
-- Reviewer: **GPT-5.5** (one line in `~/.codex/config.toml`). GPT-5.6 is out only
-  to ~20 gov-approved orgs; evaluate when it reaches Codex GA (mid-July earliest).
+## Current models (July 2026 — see .plinth/MODELS.md, updated via `plinth update`)
+- **Driver: Opus 4.8** default, routed to the work for speed and efficiency —
+  **Sonnet 5** for mechanical/doc changes (they land Tier 0–1), Opus at high effort
+  for high-consequence work (Tier 2), **Fable 5 by exception** on usage credits for
+  the heaviest long-context tasks (no automatic fallback — enable credits with a
+  monthly cap first). This is the driver's own speed/cost call: GUIDANCE, not a gate.
+- **Reviewer: GPT-5.5** (one line in `~/.codex/config.toml`), risk-tiered, with
+  **grok** (xAI) as the default Tier-2 cross-vendor second opinion. GPT-5.6 is
+  gov-only for now; evaluate when it reaches Codex GA (mid-July earliest).
+- The reviewer's risk tier is the immutable adversarial gate; the driver's model is
+  not. The driver's only lever over review cost is tier hygiene — keep low-risk work
+  in its own change so it takes the cheap path, don't bundle it into a Tier-2 diff.
 - Orchestration: `/effort` -> `ultracode` for substantive tasks.
 
 ## Commands

@@ -1,5 +1,24 @@
 # Plinth changelog
 
+## v4.2 (continued) — explicit driver model routing — July 7, 2026
+- MODELS.md + MANUAL.md: the DRIVER now gets the same explicit routing the reviewer
+  already had. A task-shape → risk-tier → model table replaces the stale two-phase
+  "Fable through July 7 / Opus from July 8" prose (that window closes tomorrow):
+  Sonnet 5 for mechanical/doc work (Tier 0–1), Opus 4.8 default (Tier 1), Opus at
+  high effort or Fable 5 by exception for high-consequence work (Tier 2). The point
+  is speed and efficiency — don't drive a doc tweak on Opus, don't drive a security
+  change on Sonnet.
+- Named the asymmetry the design rests on: driver-model choice is a self-interested
+  speed/cost decision with NO adversarial stakes (the CI floor + cross-model review
+  catch bad work whoever wrote it), so it is GUIDANCE, not a gate — deliberately the
+  opposite of the reviewer's risk tier, which is immutable precisely because it IS
+  the adversarial gate. That is why driver routing stays doc guidance and is not a
+  new knob or script: a driver-writable model gate would be worthless anyway.
+- Made explicit the driver's one real lever over review COST: tier hygiene. A single
+  Tier-2 signal drags the whole diff onto the deep clean-slate + cross-vendor path,
+  so low-risk work belongs in its own commit/PR. The driver never picks the reviewer
+  — the diff does — and that is the only "direction over the reviewer" it has.
+
 ## v4.2 — smoke no-hang fix — July 8, 2026
 - smoke.yml: a github-hosted `precheck` job now decides whether there is anything
   to smoke (smoke_cmd set in the base config) BEFORE any self-hosted runner is
