@@ -21,11 +21,15 @@ permissions:
   security-events: write
 
 jobs:
+  # These call Plinth's reusable workflows by RELEASE TAG (@v<VERSION>) — that IS
+  # the version-propagation mechanism (plinth update rewrites the tag), so they
+  # cannot be SHA-pinned. nosemgrep the mutable-action-tag rule on THESE lines
+  # only; it stays active for every third-party action a project adds.
   floor:
-    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@v4.0.1
+    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@v4.0.1 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
 
   checks:
-    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@v4.0.1
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@v4.0.1 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest

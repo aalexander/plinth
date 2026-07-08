@@ -55,7 +55,11 @@ SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|per
 MIGRATION='(migrat|/schema\.|\.sql$|alembic|/prisma/|liquibase|flyway|db_.*update|alter_.*table|/models?\.py$|/entities/)'
 PUBAPI='(openapi|swagger|asyncapi|\.proto$|\.graphql$|\.gql$|schema\.(graphql|json)$|(^|/)api/|(^|/)(routes?|controllers?|handlers?|endpoints?)[./])'
 DEPS='(^|/)(requirements[^/]*\.(txt|in|lock)|.*requirements[^/]*\.txt|constraints[^/]*\.txt|package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile(\.lock)?|uv\.lock|poetry\.lock|pyproject\.toml|Cargo\.(toml|lock)|go\.(mod|sum|work)|Gemfile(\.lock)?|composer\.(json|lock)|environment\.yml|conda-lock\.yml|mix\.(exs|lock)|Podfile(\.lock)?|Package\.resolved|vcpkg\.json|conanfile\.(txt|py)|gradle\.lockfile|bun\.lockb?)$'
-TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_'
+# Path is test-surface if it's under a test dir, has a test suffix/prefix, OR is a
+# test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*/…): modifying that
+# config can disable/skip/narrow the suite, the same weakening the tier escalates.
+# (tox.ini, setup.cfg, pyproject.toml are already Tier 2 via BUILD/DEPS.)
+TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_|(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypress|karma|wdio|mocha|ava|jasmine)\.(config|conf)\.[^/]+$|(^|/)\.(mocharc|nycrc)'
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.

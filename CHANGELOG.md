@@ -8,12 +8,21 @@ here hitting a live PR first:
   git allowed it). The fixture now sets a `git config --global user.email/name`
   before scaffolding. Verified locally: the full fail-loud fixture (plinth init +
   the bad-base and dirty-tree review.sh paths -> exit 2) runs green.
-- plinth-floor.yml (semgrep SAST): `p/security-audit` on `semgrep:latest` began
-  enforcing `github-actions-mutable-action-tag` (10 blocking findings). Plinth's
-  version-propagation design REQUIRES `@v<VERSION>` tag refs for its own reusable
-  workflows (that IS the release mechanism, so those can't be SHA-pinned), making
-  the rule fundamentally incompatible; excluded it via `--exclude-rule` with the
-  canary as the compensating control that monitors action-tag drift on schedule.
+- semgrep SAST: `p/security-audit` on `semgrep:latest` began enforcing
+  `github-actions-mutable-action-tag` (10 blocking). Fixed the RIGHT way (a first
+  cut disabled the rule in the reusable floor — which would have suppressed it for
+  every DOWNSTREAM project too; reverted): SHA-pinned all third-party actions
+  (checkout/upload-artifact/gitleaks/osv-scanner, with `# vX` comments) across the
+  repo and templates, and `# nosemgrep`'d only the first-party reusable-workflow
+  refs (`ci.yml -> plinth-floor.yml@vX`) that genuinely can't be SHA-pinned (the
+  `@v<VERSION>` ref IS the release mechanism `plinth update` rewrites). The rule
+  stays active for every third-party action and every downstream project.
+- risk-classify.sh: test-RUNNER CONFIG files (`pytest.ini`, `conftest.py`,
+  `jest.config.*`, `vitest.config.*`, `.mocharc`, …) now count as test surface, so
+  MODIFYING one (which can disable/skip/narrow the suite) takes the Tier-2
+  weakened-test path instead of routing as ordinary Tier-1 code. (`tox.ini`,
+  `setup.cfg`, `pyproject.toml` were already Tier 2 via BUILD/DEPS.) Canary probe
+  added.
 
 
 Surfaced by the clean-slate confirmation reviewing this branch:

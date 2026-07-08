@@ -24,7 +24,7 @@ jobs:
   scaffold:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Syntax-check every shipped script
         run: |
           set -euo pipefail
@@ -97,6 +97,14 @@ jobs:
           git checkout -qB addonly main >/dev/null 2>&1; printf '    return  # early-out weakening\n' >> tests/core_test.py; git add -A; git commit -qm addonly >/dev/null
           git diff main...addonly -- tests/core_test.py | grep -Eq '^-[^-]' && { echo "::error::addition-only probe setup actually removed a line"; exit 1; } || true
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: addition-only existing-test change != Tier 2"; exit 1; }
+          # A test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*) is test
+          # surface: modifying it can disable/skip the suite => Tier 2 (a new one
+          # added is additive => Tier 1).
+          git checkout -q main; printf '[pytest]\ntestpaths = tests\n' > pytest.ini; printf 'module.exports={testMatch:["**/*.test.js"]}\n' > jest.config.js; git add -A; git commit -qm "test config baseline" >/dev/null
+          git checkout -qB tcfg main >/dev/null 2>&1; printf '[pytest]\naddopts = --ignore=tests/security\n' > pytest.ini; git add -A; git commit -qm tcfg >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified pytest.ini (test-runner config) != Tier 2"; exit 1; }
+          git checkout -qB tcfg2 main >/dev/null 2>&1; printf 'module.exports={testMatch:[]}\n' > jest.config.js; git add -A; git commit -qm tcfg2 >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified jest.config.js (test-runner config) != Tier 2"; exit 1; }
           # A modified BINARY test baseline (snapshot/golden) has no textual '-' line
           # but is still a weakening surface => Tier 2. A NEW binary test stays Tier 1.
           git checkout -q main; printf '\000\001\002\003\004' > tests/snap.bin; git add -A; git commit -qm "binary test baseline" >/dev/null

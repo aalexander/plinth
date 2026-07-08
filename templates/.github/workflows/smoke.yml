@@ -28,7 +28,7 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       - id: decide
@@ -56,7 +56,7 @@ jobs:
     runs-on: [self-hosted, plinth-smoke]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Run smoke_cmd (execution evidence, not narration)
         run: |
           set -euo pipefail
@@ -80,7 +80,7 @@ jobs:
           fi
       - name: Upload receipt + log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: smoke-receipt
           path: |
