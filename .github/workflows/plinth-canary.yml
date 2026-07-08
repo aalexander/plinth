@@ -42,7 +42,8 @@ jobs:
           # init must SHA-pin the reusable-workflow refs (immutable, no mutable tag,
           # no scanner suppression) to the SHA of the Plinth checkout it installed.
           PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
-          grep -q "plinth-floor.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable floor ref to the plinth checkout SHA"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable FLOOR ref to the plinth checkout SHA"; exit 1; }
+          grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
           grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
