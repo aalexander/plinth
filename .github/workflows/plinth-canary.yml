@@ -130,6 +130,7 @@ jobs:
           mkdir -p /tmp/asb
           cat > /tmp/asb/codex <<'CX'
           #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/asb/codex-args
           out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
           cat >/dev/null
           [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"stub","findings":[]}' > "$out"
@@ -174,6 +175,22 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # reviewer_model_tier1/tier2 must reach the PRIMARY reviewer as `codex -m
+          # <model>` (two argv tokens) on the MATCHING tier — a collapsed "-m model"
+          # token or a wrong-tier pick would silently ship. Seed both on main so the
+          # probe diffs (ordinary code / spec) don't themselves force Tier 2.
+          git checkout -q main
+          printf 'reviewer_model_tier1 = t1model\nreviewer_model_tier2 = t2model\n' >> .plinth/config
+          git commit -qm "reviewer model config" .plinth/config >/dev/null
+          git checkout -qB rmt1 main >/dev/null 2>&1; echo "x=1" > ord.py; git add -A; git commit -qm rmt1 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/codex-args && grep -qx 't1model' /tmp/asb/codex-args \
+            || { echo "::error::reviewer_model_tier1 not passed to codex as -m t1model on a Tier-1 review (args: $(tr '\n' ' ' < /tmp/asb/codex-args 2>/dev/null))"; exit 1; }
+          grep -qx 't2model' /tmp/asb/codex-args && { echo "::error::Tier-1 review used the Tier-2 reviewer model"; exit 1; } || true
+          git checkout -qB rmt2 main >/dev/null 2>&1; echo "req" >> SPEC.md; git add -A; git commit -qm rmt2 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/codex-args && grep -qx 't2model' /tmp/asb/codex-args \
+            || { echo "::error::reviewer_model_tier2 not passed to codex as -m t2model on a Tier-2 review (args: $(tr '\n' ' ' < /tmp/asb/codex-args 2>/dev/null))"; exit 1; }
           # Unknown audit_vendor (a config typo) must be recorded UNAVAILABLE, never
           # silently fall through to codex — the primary reviewer's OWN vendor, which
           # would be a false cross-vendor guarantee. With the bug the codex auditor
@@ -206,6 +223,16 @@ jobs:
           bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main bogus"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
           bash -c "$RP; resumable_prev CHANGES_NEEDED '' main main fresh"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
           bash -c "$RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          # The tools-forbidden auditor must inline the WHOLE canonical spec tree
+          # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
+          # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.
+          IS="$(sed -n '/^inline_spec() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          STD="$(mktemp -d)"; mkdir -p "$STD/spec"
+          printf 'req-in-yaml\n' > "$STD/spec/reqs.yaml"; printf '# md-req\n' > "$STD/spec/a.md"; printf 'BINblob\000\001\002' > "$STD/spec/img.png"
+          SPECOUT="$(cd "$STD" && SPEC_PATH=spec bash -c "$IS"'; inline_spec')"
+          printf '%s' "$SPECOUT" | grep -q 'req-in-yaml' || { echo "::error::inline_spec dropped a non-.md (yaml) spec file — incomplete auditor spec"; exit 1; }
+          printf '%s' "$SPECOUT" | grep -q 'md-req'      || { echo "::error::inline_spec dropped an .md spec file"; exit 1; }
+          printf '%s' "$SPECOUT" | grep -q 'BINblob'     && { echo "::error::inline_spec included a binary blob in the auditor prompt"; exit 1; } || true
           # The dashboard must show an UNAVAILABLE audit distinctly, never as
           # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
           AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"

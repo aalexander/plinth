@@ -90,6 +90,24 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # subscription-auth, no per-use cost) and writes a schema-shaped findings JSON
 # to $2. Returns nonzero on failure. grok/agy emit free-form text, so we extract
 # the JSON object; codex forces the schema directly.
+# Inline the canonical spec for the tools-forbidden auditor. A file spec is cat'd;
+# a directory-tree spec has EVERY text file inlined (any extension) so the auditor
+# judges against the WHOLE spec — MANUAL documents spec_path as a file or a tree
+# with no extension restriction, and .md/.rst/.txt-only would silently drop
+# YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
+# the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
+inline_spec() {
+  if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH"; return; fi
+  if [ -d "$SPEC_PATH" ]; then
+    find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
+      grep -Iq . "$sf" 2>/dev/null || continue
+      echo "--- $sf ---"; cat "$sf"
+    done
+    return
+  fi
+  echo "(spec path not found: ${SPEC_PATH})"
+}
+
 run_auditor() {  # run_auditor <prompt> <out-findings-json>
   local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
   printf '%s' "$prompt" > "$pf"
@@ -500,9 +518,7 @@ Output ONLY a JSON object (no prose, no markdown fences):
 $( for f in AGENTS.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
 
 === CANONICAL SPEC (${SPEC_PATH}) ===
-$( if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH";
-   elif [ -d "$SPEC_PATH" ]; then find "$SPEC_PATH" -type f \( -name '*.md' -o -name '*.rst' -o -name '*.txt' \) | sort | while IFS= read -r sf; do echo "--- $sf ---"; cat "$sf"; done;
-   else echo "(spec path not found: ${SPEC_PATH})"; fi )
+$(inline_spec)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"

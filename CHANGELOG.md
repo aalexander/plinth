@@ -46,9 +46,20 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   suffixes — deleting or modifying a `test_*.py` outside a `tests/` dir was
   slipping through as ordinary Tier-1 code instead of the required Tier-2
   weakened/deleted-test path.
+- review.sh: the cross-vendor auditor now inlines the WHOLE canonical spec tree
+  (new `inline_spec`): a directory-tree spec had only `.md`/`.rst`/`.txt` files
+  inlined, so a project whose spec tree includes YAML/JSON/other files gave the
+  tools-forbidden auditor an INCOMPLETE spec — a false cross-vendor guarantee. Now
+  every text file in the tree is inlined (binaries skipped); a file spec is
+  unchanged.
 - plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
   blocking==0 matched the concur branch). The dashboard now shows "audit
   unavailable" distinctly, so a failed auditor is not mistaken for a passing one.
+- Canary: added the previously-missing `reviewer_model_tier1/tier2` regression
+  test — asserts the primary reviewer receives `codex -m <model>` as two argv
+  tokens on the MATCHING tier (Tier 1 uses tier1's model, Tier 2 uses tier2's),
+  the same argv-collapse class the audit_model probe guards. Also an `inline_spec`
+  unit probe (non-.md spec file inlined, binary skipped).
 - Canary: regression probes for every fix above — unknown `audit_vendor` =>
   UNAVAILABLE (not a codex fallthrough); the full `binds_directly`/`bind_note`
   mode×tier matrix (incl. Tier-1 verify must NOT bind); invalid `tier2_extra` =>
