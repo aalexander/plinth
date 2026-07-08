@@ -49,4 +49,22 @@ jobs:
           [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
           [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
           [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers OK"
+          # Security-critical bypass cases (the classifier decides whether review
+          # is skipped, so these must not sneak into Tier 0/1):
+          [ "$(tier 'echo requests==1 > requirements.txt')" = "2" ] || { echo "::error::classifier: deps manifest != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p src; echo x > src/auth_login.py')" = "2" ] || { echo "::error::classifier: security path != Tier 2"; exit 1; }
+          [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
+          # Rename + test-weakening bypasses need the base file to exist ON MAIN
+          # (else the change reads as an added file from main's view). Seed main:
+          git checkout -q main; mkdir -p src tests
+          echo "secret=1" > src/logic.py
+          printf 'def test_a():\n    assert f() == 1\n    assert g() == 2\n' > tests/core_test.py
+          git add -A; git commit -qm "base files for bypass tests" >/dev/null
+          # Real code renamed to a .md destination must NOT be Tier 0.
+          git checkout -qB rn main >/dev/null 2>&1; git mv src/logic.py notes.md; git commit -qm rename >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" != "0" ] || { echo "::error::classifier: code renamed to .md is Tier 0 (bypass)"; exit 1; }
+          # Removing assertions from an existing test => Tier 2.
+          git checkout -qB tw main >/dev/null 2>&1
+          printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened test != Tier 2"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass cases OK"

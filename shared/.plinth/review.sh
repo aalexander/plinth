@@ -148,10 +148,14 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # deliberately NOT sampled: it already gets a full adversarial review, so
 # escalating it is redundant overhead on the common path.
 # verify_sample_rate = percent (default 10; 0 disables). DEPTH drives review
-# depth; RISK stays the deterministic value recorded in the verdict.
+# depth; RISK stays the deterministic value recorded in the verdict. The sample
+# decision is DETERMINISTIC per commit SHA (not re-rolled each run), so a sampled
+# change cannot be re-run at the same SHA until it escapes the sample — it is
+# sampled or not for that SHA, unpredictably but stably.
 DEPTH="$RISK"; verify_sample=0
 VERIFY_RATE="$(cfg verify_sample_rate || true)"; case "$VERIFY_RATE" in ''|*[!0-9]*) VERIFY_RATE=10 ;; esac
-if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" = "0" ] && [ $((RANDOM % 100)) -lt "$VERIFY_RATE" ]; then
+sroll=$(printf '%s' "$sha" | cksum | cut -d' ' -f1); sroll=$((sroll % 100))
+if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" = "0" ] && [ "$sroll" -lt "$VERIFY_RATE" ]; then
   verify_sample=1; DEPTH=2
   echo "Plinth review: TRUST-BUT-VERIFY sample — this Tier 0 change gets a full review despite skipping by tier."
 fi
@@ -468,7 +472,17 @@ $(git diff "${baseref}...HEAD")"
         echo "Plinth review: cross-vendor audit concurs (${averd}, 0 blocking)."
       fi
     else
-      echo "Plinth review: cross-vendor audit failed (non-fatal) — is '${AUDIT_VENDOR}' signed in? see $SDIR/*.raw"
+      # The audit is best-effort defense-in-depth ON TOP of a COMPLETED full
+      # primary review (the Tier-2 gate that already approved) — not a second
+      # gate. run_auditor never false-concurs (it returns error rather than
+      # treating an unparseable/empty audit as agreement), so this branch means
+      # the audit could not RUN, not that it concurred. We record that it was
+      # unavailable (no silent omission) but do NOT block: a hard dependency on a
+      # second vendor's availability would be exactly the tool bottleneck the
+      # no-bottleneck axiom forbids. The primary review remains the gate.
+      jq --arg vn "$AUDIT_VENDOR" '. + {audit: {vendor: $vn, verdict: "UNAVAILABLE", blocking: 0}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' signed in? see $SDIR/*.raw"
     fi
   fi
 fi

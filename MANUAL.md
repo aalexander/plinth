@@ -2,8 +2,10 @@
 
 ## What Plinth is
 A subscription-funded, multi-model dev environment: a frontier Claude model drives,
-Codex/GPT-5.5 adversarially reviews, and a deterministic CI floor (tests + scanners,
-plus Codex cloud review once connected — security-briefed via AGENTS.md) gates every merge. The name is the design:
+Codex/GPT-5.5 adversarially reviews (risk-tiered — inert docs are approved by the
+deterministic floor, code and high-consequence changes get the model), and a
+deterministic CI floor (tests + scanners, plus Codex cloud review once connected —
+security-briefed via AGENTS.md) gates every merge. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -173,15 +175,31 @@ Two operator chores the rules generate:
    answering; red guard-blocks mean the base deflected something.
 4. **The model:** commits, then runs `./.plinth/review.sh`.
    *Background:* the script refuses to run on uncommitted work (verdicts bind
-   to a commit SHA), diffs the branch against main, and sends the diff to the
-   second model (Codex) with the reviewer rules in AGENTS.md. The verdict comes
-   back as machine-readable JSON in `.plinth/session/review/` — APPROVED or
-   CHANGES_NEEDED with file:line findings. Exit code 0 = approved, 1 = fix
-   findings (the model fixes, commits, re-runs; re-review rounds reuse the same
-   reviewer session with just the incremental diff, and fall back to a fresh
+   to a commit SHA), diffs the branch against main, and classifies the diff into
+   a **risk tier** (deterministic, version-pinned, not driver-writable). The tier
+   routes review DEPTH:
+   - **Tier 0** — inert docs/text only: APPROVED by the deterministic floor with
+     NO model round (the CI floor scanners still run at PR). This is the one case
+     where model review is skipped, and only because the classifier proved every
+     changed file is an inert doc blob; any code, tooling, or spec would have
+     bumped the tier. A random, unpredictable sample of Tier 0 changes gets a
+     full review anyway (trust-but-verify).
+   - **Tier 1** — ordinary code: standard adversarial review by the second model
+     (Codex) with the reviewer rules in AGENTS.md. A resumed/verify approval
+     binds directly — iterative convergence speed is worth more than a second
+     full read for ordinary code.
+   - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
+     public API, dependencies, weakened tests): full review, approval binds only
+     through a clean-slate full pass (a warm reviewer can't approve its own
+     checklist), plus a best-effort cross-vendor second opinion (a different
+     vendor than the primary reviewer; its failure warns but the primary review
+     remains the gate).
+   The verdict comes back as machine-readable JSON in `.plinth/session/review/`
+   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
+   1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
+   same reviewer session with just the incremental diff, and fall back to a fresh
    full review automatically if that session is too large or dead), 2 = the
-   review DID NOT RUN. Approval only ever binds through a clean-slate full
-   review — a warm reviewer can't approve its own checklist.
+   review DID NOT RUN.
    *Background, enforcement:* if the model tries to end its turn with commits
    but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
    refuses and sends it back with instructions. It cannot skip the review.
