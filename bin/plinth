@@ -676,6 +676,10 @@ case "$cmd" in
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths
+    # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
+    # configs are preserved, so remind upgraded projects (MANUAL.md points here).
+    grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null \
+      || echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. Add 'audit_vendor = grok' (or agy) to .plinth/config."
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"

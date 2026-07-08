@@ -38,8 +38,8 @@ Everything between is the model's call.
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
-  round_budget, audit_model — the config itself is agent-immutable, so these
-  are yours alone), `protected-paths` (agent-immutable files),
+  round_budget, audit_vendor/audit_model, tier2_extra — the config itself is
+  agent-immutable, so these are yours alone), `protected-paths` (agent-immutable files),
   `AGENTS-project.md` (project-specific reviewer rules). None is ever
   overwritten by `plinth update`.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
@@ -190,9 +190,11 @@ Two operator chores the rules generate:
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
-     checklist), plus a best-effort cross-vendor second opinion (a different
-     vendor than the primary reviewer; its failure warns but the primary review
-     remains the gate).
+     checklist). When a cross-vendor auditor is configured (`audit_vendor` — new
+     projects default to `grok`; an upgraded project adds the line, and `plinth
+     update` reminds you if it is unset), every Tier-2 approval also gets a
+     best-effort second opinion from that different vendor; its failure is
+     recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
@@ -261,9 +263,11 @@ guard/gate alerts. Token economics stay on `plinth watch`.
 - "NOTE — last round cost N input tokens": the budget warning. Advisory only —
   the loop continues; spend is on the dashboard (`review` line's Σ). Interrupt
   if it looks wrong; nothing waits for you.
-- "AUDIT DISAGREEMENT" after an approval: the cross-model audit (config
-  `audit_model`, every 5th approval) found blocking issues the primary
-  reviewer missed. The verdict stands; adjudication is yours.
+- "AUDIT DISAGREEMENT" after an approval: the cross-vendor audit (config
+  `audit_vendor`, on every Tier-2 approval) found blocking issues the primary
+  reviewer missed. The verdict stands; adjudication is yours. "audit UNAVAILABLE"
+  means the configured auditor couldn't run — recorded, non-blocking; the primary
+  review remains the gate.
 - "PLINTH REVIEW GATE:" when the model tries to stop: the gate working. It runs
   the review or it doesn't finish. (Anti-trap: releases after
   PLINTH_GATE_MAX_BLOCKS blocks, default 10 — and every release is a red
