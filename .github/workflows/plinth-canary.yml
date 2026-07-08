@@ -92,7 +92,9 @@ jobs:
           git checkout -qB smdel main >/dev/null 2>&1; git update-index --force-remove subdel; git commit -qm smdel >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: DELETED submodule != Tier 2 (oldmode 160000)"; exit 1; }
           # A submodule TYPE-CHANGED to a regular file (oldmode 160000, newmode 100644) stays Tier 2.
-          git checkout -q main; git checkout -qB smtc main >/dev/null 2>&1; git update-index --force-remove subdel; echo "now a file" > subdel; git add subdel; git commit -qm smtc >/dev/null
+          # checking out main (which has the subdel gitlink) leaves an empty subdel/
+          # dir on disk; remove it before writing the regular file in its place.
+          git checkout -q main; git checkout -qB smtc main >/dev/null 2>&1; git update-index --force-remove subdel; rm -rf subdel; echo "now a file" > subdel; git add subdel; git commit -qm smtc >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule type-changed to file != Tier 2 (oldmode 160000)"; exit 1; }
           # Rename, test-weakening, and test-deletion need the base file ON MAIN
           # (else the change reads as an added file from main's view). Seed main:
