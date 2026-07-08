@@ -237,8 +237,9 @@ copy_templates_if_absent() {
     fi
     # Pin the reusable-workflow refs to the SHA of the Plinth release being
     # installed (immutable — no mutable tag to trust or suppress). If HEAD can't be
-    # resolved (odd checkout), the shipped release SHA stays. BRE-portable sed
-    # (no alternation) so it works with macOS BSD sed too.
+    # resolved (non-git checkout), fail LOUD instead: the else branch rewrites the
+    # refs to an unpinned sentinel so CI errors until the operator pins them — never
+    # a silently-stale floor. BRE-portable sed (no alternation) for macOS BSD sed.
     psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
     if [ -n "$psha" ]; then
       edit_file "$target/.github/workflows/ci.yml" \

@@ -22,12 +22,12 @@ permissions:
 
 jobs:
   # These call Plinth's reusable workflows by IMMUTABLE COMMIT SHA — no mutable tag
-  # to trust, nothing to suppress. `plinth init` REPINS this to the exact commit of
-  # the Plinth checkout you install from (and updates the `# vX` comment). The SHA
-  # below is only a FALLBACK (a prior release) for when init can't resolve a commit
-  # — e.g. a non-git Plinth install; init warns loudly in that case. If you see this
-  # fallback in your repo, pin it to YOUR Plinth version's commit SHA. (`plinth
-  # update` never rewrites this per-project file.)
+  # to trust, nothing to suppress. `plinth init` ALWAYS rewrites the SHA below: to
+  # the exact commit of the Plinth checkout you install from (normal), or — if it
+  # can't resolve one (non-git install) — to an UNPINNED sentinel that fails CI
+  # loudly (never a silently-stale floor). So an init'd project never keeps the
+  # literal SHA below; it's just a valid placeholder for the shipped template.
+  # (`plinth update` never rewrites this per-project file — bump it deliberately.)
   floor:
     uses: OWNER/plinth/.github/workflows/plinth-floor.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9 (plinth init repins)
 

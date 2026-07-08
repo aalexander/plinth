@@ -73,10 +73,13 @@ here hitting a live PR first:
   contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
   matching the generic `.md` docs rule and going Tier 0 (skipping the model round
   entirely). Canary probe added.
-- bin/plinth / templates/ci.yml: the SHA-pinned reusable-ref FALLBACK is now
-  honestly documented as a prior release (not "latest"), and `plinth init` WARNS
-  loudly if it can't resolve the Plinth commit (non-git install) rather than
-  silently shipping the stale fallback floor.
+- bin/plinth / templates/ci.yml: `plinth init` ALWAYS rewrites the template's
+  reusable-ref SHA — to the exact commit of the Plinth checkout it installs from
+  (normal git install), or, if it can't resolve one (non-git install), to an
+  UNPINNED sentinel (`PIN_TO_YOUR_PLINTH_RELEASE_COMMIT`) + a loud warning so CI
+  fails until the operator pins it. Never a silently-stale floor. The literal SHA
+  in the shipped template is just a valid placeholder; an init'd project never
+  keeps it. Comments in both files match this behavior.
 
 
 Surfaced by the clean-slate confirmation reviewing this branch:
