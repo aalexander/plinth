@@ -95,6 +95,11 @@ jobs:
           # checking out main (which has the subdel gitlink) leaves an empty subdel/
           # dir on disk; remove it before writing the regular file in its place.
           git checkout -q main; git checkout -qB smtc main >/dev/null 2>&1; git update-index --force-remove subdel; rm -rf subdel; echo "now a file" > subdel; git add subdel; git commit -qm smtc >/dev/null
+          # Remove the seeded gitlink from main so later probes branch from a clean
+          # tree: an uninitialized submodule gitlink reads as a DIRTY tree in newer
+          # git (2.54+), which would make review.sh (dirty-tree guard) exit 2 on the
+          # Tier-0 probe below. Clear the on-disk dir too.
+          git checkout -q main; git update-index --force-remove subdel 2>/dev/null || true; rm -rf subdel; git commit -qm "drop submodule seed" >/dev/null 2>&1 || true
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule type-changed to file != Tier 2 (oldmode 160000)"; exit 1; }
           # Rename, test-weakening, and test-deletion need the base file ON MAIN
           # (else the change reads as an added file from main's view). Seed main:
@@ -158,8 +163,8 @@ jobs:
           # with codex absent (CI runners have no codex). A Tier 1 diff still fails
           # loud at the deferred codex check when codex is absent.
           git checkout -q main; git checkout -qB t0nc main >/dev/null 2>&1; echo "docs only" > NOTES.md; git add -A; git commit -qm t0 >/dev/null
-          rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
-          [ "$rc" = "0" ] || { echo "::error::Tier-0 docs did not approve without a model round (exit $rc)"; exit 1; }
+          rc=0; ./.plinth/review.sh main >/tmp/t0nc.out 2>&1 || rc=$?
+          [ "$rc" = "0" ] || { echo "::error::Tier-0 docs did not approve without a model round (exit $rc)"; echo "--- git status ---"; git status --porcelain; echo "--- diff stat main...HEAD ---"; git diff --stat main...HEAD; echo "--- review.sh output ---"; cat /tmp/t0nc.out; exit 1; }
           if ! command -v codex >/dev/null 2>&1; then
             git checkout -q main; git checkout -qB t1nc main >/dev/null 2>&1; echo "x=1" > mod.py; git add -A; git commit -qm t1 >/dev/null
             rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
