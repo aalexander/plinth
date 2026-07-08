@@ -1,6 +1,21 @@
 # Plinth changelog
 
-## v4.2 (continued) — audit/tier review-integrity fixes — July 8, 2026
+## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
+Two floor/smoke failures that are exactly the drift the canary exists to catch,
+here hitting a live PR first:
+- smoke.yml: the fixture's `git commit` failed with "empty ident name" — fresh
+  runners set no git identity and git >= 2.54 now REFUSES an empty ident (older
+  git allowed it). The fixture now sets a `git config --global user.email/name`
+  before scaffolding. Verified locally: the full fail-loud fixture (plinth init +
+  the bad-base and dirty-tree review.sh paths -> exit 2) runs green.
+- plinth-floor.yml (semgrep SAST): `p/security-audit` on `semgrep:latest` began
+  enforcing `github-actions-mutable-action-tag` (10 blocking findings). Plinth's
+  version-propagation design REQUIRES `@v<VERSION>` tag refs for its own reusable
+  workflows (that IS the release mechanism, so those can't be SHA-pinned), making
+  the rule fundamentally incompatible; excluded it via `--exclude-rule` with the
+  canary as the compensating control that monitors action-tag drift on schedule.
+
+
 Surfaced by the clean-slate confirmation reviewing this branch:
 - review.sh: an unknown `audit_vendor` (a config typo like `gork`) no longer
   silently falls through to codex. Falling through ran the SAME vendor as the

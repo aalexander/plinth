@@ -18,6 +18,10 @@ jobs:
       - name: Scaffold fixture and exercise fail-loud paths
         run: |
           set -euo pipefail
+          # Fresh runners set no git identity, and git >= 2.54 refuses to commit
+          # with an empty ident (older git allowed it) — set one for the fixture.
+          git config --global user.email "smoke@plinth.ci"
+          git config --global user.name  "plinth smoke"
           for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh bin/plinth; do bash -n "$f"; done
           mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
           "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx

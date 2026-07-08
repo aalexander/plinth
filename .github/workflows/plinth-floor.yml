@@ -43,7 +43,14 @@ jobs:
     container: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      - run: semgrep scan --metrics=off --error --config p/owasp-top-ten --config p/security-audit .
+      # --exclude-rule github-actions-mutable-action-tag: Plinth's version-
+      # propagation design REQUIRES @v<VERSION> tag refs for its own reusable
+      # workflows (ci.yml -> plinth-floor.yml@vX) — that IS the release mechanism,
+      # so pinning them to SHAs is not possible. The rule (newly enforced by
+      # p/security-audit on semgrep:latest) is thus fundamentally incompatible with
+      # the design; the plinth CANARY is the compensating control that monitors
+      # action-tag drift/retirement on a schedule.
+      - run: semgrep scan --metrics=off --error --exclude-rule yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag --config p/owasp-top-ten --config p/security-audit .
 
   # osv v2 dropped the configurable root action; the documented usage is its
   # reusable workflow (nested reusable calls are fine: ci.yml -> floor -> osv).
