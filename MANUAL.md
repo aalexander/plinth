@@ -386,18 +386,3 @@ order when anything conflicts: deterministic floor (CI) > cross-model review >
 driver self-report — `verdict.json` and runner output are evidence; the model's
 summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
-
-## Noticed
-Minor/deferred findings surfaced by review, kept out of the change that found them.
-
-- **Template reusable-workflow refs use a release TAG + `# nosemgrep`, not a SHA**
-  (`templates/.github/workflows/ci.yml`). The dogfood reviewer flags this as
-  shipping a mutable-tag trust + a scanner suppression to every new project. This
-  is a RATIFIED DESIGN STANCE (2026-07-08, v4.2.1), not an oversight: a downstream
-  project references Plinth by `<owner>/plinth/…@v<VERSION>` (its own fork's release
-  tag), and (a) a template cannot hardcode the SHA of a release that isn't cut yet,
-  (b) at init the owner's fork/tag may not exist to resolve a SHA from, and (c)
-  trusting your own Plinth fork's release tag is inherent to adopting Plinth. The
-  rule stays fully active for every third-party action and for downstream project
-  code; only these first-party reusable-workflow lines are suppressed. Revisit if
-  `plinth init` gains reliable fork-release-SHA resolution (then SHA-pin at init).
