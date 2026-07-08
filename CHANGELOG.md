@@ -1,5 +1,27 @@
 # Plinth changelog
 
+## v4.2 (continued) — July 7, 2026
+Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
+- SPEC template + PLANNING-PROMPT (kept in sync): requirements now carry STABLE
+  IDs (REQ-<AREA>-<NN>), explicit `prereqs:` (a dependency DAG, not a linear
+  list — enables small vertical slices + safe parallel work), and a `validate:`
+  line naming unit / integration / RUNTIME-smoke / post-merge checks. "Has a
+  test" is no longer enough — the runtime-smoke question is forced, closing the
+  blindspot class that let the anvil real-run layer go unvalidated. NEW spec
+  sections: Core Invariants (near-immutable), Execution-gated surface
+  (exec_gated + smoke_cmd), High-consequence surface (tier2_extra).
+- TRUST BUT VERIFY: the tier system assumed the classifier/driver honest; now a
+  random UNPREDICTABLE `verify_sample_rate` percent (default 10) of Tier 0/1
+  changes get a full Tier-2 review anyway — catching classifier blind spots AND
+  a driver gaming the tiering, since it can't know which run is watched. The
+  receipt still records the deterministic tier so CI's recompute matches.
+- Optimal reviewer assignment across the three subscription CLIs (MODELS.md):
+  codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
+  the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional
+  fast tier1 reviewer; agy/Gemini kept as a third option (refuses adversarial
+  framing, so audit-only). New projects default to audit_vendor=grok +
+  verify_sample_rate=10.
+
 ## v4.2 — July 7, 2026
 First increment of the multi-model-panel-converged improvement plan: **risk-based
 review routing** (P1) — the top speed/efficiency win that also closes the worst

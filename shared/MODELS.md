@@ -53,6 +53,25 @@ context window — PLINTH_RESUME_MAX defaults to 650000 (~65% of GPT-5.5's
 ~65% of it (env var or wrapper); staying well under the window matters because a
 near-full thread silently auto-compacts away the original diff context.
 
+## Reviewer assignment across vendors (all subscription-authenticated, no per-use cost)
+Three reviewer CLIs are available; assign by their observed strengths:
+- **codex / GPT-5.5** — goes DEEPEST. Keep it the PRIMARY adversarial reviewer at
+  all tiers, and it does the binding clean-slate confirmation. Slower.
+- **grok / Grok Build (xAI)** — good and noticeably FASTER. Best as the Tier-2
+  CROSS-VENDOR second opinion (`audit_vendor = grok`) — a different vendor breaks
+  the reviewer-collusion risk (the primary reviewer is otherwise a sibling of the
+  driver), and speed matters for a check that fires on every Tier-2 approval.
+  Also a good `reviewer_model_tier1` when you want faster ordinary-code review.
+- **agy / Antigravity (Gemini, Google)** — CAUTION: it REFUSES adversarial
+  "find-the-bypass" framing. Fine for the review-loop audit (framed as
+  "audit your own code," which review.sh uses) but do not point red-team prompts
+  at it. Keep as a third cross-vendor option, not the primary adversary.
+
+Default config (templates/.plinth/config): `audit_vendor = grok`,
+`verify_sample_rate = 10`. Trust-but-verify (verify_sample_rate) is ON by default
+— a random tenth of low-risk changes get a full review so tier honesty is
+confirmed, not assumed. Revisit these on any model/subscription change.
+
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —
 the code is the code; the commentary is partly theater. Plinth's trust order is:
