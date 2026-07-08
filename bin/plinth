@@ -9,8 +9,11 @@
 #   plinth update <project-path>  Propagate a Plinth version to an existing project:
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
-#                                 (created only if absent — yours are never touched),
-#                                 report the version transition. Refuses to run on a
+#                                 (created only if absent). Your per-project files are
+#                                 not rewritten, with ONE managed exception:
+#                                 .plinth/protected-paths gets new plinth-managed
+#                                 security patterns appended (your lines preserved).
+#                                 Reports the version transition. Refuses to run on a
 #                                 directory that isn't already a Plinth project.
 #   plinth goal   <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
 #

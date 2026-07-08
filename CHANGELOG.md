@@ -26,6 +26,13 @@ Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - bin/plinth config doc: clarified `audit_vendor` — unset => codex (= the primary
   reviewer, so NO cross-vendor audit); init scaffolds `grok` to enable it (removes
   the "Default codex" vs scaffolded-grok confusion).
+- review.sh config-block comment: the `audit_model` line still described it as "the
+  optional second model" with "every 5th binding approval gets a cold cross-model
+  audit" — stale. Now documents `audit_vendor` (the trigger, cross-vendor only) and
+  `audit_model` as a model override.
+- bin/plinth `update` header: said per-project files are "never touched" — but
+  update DOES append managed patterns to `.plinth/protected-paths`. Documented that
+  one managed exception (your lines preserved).
 
 ## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
 Two floor/smoke failures that are exactly the drift the canary exists to catch,

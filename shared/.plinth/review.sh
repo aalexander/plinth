@@ -67,8 +67,11 @@ diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD 
 #                RUNTIME: findings on these don't block — they join the run gate
 #   round_budget advisory warning threshold for per-round input tokens
 #                (default 4000000; warns and continues — never blocks)
-#   audit_model  optional second model; every 5th binding approval gets a cold
-#                cross-model audit round (disagreement reported, not adjudicated)
+#   audit_vendor a DIFFERENT-vendor CLI for the cross-vendor second opinion; the
+#                audit runs only when audit_vendor != codex (the primary reviewer),
+#                on every Tier-2 approval (and every 5th otherwise). Disagreement
+#                reported, not adjudicated.
+#   audit_model  optional MODEL OVERRIDE for audit_vendor (not a trigger)
 cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
 # Reviewer model (for the dashboard): whatever codex actually runs — the model
 # line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
