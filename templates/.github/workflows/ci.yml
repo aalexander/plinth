@@ -21,16 +21,20 @@ permissions:
   security-events: write
 
 jobs:
-  # These call Plinth's reusable workflows by RELEASE TAG (@v<VERSION>) — the tag
-  # IS the pin to a Plinth release (set at init, bumped deliberately when you adopt
-  # a new Plinth version; `plinth update` never touches this per-project file), so
-  # it cannot be SHA-pinned. nosemgrep the mutable-action-tag rule on THESE lines
-  # only; it stays active for every third-party action a project adds.
+  # These call Plinth's reusable workflows by RELEASE TAG (@v<VERSION>). Reusable-
+  # workflow refs CAN be commit SHAs, and for MAXIMUM supply-chain hardening you
+  # SHOULD replace each @v<VERSION> with the SHA of that Plinth release commit
+  # (`# vX` comment) — the tag is the trust anchor for adopting Plinth, but a SHA
+  # is immutable. The template ships a tag because a release's own SHA isn't
+  # knowable until it's cut. nosemgrep here keeps the shipped template + a fresh
+  # project green; the mutable-action-tag rule stays active for every third-party
+  # action a project adds. `plinth update` never rewrites this per-project file, so
+  # bump the ref deliberately when adopting a new Plinth version.
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.2 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.2.1 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
 
   checks:
-    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.2 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.2.1 # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest

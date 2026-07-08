@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.2 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.2.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.

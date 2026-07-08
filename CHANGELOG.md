@@ -1,6 +1,18 @@
 # Plinth changelog
 
-## v4.2 (continued) — claim/comment accuracy — July 8, 2026
+## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
+Version bump: the v4.2 branch (below) gained substantial CI supply-chain
+hardening, classifier bypass fixes, and audit-integrity fixes after its first
+APPROVED, so it ships as v4.2.1. Reusable-workflow references:
+- The Plinth repo now calls its OWN reusable workflows by LOCAL path
+  (`./.github/workflows/...`) instead of an external release tag — a PR is gated by
+  the floor/checks in that PR (was pinned to the stale v4.0.1 floor), and there is
+  no external mutable ref to pin or suppress.
+- The template still references Plinth by RELEASE TAG (downstream can't use a local
+  ref); the comment is now honest — reusable refs CAN be SHA-pinned and projects
+  SHOULD for max hardening, but a template can't hardcode its own release's SHA, so
+  it ships a tag (nosemgrep only on those lines).
+
 Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
   audit_model is set" — false since the gate became `audit_vendor != codex`.
@@ -30,13 +42,11 @@ here hitting a live PR first:
   their SPECIFIC release tags (checkout@v4.3.0, upload-artifact@v4.6.2,
   gitleaks@v2.3.9, osv-scanner@v2.3.8) across the repo and templates — NOT the
   moving major tag, which for actions/checkout had drifted onto v6-line code, so a
-  first pass mispinned `@v4` to a v6 commit (caught in review). `# nosemgrep`'d only
-  the first-party reusable-workflow
-  refs (`ci.yml -> plinth-floor.yml@vX`) that genuinely can't be SHA-pinned — the
-  `@v<VERSION>` ref is the pin to a Plinth release (set at init, bumped
-  deliberately when adopting a new version; `plinth update` never touches the
-  per-project ci.yml). The rule stays active for every third-party action and
-  every downstream project.
+  first pass mispinned `@v4` to a v6 commit (caught in review). First-party
+  reusable-workflow refs: the Plinth repo's own ci.yml now uses LOCAL refs (no tag
+  to pin); only the shipped TEMPLATE keeps a release-tag ref (`# nosemgrep`'d,
+  since a template can't hardcode its own release's SHA — see the v4.2.1 entry).
+  The rule stays active for every third-party action and every downstream project.
 - risk-classify.sh: test-RUNNER CONFIG files (`pytest.ini`, `conftest.py`,
   `jest.config.*`, `vitest.config.*`, `.mocharc`, …) are now their own Tier-2
   surface. Unlike a test FILE (where ADDING one is additive → Tier 1), adding a
