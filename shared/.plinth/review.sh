@@ -142,13 +142,13 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 
 # ── Trust but verify (Tier 0 only) ──────────────────────────────────────────
 # Tier 0 is the only tier that otherwise gets NO model review, so a novel
-# classifier evasion (code shipped as docs) would sail through — and the receipt
-# CI check can't catch it (it re-runs the SAME classifier, sharing its blind
-# spots). So a random, UNPREDICTABLE fraction of Tier 0 changes get a full review
-# anyway. Tier 1 is deliberately NOT sampled: it already gets a full adversarial
-# review, so escalating it is redundant overhead on the common path.
+# classifier evasion (code shipped as docs) that the deterministic classifier
+# itself missed would sail through with nothing having looked at it. So a random,
+# UNPREDICTABLE fraction of Tier 0 changes get a full review anyway. Tier 1 is
+# deliberately NOT sampled: it already gets a full adversarial review, so
+# escalating it is redundant overhead on the common path.
 # verify_sample_rate = percent (default 10; 0 disables). DEPTH drives review
-# depth; RISK stays the deterministic value in the receipt (CI recompute matches).
+# depth; RISK stays the deterministic value recorded in the verdict.
 DEPTH="$RISK"; verify_sample=0
 VERIFY_RATE="$(cfg verify_sample_rate || true)"; case "$VERIFY_RATE" in ''|*[!0-9]*) VERIFY_RATE=10 ;; esac
 if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" = "0" ] && [ $((RANDOM % 100)) -lt "$VERIFY_RATE" ]; then
@@ -400,8 +400,8 @@ esac
 # A warm (resume) or delta-scoped (verify) approval only says "my findings were
 # addressed". For TIER 2, bind APPROVED via a clean-slate full pass so neither
 # continuity nor a narrow view can soften the adversarial read. TIER 1 (ordinary
-# code) binds a resumed approval directly — the digest binds it and the speed of
-# iterative convergence is worth more than the second full read here.
+# code) accepts a resumed approval directly — the speed of iterative convergence
+# is worth more than a second full read here.
 if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ] && [ "$DEPTH" = "2" ]; then
   echo "Plinth review: Tier 2 — round ${round} findings resolved; running clean-slate confirmation review..."
   round=$((round + 1))
