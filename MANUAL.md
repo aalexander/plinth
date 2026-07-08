@@ -188,9 +188,12 @@ Two operator chores the rules generate:
      changed file is an inert doc blob; any code, tooling, or spec would have
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
-     (Codex) with the reviewer rules in AGENTS.md. A resumed/verify approval
-     binds directly — iterative convergence speed is worth more than a second
-     full read for ordinary code.
+     (Codex) with the reviewer rules in AGENTS.md. A resumed approval binds
+     directly — the warm reviewer thread still holds its first-pass full read, and
+     iterative convergence speed is worth more than a second full read for ordinary
+     code. A fallback verify (a fresh session, used when the prior thread is too
+     large to resume) saw only the prior findings plus the incremental diff, so it
+     does NOT bind on its own — like Tier 2 it gets a clean-slate confirmation first.
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
