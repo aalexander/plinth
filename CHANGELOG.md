@@ -10,11 +10,13 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   blindspot class that let the anvil real-run layer go unvalidated. NEW spec
   sections: Core Invariants (near-immutable), Execution-gated surface
   (exec_gated + smoke_cmd), High-consequence surface (tier2_extra).
-- TRUST BUT VERIFY: the tier system assumed the classifier/driver honest; now a
-  random UNPREDICTABLE `verify_sample_rate` percent (default 10) of Tier 0/1
-  changes get a full Tier-2 review anyway — catching classifier blind spots AND
-  a driver gaming the tiering, since it can't know which run is watched. The
-  receipt still records the deterministic tier so CI's recompute matches.
+- TRUST BUT VERIFY (Tier 0 only): a random UNPREDICTABLE `verify_sample_rate`
+  percent (default 10) of TIER 0 changes get a full review anyway — Tier 0 is the
+  only tier that skips model review, so this guards against a novel classifier
+  evasion the receipt CI check (same classifier) would share. Tier 1 is NOT
+  sampled: it is already fully reviewed, so escalating it was redundant overhead
+  on the common path. The receipt still records the deterministic tier so CI's
+  recompute matches.
 - Optimal reviewer assignment across the three subscription CLIs (MODELS.md):
   codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
   the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional

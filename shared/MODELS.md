@@ -68,9 +68,10 @@ Three reviewer CLIs are available; assign by their observed strengths:
   at it. Keep as a third cross-vendor option, not the primary adversary.
 
 Default config (templates/.plinth/config): `audit_vendor = grok`,
-`verify_sample_rate = 10`. Trust-but-verify (verify_sample_rate) is ON by default
-— a random tenth of low-risk changes get a full review so tier honesty is
-confirmed, not assumed. Revisit these on any model/subscription change.
+`verify_sample_rate = 10`. Trust-but-verify samples TIER 0 ONLY — the only tier
+that skips model review — so a random tenth of docs-class changes get a real
+review, guarding against a novel classifier evasion (Tier 1 is already reviewed,
+so it is not sampled). Revisit these on any model/subscription change.
 
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —

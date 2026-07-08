@@ -152,18 +152,20 @@ if [ -x ".plinth/risk-classify.sh" ]; then
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
-# ── Trust but verify ────────────────────────────────────────────────────────
-# The tier system assumes the classifier (and the driver) are honest. Confirm it:
-# a random, UNPREDICTABLE fraction of low-risk (Tier 0/1) changes get a full
-# Tier-2 review anyway. This catches classifier blind spots AND a driver gaming
-# the tiering — because it can't know which run is being watched. verify_sample_
-# rate = percent (default 10; 0 disables). DEPTH drives review depth; RISK stays
-# the deterministic value recorded in the receipt (so CI's recompute still matches).
+# ── Trust but verify (Tier 0 only) ──────────────────────────────────────────
+# Tier 0 is the only tier that otherwise gets NO model review, so a novel
+# classifier evasion (code shipped as docs) would sail through — and the receipt
+# CI check can't catch it (it re-runs the SAME classifier, sharing its blind
+# spots). So a random, UNPREDICTABLE fraction of Tier 0 changes get a full review
+# anyway. Tier 1 is deliberately NOT sampled: it already gets a full adversarial
+# review, so escalating it is redundant overhead on the common path.
+# verify_sample_rate = percent (default 10; 0 disables). DEPTH drives review
+# depth; RISK stays the deterministic value in the receipt (CI recompute matches).
 DEPTH="$RISK"; verify_sample=0
 VERIFY_RATE="$(cfg verify_sample_rate || true)"; case "$VERIFY_RATE" in ''|*[!0-9]*) VERIFY_RATE=10 ;; esac
-if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" != "2" ] && [ $((RANDOM % 100)) -lt "$VERIFY_RATE" ]; then
+if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" = "0" ] && [ $((RANDOM % 100)) -lt "$VERIFY_RATE" ]; then
   verify_sample=1; DEPTH=2
-  echo "Plinth review: TRUST-BUT-VERIFY sample — this Tier ${RISK} change gets a full Tier-2 review (+cross-vendor) despite its tier."
+  echo "Plinth review: TRUST-BUT-VERIFY sample — this Tier 0 change gets a full review despite skipping by tier."
 fi
 
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
