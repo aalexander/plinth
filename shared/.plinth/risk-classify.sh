@@ -50,7 +50,7 @@ raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
 
 # High-consequence path signals (Tier 2). Case-insensitive matching below.
 TOOLING='(^|/)\.plinth/|(^|/)\.claude/|(^|/)\.github/|(^|/)\.gitlab-ci|(^|/)\.circleci/|(^|/)\.buildkite/|(^|/)Jenkinsfile|(^|/)azure-pipelines|(^|/)AGENTS\.md$|(^|/)CLAUDE\.md$|(^|/)PLANNING-PROMPT\.md$|(^|/)\.gitattributes$|(^|/)\.gitmodules$'
-BUILD='(^|/)(Makefile|CMakeLists\.txt|Dockerfile|docker-compose[^/]*\.ya?ml|setup\.py|setup\.cfg|MANIFEST\.in|tox\.ini|build\.gradle|settings\.gradle|pom\.xml|WORKSPACE|MODULE\.bazel|BUILD\.bazel|flake\.nix)$|\.cmake$|(^|/)scripts/(release|deploy|publish)'
+BUILD='(^|/)(Makefile|CMakeLists\.txt|Dockerfile(\.[^/]+)?|Containerfile(\.[^/]+)?|docker-compose[^/]*\.ya?ml|setup\.py|setup\.cfg|MANIFEST\.in|tox\.ini|build\.gradle|settings\.gradle|pom\.xml|WORKSPACE|MODULE\.bazel|BUILD\.bazel|flake\.nix)$|\.cmake$|\.dockerfile$|(^|/)scripts/(release|deploy|publish)'
 SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|permission|rbac|acl|oauth|jwt|signing|keystore|access|policy|identity|sso|saml|mfa|totp|webauthn|csrf|cors|cookie|cert|tls|x509|guard|roles?|cipher|encrypt|decrypt|hash|nonce)'
 MIGRATION='(migrat|/schema\.|\.sql$|alembic|/prisma/|liquibase|flyway|db_.*update|alter_.*table|/models?\.py$|/entities/)'
 PUBAPI='(openapi|swagger|asyncapi|\.proto$|\.graphql$|\.gql$|schema\.(graphql|json)$|(^|/)api/|(^|/)(routes?|controllers?|handlers?|endpoints?)[./])'
@@ -77,7 +77,7 @@ while IFS=$'\t' read -r meta p2 p3; do
   [ -n "${meta:-}" ] || continue
   # meta: ":oldmode newmode oldsha newsha status"
   # shellcheck disable=SC2086
-  set -- $meta; newmode="${2:-}"; status="${5:-}"
+  set -- $meta; oldmode="${1#:}"; newmode="${2:-}"; status="${5:-}"
   case "$status" in
     R*|C*) oldpath="$p2"; path="${p3:-$p2}" ;;
     *)     oldpath=""; path="$p2" ;;
@@ -91,6 +91,9 @@ while IFS=$'\t' read -r meta p2 p3; do
     120000) bump 2; add_reason "symlink: $path"; continue ;;
     160000) bump 2; add_reason "submodule: $path"; continue ;;
   esac
+  # A submodule DELETED or type-changed to a regular file has newmode 000000/100644
+  # but OLDMODE 160000 — still dependency/supply-chain surface, so keep it Tier 2.
+  case "$oldmode" in 160000) bump 2; add_reason "submodule removed/type-changed: $path"; continue ;; esac
   # Any execute bit (owner/group/other) disqualifies Tier 0 — a "docs" name with
   # an exec bit is not inert. Last 3 mode digits are the perms; odd = exec bit.
   case "${newmode: -3}" in *[1357]*) bump 1; add_reason "executable: $path" ;; esac

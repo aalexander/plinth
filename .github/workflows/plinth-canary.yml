@@ -62,6 +62,7 @@ jobs:
           [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
           [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
           [ "$(tier 'printf "all:\n\techo hi\n" > makefile')" = "2" ] || { echo "::error::classifier: lowercase makefile != Tier 2"; exit 1; }
+          [ "$(tier 'echo FROM alpine > Dockerfile.prod')" = "2" ] || { echo "::error::classifier: Dockerfile.prod (build/deploy variant) != Tier 2"; exit 1; }
           [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
           [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
           [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
@@ -72,6 +73,10 @@ jobs:
           git checkout -q main; git checkout -qB sm >/dev/null 2>&1
           git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",subm; git commit -qm sm >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule != Tier 2"; exit 1; }
+          # A submodule DELETED (oldmode 160000, newmode 000000) must stay Tier 2.
+          git checkout -q main; git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",subdel; git commit -qm "seed submodule" >/dev/null
+          git checkout -qB smdel main >/dev/null 2>&1; git update-index --force-remove subdel; git commit -qm smdel >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: DELETED submodule != Tier 2 (oldmode 160000)"; exit 1; }
           # Rename, test-weakening, and test-deletion need the base file ON MAIN
           # (else the change reads as an added file from main's view). Seed main:
           git checkout -q main; mkdir -p src tests

@@ -28,6 +28,12 @@ here hitting a live PR first:
   a `pytest.ini` with `addopts=--ignore` narrows existing discovery — so add,
   modify, AND delete all take Tier 2. (`tox.ini`, `setup.cfg`, `pyproject.toml`
   were already Tier 2 via BUILD/DEPS.) Canary probes for modify/add/delete.
+- risk-classify.sh: two more supply-chain under-review paths closed. (1) BUILD
+  matched only an exact `Dockerfile` — now `Dockerfile.prod`/`.dev`/`.ci`,
+  `Containerfile`, and `*.dockerfile` too. (2) The submodule check read only
+  `newmode` 160000, so DELETING or type-changing a submodule out (newmode
+  000000/100644) fell to Tier 1; it now also checks `oldmode` 160000 — submodule
+  add/modify/delete/type-change all stay Tier 2. Canary probes for both.
 
 
 Surfaced by the clean-slate confirmation reviewing this branch:
