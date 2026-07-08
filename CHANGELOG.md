@@ -14,9 +14,11 @@ here hitting a live PR first:
   every DOWNSTREAM project too; reverted): SHA-pinned all third-party actions
   (checkout/upload-artifact/gitleaks/osv-scanner, with `# vX` comments) across the
   repo and templates, and `# nosemgrep`'d only the first-party reusable-workflow
-  refs (`ci.yml -> plinth-floor.yml@vX`) that genuinely can't be SHA-pinned (the
-  `@v<VERSION>` ref IS the release mechanism `plinth update` rewrites). The rule
-  stays active for every third-party action and every downstream project.
+  refs (`ci.yml -> plinth-floor.yml@vX`) that genuinely can't be SHA-pinned — the
+  `@v<VERSION>` ref is the pin to a Plinth release (set at init, bumped
+  deliberately when adopting a new version; `plinth update` never touches the
+  per-project ci.yml). The rule stays active for every third-party action and
+  every downstream project.
 - risk-classify.sh: test-RUNNER CONFIG files (`pytest.ini`, `conftest.py`,
   `jest.config.*`, `vitest.config.*`, `.mocharc`, …) are now their own Tier-2
   surface. Unlike a test FILE (where ADDING one is additive → Tier 1), adding a

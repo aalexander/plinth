@@ -102,6 +102,7 @@ while IFS=$'\t' read -r meta p2 p3; do
     if is_test "$oldpath" && ! is_test "$path"; then bump 2; add_reason "test moved out of test tree: $oldpath -> $path"; continue; fi
     if is_spec "$oldpath"; then bump 2; add_reason "spec moved: $oldpath -> $path"; continue; fi
     if printf '%s' "$oldpath" | grep -Eiq "$SECURITY|$MIGRATION|$TOOLING|$BUILD"; then bump 2; add_reason "sensitive/tooling source moved: $oldpath -> $path"; continue; fi
+    if printf '%s' "$oldpath" | grep -Eq "$TEST_CONFIG"; then bump 2; add_reason "test-runner config moved out: $oldpath -> $path"; continue; fi
     # Renaming real content (non-doc source) into an inert destination is the
     # "relabel code as docs" bypass — it can never be Tier 0. Floor to Tier 1,
     # then let the destination-path rules escalate further if they match.

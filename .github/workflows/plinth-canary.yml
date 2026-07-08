@@ -107,6 +107,8 @@ jobs:
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: NEWLY-ADDED jest.config.js != Tier 2 (a new config can narrow discovery)"; exit 1; }
           git checkout -qB tcfgdel main >/dev/null 2>&1; git rm -q pytest.ini; git commit -qm tcfgdel >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: DELETED pytest.ini != Tier 2"; exit 1; }
+          git checkout -qB tcfgmv main >/dev/null 2>&1; git mv pytest.ini NOTES.md; git commit -qm tcfgmv >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: runner config RENAMED out of place != Tier 2 (effectively a deletion)"; exit 1; }
           # A modified BINARY test baseline (snapshot/golden) has no textual '-' line
           # but is still a weakening surface => Tier 2. A NEW binary test stays Tier 1.
           git checkout -q main; printf '\000\001\002\003\004' > tests/snap.bin; git add -A; git commit -qm "binary test baseline" >/dev/null
