@@ -58,6 +58,7 @@ jobs:
           [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
           [ "$(tier 'printf "all:\n\techo hi\n" > makefile')" = "2" ] || { echo "::error::classifier: lowercase makefile != Tier 2"; exit 1; }
           [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
+          [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
           [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
           [ "$(tier 'mkdir -p vault; echo x > vault/a.md')" = "2" ] || { echo "::error::classifier: tier2_extra path != Tier 2"; exit 1; }
           [ "$(tier 'echo x > run.md; chmod +x run.md')" = "1" ] || { echo "::error::classifier: executable .md is Tier 0"; exit 1; }
@@ -158,8 +159,13 @@ jobs:
           grep -q 'runs-on: \[self-hosted, plinth-smoke\]' "$SMK" || { echo "::error::smoke.yml self-hosted smoke job missing"; exit 1; }
           # plinth update backfills managed protected-paths patterns, preserves user lines.
           PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
-          printf '(^|/)my-custom-secret\n' > "$PPFX/.plinth/protected-paths"
+          # NO trailing newline on the user's last line — this is the exact input
+          # ensure_protected_paths guards: without the guard the first managed
+          # pattern concatenates onto this line, corrupting BOTH.
+          printf '(^|/)my-custom-secret' > "$PPFX/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PPFX" >/dev/null 2>&1
           grep -q 'risk-classify' "$PPFX/.plinth/protected-paths" || { echo "::error::update did not backfill managed protected pattern"; exit 1; }
-          grep -q 'my-custom-secret' "$PPFX/.plinth/protected-paths" || { echo "::error::update dropped a user protected-paths line"; exit 1; }
+          # -x (whole line) is load-bearing: a plain substring grep would still
+          # match a corrupted "(^|/)my-custom-secret(^|/)\.plinth/session/" line.
+          grep -qxF '(^|/)my-custom-secret' "$PPFX/.plinth/protected-paths" || { echo "::error::update corrupted a no-trailing-newline user protected-paths line (newline guard regressed)"; exit 1; }
           echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths OK"

@@ -18,6 +18,13 @@
   Tier-2 signal drags the whole diff onto the deep clean-slate + cross-vendor path,
   so low-risk work belongs in its own commit/PR. The driver never picks the reviewer
   — the diff does — and that is the only "direction over the reviewer" it has.
+- Canary coverage closes (surfaced reviewing this branch): the classifier canary now
+  probes PLANNING-PROMPT.md => Tier 2 (round 29's TOOLING classification had no test,
+  so the regex could silently regress to Tier 0); and the protected-paths update test
+  now writes a user line with NO trailing newline and asserts whole-line survival
+  (`grep -qxF`), actually exercising round 29's `ensure_protected_paths` concat guard
+  — the prior test wrote a trailing newline and used a substring grep that a corrupted
+  concatenation would still satisfy.
 
 ## v4.2 — smoke no-hang fix — July 8, 2026
 - smoke.yml: a github-hosted `precheck` job now decides whether there is anything
