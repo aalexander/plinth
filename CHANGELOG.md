@@ -1,6 +1,16 @@
 # Plinth changelog
 
 ## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
+- plinth-canary.yml now runs on `pull_request` too, so the ~30 regression probes
+  (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
+  init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only
+  firing on the weekly schedule. The redundant floor job is skipped on PRs (the
+  project's own ci.yml already runs the floor there).
+- NEEDS-HUMAN: the Plinth repo should set `tier2_extra = (^|/)(shared|templates|bin)/`
+  in its agent-immutable `.plinth/config` so docs-only changes to its OWN product
+  source (e.g. shared/MODELS.md) get Tier-2 review instead of the generic .md → Tier
+  0 path. The generic classifier can't know this repo's scope inversion; only the
+  human can set the config knob. Filed in .plinth/NEEDS-HUMAN.md.
 Version bump: the v4.2 branch (below) gained substantial CI supply-chain
 hardening, classifier bypass fixes, and audit-integrity fixes after its first
 APPROVED, so it ships as v4.2.1. Reusable-workflow references:

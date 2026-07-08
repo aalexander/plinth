@@ -8,6 +8,8 @@ on:
   schedule:
     - cron: "0 14 * * 1"   # Mondays 14:00 UTC
   workflow_dispatch:
+  pull_request:
+    branches: [main]       # the scaffold probes gate merges; drift job is schedule-only
 
 permissions:
   contents: read
@@ -16,8 +18,10 @@ permissions:
   security-events: write
 
 jobs:
-  # Do all pinned floor actions still resolve and run?
+  # Do all pinned floor actions still resolve and run? Drift check — schedule/
+  # dispatch only; on a PR the project's own ci.yml already runs the floor.
   floor:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/plinth-floor.yml
 
   # Does the harness itself still scaffold and fail loud correctly?
