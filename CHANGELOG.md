@@ -9,8 +9,8 @@ APPROVED, so it ships as v4.2.1. Reusable-workflow references:
   the floor/checks in that PR (was pinned to the stale v4.0.1 floor), and there is
   no external mutable ref to pin or suppress.
 - The template now pins Plinth's reusable workflows by IMMUTABLE COMMIT SHA (no
-  mutable tag, no `nosemgrep` anywhere): the shipped file carries the latest release
-  SHA, and `plinth init` repins it to the exact Plinth checkout it installed from
+  mutable tag, no `nosemgrep` anywhere): the shipped file carries a prior-release
+  SHA as a placeholder, and `plinth init` repins it to the exact Plinth checkout it installed from
   (alongside the existing OWNER substitution). This closes the reviewer's finding
   that the old tag+suppression shipped mutable-tag trust to every new project —
   downstream now gets an immutable SHA their own floor scans clean.
@@ -33,6 +33,10 @@ Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - bin/plinth `update` header: said per-project files are "never touched" — but
   update DOES append managed patterns to `.plinth/protected-paths`. Documented that
   one managed exception (your lines preserved).
+- MODELS.md driver table: dropped "test/dep bump" from the Tier-0–1 row (deps/tests
+  are Tier 2) and added a note that model tier ≠ review tier — you may DRIVE a dep
+  bump or test edit with Sonnet, but the classifier still routes it to Tier-2
+  review (high-consequence to verify, whoever wrote it).
 
 ## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
 Two floor/smoke failures that are exactly the drift the canary exists to catch,

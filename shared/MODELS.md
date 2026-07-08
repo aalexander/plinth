@@ -16,13 +16,16 @@ cheap change stays cheap end to end:
 
 | The work | Tier it lands in | Drive with |
 |----------|-----------------|------------|
-| Docs, comments, CHANGELOG, mechanical refactor, test/dep bump | 0–1 | **Sonnet 5** — fast, burns plan limits far slower |
+| Docs, comments, CHANGELOG, mechanical refactor | 0–1 | **Sonnet 5** — fast, burns plan limits far slower |
 | Ordinary feature or bugfix in project code | 1 | **Opus 4.8** (default) |
 | Architecture, whole-repo / 1M-context reasoning, security · tooling · spec · migrations | 2 | **Opus 4.8 at high effort**; **Fable 5 by exception** (credits — below) |
 
 Sonnet 5 is ~63.2% on agentic coding vs Opus 4.8's 69.2 — genuinely weaker, so keep
 it to mechanical/doc work where the diff is its own proof; don't reach for it on
-logic you'd want Opus to reason through.
+logic you'd want Opus to reason through. Note: model tier ≠ review tier. A
+dependency bump or a test edit is mechanical enough to DRIVE with Sonnet, but the
+classifier still routes it to Tier 2 review (deps/tests/tooling are high-
+consequence to *verify*, whoever wrote them) — the two axes are independent.
 
 Your one lever over review COST is tier hygiene: a single Tier-2 signal anywhere in
 a diff pulls the WHOLE change onto the deep clean-slate + cross-vendor path. Land
