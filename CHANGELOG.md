@@ -18,11 +18,12 @@ here hitting a live PR first:
   `@v<VERSION>` ref IS the release mechanism `plinth update` rewrites). The rule
   stays active for every third-party action and every downstream project.
 - risk-classify.sh: test-RUNNER CONFIG files (`pytest.ini`, `conftest.py`,
-  `jest.config.*`, `vitest.config.*`, `.mocharc`, …) now count as test surface, so
-  MODIFYING one (which can disable/skip/narrow the suite) takes the Tier-2
-  weakened-test path instead of routing as ordinary Tier-1 code. (`tox.ini`,
-  `setup.cfg`, `pyproject.toml` were already Tier 2 via BUILD/DEPS.) Canary probe
-  added.
+  `jest.config.*`, `vitest.config.*`, `.mocharc`, …) are now their own Tier-2
+  surface. Unlike a test FILE (where ADDING one is additive → Tier 1), adding a
+  runner config is NOT additive — a new `jest.config.js` with empty `testMatch` or
+  a `pytest.ini` with `addopts=--ignore` narrows existing discovery — so add,
+  modify, AND delete all take Tier 2. (`tox.ini`, `setup.cfg`, `pyproject.toml`
+  were already Tier 2 via BUILD/DEPS.) Canary probes for modify/add/delete.
 
 
 Surfaced by the clean-slate confirmation reviewing this branch:

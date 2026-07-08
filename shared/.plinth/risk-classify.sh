@@ -55,11 +55,14 @@ SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|per
 MIGRATION='(migrat|/schema\.|\.sql$|alembic|/prisma/|liquibase|flyway|db_.*update|alter_.*table|/models?\.py$|/entities/)'
 PUBAPI='(openapi|swagger|asyncapi|\.proto$|\.graphql$|\.gql$|schema\.(graphql|json)$|(^|/)api/|(^|/)(routes?|controllers?|handlers?|endpoints?)[./])'
 DEPS='(^|/)(requirements[^/]*\.(txt|in|lock)|.*requirements[^/]*\.txt|constraints[^/]*\.txt|package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile(\.lock)?|uv\.lock|poetry\.lock|pyproject\.toml|Cargo\.(toml|lock)|go\.(mod|sum|work)|Gemfile(\.lock)?|composer\.(json|lock)|environment\.yml|conda-lock\.yml|mix\.(exs|lock)|Podfile(\.lock)?|Package\.resolved|vcpkg\.json|conanfile\.(txt|py)|gradle\.lockfile|bun\.lockb?)$'
-# Path is test-surface if it's under a test dir, has a test suffix/prefix, OR is a
-# test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*/…): modifying that
-# config can disable/skip/narrow the suite, the same weakening the tier escalates.
-# (tox.ini, setup.cfg, pyproject.toml are already Tier 2 via BUILD/DEPS.)
-TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_|(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypress|karma|wdio|mocha|ava|jasmine)\.(config|conf)\.[^/]+$|(^|/)\.(mocharc|nycrc)'
+TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_'
+# Test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*/…). Unlike a test FILE,
+# ADDING one is NOT additive: a new config can disable or narrow existing test
+# discovery (empty testMatch, addopts=--ignore, an autouse skip fixture). So ANY
+# change — add, modify, or delete — is high-consequence Tier 2, handled below as
+# its own surface rather than through the test-FILE add=Tier-1 path. (tox.ini,
+# setup.cfg, pyproject.toml are already Tier 2 via BUILD/DEPS.)
+TEST_CONFIG='(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypress|karma|wdio|mocha|ava|jasmine)\.(config|conf)\.[^/]+$|(^|/)\.(mocharc|nycrc)'
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.
@@ -114,6 +117,7 @@ while IFS=$'\t' read -r meta p2 p3; do
   if printf '%s' "$path" | grep -Eiq "$PUBAPI"; then bump 2; add_reason "public API/schema: $path"; continue; fi
   if printf '%s' "$path" | grep -Eiq "$DEPS"; then bump 2; add_reason "dependency manifest: $path"; continue; fi
   if [ -n "$TIER2_EXTRA" ] && printf '%s' "$path" | grep -Eq "$TIER2_EXTRA"; then bump 2; add_reason "project tier2_extra: $path"; continue; fi
+  if printf '%s' "$path" | grep -Eq "$TEST_CONFIG"; then bump 2; add_reason "test-runner config (can disable/narrow the suite): $path"; continue; fi
 
   # Tests: deletion, ANY modification of an existing test (removed content), or a
   # skip/ignore added -> Tier 2. Net assertion counting is gameable by padding,
