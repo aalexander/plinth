@@ -431,8 +431,13 @@ what the primary reviewer systematically misses.
 Output ONLY a JSON object (no prose, no markdown fences):
 {\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
 
+=== REVIEWER RULES (mandatory project blocking policy — apply these) ===
+$( for f in AGENTS.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
+
 === CANONICAL SPEC (${SPEC_PATH}) ===
-$( [ -f "$SPEC_PATH" ] && cat "$SPEC_PATH" || echo "(spec is a directory tree; not inlined)" )
+$( if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH";
+   elif [ -d "$SPEC_PATH" ]; then find "$SPEC_PATH" -type f \( -name '*.md' -o -name '*.rst' -o -name '*.txt' \) | sort | while IFS= read -r sf; do echo "--- $sf ---"; cat "$sf"; done;
+   else echo "(spec path not found: ${SPEC_PATH})"; fi )
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"

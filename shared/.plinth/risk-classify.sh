@@ -120,7 +120,17 @@ while IFS=$'\t' read -r meta p2 p3; do
 
   # Everything else: ordinary code -> Tier 1.
   bump 1; add_reason "code: $path"
-done <<< "$raw"
+done < <(printf '%s\n' "$raw")
+
+# Fail CLOSED, never open: raw was already checked non-empty above, so if the
+# loop processed zero files the input mechanism failed (e.g. the old here-string
+# could emit "cannot create temp file" and leave tier=0). A non-empty diff must
+# never emit Tier 0 — default to Tier 2 (full review) so a classifier failure
+# can only ever OVER-review, never skip review.
+if [ "$nfiles" -eq 0 ]; then
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["classifier processed 0 files from a non-empty diff — failing closed to Tier 2"]}\n' "$baseref"
+  exit 0
+fi
 
 printf '{"tier":%s,"files":%s,"base_ref":"%s","reasons":[' "$tier" "$nfiles" "$baseref"
 for i in "${!reasons[@]}"; do
