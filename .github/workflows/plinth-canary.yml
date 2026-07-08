@@ -147,12 +147,15 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
-          # Smoke precheck predicate: no smoke_cmd => run=false, smoke_cmd set => run=true.
+          # Smoke no-hang WIRING: the shipped template must gate the self-hosted
+          # job behind a github-hosted precheck (assert the actual structure, not
+          # a copied predicate — so removing the wiring fails the canary).
           git checkout -q main
-          sdecide() { local c; c="$(sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' "$1" 2>/dev/null | head -1)"; [ -n "$c" ] && echo true || echo false; }
-          [ "$(sdecide .plinth/config)" = "false" ] || { echo "::error::smoke precheck: no smoke_cmd must be run=false"; exit 1; }
-          printf 'smoke_cmd = echo hi\n' > "$(mktemp)"; c2="$(mktemp)"; printf 'smoke_cmd = echo hi\n' > "$c2"
-          [ "$(sdecide "$c2")" = "true" ] || { echo "::error::smoke precheck: smoke_cmd set must be run=true"; exit 1; }
+          SMK="$GITHUB_WORKSPACE/templates/.github/workflows/smoke.yml"
+          grep -q '^  precheck:' "$SMK" || { echo "::error::smoke.yml missing precheck job"; exit 1; }
+          grep -Eq 'precheck:[[:space:]]*$' "$SMK" && grep -q 'runs-on: ubuntu-latest' "$SMK" || { echo "::error::smoke.yml precheck not on a github-hosted runner"; exit 1; }
+          grep -q "if: needs.precheck.outputs.run == 'true'" "$SMK" || { echo "::error::smoke.yml self-hosted job not gated on precheck output"; exit 1; }
+          grep -q 'runs-on: \[self-hosted, plinth-smoke\]' "$SMK" || { echo "::error::smoke.yml self-hosted smoke job missing"; exit 1; }
           # plinth update backfills managed protected-paths patterns, preserves user lines.
           PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
           printf '(^|/)my-custom-secret\n' > "$PPFX/.plinth/protected-paths"
