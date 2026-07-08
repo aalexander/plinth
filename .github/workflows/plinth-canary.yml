@@ -147,4 +147,16 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit(concur/unavail/blocking/model) OK"
+          # Smoke precheck predicate: no smoke_cmd => run=false, smoke_cmd set => run=true.
+          git checkout -q main
+          sdecide() { local c; c="$(sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' "$1" 2>/dev/null | head -1)"; [ -n "$c" ] && echo true || echo false; }
+          [ "$(sdecide .plinth/config)" = "false" ] || { echo "::error::smoke precheck: no smoke_cmd must be run=false"; exit 1; }
+          printf 'smoke_cmd = echo hi\n' > "$(mktemp)"; c2="$(mktemp)"; printf 'smoke_cmd = echo hi\n' > "$c2"
+          [ "$(sdecide "$c2")" = "true" ] || { echo "::error::smoke precheck: smoke_cmd set must be run=true"; exit 1; }
+          # plinth update backfills managed protected-paths patterns, preserves user lines.
+          PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
+          printf '(^|/)my-custom-secret\n' > "$PPFX/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PPFX" >/dev/null 2>&1
+          grep -q 'risk-classify' "$PPFX/.plinth/protected-paths" || { echo "::error::update did not backfill managed protected pattern"; exit 1; }
+          grep -q 'my-custom-secret' "$PPFX/.plinth/protected-paths" || { echo "::error::update dropped a user protected-paths line"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths OK"
