@@ -192,6 +192,16 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # audit_model ALONE (with audit_vendor = codex, the primary reviewer's own
+          # vendor) must NOT trigger a same-vendor audit falsely recorded as cross-
+          # vendor — the audit runs only when audit_vendor is a DIFFERENT vendor.
+          git checkout -q main; git checkout -qB audsame main >/dev/null 2>&1
+          sed -i 's/^audit_vendor = .*/audit_vendor = codex/' .plinth/config
+          printf 'audit_model = some-codex-model\n' >> .plinth/config
+          echo "same-vendor req" >> SPEC.md; git add -A; git commit -qm audsame >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          [ "$(jq -r 'has("audit")' .plinth/session/review/audsame/verdict.json 2>/dev/null)" = "false" ] || { echo "::error::audit_model + codex vendor triggered a same-vendor audit (false cross-vendor)"; exit 1; }
+          git checkout -q .plinth/config
           # reviewer_model_tier1/tier2 must reach the PRIMARY reviewer as `codex -m
           # <model>` (two argv tokens) on the MATCHING tier — a collapsed "-m model"
           # token or a wrong-tier pick would silently ship. Seed both on main so the

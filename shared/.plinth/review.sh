@@ -492,11 +492,13 @@ fi
 
 # Reviewer error bar (cross-vendor second opinion). Fires on EVERY Tier 2
 # approval (high-consequence -> always a second, DIFFERENT-VENDOR adversary), and
-# on every 5th approval otherwise. Runs when a cross-vendor auditor is configured
-# (audit_vendor != codex) or an audit_model is set. Disagreement is reported,
-# never adjudicated here — a different isolated model is the authority, not a
-# human.
-if [ -n "$AUDIT_MODEL" ] || [ "$AUDIT_VENDOR" != "codex" ]; then
+# on every 5th approval otherwise. Runs ONLY when a genuinely cross-vendor auditor
+# is configured (audit_vendor != the primary reviewer's codex) — audit_model alone
+# must NOT trigger it, or a project carrying only the legacy audit_model would get
+# a SAME-vendor codex audit falsely framed/recorded as cross-vendor. audit_model
+# is a model override for that different vendor, not a trigger. Disagreement is
+# reported, never adjudicated here — a different isolated model is the authority.
+if [ "$AUDIT_VENDOR" != "codex" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count

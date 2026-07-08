@@ -37,6 +37,14 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   guarantee AND a fail-open. `run_auditor` now returns nonzero for any vendor
   outside {codex, grok, agy}, so the audit is recorded UNAVAILABLE (non-blocking,
   primary review still stands) and the message names the misconfiguration.
+- review.sh: the cross-vendor audit no longer runs on `audit_model` ALONE. The gate
+  was `[ -n "$AUDIT_MODEL" ] || [ audit_vendor != codex ]`, so an upgraded project
+  carrying only the legacy `audit_model` (with `audit_vendor` defaulting to codex,
+  the primary reviewer's vendor) got a SAME-vendor codex audit framed + recorded as
+  cross-vendor — the exact false assurance this release closes elsewhere. The gate
+  is now purely `audit_vendor != codex`; `audit_model` is a model override for that
+  different vendor, not a trigger (config doc corrected to match). Canary probe:
+  `audit_model` + codex vendor => no audit recorded.
 - review.sh: the binding rule is now one predicate, `binds_directly(mode, tier)`,
   shared by the post-round gate and the reviewer-facing note so they can't drift.
   A fresh full review binds; a warm Tier-1 RESUME binds directly (its thread holds
