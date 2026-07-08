@@ -13,9 +13,12 @@ here hitting a live PR first:
 - semgrep SAST: `p/security-audit` on `semgrep:latest` began enforcing
   `github-actions-mutable-action-tag` (10 blocking). Fixed the RIGHT way (a first
   cut disabled the rule in the reusable floor — which would have suppressed it for
-  every DOWNSTREAM project too; reverted): SHA-pinned all third-party actions
-  (checkout/upload-artifact/gitleaks/osv-scanner, with `# vX` comments) across the
-  repo and templates, and `# nosemgrep`'d only the first-party reusable-workflow
+  every DOWNSTREAM project too; reverted): SHA-pinned all third-party actions to
+  their SPECIFIC release tags (checkout@v4.3.0, upload-artifact@v4.6.2,
+  gitleaks@v2.3.9, osv-scanner@v2.3.8) across the repo and templates — NOT the
+  moving major tag, which for actions/checkout had drifted onto v6-line code, so a
+  first pass mispinned `@v4` to a v6 commit (caught in review). `# nosemgrep`'d only
+  the first-party reusable-workflow
   refs (`ci.yml -> plinth-floor.yml@vX`) that genuinely can't be SHA-pinned — the
   `@v<VERSION>` ref is the pin to a Plinth release (set at init, bumped
   deliberately when adopting a new version; `plinth update` never touches the
