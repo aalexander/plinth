@@ -134,4 +134,17 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           ab="$(jq -r '.audit.blocking // 0' .plinth/session/review/aud3/verdict.json 2>/dev/null)"
           [ "$ab" -ge 1 ] 2>/dev/null || { echo "::error::blocking auditor finding not counted (blocking=$ab)"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit(concur/unavail/blocking) OK"
+          # audit_model override must reach the auditor as TWO argv tokens
+          # (-m and the model), not one collapsed "-m model" token.
+          cat > /tmp/asb/grok <<'GK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/asb/grok-args
+          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud4 main >/dev/null 2>&1
+          printf 'audit_model = testmodel-x\n' >> .plinth/config; echo "req x" >> SPEC.md; git add -A; git commit -qm aud4 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
+            || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit(concur/unavail/blocking/model) OK"

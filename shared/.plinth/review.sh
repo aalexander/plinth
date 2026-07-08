@@ -93,16 +93,21 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 run_auditor() {  # run_auditor <prompt> <out-findings-json>
   local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
   printf '%s' "$prompt" > "$pf"
+  # Model flag as a proper 2-element array — an unquoted ${VAR:+-m "$VAR"} would
+  # collapse to a SINGLE argv token "-m model" and the override would be ignored.
+  local mflag margs=()
+  case "$AUDIT_VENDOR" in agy|gemini) mflag="--model" ;; *) mflag="-m" ;; esac
+  [ -n "$AUDIT_MODEL" ] && margs=("$mflag" "$AUDIT_MODEL")
   case "$AUDIT_VENDOR" in
     grok)
       grok --prompt-file "$pf" --output-format json --disallowed-tools 'Bash,Edit,Write' \
-        ${AUDIT_MODEL:+-m "$AUDIT_MODEL"} > "$raw" 2>/dev/null || return 1
+        ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
       jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' > "${out}.j" 2>/dev/null || return 1 ;;
     agy|gemini)
-      agy -p "$prompt" --sandbox ${AUDIT_MODEL:+--model "$AUDIT_MODEL"} > "$raw" 2>/dev/null || return 1
+      agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
       perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     codex|*)
-      printf '%s' "$prompt" | codex exec ${AUDIT_MODEL:+-m "$AUDIT_MODEL"} --sandbox read-only --json \
+      printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
         --output-schema "$SCHEMA" -o "${out}.j" - > /dev/null 2>&1 || return 1 ;;
   esac
   jq . "${out}.j" > "$out" 2>/dev/null || return 1

@@ -55,6 +55,11 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
   update`'s protected-paths backfill is documented as the one managed exception
   to "update never touches your per-project files."
+- audit_model override was silently broken: `${AUDIT_MODEL:+-m "$AUDIT_MODEL"}`
+  collapsed to a single argv token `-m model` instead of two, so a configured
+  audit_model never reached the auditor. Fixed with a proper 2-element array
+  across all three vendor call sites; canary now asserts the auditor receives
+  `-m` and the model as separate tokens.
 - More dogfood fixes: review.sh now fails CLOSED when the classifier is
   missing/broken (defaults Tier 2, not Tier 1 — an unclassified high-consequence
   diff is over-reviewed, never under-reviewed); the floor byte-compare skips
