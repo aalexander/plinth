@@ -1,5 +1,18 @@
 # Plinth changelog
 
+## v4.2 (continued) — claim/comment accuracy — July 8, 2026
+Stale/overclaimed statements the reviewer rules block on, now matching the code:
+- review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
+  audit_model is set" — false since the gate became `audit_vendor != codex`.
+  Reworded to match (audit_model is a model override, not a trigger).
+- templates/SPEC.md: dropped the unbacked claim that "the review loop, receipts,
+  and drift detection key off" REQ-<AREA>-<NN> IDs — nothing machine-parses them.
+  They're a stable human/reviewer handle for referencing a requirement across
+  rounds, not automation.
+- bin/plinth config doc: clarified `audit_vendor` — unset => codex (= the primary
+  reviewer, so NO cross-vendor audit); init scaffolds `grok` to enable it (removes
+  the "Default codex" vs scaffolded-grok confusion).
+
 ## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
 Two floor/smoke failures that are exactly the drift the canary exists to catch,
 here hitting a live PR first:

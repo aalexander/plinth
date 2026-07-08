@@ -14,8 +14,10 @@
 - INV-1: <e.g., no user data leaves the process unencrypted.>
 
 ## Requirements
-<!-- Each requirement has a STABLE ID (REQ-<AREA>-<NN> — never renumber; the
-     review loop, receipts, and drift detection key off these). EARS phrasing.
+<!-- Each requirement has a STABLE ID (REQ-<AREA>-<NN> — never renumber; a stable
+     handle so reviews, commits, and `## Noticed` entries can reference the same
+     requirement across rounds. Human/reviewer convention, not machine-parsed).
+     EARS phrasing.
      List prerequisites so the build is a dependency DAG (enables small vertical
      slices + safe parallel work). And name HOW it is validated at each level it
      needs — "has a test" is NOT enough: for anything whose correctness depends on

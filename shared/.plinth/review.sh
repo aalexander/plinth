@@ -207,9 +207,10 @@ command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
 #   APPROVED binds directly (skip the clean-slate confirmation) — faster
 #   iterative convergence, acceptable for ordinary code with a bound digest.
 # Tier 2 (high-consequence): the frontier reviewer, ALWAYS a clean-slate
-#   confirmation, and a cross-vendor second opinion every time audit_model is set
-#   (not just every 5th). Config knobs reviewer_model_tier1/tier2 select models;
-#   unset => whatever ~/.codex/config.toml runs (no behavioral change).
+#   confirmation, and — when a genuinely cross-vendor auditor is configured
+#   (audit_vendor != codex) — a cross-vendor second opinion on EVERY Tier-2
+#   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
+#   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
 MODEL_ARGS=()
 if [ "$RISK" = "2" ]; then tmodel="$(cfg reviewer_model_tier2 || true)"
 else tmodel="$(cfg reviewer_model_tier1 || true)"; fi
