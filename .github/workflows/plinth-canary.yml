@@ -49,10 +49,4 @@ jobs:
           [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
           [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
           [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
-          # Receipt binding: the digest (excluding the receipt) must change when
-          # the diff changes — the property the CI receipt verifier enforces.
-          git checkout -q main; git checkout -qB rcpt >/dev/null 2>&1; echo v1 > app.py; git add -A; git commit -qm w >/dev/null
-          dg() { printf '%s' "$(git diff main...HEAD -- . ':(exclude).plinth/review-receipt.json')" | sha256sum | cut -d' ' -f1; }
-          d1="$(dg)"; echo v2 >> app.py; git add -A; git commit -qm tamper >/dev/null; d2="$(dg)"
-          [ "$d1" != "$d2" ] || { echo "::error::receipt digest did not change when the diff changed"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers + receipt digest OK"
+          echo "canary: scaffold + fail-loud + classifier tiers OK"

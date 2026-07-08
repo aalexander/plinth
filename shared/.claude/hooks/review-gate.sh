@@ -62,18 +62,7 @@ vfile="$SDIR/review/$slug/verdict.json"
 if [ -f "$vfile" ]; then
   v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || echo "")
   vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || echo "")
-  if [ "$v" = "APPROVED" ]; then
-    [ "$vsha" = "$head" ] && exit 0
-    # Receipt-only advance: committing .plinth/review-receipt.json moves HEAD
-    # past the reviewed SHA but changes nothing reviewable — still APPROVED at
-    # HEAD (mirrors review.sh/CI, which exclude the receipt from the digest).
-    if git -C "$proj" cat-file -e "${vsha}^{commit}" 2>/dev/null; then
-      changed="$(git -C "$proj" diff --name-only "${vsha}..${head}" 2>/dev/null || true)"
-      if [ -n "$changed" ] && [ -z "$(printf '%s\n' "$changed" | grep -vx '\.plinth/review-receipt\.json' || true)" ]; then
-        exit 0
-      fi
-    fi
-  fi
+  if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then exit 0; fi
 fi
 
 echo $((cnt + 1)) > "$SDIR/gate-blocks-$sid"

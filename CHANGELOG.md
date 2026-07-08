@@ -13,16 +13,23 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
 - TRUST BUT VERIFY (Tier 0 only): a random UNPREDICTABLE `verify_sample_rate`
   percent (default 10) of TIER 0 changes get a full review anyway — Tier 0 is the
   only tier that skips model review, so this guards against a novel classifier
-  evasion the receipt CI check (same classifier) would share. Tier 1 is NOT
-  sampled: it is already fully reviewed, so escalating it was redundant overhead
-  on the common path. The receipt still records the deterministic tier so CI's
-  recompute matches.
+  evasion (a Tier 0 that is really code) the deterministic classifier itself
+  missed. Tier 1 is NOT sampled: it is already fully reviewed, so escalating it
+  was redundant overhead on the common path.
 - Optimal reviewer assignment across the three subscription CLIs (MODELS.md):
   codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
   the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional
   fast tier1 reviewer; agy/Gemini kept as a third option (refuses adversarial
   framing, so audit-only). New projects default to audit_vendor=grok +
   verify_sample_rate=10.
+- DEFERRED (removed before merge): a CI review-receipt verifier that would
+  recompute tier+digest at merge to close a hypothesized approve-then-swap
+  TOCTOU. Built, but it generated every dogfood-review finding (a gate deadlock,
+  a push-event CI failure, a protected-paths gap, an untested security workflow)
+  without an OBSERVED problem justifying it — the definition of premature
+  hardening. Pulled per "get the core working, then harden." Returns as its own
+  tested increment if real use shows the need. `diff_digest` is still recorded in
+  the verdict as a forensic fingerprint (no longer an enforcement point).
 
 ## v4.2 — July 7, 2026
 First increment of the multi-model-panel-converged improvement plan: **risk-based

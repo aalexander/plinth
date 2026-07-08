@@ -29,9 +29,3 @@ jobs:
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest
-
-  receipt:
-    # PRs only: on a push to main there is no base_ref, so the PR-diff
-    # verification is meaningless (and would fail on the committed receipt).
-    if: github.event_name == 'pull_request'
-    uses: OWNER/plinth/.github/workflows/plinth-review-receipt.yml@v4.2

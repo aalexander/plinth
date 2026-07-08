@@ -126,24 +126,12 @@ mkdir -p "$SDIR"
 # The tier is computed deterministically from the diff by version-pinned tooling
 # the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
 # docs/text) is granted by the deterministic floor without a model round; Tier
-# 1/2 get adversarial review. diff_digest binds the verdict to the reviewed diff.
-# The BINDING digest excludes the receipt file itself, so committing the receipt
-# (which the driver does before the PR) does not change the digest it certifies.
-# CI recomputes this exact quantity on the merge diff and fails on mismatch.
-REVIEW_RECEIPT=".plinth/review-receipt.json"
-bind_diff="$(git diff "${baseref}...HEAD" -- . ":(exclude)${REVIEW_RECEIPT}" 2>/dev/null || printf '%s' "$diff")"
-diff_digest="$(printf '%s' "$bind_diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
-[ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$bind_diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
-# Writes the committed, guard-protected receipt CI verifies. Only review.sh
-# writes it (the driver cannot: the path is in protected-paths).
-write_receipt() {  # write_receipt <verdict>
-  jq -n --arg base "$baseref" --arg head "$sha" --argjson tier "$RISK" \
-        --arg digest "$diff_digest" --arg verdict "$1" \
-        --arg ver "$(cat .plinth-version 2>/dev/null || echo unknown)" \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{base_ref:$base, head_sha:$head, tier:$tier, diff_digest:$digest,
-          verdict:$verdict, plinth_version:$ver, ts:$ts}' > "$REVIEW_RECEIPT" 2>/dev/null || true
-}
+# 1/2 get adversarial review. diff_digest is recorded in the verdict as a
+# forensic fingerprint of the reviewed diff (dashboard/audit only — it is not
+# a merge-time enforcement point; that hardening is deferred until real use
+# shows it is needed).
+diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+[ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
 RISK=1; RISK_JSON='{"tier":1,"reasons":["classifier unavailable"]}'
 if [ -x ".plinth/risk-classify.sh" ]; then
   RISK_JSON="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || echo "$RISK_JSON")"
@@ -177,10 +165,8 @@ if [ "$DEPTH" = "0" ]; then
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
           round:0, session_id:"", model:"deterministic-floor", risk:$risk,
           diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
-  write_receipt "APPROVED"
   rm -f "$SDIR/last-error"
-  echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round."
-  echo "Commit the receipt, then open the PR: git add ${REVIEW_RECEIPT} && git commit -m 'plinth review receipt'"
+  echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
 fi
 
@@ -486,8 +472,5 @@ $(git diff "${baseref}...HEAD")"
     fi
   fi
 fi
-write_receipt "APPROVED"
-echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12})."
-echo "Commit the receipt, then open the PR — CI verifies the receipt binds this exact diff:"
-echo "  git add ${REVIEW_RECEIPT} && git commit -m 'plinth review receipt' && <open PR>"
+echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0
