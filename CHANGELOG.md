@@ -30,9 +30,9 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   the here-string that could fail on temp-file creation); the cross-vendor audit
   prompt inlines the reviewer rules (AGENTS.md + AGENTS-project.md) and
   directory-tree specs so a tools-forbidden auditor applies mandatory blocking
-  policy; the Stop gate accepts nothing it didn't review; MANUAL.md rewritten to
-  describe the tiered model (Tier 0 floor-approved, Tier 1 warm-binds, Tier 2
-  clean-slate + cross-vendor); and the classifier canary now exercises 11 bypass
+  policy; MANUAL.md rewritten to describe the tiered model (Tier 0 floor-approved,
+  Tier 1 warm-binds, Tier 2 clean-slate + cross-vendor); and the classifier
+  canary now exercises 11 bypass
   classes (deps, security, symlink, build, spec, tier2_extra, executable,
   skip/delete/weaken tests, submodule, rename-to-doc, type-change).
 - DEFERRED (removed before merge): a CI review-receipt verifier that would
