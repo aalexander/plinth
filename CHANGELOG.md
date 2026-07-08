@@ -23,7 +23,11 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   `mode=resume`, where `binds_directly(resume, tier1)` bound a thread that had only
   ever seen the incremental diff. A verify-origin session is now non-resumable
   (`resumable_prev`, and the round's `mode` is recorded in the verdict): the next
-  round goes fresh and re-reads the full diff before any bind.
+  round goes fresh and re-reads the full diff before any bind. `resumable_prev`
+  fails CLOSED — it resumes only a mode KNOWN to carry a full-diff read (`fresh` or
+  a prior `resume`); an empty/unknown mode (e.g. a verdict.json written before the
+  `mode` field existed, or an in-flight upgrade) goes fresh rather than resuming a
+  possibly-narrow thread.
 - risk-classify.sh: an invalid `tier2_extra` regex (a typo in this agent-immutable
   routing knob) now fails CLOSED to Tier 2 instead of silently disabling the
   project Tier-2 surface — `grep -Eq` returns exit 2 on a bad pattern, which the

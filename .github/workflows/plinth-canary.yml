@@ -190,7 +190,10 @@ jobs:
           # thread that never read the full diff. resumable_prev enforces it.
           RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
           bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main fresh"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main resume" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
           bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main verify" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main ''"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main bogus"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
           bash -c "$RP; resumable_prev CHANGES_NEEDED '' main main fresh"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
           bash -c "$RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
           # The dashboard must show an UNAVAILABLE audit distinctly, never as

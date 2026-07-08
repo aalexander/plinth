@@ -197,7 +197,14 @@ if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel
 # read). So a verify-origin session is NOT resumable — the next round goes fresh
 # and re-reads the full diff before binding. Pure fn -> testable.
 resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode>
-  [ "$1" = "CHANGES_NEEDED" ] && [ -n "$2" ] && [ "$3" = "$4" ] && [ "$5" != "verify" ]
+  [ "$1" = "CHANGES_NEEDED" ] || return 1
+  [ -n "$2" ] || return 1
+  [ "$3" = "$4" ] || return 1
+  # Only resume a mode KNOWN to hold a full-diff read: fresh, or a prior resume
+  # that continues such a thread. verify is narrow; an empty/unknown mode (e.g. a
+  # verdict.json written before the `mode` field existed) is treated the same —
+  # fail CLOSED, go fresh, re-read the full diff before any bind.
+  case "${5:-}" in fresh|resume) return 0 ;; *) return 1 ;; esac
 }
 
 # Round bookkeeping. A CHANGES_NEEDED verdict with a live (resumable) session
