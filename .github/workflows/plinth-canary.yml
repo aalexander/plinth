@@ -32,6 +32,11 @@ jobs:
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
+          # Fresh runners set no git identity, and git >= 2.54 refuses to commit
+          # with an empty ident — the fixtures below commit, so set one (same fix
+          # as smoke.yml). Global, so it covers every fixture repo this job creates.
+          git config --global user.email "canary@plinth.ci"
+          git config --global user.name  "plinth canary"
           mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
           "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe

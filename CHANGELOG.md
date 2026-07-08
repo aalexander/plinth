@@ -3,11 +3,13 @@
 ## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
 Two floor/smoke failures that are exactly the drift the canary exists to catch,
 here hitting a live PR first:
-- smoke.yml: the fixture's `git commit` failed with "empty ident name" — fresh
-  runners set no git identity and git >= 2.54 now REFUSES an empty ident (older
-  git allowed it). The fixture now sets a `git config --global user.email/name`
-  before scaffolding. Verified locally: the full fail-loud fixture (plinth init +
-  the bad-base and dirty-tree review.sh paths -> exit 2) runs green.
+- smoke.yml AND plinth-canary.yml: the fixture `git commit`s failed with "empty
+  ident name" — fresh runners set no git identity and git >= 2.54 now REFUSES an
+  empty ident (older git allowed it). Both now set `git config --global
+  user.email/name` before scaffolding (the canary would otherwise have failed
+  before ever reaching its probes). Verified locally: the full smoke fail-loud
+  fixture (plinth init + the bad-base and dirty-tree review.sh paths -> exit 2)
+  runs green.
 - semgrep SAST: `p/security-audit` on `semgrep:latest` began enforcing
   `github-actions-mutable-action-tag` (10 blocking). Fixed the RIGHT way (a first
   cut disabled the rule in the reusable floor — which would have suppressed it for
