@@ -33,11 +33,19 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   project Tier-2 surface — `grep -Eq` returns exit 2 on a bad pattern, which the
   per-file check read as a plain "no match", letting intended Tier-2 paths slip to
   Tier 0/1. Validated once against empty input at startup.
-- risk-classify.sh: a modified BINARY test baseline (image snapshot, golden,
-  testdata blob) now escalates to Tier 2. The existing-test check only looked for
-  textual removed lines (`^-[^-]`), which a binary diff never produces, so a
-  swapped baseline slipped to Tier 1. A new binary-modification check closes it;
-  newly-ADDED binary tests stay Tier 1 (a new baseline is not a weakening).
+- risk-classify.sh: ANY modification of an existing test now escalates to Tier 2,
+  not just ones with a removed line. The prior check keyed on `^-[^-]` (removed
+  text), a binary diff, or an added skip token — so an ADDITION-ONLY weakening
+  (e.g. inserting an early `return` before the assertions) slipped to Tier 1. Now
+  any touch of existing test content (status != added) is Tier 2, matching the
+  classifier's own stated intent that assertion-counting is gameable by padding.
+  This subsumes the removed-line and binary-baseline checks; only a brand-NEW test
+  file stays Tier 1 (unless it lands pre-skipped).
+- risk-classify.sh: the TESTS regex now recognizes the pytest `test_*` PREFIX
+  convention (`test_core.py`, `app/test_core.py`), not just the `*_test`/`*.spec`
+  suffixes — deleting or modifying a `test_*.py` outside a `tests/` dir was
+  slipping through as ordinary Tier-1 code instead of the required Tier-2
+  weakened/deleted-test path.
 - plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
   blocking==0 matched the concur branch). The dashboard now shows "audit
   unavailable" distinctly, so a failed auditor is not mistaken for a passing one.

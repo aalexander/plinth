@@ -87,6 +87,16 @@ jobs:
           git checkout -qB tw main >/dev/null 2>&1
           printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened test != Tier 2"; exit 1; }
+          # test_*.py (pytest PREFIX convention) outside a tests/ dir is a test:
+          # modifying it must escalate like any existing test.
+          git checkout -q main; printf 'def test_x():\n    assert h() == 3\n' > test_core.py; git add -A; git commit -qm "test_ prefix baseline" >/dev/null
+          git checkout -qB tpfx main >/dev/null 2>&1; printf 'def test_x():\n    assert True\n' > test_core.py; git add -A; git commit -qm tpfx >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified test_*.py (prefix, no tests/ dir) != Tier 2"; exit 1; }
+          # ADDITION-ONLY weakening of an existing test (e.g. an early return before
+          # the assertions) has no '-' line and no skip token — must still be Tier 2.
+          git checkout -qB addonly main >/dev/null 2>&1; printf '    return  # early-out weakening\n' >> tests/core_test.py; git add -A; git commit -qm addonly >/dev/null
+          git diff main...addonly -- tests/core_test.py | grep -Eq '^-[^-]' && { echo "::error::addition-only probe setup actually removed a line"; exit 1; } || true
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: addition-only existing-test change != Tier 2"; exit 1; }
           # A modified BINARY test baseline (snapshot/golden) has no textual '-' line
           # but is still a weakening surface => Tier 2. A NEW binary test stays Tier 1.
           git checkout -q main; printf '\000\001\002\003\004' > tests/snap.bin; git add -A; git commit -qm "binary test baseline" >/dev/null

@@ -55,7 +55,7 @@ SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|per
 MIGRATION='(migrat|/schema\.|\.sql$|alembic|/prisma/|liquibase|flyway|db_.*update|alter_.*table|/models?\.py$|/entities/)'
 PUBAPI='(openapi|swagger|asyncapi|\.proto$|\.graphql$|\.gql$|schema\.(graphql|json)$|(^|/)api/|(^|/)(routes?|controllers?|handlers?|endpoints?)[./])'
 DEPS='(^|/)(requirements[^/]*\.(txt|in|lock)|.*requirements[^/]*\.txt|constraints[^/]*\.txt|package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile(\.lock)?|uv\.lock|poetry\.lock|pyproject\.toml|Cargo\.(toml|lock)|go\.(mod|sum|work)|Gemfile(\.lock)?|composer\.(json|lock)|environment\.yml|conda-lock\.yml|mix\.(exs|lock)|Podfile(\.lock)?|Package\.resolved|vcpkg\.json|conanfile\.(txt|py)|gradle\.lockfile|bun\.lockb?)$'
-TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.'
+TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_'
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.
@@ -117,18 +117,16 @@ while IFS=$'\t' read -r meta p2 p3; do
   # addition-only changes stay Tier 1.
   if is_test "$path"; then
     if [ "$status" = "D" ]; then bump 2; add_reason "deleted test: $path"; continue; fi
+    # ANY modification of an EXISTING test is a potential weakening — removed or
+    # loosened assertions, an early return/skip inserted (addition-only, no '-'
+    # line!), or a swapped binary baseline. Static diff analysis can't tell a
+    # weakening from a genuine addition (net assertion counting is gameable by
+    # padding), so escalate on ANY touch of existing test content. Only a brand-NEW
+    # test file (status A) stays Tier 1.
+    if [ "$status" != "A" ]; then bump 2; add_reason "existing test modified (possible weakening): $path"; continue; fi
+    # New test file: additive — but suspicious if it lands pre-skipped/ignored.
     tdiff="$(git diff "${baseref}...HEAD" -- "$path" 2>/dev/null || true)"
-    if [ "$status" != "A" ] && printf '%s' "$tdiff" | grep -Eq '^-[^-]'; then
-      bump 2; add_reason "existing test modified (possible weakening): $path"; continue
-    fi
-    # A modified BINARY test baseline (image snapshot, golden, testdata blob) shows
-    # no textual '-' line, so the check above misses it — yet a swapped baseline is
-    # exactly the weakening surface we escalate. Any non-add modification git reports
-    # as binary -> Tier 2.
-    if [ "$status" != "A" ] && printf '%s' "$tdiff" | grep -Eq '^Binary files .* differ$'; then
-      bump 2; add_reason "existing binary test/baseline modified: $path"; continue
-    fi
-    if printf '%s' "$tdiff" | grep -Eq "^\+.*$SKIPADD"; then bump 2; add_reason "test skip/ignore added: $path"; continue; fi
+    if printf '%s' "$tdiff" | grep -Eq "^\+.*$SKIPADD"; then bump 2; add_reason "new test added pre-skipped/ignored: $path"; continue; fi
     bump 1; add_reason "test added: $path"; continue
   fi
 
