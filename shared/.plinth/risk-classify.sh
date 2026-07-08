@@ -23,6 +23,19 @@ if git rev-parse --verify --quiet "origin/${base}" >/dev/null 2>&1; then baseref
 elif git rev-parse --verify --quiet "${base}" >/dev/null 2>&1; then baseref="${base}"
 else printf '{"tier":1,"reasons":["base ref not found; defaulting Tier 1"],"files":0,"base_ref":"%s"}\n' "$base"; exit 0; fi
 
+# An invalid tier2_extra regex (a typo in this agent-immutable routing knob) must
+# fail CLOSED, not silently disable the Tier-2 surface: grep exits 2 on a bad
+# pattern, which the per-file `if ... grep -Eq "$TIER2_EXTRA"` below reads as a
+# plain "no match", letting intended Tier-2 paths slip to Tier 0/1. Validate the
+# pattern ONCE against empty input (valid -> exit 0/1; invalid -> >=2).
+if [ -n "$TIER2_EXTRA" ]; then
+  t2rc=0; printf '' | grep -Eq "$TIER2_EXTRA" 2>/dev/null || t2rc=$?
+  if [ "$t2rc" -ge 2 ]; then
+    printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["invalid tier2_extra regex in .plinth/config — failing closed to Tier 2"]}\n' "$baseref"
+    exit 0
+  fi
+fi
+
 # spec_path is read from the BASE config, not the working tree: repointing
 # spec_path in the same PR must not downgrade that PR's own spec edits. The
 # canonical spec paths are ALWAYS Tier 2 regardless of config (defense in depth).
@@ -107,6 +120,13 @@ while IFS=$'\t' read -r meta p2 p3; do
     tdiff="$(git diff "${baseref}...HEAD" -- "$path" 2>/dev/null || true)"
     if [ "$status" != "A" ] && printf '%s' "$tdiff" | grep -Eq '^-[^-]'; then
       bump 2; add_reason "existing test modified (possible weakening): $path"; continue
+    fi
+    # A modified BINARY test baseline (image snapshot, golden, testdata blob) shows
+    # no textual '-' line, so the check above misses it — yet a swapped baseline is
+    # exactly the weakening surface we escalate. Any non-add modification git reports
+    # as binary -> Tier 2.
+    if [ "$status" != "A" ] && printf '%s' "$tdiff" | grep -Eq '^Binary files .* differ$'; then
+      bump 2; add_reason "existing binary test/baseline modified: $path"; continue
     fi
     if printf '%s' "$tdiff" | grep -Eq "^\+.*$SKIPADD"; then bump 2; add_reason "test skip/ignore added: $path"; continue; fi
     bump 1; add_reason "test added: $path"; continue

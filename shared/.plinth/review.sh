@@ -236,16 +236,28 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
 fi
 
-# The stakes a resumed/verify APPROVED carries depend on the risk tier, and the
-# reviewer must be told the truth so it doesn't relax rigor expecting a later
-# pass that won't come. Tier 2 always gets an independent clean-slate confirmation
-# before binding (see the post-round block); Tier 1 binds a resumed/verify verdict
-# directly. Pure fn of the tier -> testable in isolation.
-bind_note() {  # bind_note <risk-tier>
-  if [ "${1:-}" = "2" ]; then
-    printf '%s' "This is a Tier-2 change: if everything blocking is resolved, a separate clean-slate full review still confirms before anything binds."
+# Whether a completed round's APPROVED binds on its own, or a clean-slate
+# confirmation must run first. A fresh full review binds. A warm RESUME holds the
+# full round-1 read in its thread, so a Tier-1 resume binds directly (Tier 2 still
+# gets a frontier reconfirm). A fallback VERIFY is a FRESH session that saw only
+# the prior findings plus the incremental diff — it never read the full current
+# diff, so it never binds on its own, at ANY tier. Single source of truth for both
+# the post-round gate and the reviewer-facing note. Pure fn -> testable.
+binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
+  case "${1:-}" in
+    fresh)  return 0 ;;
+    resume) [ "${2:-}" != "2" ] ;;
+    *)      return 1 ;;
+  esac
+}
+
+# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
+# expecting a later pass that won't come, nor treats a non-binding round as final.
+bind_note() {  # bind_note <mode> <risk-tier>
+  if binds_directly "${1:-}" "${2:-}"; then
+    printf '%s' "You hold the full diff from your first pass in this thread and this is an ordinary-code (Tier 1) change: your verdict BINDS DIRECTLY — no separate confirmation follows, so apply full first-pass rigor now."
   else
-    printf '%s' "This is a Tier-1 (ordinary-code) change: your verdict BINDS DIRECTLY — there is NO separate clean-slate confirmation pass, so apply full first-pass rigor now."
+    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
   fi
 }
 
@@ -304,7 +316,7 @@ previous round, (2) the INCREMENTAL diff from the commit that round reviewed
    evidence in the incremental diff, not the driver's claim.
 2) Review the incremental diff itself with first-pass rigor; new findings status
    \"open\".
-$(bind_note "$RISK")
+$(bind_note "$m" "$RISK")
 
 PRIOR FINDINGS:
 ${prior}
@@ -325,7 +337,7 @@ diff in this conversation.
    or \"open\" — resolved requires evidence in the changes, not the driver's claim.
 2) Review the new changes below with the same rigor as a first pass; report new
    findings with status \"open\".
-Verdict is APPROVED only if no finding remains open. $(bind_note "$RISK")
+Verdict is APPROVED only if no finding remains open. $(bind_note "$m" "$RISK")
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
@@ -415,12 +427,14 @@ case "$mode" in
 esac
 
 # A warm (resume) or delta-scoped (verify) approval only says "my findings were
-# addressed". For TIER 2, bind APPROVED via a clean-slate full pass so neither
-# continuity nor a narrow view can soften the adversarial read. TIER 1 (ordinary
-# code) accepts a resumed approval directly — the speed of iterative convergence
-# is worth more than a second full read here.
-if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ] && [ "$RISK" = "2" ]; then
-  echo "Plinth review: Tier 2 — round ${round} findings resolved; running clean-slate confirmation review..."
+# addressed". Bind it directly only when the round that produced it actually held
+# the full current diff: a Tier-1 RESUME does (its thread carries the round-1 full
+# read). A Tier-2 approval, and ANY fallback VERIFY (a fresh session that saw only
+# prior findings + the incremental diff), get a clean-slate full pass first so
+# neither continuity nor a narrow view can soften the adversarial read.
+# binds_directly() is the single source of truth, shared with the reviewer note.
+if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
+  echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
 fi

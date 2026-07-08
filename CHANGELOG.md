@@ -8,18 +8,35 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   guarantee AND a fail-open. `run_auditor` now returns nonzero for any vendor
   outside {codex, grok, agy}, so the audit is recorded UNAVAILABLE (non-blocking,
   primary review still stands) and the message names the misconfiguration.
-- review.sh: the resume/verify reviewer prompts no longer tell the reviewer that a
-  clean-slate full review will confirm before its approval binds — that is true
-  only for Tier 2. Tier 1 binds a resumed/verify approval DIRECTLY, so a new
-  `bind_note()` tells the reviewer the truth per tier ("your verdict BINDS
-  DIRECTLY … apply full first-pass rigor now" for Tier 1), closing a rigor gap for
-  ordinary-code fixes.
+- review.sh: the binding rule is now one predicate, `binds_directly(mode, tier)`,
+  shared by the post-round gate and the reviewer-facing note so they can't drift.
+  A fresh full review binds; a warm Tier-1 RESUME binds directly (its thread holds
+  the round-1 full read); a Tier-2 approval and ANY fallback VERIFY (a fresh
+  session that saw only prior findings + the incremental diff — never the full
+  current diff) get a clean-slate confirmation before binding. This closes two
+  gaps: the resume/verify prompts previously told the reviewer a clean-slate pass
+  would confirm even when (for Tier 1) its verdict bound directly, AND a Tier-1
+  fallback verify could bind final APPROVED off that narrow view. `bind_note` now
+  states the truth for the actual (mode, tier).
+- risk-classify.sh: an invalid `tier2_extra` regex (a typo in this agent-immutable
+  routing knob) now fails CLOSED to Tier 2 instead of silently disabling the
+  project Tier-2 surface — `grep -Eq` returns exit 2 on a bad pattern, which the
+  per-file check read as a plain "no match", letting intended Tier-2 paths slip to
+  Tier 0/1. Validated once against empty input at startup.
+- risk-classify.sh: a modified BINARY test baseline (image snapshot, golden,
+  testdata blob) now escalates to Tier 2. The existing-test check only looked for
+  textual removed lines (`^-[^-]`), which a binary diff never produces, so a
+  swapped baseline slipped to Tier 1. A new binary-modification check closes it;
+  newly-ADDED binary tests stay Tier 1 (a new baseline is not a weakening).
 - plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
   blocking==0 matched the concur branch). The dashboard now shows "audit
   unavailable" distinctly, so a failed auditor is not mistaken for a passing one.
-- Canary: three regression probes — unknown `audit_vendor` => UNAVAILABLE (not a
-  codex fallthrough); `bind_note` wording per tier; and the dashboard audit badge's
-  three-way discrimination (unavailable / ✓ / DISAGREES).
+- Canary: regression probes for every fix above — unknown `audit_vendor` =>
+  UNAVAILABLE (not a codex fallthrough); the full `binds_directly`/`bind_note`
+  mode×tier matrix (incl. Tier-1 verify must NOT bind); invalid `tier2_extra` =>
+  fail-closed Tier 2; modified-binary-test => Tier 2 (new binary test stays Tier 1);
+  and the dashboard audit badge's three-way discrimination (unavailable / ✓ /
+  DISAGREES).
 
 ## v4.2 (continued) — explicit driver model routing — July 7, 2026
 - MODELS.md + MANUAL.md: the DRIVER now gets the same explicit routing the reviewer

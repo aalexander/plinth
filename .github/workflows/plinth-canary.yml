@@ -87,6 +87,22 @@ jobs:
           git checkout -qB tw main >/dev/null 2>&1
           printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened test != Tier 2"; exit 1; }
+          # A modified BINARY test baseline (snapshot/golden) has no textual '-' line
+          # but is still a weakening surface => Tier 2. A NEW binary test stays Tier 1.
+          git checkout -q main; printf '\000\001\002\003\004' > tests/snap.bin; git add -A; git commit -qm "binary test baseline" >/dev/null
+          git checkout -qB binmod main >/dev/null 2>&1; printf '\000\011\011\011\011' > tests/snap.bin; git add -A; git commit -qm binmod >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified binary test baseline != Tier 2"; exit 1; }
+          git checkout -qB binadd main >/dev/null 2>&1; printf '\000\001' > tests/newsnap.bin; git add -A; git commit -qm binadd >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "1" ] || { echo "::error::classifier: newly-added binary test != Tier 1"; exit 1; }
+          # An invalid tier2_extra regex must fail CLOSED (Tier 2), never silently
+          # disable the project Tier-2 surface (grep exit 2 read as 'no match'). The
+          # bad pattern is set in the WORKING config only, so the committed diff is
+          # docs-only (Tier 0 but for the fail-closed).
+          git checkout -q main; git checkout -qB t2bad main >/dev/null 2>&1
+          echo docs > T2DOC.md; git add T2DOC.md; git commit -qm t2bad >/dev/null
+          sed -i 's/^tier2_extra = .*/tier2_extra = [unterminated/' .plinth/config
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: invalid tier2_extra did not fail closed to Tier 2"; exit 1; }
+          git checkout -q .plinth/config
           # Tier 0 needs NO model infrastructure: a docs-only diff approves even
           # with codex absent (CI runners have no codex). A Tier 1 diff still fails
           # loud at the deferred codex check when codex is absent.
@@ -158,12 +174,17 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
           [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
-          # The resume/verify prompt's binding note must match the tier: Tier 2 gets
-          # a clean-slate confirmation before binding; Tier 1 binds directly. Run the
-          # REAL helper extracted from source (not a copied predicate).
-          BN="$(sed -n '/^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
-          bash -c "$BN; bind_note 2" | grep -qi 'clean-slate' || { echo "::error::bind_note Tier 2 must promise a clean-slate confirmation before binding"; exit 1; }
-          bash -c "$BN; bind_note 1" | grep -qi 'binds directly' || { echo "::error::bind_note Tier 1 must tell the reviewer its verdict binds directly"; exit 1; }
+          # binds_directly() decides whether a round's APPROVED binds or needs a
+          # clean-slate confirmation; bind_note() must tell the reviewer the matching
+          # truth. Extract BOTH real fns and assert the mode x tier matrix (a Tier-1
+          # fallback VERIFY saw only the incremental diff, so it must NOT bind alone).
+          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          bash -c "$FNS; binds_directly fresh 2"  || { echo "::error::a fresh full review must bind"; exit 1; }
+          bash -c "$FNS; binds_directly resume 1" || { echo "::error::a Tier-1 resume (warm thread) must bind directly"; exit 1; }
+          bash -c "$FNS; binds_directly resume 2" && { echo "::error::a Tier-2 resume must get a clean-slate confirmation"; exit 1; } || true
+          bash -c "$FNS; binds_directly verify 1" && { echo "::error::a Tier-1 fallback verify must NOT bind on a narrow view"; exit 1; } || true
+          bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
+          bash -c "$FNS; bind_note verify 1" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-1 verify its verdict does not bind alone"; exit 1; }
           # The dashboard must show an UNAVAILABLE audit distinctly, never as
           # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
           AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"
