@@ -80,6 +80,10 @@ jobs:
             || { echo "::error::cannot fetch plinth@v${ver} — missing tag, or plinth repo not readable from Actions"; exit 1; }
           fail=0
           check() {  # check <plinth-shared-path> <project-path>
+            # Skip files the PINNED release predates (version skew) — there is
+            # nothing to compare. If the release ships the file but the project
+            # deleted it, cmp still fails below (that IS tampering).
+            [ -f "/tmp/plinth/$1" ] || return 0
             if ! cmp -s "/tmp/plinth/$1" "$2"; then
               echo "::error file=$2::differs from plinth v${ver} ($1) — version-pinned tooling was modified"
               fail=1

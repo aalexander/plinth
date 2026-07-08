@@ -52,6 +52,14 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
   update`'s protected-paths backfill is documented as the one managed exception
   to "update never touches your per-project files."
+- More dogfood fixes: review.sh now fails CLOSED when the classifier is
+  missing/broken (defaults Tier 2, not Tier 1 — an unclassified high-consequence
+  diff is over-reviewed, never under-reviewed); the floor byte-compare skips
+  files the PINNED release predates (so the plinth repo's own canary, whose
+  installed .plinth/ is an older release, is not permanently red on a
+  not-yet-shipped file); and the canary now stubs a primary reviewer + grok
+  auditor to exercise the cross-vendor audit path (records the audit verdict on
+  concur, UNAVAILABLE on a failing auditor). All verified locally.
 - Two more routing holes closed: `CLAUDE.md` (imports the plinth rules, controls
   the driver) is now classified TOOLING/Tier 2 instead of falling through to the
   inert-docs rule; and `.plinth/protected-paths` was removed from review.sh's

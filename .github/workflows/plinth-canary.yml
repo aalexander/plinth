@@ -97,4 +97,30 @@ jobs:
             rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = "2" ] || { echo "::error::Tier-1 without codex did not fail loud at the deferred check (exit $rc)"; exit 1; }
           fi
-          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex OK"
+          # Cross-vendor audit path: stub the primary reviewer (codex) and a grok
+          # auditor, run a Tier-2 review, verify the audit verdict is recorded;
+          # then a FAILING auditor is recorded UNAVAILABLE (non-blocking).
+          mkdir -p /tmp/asb
+          cat > /tmp/asb/codex <<'CX'
+          #!/usr/bin/env bash
+          out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+          cat >/dev/null
+          [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"stub","findings":[]}' > "$out"
+          echo '{"type":"thread.started","thread_id":"stub"}'
+          echo '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+          CX
+          cat > /tmp/asb/grok <<'GK'
+          #!/usr/bin/env bash
+          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x /tmp/asb/codex /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud main >/dev/null 2>&1; echo "new req" >> SPEC.md; git add -A; git commit -qm aud >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          v="$(jq -r '.audit.vendor // "none"' .plinth/session/review/aud/verdict.json 2>/dev/null)"
+          [ "$v" = "grok" ] || { echo "::error::cross-vendor audit not recorded (vendor=$v)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/grok; chmod +x /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          av="$(jq -r '.audit.verdict // "none"' .plinth/session/review/aud2/verdict.json 2>/dev/null)"
+          [ "$av" = "UNAVAILABLE" ] || { echo "::error::failing auditor not recorded UNAVAILABLE (verdict=$av)"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit OK"

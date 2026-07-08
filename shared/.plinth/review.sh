@@ -136,11 +136,14 @@ mkdir -p "$SDIR"
 # shows it is needed).
 diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
 [ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
-RISK=1; RISK_JSON='{"tier":1,"reasons":["classifier unavailable"]}'
+# Fail CLOSED: a missing/broken classifier must not de-escalate. Default Tier 2
+# (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
+# high-consequence diff is over-reviewed, never under-reviewed.
+RISK=2; RISK_JSON='{"tier":2,"reasons":["classifier unavailable — failing closed to Tier 2"]}'
 if [ -x ".plinth/risk-classify.sh" ]; then
-  RISK_JSON="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || echo "$RISK_JSON")"
-  RISK="$(printf '%s' "$RISK_JSON" | jq -r '.tier // 1' 2>/dev/null || echo 1)"
-  case "$RISK" in 0|1|2) ;; *) RISK=1 ;; esac
+  out="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || true)"
+  t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
+  case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
