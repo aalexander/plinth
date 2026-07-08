@@ -37,6 +37,12 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   fail-closed Tier 2; modified-binary-test => Tier 2 (new binary test stays Tier 1);
   and the dashboard audit badge's three-way discrimination (unavailable / ✓ /
   DISAGREES).
+- MODELS.md: spelled out the two SEPARATE reviewer integration paths a field driver
+  conflated. `audit_vendor` = grok|agy runs that vendor's OWN CLI (subscription-
+  authed, independent of codex config; missing => non-blocking UNAVAILABLE).
+  `reviewer_model_tier1/tier2` are passed to `codex -m`, so making grok the PRIMARY
+  reviewer needs an xAI `model_provider` + key in `~/.codex/config.toml` plus a
+  `PLINTH_RESUME_MAX` reset — not automatic; leave unset to keep gpt-5.5.
 
 ## v4.2 (continued) — explicit driver model routing — July 7, 2026
 - MODELS.md + MANUAL.md: the DRIVER now gets the same explicit routing the reviewer

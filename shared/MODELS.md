@@ -71,17 +71,32 @@ near-full thread silently auto-compacts away the original diff context.
 Three reviewer CLIs are available; assign by their observed strengths:
 - **codex / GPT-5.5** — goes DEEPEST. Keep it the PRIMARY adversarial reviewer at
   all tiers, and it does the binding clean-slate confirmation. Slower.
-- **grok / Grok Build (xAI)** — good and noticeably FASTER. Best as the Tier-2
-  CROSS-VENDOR second opinion (`audit_vendor = grok`) — a different vendor breaks
-  the reviewer-collusion risk (the primary reviewer is otherwise a sibling of the
-  driver), and speed matters for a check that fires on every Tier-2 approval.
-  Also a good `reviewer_model_tier1` when you want faster ordinary-code review.
+- **grok / Grok Build (xAI)** — good and noticeably FASTER, and a DIFFERENT vendor.
+  Best as the Tier-2 CROSS-VENDOR second opinion (`audit_vendor = grok`) — a
+  different vendor breaks the reviewer-collusion risk (the primary reviewer is
+  otherwise a sibling of the driver), and speed matters for a check that fires on
+  every Tier-2 approval. This path runs grok's OWN `grok` CLI — nothing goes in
+  codex's config.
 - **agy / Antigravity (Gemini, Google)** — CAUTION: it REFUSES adversarial
   "find-the-bypass" framing. Fine for the review-loop audit (framed as
   "audit your own code," which review.sh uses) but do not point red-team prompts
   at it. Keep as a third cross-vendor option, not the primary adversary.
 
-Default config (templates/.plinth/config): `audit_vendor = grok`. Revisit on any
+Two SEPARATE integration paths — don't conflate them (a driver did):
+- `audit_vendor` = grok | agy runs that vendor's OWN CLI (a separate binary,
+  subscription-authed), independent of your codex config. If that CLI isn't
+  installed or signed in, the audit is recorded UNAVAILABLE (non-blocking) and the
+  codex primary review stands — surface it (the dashboard shows "audit
+  unavailable"), don't read a missing audit as a pass.
+- `reviewer_model_tier1/tier2` are passed to `codex -m`, so they must be models
+  YOUR codex can actually run. The stock config runs only gpt-5.5; making grok (or
+  any non-OpenAI model) the PRIMARY reviewer means adding an xAI/Google
+  `model_provider` + key to `~/.codex/config.toml` AND resetting `PLINTH_RESUME_MAX`
+  to ~65% of that model's context window (reviewer-swap checklist above). It is not
+  automatic — leave these UNSET to keep gpt-5.5 unless you've done that setup.
+
+Default config (templates/.plinth/config): `audit_vendor = grok` — the separate
+`grok` CLI (needs it signed in; a non-fatal UNAVAILABLE if not). Revisit on any
 model/subscription change.
 
 ## Trust note (from the Fable 5 system card)
