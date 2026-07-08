@@ -245,6 +245,11 @@ copy_templates_if_absent() {
         -e "s|plinth-floor\.yml@[0-9a-f]*|plinth-floor.yml@${psha}|g" \
         -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
         -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned by plinth init from this checkout)|g"
+    else
+      echo "  ci.yml:        WARNING — could not resolve the Plinth commit SHA (PLINTH_ROOT is not a"
+      echo "                 git checkout?). The reusable-workflow refs keep the shipped FALLBACK"
+      echo "                 release, which lags this Plinth version — pin them to this version's"
+      echo "                 commit SHA before relying on CI."
     fi
   fi
 }

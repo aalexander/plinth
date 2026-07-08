@@ -74,6 +74,7 @@ jobs:
           [ "$(tier 'echo FROM alpine > prod.dockerfile')" = "2" ] || { echo "::error::classifier: *.dockerfile suffix != Tier 2"; exit 1; }
           [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
           [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
+          [ "$(tier 'echo maximize > GOAL.md')" = "2" ] || { echo "::error::classifier: GOAL.md (optimization contract) != Tier 2 — metric-gaming bypass"; exit 1; }
           [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
           [ "$(tier 'mkdir -p vault; echo x > vault/a.md')" = "2" ] || { echo "::error::classifier: tier2_extra path != Tier 2"; exit 1; }
           [ "$(tier 'echo x > run.md; chmod +x run.md')" = "1" ] || { echo "::error::classifier: executable .md is Tier 0"; exit 1; }

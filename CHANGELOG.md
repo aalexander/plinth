@@ -69,6 +69,14 @@ here hitting a live PR first:
   `newmode` 160000, so DELETING or type-changing a submodule out (newmode
   000000/100644) fell to Tier 1; it now also checks `oldmode` 160000 — submodule
   add/modify/delete/type-change all stay Tier 2. Canary probes for both.
+- risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
+  contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
+  matching the generic `.md` docs rule and going Tier 0 (skipping the model round
+  entirely). Canary probe added.
+- bin/plinth / templates/ci.yml: the SHA-pinned reusable-ref FALLBACK is now
+  honestly documented as a prior release (not "latest"), and `plinth init` WARNS
+  loudly if it can't resolve the Plinth commit (non-git install) rather than
+  silently shipping the stale fallback floor.
 
 
 Surfaced by the clean-slate confirmation reviewing this branch:

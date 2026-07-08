@@ -49,7 +49,7 @@ raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
 [ -n "$raw" ] || { printf '{"tier":0,"reasons":["empty diff"],"files":0,"base_ref":"%s"}\n' "$baseref"; exit 0; }
 
 # High-consequence path signals (Tier 2). Case-insensitive matching below.
-TOOLING='(^|/)\.plinth/|(^|/)\.claude/|(^|/)\.github/|(^|/)\.gitlab-ci|(^|/)\.circleci/|(^|/)\.buildkite/|(^|/)Jenkinsfile|(^|/)azure-pipelines|(^|/)AGENTS\.md$|(^|/)CLAUDE\.md$|(^|/)PLANNING-PROMPT\.md$|(^|/)\.gitattributes$|(^|/)\.gitmodules$'
+TOOLING='(^|/)\.plinth/|(^|/)\.claude/|(^|/)\.github/|(^|/)\.gitlab-ci|(^|/)\.circleci/|(^|/)\.buildkite/|(^|/)Jenkinsfile|(^|/)azure-pipelines|(^|/)AGENTS\.md$|(^|/)CLAUDE\.md$|(^|/)PLANNING-PROMPT\.md$|(^|/)GOAL\.md$|(^|/)\.gitattributes$|(^|/)\.gitmodules$'
 BUILD='(^|/)(Makefile|CMakeLists\.txt|Dockerfile(\.[^/]+)?|Containerfile(\.[^/]+)?|docker-compose[^/]*\.ya?ml|setup\.py|setup\.cfg|MANIFEST\.in|tox\.ini|build\.gradle|settings\.gradle|pom\.xml|WORKSPACE|MODULE\.bazel|BUILD\.bazel|flake\.nix)$|\.cmake$|\.dockerfile$|(^|/)scripts/(release|deploy|publish)'
 SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|permission|rbac|acl|oauth|jwt|signing|keystore|access|policy|identity|sso|saml|mfa|totp|webauthn|csrf|cors|cookie|cert|tls|x509|guard|roles?|cipher|encrypt|decrypt|hash|nonce)'
 MIGRATION='(migrat|/schema\.|\.sql$|alembic|/prisma/|liquibase|flyway|db_.*update|alter_.*table|/models?\.py$|/entities/)'
