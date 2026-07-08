@@ -42,11 +42,17 @@ jobs:
           echo dirty > f.txt
           rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
           [ "$rc" -eq 2 ] || { echo "::error::review.sh dirty-tree path exited $rc (want 2)"; exit 1; }
-          # Risk classifier smoke: docs => Tier 0, code => Tier 1, tooling => Tier 2.
-          git checkout -q main
-          git checkout -qb t0 && echo "# doc" > R.md && git add -A && git commit -qm d
-          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "0" ] || { echo "::error::classifier: docs not Tier 0"; exit 1; }
-          git checkout -q main
-          git checkout -qb t2 && mkdir -p .claude/hooks && echo x > .claude/hooks/z.sh && git add -A && git commit -qm t
-          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: tooling not Tier 2"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers OK"
+          git checkout -- f.txt   # clean the fixture before switching branches
+          # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
+          # starts fresh from main (checkout -qB resets the probe branch).
+          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
+          [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
+          [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
+          [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
+          # Receipt binding: the digest (excluding the receipt) must change when
+          # the diff changes — the property the CI receipt verifier enforces.
+          git checkout -q main; git checkout -qB rcpt >/dev/null 2>&1; echo v1 > app.py; git add -A; git commit -qm w >/dev/null
+          dg() { printf '%s' "$(git diff main...HEAD -- . ':(exclude).plinth/review-receipt.json')" | sha256sum | cut -d' ' -f1; }
+          d1="$(dg)"; echo v2 >> app.py; git add -A; git commit -qm tamper >/dev/null; d2="$(dg)"
+          [ "$d1" != "$d2" ] || { echo "::error::receipt digest did not change when the diff changed"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + receipt digest OK"
