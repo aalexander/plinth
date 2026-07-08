@@ -189,14 +189,26 @@ if [ "$RISK" = "2" ]; then tmodel="$(cfg reviewer_model_tier2 || true)"
 else tmodel="$(cfg reviewer_model_tier1 || true)"; fi
 if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel"; fi
 
-# Round bookkeeping. A CHANGES_NEEDED verdict with a live session continues the
-# thread (fix-verification round); anything else starts a fresh task.
+# Only resume a prior session that (a) asked for changes, (b) has a live thread on
+# the SAME base, and (c) actually holds a full-diff read. A VERIFY session is a
+# fresh, narrow session (prior findings + incremental diff only); resuming it and
+# treating the continued thread as "warm" would let a Tier-1 approval bind without
+# any full read (binds_directly trusts that a resume carries the round-1 full
+# read). So a verify-origin session is NOT resumable — the next round goes fresh
+# and re-reads the full diff before binding. Pure fn -> testable.
+resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode>
+  [ "$1" = "CHANGES_NEEDED" ] && [ -n "$2" ] && [ "$3" = "$4" ] && [ "$5" != "verify" ]
+}
+
+# Round bookkeeping. A CHANGES_NEEDED verdict with a live (resumable) session
+# continues the thread (fix-verification round); anything else starts a fresh task.
 mode="fresh"; round=1; sid=""
 if [ -f "$SDIR/verdict.json" ]; then
   prev_verdict="$(jq -r '.verdict // empty'    "$SDIR/verdict.json")"
   prev_sha="$(jq -r '.sha // empty'            "$SDIR/verdict.json")"
   prev_base="$(jq -r '.base_ref // empty'      "$SDIR/verdict.json")"
   prev_sid="$(jq -r '.session_id // empty'     "$SDIR/verdict.json")"
+  prev_mode="$(jq -r '.mode // empty'          "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
@@ -213,7 +225,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
     die "HEAD unchanged since round ${prev_round} returned CHANGES_NEEDED — commit fixes before re-running"
   fi
-  if [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ -n "$prev_sid" ] && [ "$prev_base" = "$baseref" ]; then
+  if resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
     # Resume only when it can plausibly work; otherwise a cheap verify round
     # (fresh session, prior findings + incremental diff — non-binding) instead
@@ -405,10 +417,10 @@ ${inc}${evidence}${commits}"
   usage="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"
   [ -n "$usage" ] || usage="null"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
-        --argjson round "$r" --arg sid "$RSID" --argjson usage "$usage" \
+        --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, model:$model, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}' \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
   jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
     '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true

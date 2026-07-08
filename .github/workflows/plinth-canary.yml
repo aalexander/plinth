@@ -185,6 +185,14 @@ jobs:
           bash -c "$FNS; binds_directly verify 1" && { echo "::error::a Tier-1 fallback verify must NOT bind on a narrow view"; exit 1; } || true
           bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
           bash -c "$FNS; bind_note verify 1" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-1 verify its verdict does not bind alone"; exit 1; }
+          # A verify-origin session must NOT be resumable — else the next round
+          # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
+          # thread that never read the full diff. resumable_prev enforces it.
+          RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main fresh"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main verify" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED '' main main fresh"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
           # The dashboard must show an UNAVAILABLE audit distinctly, never as
           # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
           AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"

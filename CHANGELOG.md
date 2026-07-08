@@ -18,6 +18,12 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   would confirm even when (for Tier 1) its verdict bound directly, AND a Tier-1
   fallback verify could bind final APPROVED off that narrow view. `bind_note` now
   states the truth for the actual (mode, tier).
+- review.sh: closed the lineage leak in the above — a verify round that returned
+  CHANGES_NEEDED recorded its session_id, and the NEXT run resumed it as
+  `mode=resume`, where `binds_directly(resume, tier1)` bound a thread that had only
+  ever seen the incremental diff. A verify-origin session is now non-resumable
+  (`resumable_prev`, and the round's `mode` is recorded in the verdict): the next
+  round goes fresh and re-reads the full diff before any bind.
 - risk-classify.sh: an invalid `tier2_extra` regex (a typo in this agent-immutable
   routing knob) now fails CLOSED to Tier 2 instead of silently disabling the
   project Tier-2 surface — `grep -Eq` returns exit 2 on a bad pattern, which the
