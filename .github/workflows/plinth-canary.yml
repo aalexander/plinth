@@ -260,6 +260,12 @@ jobs:
           printf '%s' "$SPECOUT" | grep -q 'req-in-yaml' || { echo "::error::inline_spec dropped a non-.md (yaml) spec file — incomplete auditor spec"; exit 1; }
           printf '%s' "$SPECOUT" | grep -q 'md-req'      || { echo "::error::inline_spec dropped an .md spec file"; exit 1; }
           printf '%s' "$SPECOUT" | grep -q 'BINblob'     && { echo "::error::inline_spec included a binary blob in the auditor prompt"; exit 1; } || true
+          # The tools-forbidden auditor must ALSO see GOAL.md when present (it can't
+          # read files, and metric-integrity review needs the eval/score contract).
+          IG="$(sed -n '/^inline_goal() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          GTD="$(mktemp -d)"; printf 'REQ: maximize accuracy; eval.py immutable; score must not decrease\n' > "$GTD/GOAL.md"
+          (cd "$GTD" && bash -c "$IG"'; inline_goal') | grep -q 'eval.py immutable' || { echo "::error::inline_goal dropped GOAL.md — auditor blind to metric-integrity contract"; exit 1; }
+          GTD2="$(mktemp -d)"; (cd "$GTD2" && bash -c "$IG"'; inline_goal') | grep -qi 'no GOAL.md' || { echo "::error::inline_goal missing the no-GOAL stub"; exit 1; }
           # The dashboard must show an UNAVAILABLE audit distinctly, never as
           # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
           AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"

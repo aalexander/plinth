@@ -108,6 +108,14 @@ inline_spec() {
   echo "(spec path not found: ${SPEC_PATH})"
 }
 
+# Inline GOAL.md for the tools-forbidden auditor. AGENTS.md carries the metric-
+# integrity rules; the auditor also needs the GOAL's actual eval/score contract to
+# judge metric gaming, and it cannot read files. Pure fn -> testable.
+inline_goal() {
+  [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
+  echo "--- GOAL.md ---"; cat GOAL.md
+}
+
 run_auditor() {  # run_auditor <prompt> <out-findings-json>
   local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
   printf '%s' "$prompt" > "$pf"
@@ -521,6 +529,9 @@ $( for f in AGENTS.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $
 
 === CANONICAL SPEC (${SPEC_PATH}) ===
 $(inline_spec)
+
+=== OPTIMIZATION GOAL (if present, apply the AGENTS.md metric-integrity rules) ===
+$(inline_goal)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"

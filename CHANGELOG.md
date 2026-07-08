@@ -89,6 +89,11 @@ Surfaced by the clean-slate confirmation reviewing this branch:
   tools-forbidden auditor an INCOMPLETE spec — a false cross-vendor guarantee. Now
   every text file in the tree is inlined (binaries skipped); a file spec is
   unchanged.
+- review.sh: the auditor prompt now inlines GOAL.md when present (new
+  `inline_goal`). The tools-forbidden auditor was given AGENTS.md's metric-
+  integrity RULES but not the GOAL's eval/score contract, so on optimization-loop
+  repos it could falsely concur on metric-gaming it couldn't see. Canary probes for
+  both `inline_spec` and `inline_goal`.
 - plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
   blocking==0 matched the concur branch). The dashboard now shows "audit
   unavailable" distinctly, so a failed auditor is not mistaken for a passing one.
