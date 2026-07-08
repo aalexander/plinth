@@ -57,6 +57,7 @@ jobs:
           [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
           [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
           [ "$(tier 'printf "all:\n\techo hi\n" > makefile')" = "2" ] || { echo "::error::classifier: lowercase makefile != Tier 2"; exit 1; }
+          [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
           [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
           [ "$(tier 'mkdir -p vault; echo x > vault/a.md')" = "2" ] || { echo "::error::classifier: tier2_extra path != Tier 2"; exit 1; }
           [ "$(tier 'echo x > run.md; chmod +x run.md')" = "1" ] || { echo "::error::classifier: executable .md is Tier 0"; exit 1; }

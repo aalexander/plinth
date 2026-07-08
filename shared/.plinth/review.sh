@@ -114,7 +114,9 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
-HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|^AGENTS\.md$'
+# NB: protected-paths is DELIBERATELY NOT here — AGENTS.md excludes it from the
+# UPSTREAM/tooling exemption, so a bad protected-paths change must stay blocking.
+HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md)$|^AGENTS\.md$'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"

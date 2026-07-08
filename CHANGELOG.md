@@ -41,6 +41,11 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
   update`'s protected-paths backfill is documented as the one managed exception
   to "update never touches your per-project files."
+- Two more routing holes closed: `CLAUDE.md` (imports the plinth rules, controls
+  the driver) is now classified TOOLING/Tier 2 instead of falling through to the
+  inert-docs rule; and `.plinth/protected-paths` was removed from review.sh's
+  HARNESS_RE so a bad protected-paths change stays BLOCKING (AGENTS.md excludes
+  it from the UPSTREAM/tooling exemption) instead of being filtered as non-blocking.
 - DEFERRED (removed before merge): a CI review-receipt verifier that would
   recompute tier+digest at merge to close a hypothesized approve-then-swap
   TOCTOU. Built, but it generated every dogfood-review finding (a gate deadlock,
