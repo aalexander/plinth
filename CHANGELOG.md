@@ -1,5 +1,16 @@
 # Plinth changelog
 
+## v4.2 — smoke no-hang fix — July 8, 2026
+- smoke.yml: a github-hosted `precheck` job now decides whether there is anything
+  to smoke (smoke_cmd set in the base config) BEFORE any self-hosted runner is
+  requested. Previously the self-hosted `smoke` job was queued unconditionally,
+  so a repo with no `plinth-smoke` runner (and/or no smoke_cmd) left the job
+  `queued` forever — blocking PR merges. With the gate, no-smoke_cmd repos skip
+  the self-hosted job entirely (green no-op, no runner needed). Found in the
+  field: certeus PRs hung 2h+ on a queued smoke with no runner and no smoke_cmd.
+  NOTE: smoke.yml is a per-project file (never overwritten by update) — existing
+  projects must copy the new template in.
+
 ## v4.2 (continued) — July 7, 2026
 Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
 - SPEC template + PLANNING-PROMPT (kept in sync): requirements now carry STABLE
