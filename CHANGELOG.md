@@ -10,12 +10,14 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   blindspot class that let the anvil real-run layer go unvalidated. NEW spec
   sections: Core Invariants (near-immutable), Execution-gated surface
   (exec_gated + smoke_cmd), High-consequence surface (tier2_extra).
-- TRUST BUT VERIFY (Tier 0 only): a random UNPREDICTABLE `verify_sample_rate`
-  percent (default 10) of TIER 0 changes get a full review anyway — Tier 0 is the
-  only tier that skips model review, so this guards against a novel classifier
-  evasion (a Tier 0 that is really code) the deterministic classifier itself
-  missed. Tier 1 is NOT sampled: it is already fully reviewed, so escalating it
-  was redundant overhead on the common path.
+- DROPPED (built, then removed): trust-but-verify Tier-0 sampling. The dogfood
+  review proved it can't work — any sample computed locally from the commit SHA
+  is grindable (amend the commit until the roll escapes the rate), and any
+  per-run random is re-runnable. Local sampling cannot be unpredictable to an
+  adversarial driver. Real Tier-0 verification belongs in CI (deterministic
+  re-classification of the merge diff — ungameable), deferred with the receipt
+  work. A clean example of the loop killing over-clever hardening that can't
+  deliver what it promised.
 - Optimal reviewer assignment across the three subscription CLIs (MODELS.md):
   codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
   the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional

@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
           "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx
+          printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"
           git checkout -qb feat && echo x > f.txt && git add -A && git commit -qm "canary work"
           # review.sh must fail LOUD (exit 2), never fail open, without codex:
@@ -54,7 +55,16 @@ jobs:
           [ "$(tier 'echo requests==1 > requirements.txt')" = "2" ] || { echo "::error::classifier: deps manifest != Tier 2"; exit 1; }
           [ "$(tier 'mkdir -p src; echo x > src/auth_login.py')" = "2" ] || { echo "::error::classifier: security path != Tier 2"; exit 1; }
           [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
-          # Rename + test-weakening bypasses need the base file to exist ON MAIN
+          [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
+          [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p vault; echo x > vault/a.md')" = "2" ] || { echo "::error::classifier: tier2_extra path != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > run.md; chmod +x run.md')" = "1" ] || { echo "::error::classifier: executable .md is Tier 0"; exit 1; }
+          [ "$(tier 'mkdir -p tests; printf "@pytest.mark.skip\ndef test_x():\n    assert True\n" > tests/skip_test.py')" = "2" ] || { echo "::error::classifier: skip-added test != Tier 2"; exit 1; }
+          # Submodule gitlink (mode 160000) must never be Tier 0.
+          git checkout -q main; git checkout -qB sm >/dev/null 2>&1
+          git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",subm; git commit -qm sm >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule != Tier 2"; exit 1; }
+          # Rename, test-weakening, and test-deletion need the base file ON MAIN
           # (else the change reads as an added file from main's view). Seed main:
           git checkout -q main; mkdir -p src tests
           echo "secret=1" > src/logic.py
@@ -63,6 +73,9 @@ jobs:
           # Real code renamed to a .md destination must NOT be Tier 0.
           git checkout -qB rn main >/dev/null 2>&1; git mv src/logic.py notes.md; git commit -qm rename >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" != "0" ] || { echo "::error::classifier: code renamed to .md is Tier 0 (bypass)"; exit 1; }
+          # Deleting an existing test must be Tier 2.
+          git checkout -qB del main >/dev/null 2>&1; git rm -q tests/core_test.py; git commit -qm del >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: test deletion != Tier 2"; exit 1; }
           # Removing assertions from an existing test => Tier 2.
           git checkout -qB tw main >/dev/null 2>&1
           printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null

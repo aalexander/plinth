@@ -140,30 +140,11 @@ if [ -x ".plinth/risk-classify.sh" ]; then
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
-# ── Trust but verify (Tier 0 only) ──────────────────────────────────────────
-# Tier 0 is the only tier that otherwise gets NO model review, so a novel
-# classifier evasion (code shipped as docs) that the deterministic classifier
-# itself missed would sail through with nothing having looked at it. So a random,
-# UNPREDICTABLE fraction of Tier 0 changes get a full review anyway. Tier 1 is
-# deliberately NOT sampled: it already gets a full adversarial review, so
-# escalating it is redundant overhead on the common path.
-# verify_sample_rate = percent (default 10; 0 disables). DEPTH drives review
-# depth; RISK stays the deterministic value recorded in the verdict. The sample
-# decision is DETERMINISTIC per commit SHA (not re-rolled each run), so a sampled
-# change cannot be re-run at the same SHA until it escapes the sample — it is
-# sampled or not for that SHA, unpredictably but stably.
-DEPTH="$RISK"; verify_sample=0
-VERIFY_RATE="$(cfg verify_sample_rate || true)"; case "$VERIFY_RATE" in ''|*[!0-9]*) VERIFY_RATE=10 ;; esac
-sroll=$(printf '%s' "$sha" | cksum | cut -d' ' -f1); sroll=$((sroll % 100))
-if [ "$VERIFY_RATE" -gt 0 ] && [ "$RISK" = "0" ] && [ "$sroll" -lt "$VERIFY_RATE" ]; then
-  verify_sample=1; DEPTH=2
-  echo "Plinth review: TRUST-BUT-VERIFY sample — this Tier 0 change gets a full review despite skipping by tier."
-fi
 
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
-if [ "$DEPTH" = "0" ]; then
+if [ "$RISK" = "0" ]; then
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
@@ -406,7 +387,7 @@ esac
 # continuity nor a narrow view can soften the adversarial read. TIER 1 (ordinary
 # code) accepts a resumed approval directly — the speed of iterative convergence
 # is worth more than a second full read here.
-if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ] && [ "$DEPTH" = "2" ]; then
+if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ] && [ "$RISK" = "2" ]; then
   echo "Plinth review: Tier 2 — round ${round} findings resolved; running clean-slate confirmation review..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
@@ -436,7 +417,7 @@ if [ -n "$AUDIT_MODEL" ] || [ "$AUDIT_VENDOR" != "codex" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count
-  if [ "$DEPTH" = "2" ] || [ $((ac % 5)) -eq 0 ]; then
+  if [ "$RISK" = "2" ] || [ $((ac % 5)) -eq 0 ]; then
     echo "Plinth review: cross-vendor audit (Tier ${RISK}, approval #$ac) — ${AUDIT_VENDOR}${AUDIT_MODEL:+ / $AUDIT_MODEL}..."
     afind="$SDIR/findings-audit-$round.json"
     # Self-contained: agentic auditor CLIs (grok/agy) would otherwise try to

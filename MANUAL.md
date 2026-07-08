@@ -182,8 +182,7 @@ Two operator chores the rules generate:
      NO model round (the CI floor scanners still run at PR). This is the one case
      where model review is skipped, and only because the classifier proved every
      changed file is an inert doc blob; any code, tooling, or spec would have
-     bumped the tier. A random, unpredictable sample of Tier 0 changes gets a
-     full review anyway (trust-but-verify).
+     bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
      (Codex) with the reviewer rules in AGENTS.md. A resumed/verify approval
      binds directly — iterative convergence speed is worth more than a second

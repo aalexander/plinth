@@ -67,11 +67,8 @@ Three reviewer CLIs are available; assign by their observed strengths:
   "audit your own code," which review.sh uses) but do not point red-team prompts
   at it. Keep as a third cross-vendor option, not the primary adversary.
 
-Default config (templates/.plinth/config): `audit_vendor = grok`,
-`verify_sample_rate = 10`. Trust-but-verify samples TIER 0 ONLY — the only tier
-that skips model review — so a random tenth of docs-class changes get a real
-review, guarding against a novel classifier evasion (Tier 1 is already reviewed,
-so it is not sampled). Revisit these on any model/subscription change.
+Default config (templates/.plinth/config): `audit_vendor = grok`. Revisit on any
+model/subscription change.
 
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —
