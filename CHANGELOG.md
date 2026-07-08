@@ -55,6 +55,10 @@ Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
   case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
   update`'s protected-paths backfill is documented as the one managed exception
   to "update never touches your per-project files."
+- ensure_protected_paths now ensures a trailing newline before appending, so a
+  user's last protected-paths line lacking a newline isn't concatenated/corrupted
+  by the first managed pattern. PLANNING-PROMPT.md is classified TOOLING/Tier 2
+  (it is prompt-as-code that shapes future specs, not inert docs).
 - audit_model override was silently broken: `${AUDIT_MODEL:+-m "$AUDIT_MODEL"}`
   collapsed to a single argv token `-m model` instead of two, so a configured
   audit_model never reached the auditor. Fixed with a proper 2-element array

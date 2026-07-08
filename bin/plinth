@@ -157,6 +157,9 @@ github_preflight() {
 ensure_protected_paths() {
   local f="$target/.plinth/protected-paths"; [ -f "$f" ] || return 0
   local added=0 line
+  # If the file doesn't end in a newline, appending would concatenate the first
+  # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
+  [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     grep -qxF "$line" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
