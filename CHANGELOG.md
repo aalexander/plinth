@@ -10,7 +10,10 @@
   gates warm resume (codex/claude yes; grok runs fresh/verify). Vendor-aware
   required-CLI check + per-tier `RV_MODEL` mapped to each vendor's model flag. This
   is DISTINCT from `audit_vendor` (the cross-vendor second opinion): three separate
-  integration paths, now documented in MODELS.md + the config scaffold.
+  integration paths, now documented in MODELS.md + the config scaffold. The
+  cross-vendor audit now gates on `audit_vendor != reviewer_vendor` (was hardcoded
+  `!= codex`), so it stays a genuine DIFFERENT-vendor check whatever the primary is
+  (e.g. grok primary + grok audit is correctly NOT a cross-vendor audit).
 - **Review-loop efficiency #1 — enumerate the whole class per pass.** The fresh and
   verify prompts now instruct the reviewer to SWEEP the diff for every sibling
   instance of a defect class and report them all in one round, instead of the single

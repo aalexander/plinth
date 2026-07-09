@@ -71,7 +71,7 @@ diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD 
 #   round_budget advisory warning threshold for per-round input tokens
 #                (default 4000000; warns and continues — never blocks)
 #   audit_vendor a DIFFERENT-vendor CLI for the cross-vendor second opinion; the
-#                audit runs only when audit_vendor != codex (the primary reviewer),
+#                audit runs only when audit_vendor differs from reviewer_vendor (the primary),
 #                on every Tier-2 approval (and every 5th otherwise). Disagreement
 #                reported, not adjudicated.
 #   audit_model  optional MODEL OVERRIDE for audit_vendor (not a trigger)
@@ -92,8 +92,9 @@ basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
 # bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
 # path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
 # come from the ratified base, NOT the working tree: else a PR could weaken its OWN
-# review (pick a weak reviewer model, set audit_vendor=codex to drop the cross-vendor
-# audit, route its own findings to the run gate). Mirrors risk-classify.sh + spec_path.
+# review (pick a weak reviewer model, set audit_vendor to the primary's own vendor to
+# drop the cross-vendor audit, route its own findings to the run gate). Mirrors
+# risk-classify.sh + spec_path.
 bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
 SPEC_PATH="$(bcfg spec_path)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
@@ -249,7 +250,7 @@ command -v "$REVIEWER_VENDOR" >/dev/null 2>&1 || die_infra "$REVIEWER_VENDOR CLI
 #   iterative convergence, acceptable for ordinary code with a bound digest.
 # Tier 2 (high-consequence): the frontier reviewer, ALWAYS a clean-slate
 #   confirmation, and — when a genuinely cross-vendor auditor is configured
-#   (audit_vendor != codex) — a cross-vendor second opinion on EVERY Tier-2
+#   (audit_vendor != reviewer_vendor) — a cross-vendor second opinion on EVERY Tier-2
 #   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
 #   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
 # Per-tier reviewer model (base config). Each vendor adapter maps RV_MODEL to its own
@@ -622,7 +623,7 @@ fi
 # a SAME-vendor codex audit falsely framed/recorded as cross-vendor. audit_model
 # is a model override for that different vendor, not a trigger. Disagreement is
 # reported, never adjudicated here — a different isolated model is the authority.
-if [ "$AUDIT_VENDOR" != "codex" ]; then
+if [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count

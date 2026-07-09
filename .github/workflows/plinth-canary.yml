@@ -449,6 +449,18 @@ jobs:
           }
           seq_probe codex resume
           seq_probe grok  noresume
+          # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
+          # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
+          # "cross-vendor" audit runs (Tier-2 change; grok primary + grok audit).
+          agd="$(mktemp -d)"
+          ( cd "$agd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$agd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = grok\naudit_vendor = grok\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            vj="$(ls .plinth/session/review/*/verdict.json | head -1)"
+            [ "$(jq -r 'has("audit")' "$vj")" = "false" ] || { echo "::error::audit gate: reviewer_vendor==audit_vendor (grok/grok) ran a false cross-vendor audit"; exit 1; } )
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
