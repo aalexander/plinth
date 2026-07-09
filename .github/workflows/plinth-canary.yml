@@ -813,6 +813,20 @@ jobs:
           [ "$(gcmd 'env git reset --hard origin/main')" = 2 ] || { echo "::error::guard: prefixed git reset --hard origin not blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
+          # Option-bearing prefixes (round-6): sudo -n / -u root, env -i, command --, nice -n 10.
+          [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'sudo -u root rm -rf x')" = 2 ] || { echo "::error::guard: sudo -u root rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'env -i rm -rf x')" = 2 ] || { echo "::error::guard: env -i rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'command -- rm -rf x')" = 2 ] || { echo "::error::guard: command -- rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'nice -n 10 rm -rf x')" = 2 ] || { echo "::error::guard: nice -n 10 rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'time -p git reset --hard origin/main')" = 2 ] || { echo "::error::guard: time -p prefixed hard-reset not blocked"; exit 1; }
+          [ "$(gcmd 'sudo -u root ls /root')" = 0 ] || { echo "::error::guard: benign sudo -u root wrongly blocked"; exit 1; }
+          # Prefixed shell wrappers must still hit the ship gate (round-6).
+          rm -f "$GV" 2>/dev/null || true
+          [ "$(gcmd 'env bash -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env-prefixed bash -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'sudo bash -c "gh pr merge"')" = 2 ] || { echo "::error::deny-ship: sudo-prefixed bash -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'FOO=1 sh -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: VAR=val-prefixed sh -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'echo "env bash -c gh pr create"')" = 0 ] || { echo "::error::deny-ship: prose naming a prefixed wrapper false-positived"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

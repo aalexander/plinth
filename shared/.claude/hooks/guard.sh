@@ -72,26 +72,33 @@ case "$tool" in
     # hardenings (driver-reported): backticks open command substitutions —
     # they are boundaries too; and QUOTED spans are stripped before matching,
     # so prose that merely mentions these commands (printf'd notes, issue
-    # bodies) no longer false-positives. Command position tolerates a chain of
-    # common PREFIX words (sudo/command/env/nice/nohup/time) and VAR=val
-    # assignments, so `sudo rm -rf` / `FOO=1 git push --force` are still
-    # caught. A destructive command hidden INSIDE quotes that reach a shell
-    # (bash -c "...") was never caught by anchoring and stays out of scope —
-    # the CI harness check is the hard layer.
+    # bodies) no longer false-positives. Command position tolerates a PREFIX
+    # CHAIN — sudo/command/env/nice/nohup/time, each with optional -opts and
+    # one optional non-dash argument per option (`sudo -u root`, `nice -n 10`,
+    # `env -i`, `command --`), plus VAR=val assignments — so prefixed forms
+    # are still caught. This is ENUMERATIVE, not a shell parser: a deliberately
+    # obfuscated invocation can still evade text matching (the guard's stated
+    # design limit); the CI harness check is the hard layer.
     # Newlines need no handling: grep matches per line, so ^ anchors every
     # line of a multiline command. DROP stays unanchored and UNstripped:
     # real destructive SQL sits inside quotes (psql -c "..."); prose naming
     # DROP TABLE still trips it — use a --body-file / heredoc for such text.
     stripped="$(printf '%s' "$cmd" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*((sudo|command|env|nice|nohup|time|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+    # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
+    # assignment; PFX is any chain of them. Shared by the destructive matcher and the
+    # ship gate's shell-wrapper rescan below.
+    PFX='((sudo|command|env|nice|nohup|time)([[:space:]]+-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
     # Ship gate: only pay the git/jq cost when the command IS a ship action. Detect on
     # `stripped` (quoted prose inert, e.g. a commit -m mentioning "gh pr create"), PLUS
-    # the raw cmd when a shell wrapper (bash -c/eval) could smuggle it past stripping.
+    # the raw cmd when a shell wrapper (bash -c/eval) could smuggle it past stripping —
+    # the wrapper itself may be prefixed too (`env bash -c ...`, `sudo sh -c ...`,
+    # `FOO=1 sh -c ...`), so the same PFX chain is tolerated before it.
     shipsan="$stripped"
-    printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*(bash|sh|zsh|eval)([[:space:]]|$)' && shipsan="$cmd"
+    printf '%s' "$cmd" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(bash|sh|zsh|eval)([[:space:]]|$)' && shipsan="$cmd"
     if printf '%s' "$shipsan" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
       ship_gate "gh pr create/merge"
     fi
