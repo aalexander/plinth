@@ -8,11 +8,11 @@
 # INCREMENTAL diff only. If the thread is too large to resume safely
 # (PLINTH_RESUME_MAX input tokens; default 650000 ≈ 65% of GPT-5.5's 1,005,000
 # window — revisit on reviewer swap, see MODELS.md), the anchor commit is gone,
-# or the resume itself fails, the round falls back to a VERIFY round (prior
-# findings + the incremental diff, which does NOT bind on its own) — or a
-# clean-slate full review when there are no prior findings to verify. Either way
-# an approval still gets a clean-slate full confirmation before it binds, so the
-# loop can never deadlock on a dead thread.
+# or the resume itself fails, the round falls back to a VERIFY round (prior findings
+# + the FULL diff — thorough but anchored on those findings, so it does NOT bind on
+# its own) — or a clean-slate full review when there are no prior findings to verify.
+# Either way an approval still gets a clean-slate full confirmation before it binds,
+# so the loop can never deadlock on a dead thread.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -106,6 +106,25 @@ AUDIT_MODEL="$(bcfg audit_model)"
 # codex. Using a DIFFERENT vendor here is what makes the second opinion a real
 # cross-vendor check rather than same-vendor-different-model.
 AUDIT_VENDOR="$(bcfg audit_vendor)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
+# Primary reviewer VENDOR — codex | claude | grok. DISTINCT from audit_vendor (the
+# cross-vendor second opinion): this is who runs the PRIMARY adversarial review.
+# Default codex (no behavior change). RV_WARM_RESUME=1 means the vendor reports
+# headless token usage, so its warm thread can be size-gated and resumed across fix
+# rounds; grok reports none, so it always runs fresh/verify. REVIEWER_MODEL (for the
+# dashboard) is the codex config model for codex, else the vendor name; a per-tier
+# reviewer model (RV_MODEL, set below) overrides it.
+REVIEWER_VENDOR="$(bcfg reviewer_vendor)"; [ -n "$REVIEWER_VENDOR" ] || REVIEWER_VENDOR="codex"
+case "$REVIEWER_VENDOR" in
+  codex|claude) RV_WARM_RESUME=1 ;;
+  grok)         RV_WARM_RESUME=0 ;;
+  *) die_infra "unknown reviewer_vendor '$REVIEWER_VENDOR' (supported: codex|claude|grok)" ;;
+esac
+[ "$REVIEWER_VENDOR" = "codex" ] || REVIEWER_MODEL="$REVIEWER_VENDOR"
+# Vendor-aware resume threshold ≈ 65% of the reviewer's context window: a bigger
+# window keeps the warm thread resumable far longer before falling back. env
+# PLINTH_RESUME_MAX still overrides. (grok never resumes — RV_WARM_RESUME=0.)
+case "$REVIEWER_VENDOR" in claude) RESUME_DEFAULT=650000 ;; grok) RESUME_DEFAULT=330000 ;; *) RESUME_DEFAULT=650000 ;; esac
+RESUME_MAX="${PLINTH_RESUME_MAX:-$RESUME_DEFAULT}"
 EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 
 # Runs the audit prompt through the configured vendor's CLI (read-only,
@@ -221,8 +240,8 @@ if [ "$RISK" = "0" ]; then
   exit 0
 fi
 
-# Past here a model round WILL run (Tier 1/2) — now the codex CLI is required.
-command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
+# Past here a model round WILL run (Tier 1/2) — now the reviewer's CLI is required.
+command -v "$REVIEWER_VENDOR" >/dev/null 2>&1 || die_infra "$REVIEWER_VENDOR CLI not found (reviewer_vendor=$REVIEWER_VENDOR)"
 
 # ── Tier 1 vs Tier 2 treatment ──────────────────────────────────────────────
 # Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed
@@ -233,26 +252,26 @@ command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
 #   (audit_vendor != codex) — a cross-vendor second opinion on EVERY Tier-2
 #   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
 #   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
-MODEL_ARGS=()
-if [ "$RISK" = "2" ]; then tmodel="$(bcfg reviewer_model_tier2)"
-else tmodel="$(bcfg reviewer_model_tier1)"; fi
-if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel"; fi
+# Per-tier reviewer model (base config). Each vendor adapter maps RV_MODEL to its own
+# flag (codex/grok -m, claude --model). Unset => the vendor's own default model.
+if [ "$RISK" = "2" ]; then RV_MODEL="$(bcfg reviewer_model_tier2)"
+else RV_MODEL="$(bcfg reviewer_model_tier1)"; fi
+if [ -n "${RV_MODEL:-}" ]; then REVIEWER_MODEL="$RV_MODEL"; fi
 
 # Only resume a prior session that (a) asked for changes, (b) has a live thread on
-# the SAME base, and (c) actually holds a full-diff read. A VERIFY session is a
-# fresh, narrow session (prior findings + incremental diff only); resuming it and
-# treating the continued thread as "warm" would let a Tier-1 approval bind without
-# any full read (binds_directly trusts that a resume carries the round-1 full
-# read). So a verify-origin session is NOT resumable — the next round goes fresh
-# and re-reads the full diff before binding. Pure fn -> testable.
+# the SAME base, and (c) is a warm UNANCHORED full-read thread. A VERIFY session is
+# a fresh session seeded with the prior findings (prior findings + full diff) —
+# thorough, but ANCHORED on those findings, not the warm unanchored round-1 thread
+# that binds_directly trusts a resume to carry. So a verify-origin session is NOT
+# resumable — the next round goes fresh (unanchored) before binding. Pure fn -> testable.
 resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode>
   [ "$1" = "CHANGES_NEEDED" ] || return 1
   [ -n "$2" ] || return 1
   [ "$3" = "$4" ] || return 1
-  # Only resume a mode KNOWN to hold a full-diff read: fresh, or a prior resume
-  # that continues such a thread. verify is narrow; an empty/unknown mode (e.g. a
-  # verdict.json written before the `mode` field existed) is treated the same —
-  # fail CLOSED, go fresh, re-read the full diff before any bind.
+  # Only resume a mode that carries a warm UNANCHORED full read: fresh, or a prior
+  # resume that continues such a thread. verify is anchored on prior findings; an
+  # empty/unknown mode (e.g. a verdict.json written before the `mode` field existed)
+  # is treated the same — fail CLOSED, go fresh, re-read the full diff before any bind.
   case "${5:-}" in fresh|resume) return 0 ;; *) return 1 ;; esac
 }
 
@@ -281,11 +300,11 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
     die "HEAD unchanged since round ${prev_round} returned CHANGES_NEEDED — commit fixes before re-running"
   fi
-  if resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode"; then
+  if [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
-    # Resume only when it can plausibly work; otherwise a cheap verify round
-    # (fresh session, prior findings + incremental diff — non-binding) instead
-    # of a full re-read. Full reads happen once per milestone, to bind.
+    # Resume only when it can plausibly work; otherwise a verify round (fresh session,
+    # prior findings + FULL diff — non-binding) instead of a warm re-read. Full reads
+    # happen once per milestone, to bind.
     fallback="fresh"
     [ -f "$SDIR/findings-${prev_round}.json" ] && fallback="verify"
     if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
@@ -294,11 +313,16 @@ if [ -f "$SDIR/verdict.json" ]; then
     else
       prev_in="$(jq -r '.usage.input_tokens // 0' "$SDIR/verdict.json")"
       case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
-      if [ "$prev_in" -gt "${PLINTH_RESUME_MAX:-650000}" ]; then
-        echo "Plinth review: prior round processed ${prev_in} input tokens (> ${PLINTH_RESUME_MAX:-650000}) — thread too large to resume; running a ${fallback} round."
+      if [ "$prev_in" -gt "$RESUME_MAX" ]; then
+        echo "Plinth review: prior round processed ${prev_in} input tokens (> ${RESUME_MAX}) — thread too large to resume; running a ${fallback} round."
         mode="$fallback"
       fi
     fi
+  elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$prev_base" = "$baseref" ] && [ -f "$SDIR/findings-${prev_round}.json" ]; then
+    # Non-warm-resume reviewer (grok: no headless token usage → no size-gateable warm
+    # thread) can't resume, but prior findings on the SAME base exist → a verify round
+    # continues the fix loop (prior findings + full diff, non-binding).
+    mode="verify"; round=$((prev_round + 1))
   else
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json
   fi
@@ -307,9 +331,10 @@ fi
 # Whether a completed round's APPROVED binds on its own, or a clean-slate
 # confirmation must run first. A fresh full review binds. A warm RESUME holds the
 # full round-1 read in its thread, so a Tier-1 resume binds directly (Tier 2 still
-# gets a frontier reconfirm). A fallback VERIFY is a FRESH session that saw only
-# the prior findings plus the incremental diff — it never read the full current
-# diff, so it never binds on its own, at ANY tier. Single source of truth for both
+# gets a frontier reconfirm). A fallback VERIFY is a FRESH session seeded with the
+# prior findings + the FULL diff — thorough, but ANCHORED on those findings, so it
+# never binds on its own, at ANY tier: a clean-slate confirmation (full diff, NO
+# prior findings — an unbiased read) is what binds. Single source of truth for both
 # the post-round gate and the reviewer-facing note. Pure fn -> testable.
 binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
   case "${1:-}" in
@@ -330,6 +355,66 @@ bind_note() {  # bind_note <mode> <risk-tier>
 }
 
 # Runs one review round. Sets RVERDICT/RSID; writes the round's protocol files.
+# ── Reviewer vendor adapters ────────────────────────────────────────────────
+# reviewer_run <mode> dispatches to the configured reviewer_vendor. Each adapter
+# runs the vendor CLI headless (read-only), writes the schema-validated verdict to
+# $SDIR/findings-$r.json, and sets globals RSID (session id or "") and RUSAGE (usage
+# JSON or "null"). Returns 1 ONLY on a recoverable resume failure (caller falls back);
+# die_infra on a hard failure. Reads run_round's locals ($prompt/$s/$m/$r/$raw/$evfile/
+# $errlog) by dynamic scope, plus $SCHEMA/$SDIR/$RV_MODEL.
+reviewer_run() {
+  local m="$1"; RSID=""; RUSAGE="null"
+  case "$REVIEWER_VENDOR" in
+    codex)  _reviewer_codex  "$m" ;;
+    claude) _reviewer_claude "$m" ;;
+    grok)   _reviewer_grok   "$m" ;;
+  esac
+}
+
+_reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json event stream
+  local m="$1" margs=(); [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
+  if [ "$m" = "resume" ]; then
+    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' --json \
+      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" || return 1
+  else
+    printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
+      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
+      || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+  fi
+  RSID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$evfile" | head -1)"
+  [ -n "$RSID" ] || die_infra "no thread id in $evfile — codex --json output changed?"
+  jq . "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
+    || die_infra "reviewer's final message is not valid JSON — see $raw"
+  RUSAGE="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"; [ -n "$RUSAGE" ] || RUSAGE="null"
+}
+
+_reviewer_claude() {  # hard --json-schema -> .structured_output; --bare skips the repo's CLAUDE.md
+  local m="$1" margs=() rargs=(); [ -n "${RV_MODEL:-}" ] && margs=(--model "$RV_MODEL")
+  [ "$m" = "resume" ] && rargs=(--resume "$s")
+  printf '%s' "$prompt" | claude -p --bare --output-format json \
+    --json-schema "$(cat "$SCHEMA")" --allowed-tools "Read,Grep,Glob" --permission-mode dontAsk \
+    ${margs[@]+"${margs[@]}"} ${rargs[@]+"${rargs[@]}"} > "$raw" 2> "$errlog" \
+    || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"; }
+  jq -e '.structured_output | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
+    || die_infra "claude returned no schema-structured verdict — see $raw"
+  RSID="$(jq -r '.session_id // empty' "$raw" 2>/dev/null)"
+  RUSAGE="$(jq -c '.usage // "null"' "$raw" 2>/dev/null)"; [ -n "$RUSAGE" ] || RUSAGE="null"
+}
+
+_reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else extract from .text
+  local m="$1" margs=() pf="$SDIR/reviewer-prompt-$r.txt"; [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
+  printf '%s\n\nOUTPUT REQUIREMENT: respond with ONLY a single raw JSON object matching {verdict,summary,findings:[{file,line,severity,description,status}]}. No prose, no markdown, no code fences; the first character MUST be "{".' "$prompt" > "$pf"
+  grok --prompt-file "$pf" --output-format json --json-schema "$(cat "$SCHEMA")" \
+    --sandbox read-only ${margs[@]+"${margs[@]}"} > "$raw" 2> "$errlog" \
+    || die_infra "grok failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+  if ! jq -e '.structuredOutput | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null; then
+    jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' | jq . > "$SDIR/findings-$r.json" 2>/dev/null \
+      || die_infra "grok returned no parseable verdict JSON — see $raw"
+  fi
+  RSID="$(jq -r '.sessionId // empty' "$raw" 2>/dev/null)"
+  RUSAGE="null"   # grok headless reports no token usage
+}
+
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
   local evfile="$SDIR/events-$r.jsonl" raw="$SDIR/raw-$r.json" errlog="$SDIR/stderr-$r.log"
@@ -385,7 +470,13 @@ metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
 Findings on execution-gated paths whose truth depends on real libraries or
 hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
-they route to the run gate instead of blocking.${specatk}
+they route to the run gate instead of blocking.
+BE EXHAUSTIVE WITHIN THIS PASS: when a finding is one instance of a general defect
+class (a bug pattern, a missing/weak-test pattern, a claim-vs-behavior mismatch, an
+unhandled input or edge case), SWEEP the entire diff for EVERY sibling instance and
+report them all now — report every independent, substantiated finding this round,
+not just the most salient one. Each missed sibling costs a full extra review
+round-trip, so within-pass exhaustiveness is far cheaper than another round.${specatk}
 
 DIFF:
 ${diff}${evidence}${commits}"
@@ -393,20 +484,23 @@ ${diff}${evidence}${commits}"
     local prior
     prior="$(cat "$SDIR/findings-$((r - 1)).json")"
     prompt="Fix-verification round ${r} (fresh session; your prior thread was too large to
-resume). Apply the Verdict policy in AGENTS.md. Below: (1) the findings from the
-previous round, (2) the INCREMENTAL diff from the commit that round reviewed
-(${prev_sha}) to the new HEAD (${sha}).
+resume). Apply the Verdict policy in AGENTS.md. This is a FRESH session — assume
+nothing from prior rounds beyond the findings listed. Below: (1) the findings from
+the previous round, (2) the FULL diff (${baseref}...HEAD at ${sha}).
 1) For each prior finding, mark status \"resolved\" or \"open\" — resolved requires
-   evidence in the incremental diff, not the driver's claim.
-2) Review the incremental diff itself with first-pass rigor; new findings status
-   \"open\".
+   evidence in the diff, not the driver's claim.
+2) Re-review the FULL diff with first-pass rigor; new findings status \"open\".
+   BE EXHAUSTIVE: when a finding is one instance of a defect class (a bug pattern,
+   a missing/weak-test pattern, a claim-vs-behavior mismatch, an unhandled edge
+   case), SWEEP the whole diff for EVERY sibling and report them all this round,
+   not just the most salient — each missed sibling costs a full extra round-trip.
 $(bind_note "$m" "$RISK")
 
 PRIOR FINDINGS:
 ${prior}
 
-INCREMENTAL DIFF (${prev_sha}..${sha}):
-$(git diff "${prev_sha}..HEAD" 2>/dev/null || printf '%s' "$diff")${evidence}${commits}"
+DIFF (${baseref}...HEAD at ${sha}):
+${diff}${evidence}${commits}"
   else
     # Incremental only: the thread already holds the prior full diff. Re-sending
     # everything is what overflowed large threads (the anvil deadlock).
@@ -432,26 +526,11 @@ ${inc}${evidence}${commits}"
         '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts}' \
         > "$SDIR/request-$r.json"
 
-  # 'codex exec' = non-interactive; read-only sandbox prevents edits. Prompt via
-  # stdin (ARG_MAX-safe); --output-schema forces the structured verdict; --json
-  # events give us the session id and token usage.
-  if [ "$m" = "resume" ]; then
-    if ! printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' --json \
-      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog"; then
-      echo "Plinth review: resume of the reviewer session failed ($(tail -1 "$errlog" 2>/dev/null | cut -c1-100)) — falling back."
-      return 1
-    fi
-  else  # fresh and verify both start a new session (per-tier model if configured)
-    printf '%s' "$prompt" | codex exec ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --sandbox read-only --json \
-      --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
-      || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
-  fi
-
-  RSID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$evfile" | head -1)"
-  [ -n "$RSID" ] || die_infra "no thread id in $evfile — codex --json output changed?"
-
-  jq . "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
-    || die_infra "reviewer's final message is not valid JSON — see $raw"
+  # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
+  # the CLI read-only, writes the validated verdict to findings-$r.json, and sets RSID
+  # + RUSAGE. A recoverable resume failure returns 1 → the caller falls back.
+  reviewer_run "$m" \
+    || { echo "Plinth review: resume of the reviewer session failed — falling back."; return 1; }
   RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
 
@@ -485,9 +564,7 @@ ${inc}${evidence}${commits}"
     echo "Plinth review: reviewer said APPROVED but ${blocking} open blocker/major project finding(s) exist — effective verdict CHANGES_NEEDED."
   fi
 
-  local usage
-  usage="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"
-  [ -n "$usage" ] || usage="null"
+  local usage="$RUSAGE"; [ -n "$usage" ] || usage="null"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
@@ -510,12 +587,12 @@ case "$mode" in
     run_round "$mode" "$round" "" ;;
 esac
 
-# A warm (resume) or delta-scoped (verify) approval only says "my findings were
-# addressed". Bind it directly only when the round that produced it actually held
-# the full current diff: a Tier-1 RESUME does (its thread carries the round-1 full
-# read). A Tier-2 approval, and ANY fallback VERIFY (a fresh session that saw only
-# prior findings + the incremental diff), get a clean-slate full pass first so
-# neither continuity nor a narrow view can soften the adversarial read.
+# A warm (resume) or findings-anchored (verify) approval only says "my findings were
+# addressed". Bind it directly only when the round that produced it held a warm
+# UNANCHORED read: a Tier-1 RESUME does (its thread carries the round-1 full read).
+# A Tier-2 approval, and ANY fallback VERIFY (a fresh session anchored on the prior
+# findings + the full diff), get a clean-slate full pass first so neither continuity
+# nor an anchored view can soften the adversarial read.
 # binds_directly() is the single source of truth, shared with the reviewer note.
 if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."

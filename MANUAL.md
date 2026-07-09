@@ -192,8 +192,9 @@ Two operator chores the rules generate:
      directly — the warm reviewer thread still holds its first-pass full read, and
      iterative convergence speed is worth more than a second full read for ordinary
      code. A fallback verify (a fresh session, used when the prior thread is too
-     large to resume) saw only the prior findings plus the incremental diff, so it
-     does NOT bind on its own — like Tier 2 it gets a clean-slate confirmation first.
+     large to resume) reads the prior findings plus the FULL diff — thorough, but
+     anchored on those findings, so it does NOT bind on its own; like Tier 2 it gets
+     a clean-slate confirmation first.
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
@@ -206,9 +207,9 @@ Two operator chores the rules generate:
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is too
-   large or dead — a verify round that sees only prior findings plus the incremental
-   diff and does NOT bind on its own, so an approval still gets a clean-slate full
-   confirmation first), 2 = the review DID NOT RUN.
+   large or dead — a verify round that reads prior findings plus the FULL diff
+   (anchored on those findings) and does NOT bind on its own, so an approval still
+   gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
    *Background, enforcement:* if the model tries to end its turn with commits
    but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
    refuses and sends it back with instructions. It cannot skip the review.
