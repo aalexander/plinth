@@ -104,13 +104,15 @@ case "$tool" in
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
-    # Ship tripwire: block the plain `gh pr create`/`gh pr merge` command on `stripped`
-    # (quoted spans removed, so prose like a commit -m mentioning "gh pr create" stays
-    # inert). Prefixes need no special handling — `sudo gh pr create` carries the
-    # unquoted action on `stripped` and matches. Deliberately-quoted obfuscation
-    # (`bash -c "gh pr create"`) is OUT OF SCOPE by design (see the header): a
-    # client-side hook can't win that race; server-side branch protection can.
-    if printf '%s' "$stripped" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+    # Ship tripwire: block `gh pr create`/`gh pr merge` at COMMAND POSITION on `stripped`
+    # (start, or after a ;&|`( boundary, allowing the PFX prefix chain so `sudo gh pr
+    # create` still matches). Anchoring — the same treatment as the destructive check —
+    # keeps an unquoted MENTION inert: `echo gh pr create`, `printf %s gh pr merge`, and
+    # `gh pr view | grep gh pr create` have the phrase as an ARGUMENT, not the command, so
+    # they do not trip. Quoted spans are already stripped, so a commit -m mentioning it is
+    # inert too. Deliberately-quoted obfuscation (`bash -c "gh pr create"`) is OUT OF SCOPE
+    # by design (see the header): a client-side hook can't win that race; branch protection can.
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
       ship_gate "gh pr create/merge"
     fi
     while IFS= read -r pattern; do

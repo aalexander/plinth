@@ -877,6 +877,11 @@ jobs:
           [ "$(gcmd 'git push origin main')" = 0 ] || { echo "::error::deny-ship: base push must NOT be gated here (branch protection's job)"; exit 1; }
           [ "$(gcmd 'git commit -m "add gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: prose mentioning gh pr create wrongly blocked"; exit 1; }
           [ "$(gcmd 'git commit -m "block bash -c \"gh pr create\" forms"')" = 0 ] || { echo "::error::deny-ship: prose with escaped quotes false-positived (stripper pairing)"; exit 1; }
+          # Unquoted MENTIONS at ARGUMENT position must NOT trip the tripwire (round-21):
+          [ "$(gcmd 'echo gh pr create')" = 0 ] || { echo "::error::deny-ship: unquoted 'echo gh pr create' (argument) wrongly blocked"; exit 1; }
+          [ "$(gcmd 'printf %s gh pr merge')" = 0 ] || { echo "::error::deny-ship: 'printf %s gh pr merge' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'gh pr view --json body | grep gh pr create')" = 0 ] || { echo "::error::deny-ship: 'gh pr view | grep gh pr create' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'gh pr list')" = 0 ] || { echo "::error::deny-ship: 'gh pr list' (not create/merge) wrongly blocked"; exit 1; }
           # Deliberately-quoted obfuscation is OUT OF SCOPE by design (client hook can't win the
           # race; server-side branch protection is the gate) — these must PASS, not block.
           [ "$(gcmd 'bash -c "gh pr create"')" = 0 ] || { echo "::error::deny-ship: quoted wrapper should be out-of-scope (documented), not blocked"; exit 1; }
