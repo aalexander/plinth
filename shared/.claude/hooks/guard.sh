@@ -86,7 +86,12 @@ case "$tool" in
     # line of a multiline command. DROP stays unanchored and UNstripped:
     # real destructive SQL sits inside quotes (psql -c "..."); prose naming
     # DROP TABLE still trips it — use a --body-file / heredoc for such text.
-    stripped="$(printf '%s' "$cmd" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
+    # Quote-stripping is escape-aware for double quotes: a \" inside a "..." span
+    # must not terminate it, or the pairing shifts and quoted prose leaks into (or
+    # hides from) `stripped` — e.g. -m "block bash -c \"gh pr create\" forms" would
+    # otherwise strand `gh pr create` outside any span. Single quotes take no
+    # escapes in shell, so their span stays simple.
+    stripped="$(printf '%s' "$cmd" | sed -E -e "s/'[^']*'//g" -e 's/"(\\.|[^"\\])*"//g')"
     # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
     # assignment; PFX is any chain of them (used by the destructive matcher; the ship
     # gate's wrapper-payload scan below is unanchored and needs no prefix handling).
@@ -112,9 +117,15 @@ case "$tool" in
     # The wrapper name needs a word boundary before it (so `lint.sh` is not read as
     # `sh`), and a non-dash first token (`bash script.sh -c ...`) does not match —
     # that -c is the script's argument, not a shell payload.
+    # Payload opener: a quote, optionally $-prefixed ($'...' ANSI-C / $"..." locale
+    # quoting). Payload span: backslash-escaped chars pass THROUGH (so `-c "echo
+    # \"x\"; gh pr create"` is still seen), an unescaped quote ends it. Prose where
+    # a backslash sits right after -c (`-m "... bash -c \"gh pr create\""`) stays
+    # inert — the opener wants a quote, not an escape.
     SHIP='gh[[:space:]]+pr[[:space:]]+(create|merge)'
-    WRAPPAY="(^|[\`[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*[[:space:]]+-[A-Za-z]*c[[:space:]]+[\"'][^\"']*"
-    EVALPAY="(^|[\`[:space:];&|(])eval[[:space:]]+[\"'][^\"']*"
+    PAY="\\\$?[\"']((\\\\.)|[^\"'\\\\])*"
+    WRAPPAY="(^|[\`[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*[[:space:]]+-[A-Za-z]*c[[:space:]]+${PAY}"
+    EVALPAY="(^|[\`[:space:];&|(])eval[[:space:]]+${PAY}"
     if printf '%s' "$stripped" | grep -Eq "$SHIP" \
        || printf '%s' "$cmd" | grep -Eq "${WRAPPAY}${SHIP}" \
        || printf '%s' "$cmd" | grep -Eq "${EVALPAY}${SHIP}"; then

@@ -871,6 +871,12 @@ jobs:
           [ "$(gcmd 'env bash -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env bash -lc payload bypassed the gate"; exit 1; }
           [ "$(gcmd 'bash -o pipefail -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -o pipefail -c payload bypassed the gate"; exit 1; }
           [ "$(gcmd 'bash lint.sh -c "gh pr create docs"')" = 0 ] || { echo "::error::deny-ship: script-arg -c false-positived (lint.sh read as sh)"; exit 1; }
+          # Escaped-quote and ANSI-C payloads (round-9): the stripper is escape-aware and the
+          # payload span passes \-escaped chars through; $'...' is a recognized opener.
+          [ "$(gcmd 'bash -c "echo \"x\"; gh pr create"')" = 2 ] || { echo "::error::deny-ship: escaped-quote payload bypassed the gate"; exit 1; }
+          [ "$(gcmd "bash -c \$'gh pr create'")" = 2 ] || { echo "::error::deny-ship: ANSI-C \$'...' payload bypassed the gate"; exit 1; }
+          [ "$(gcmd "eval \$'gh pr merge'")" = 2 ] || { echo "::error::deny-ship: eval \$'...' payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'git commit -m "block bash -c \"gh pr create\" forms"')" = 0 ] || { echo "::error::deny-ship: prose with escaped quoted invocation false-positived (stripper pairing regressed)"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

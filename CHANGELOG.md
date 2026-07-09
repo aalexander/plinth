@@ -26,13 +26,14 @@
   APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS only on Claude/codex.
   Direct base-branch pushes are left to server-side branch protection (the Stop gate
   logs+releases them); client-side base detection was fragile (base is not always
-  main/master) and redundant. Heuristic backstop: detection strips quoted prose, and
-  additionally scans quoted payloads that DIRECTLY FOLLOW a shell wrapper's `-c` / an
-  `eval` — so `bash -c "gh pr create"` (prefixed or not) cannot evade via
-  quote-stripping, while prose mentioning a wrapper plus the command with punctuation
-  in between stays inert. CI + branch protection remain the hard layers.
-  Feature-branch pushes stay allowed so the RUNTIME smoke-receipt loop is not
-  deadlocked.
+  main/master) and redundant. Heuristic backstop: detection strips quoted prose
+  (escape-aware — a `\"` inside a double-quoted span does not shift the pairing), and
+  additionally scans quoted payloads that DIRECTLY FOLLOW a shell wrapper's `-c`
+  (flag-cluster forms like `-lc` included) / an `eval` — payloads may contain escaped
+  quotes or use ANSI-C `$'...'` quoting and are still caught, while prose mentioning
+  a wrapper plus the command with punctuation in between stays inert. CI + branch
+  protection remain the hard layers. Feature-branch pushes stay allowed so the
+  RUNTIME smoke-receipt loop is not deadlocked.
 - **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
   non-blocking, driver-initiated consult of a model as good or BETTER than the driver
   (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`
