@@ -9,7 +9,8 @@ on:
     - cron: "0 14 * * 1"   # Mondays 14:00 UTC
   workflow_dispatch:
   pull_request:
-    branches: [main]       # the scaffold probes gate merges; drift job is schedule-only
+    branches: [main]       # scaffold probes RUN on PRs (red on failure); gating needs the
+                           # scaffold job in branch-protection required checks. drift job: schedule-only.
 
 permissions:
   contents: read
@@ -297,6 +298,15 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           ab="$(jq -r '.audit.blocking // 0' .plinth/session/review/aud3/verdict.json 2>/dev/null)"
           [ "$ab" -ge 1 ] 2>/dev/null || { echo "::error::blocking auditor finding not counted (blocking=$ab)"; exit 1; }
+          # review.sh reads audit config from the BASE, so the config UNDER TEST lives on
+          # MAIN (the base), not the feature branch (round-27 base-config semantics).
+          set_base_audit() {  # <vendor> [model] — deterministically set main's audit config
+            git checkout -q main
+            sed -i '/^audit_vendor = /d; /^audit_model = /d' .plinth/config
+            printf 'audit_vendor = %s\n' "$1" >> .plinth/config
+            [ -n "${2:-}" ] && printf 'audit_model = %s\n' "$2" >> .plinth/config || true
+            git commit -qm "base audit config" .plinth/config >/dev/null 2>&1 || true
+          }
           # audit_model override must reach the auditor as TWO argv tokens
           # (-m and the model), not one collapsed "-m model" token.
           cat > /tmp/asb/grok <<'GK'
@@ -305,21 +315,17 @@ jobs:
           echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
           GK
           chmod +x /tmp/asb/grok
-          git checkout -q main; git checkout -qB aud4 main >/dev/null 2>&1
-          printf 'audit_model = testmodel-x\n' >> .plinth/config; echo "req x" >> SPEC.md; git add -A; git commit -qm aud4 >/dev/null
+          set_base_audit grok testmodel-x
+          git checkout -qB aud4 main >/dev/null 2>&1; echo "req x" >> SPEC.md; git add -A; git commit -qm aud4 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
-          # audit_model ALONE (with audit_vendor = codex, the primary reviewer's own
-          # vendor) must NOT trigger a same-vendor audit falsely recorded as cross-
-          # vendor — the audit runs only when audit_vendor is a DIFFERENT vendor.
-          git checkout -q main; git checkout -qB audsame main >/dev/null 2>&1
-          sed -i 's/^audit_vendor = .*/audit_vendor = codex/' .plinth/config
-          printf 'audit_model = some-codex-model\n' >> .plinth/config
-          echo "same-vendor req" >> SPEC.md; git add -A; git commit -qm audsame >/dev/null
+          # audit_model ALONE with audit_vendor = codex (the primary reviewer's own vendor)
+          # must NOT trigger a same-vendor audit falsely recorded as cross-vendor.
+          set_base_audit codex some-codex-model
+          git checkout -qB audsame main >/dev/null 2>&1; echo "same-vendor req" >> SPEC.md; git add -A; git commit -qm audsame >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           [ "$(jq -r 'has("audit")' .plinth/session/review/audsame/verdict.json 2>/dev/null)" = "false" ] || { echo "::error::audit_model + codex vendor triggered a same-vendor audit (false cross-vendor)"; exit 1; }
-          git checkout -q .plinth/config
           # reviewer_model_tier1/tier2 must reach the PRIMARY reviewer as `codex -m
           # <model>` (two argv tokens) on the MATCHING tier — a collapsed "-m model"
           # token or a wrong-tier pick would silently ship. Seed both on main so the
@@ -340,9 +346,8 @@ jobs:
           # silently fall through to codex — the primary reviewer's OWN vendor, which
           # would be a false cross-vendor guarantee. With the bug the codex auditor
           # APPROVES, so this reads APPROVED instead of UNAVAILABLE.
-          git checkout -q main; git checkout -qB audbogus main >/dev/null 2>&1
-          sed -i 's/^audit_vendor = .*/audit_vendor = zzznotreal/' .plinth/config
-          echo "vendor typo probe" >> SPEC.md; git add -A; git commit -qm audbogus >/dev/null
+          set_base_audit zzznotreal
+          git checkout -qB audbogus main >/dev/null 2>&1; echo "vendor typo probe" >> SPEC.md; git add -A; git commit -qm audbogus >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
           [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
