@@ -877,6 +877,10 @@ jobs:
           [ "$(gcmd "bash -c \$'gh pr create'")" = 2 ] || { echo "::error::deny-ship: ANSI-C \$'...' payload bypassed the gate"; exit 1; }
           [ "$(gcmd "eval \$'gh pr merge'")" = 2 ] || { echo "::error::deny-ship: eval \$'...' payload bypassed the gate"; exit 1; }
           [ "$(gcmd 'git commit -m "block bash -c \"gh pr create\" forms"')" = 0 ] || { echo "::error::deny-ship: prose with escaped quoted invocation false-positived (stripper pairing regressed)"; exit 1; }
+          # Opposite-quote payloads (round-10): the span is quote-specific like real shell.
+          [ "$(gcmd "bash -c 'echo \"x\"; gh pr create'")" = 2 ] || { echo "::error::deny-ship: single-opened payload with double quotes bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash -c "echo '"'"'x'"'"'; gh pr create"')" = 2 ] || { echo "::error::deny-ship: double-opened payload with single quotes bypassed the gate"; exit 1; }
+          [ "$(gcmd "eval 'echo \"x\"; gh pr merge'")" = 2 ] || { echo "::error::deny-ship: single-opened eval payload with double quotes bypassed the gate"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

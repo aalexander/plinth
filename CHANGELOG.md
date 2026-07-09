@@ -29,9 +29,11 @@
   main/master) and redundant. Heuristic backstop: detection strips quoted prose
   (escape-aware — a `\"` inside a double-quoted span does not shift the pairing), and
   additionally scans quoted payloads that DIRECTLY FOLLOW a shell wrapper's `-c`
-  (flag-cluster forms like `-lc` included) / an `eval` — payloads may contain escaped
-  quotes or use ANSI-C `$'...'` quoting and are still caught, while prose mentioning
-  a wrapper plus the command with punctuation in between stays inert. CI + branch
+  (flag-cluster forms like `-lc` included) / an `eval` — payload spans are
+  quote-specific like real shell (a "-opened payload may contain single quotes and
+  escapes; a '-opened payload may contain double quotes; ANSI-C `$'...'` recognized)
+  and are still caught, while prose mentioning a wrapper plus the command with
+  punctuation in between stays inert. CI + branch
   protection remain the hard layers. Feature-branch pushes stay allowed so the
   RUNTIME smoke-receipt loop is not deadlocked.
 - **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,

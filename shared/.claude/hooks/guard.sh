@@ -118,12 +118,14 @@ case "$tool" in
     # `sh`), and a non-dash first token (`bash script.sh -c ...`) does not match —
     # that -c is the script's argument, not a shell payload.
     # Payload opener: a quote, optionally $-prefixed ($'...' ANSI-C / $"..." locale
-    # quoting). Payload span: backslash-escaped chars pass THROUGH (so `-c "echo
-    # \"x\"; gh pr create"` is still seen), an unescaped quote ends it. Prose where
-    # a backslash sits right after -c (`-m "... bash -c \"gh pr create\""`) stays
-    # inert — the opener wants a quote, not an escape.
+    # quoting). Payload spans are QUOTE-SPECIFIC, like real shell: a "-opened payload
+    # may contain single quotes and backslash-escaped chars (`-c "echo 'x' \"y\"; gh
+    # pr create"`); a '-opened payload may contain double quotes and takes no escapes
+    # (`-c 'echo "x"; gh pr create'`). Only the matching unescaped closer ends the
+    # span. Prose where a backslash sits right after -c (`-m "... bash -c \"gh pr
+    # create\""`) stays inert — the opener wants a quote, not an escape.
     SHIP='gh[[:space:]]+pr[[:space:]]+(create|merge)'
-    PAY="\\\$?[\"']((\\\\.)|[^\"'\\\\])*"
+    PAY="(\\\$?\"((\\\\.)|[^\"\\\\])*|\\\$?'[^']*)"
     WRAPPAY="(^|[\`[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*[[:space:]]+-[A-Za-z]*c[[:space:]]+${PAY}"
     EVALPAY="(^|[\`[:space:];&|(])eval[[:space:]]+${PAY}"
     if printf '%s' "$stripped" | grep -Eq "$SHIP" \
