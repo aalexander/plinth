@@ -97,8 +97,10 @@ the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
-(re-runs resume the same reviewer session when feasible; oversized or dead
-threads fall back to a fresh full review automatically). Exit 2 = the
+(re-runs resume the same reviewer thread when it fits the vendor's window; an
+oversized or dead thread instead runs a VERIFY round — a fresh session seeded with
+the prior findings plus the FULL diff — re-checking each finding and re-reviewing the
+whole diff). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
 pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (the guard enforces both). Verdict policy: blockers/majors in project code block;

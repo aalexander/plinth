@@ -96,8 +96,9 @@ case "$tool" in
     # escapes in shell, so their span stays simple.
     stripped="$(printf '%s' "$cmd" | sed -E -e "s/'[^']*'//g" -e 's/"(\\.|[^"\\])*"//g')"
     # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
-    # assignment; PFX is any chain of them (used by the destructive matcher; the ship
-    # gate's wrapper-payload scan below is unanchored and needs no prefix handling).
+    # assignment; PFX is any chain of them (used only by the destructive matcher — the
+    # ship tripwire below matches plain unquoted `gh pr create/merge`, where prefixes
+    # ride on the same line and need no special handling).
     PFX='((sudo|command|env|nice|nohup|time)([[:space:]]+-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
