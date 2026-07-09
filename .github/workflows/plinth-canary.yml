@@ -73,6 +73,19 @@ jobs:
             printf 'spec_path = EVIL.md\n' > .plinth/config )
           SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$SB"; echo "$SPEC_PATH" )"
           [ "$SPR" = "BASE.md" ] || { echo "::error::review.sh spec_path -> '$SPR': a same-PR working-tree repoint redirected the review target (want BASE.md from base config)"; exit 1; }
+          # review.sh first-adoption fallback: base has NO .plinth/config. The SAME extracted
+          # block must NOT abort under pipefail and must fall back to the working-tree
+          # spec_path (round-24 — the risk-classify probe below does not cover review.sh).
+          SR2="$(mktemp -d)"; SORG3="$(mktemp -d)"; git init -q --bare "$SORG3"
+          ( cd "$SR2"; git init -qb main . >/dev/null; echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git remote add origin "$SORG3"; git push -q origin main
+            mkdir -p .plinth; printf 'spec_path = WORK.md\n' > .plinth/config )   # working-tree only, base has none
+          # Run the extracted block in a REAL subprocess under set -euo pipefail — a `||`
+          # or command-sub wrapper around `source` SUPPRESSES set -e and would HIDE a
+          # pipefail-abort regression (a child bash keeps its own real set -e).
+          DRV="$(mktemp)"; printf '%s\n' 'set -euo pipefail' 'cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }' 'baseref="origin/main"' 'source "$1"' 'printf "%s" "$SPEC_PATH"' > "$DRV"
+          sprc=0; SPR2="$( cd "$SR2" && bash "$DRV" "$SB" )" || sprc=$?
+          [ "$sprc" = "0" ] && [ "$SPR2" = "WORK.md" ] || { echo "::error::review.sh spec_path first-adoption fallback failed (exit=$sprc, got '$SPR2', want WORK.md) — pipefail abort or wrong fallback"; exit 1; }
           # Classifier must FAIL-SOFT when the BASE lacks .plinth/config (first-adoption PR
           # that adds it): under set -euo pipefail the base spec_path read must not abort,
           # else callers get NO tier at all (round-24 pipefail class — same as review.sh).
