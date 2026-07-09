@@ -819,20 +819,27 @@ jobs:
             v="$(jq -r .verdict .plinth/session/review/feat/verdict.json 2>/dev/null)"
             { [ "$rc" = 0 ] && [ "$v" = APPROVED ]; } || { echo "::error::a project commit editing .plinth/protected-paths (non-plinth subject) was auto-labeled tampering (verdict=$v exit=$rc, want APPROVED/0)"; exit 1; } )
           
-          # ── v4.4.0: guard.sh deny-ship (gh pr create/merge only, wrapper-aware) ──
+          # ── v4.4.0: guard.sh deny-ship TRIPWIRE (plain command; obfuscation out of scope) ──
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
           ( cd "$GD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo a>f; git add -A; git commit -qm b >/dev/null; git checkout -qb feat/x >/dev/null 2>&1; echo c>f; git add -A; git commit -qm w >/dev/null )
           GH4="$(git -C "$GD" rev-parse HEAD)"; GV="$GD/.plinth/session/review/feat-x/verdict.json"
           gcmd() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')" | CLAUDE_PROJECT_DIR="$GD" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?; }
+          # The plain ship command needs APPROVED@HEAD; prefixes ride on stripped and match.
           [ "$(gcmd 'gh pr create --fill')" = 2 ] || { echo "::error::deny-ship: gh pr create not blocked without approval"; exit 1; }
-          [ "$(gcmd 'bash -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'gh pr merge --squash')" = 2 ] || { echo "::error::deny-ship: gh pr merge not blocked without approval"; exit 1; }
+          [ "$(gcmd 'sudo gh pr create')" = 2 ] || { echo "::error::deny-ship: sudo gh pr create (unquoted prefix) not blocked"; exit 1; }
           [ "$(gcmd 'git push origin feat/x')" = 0 ] || { echo "::error::deny-ship: feature push wrongly blocked (RUNTIME deadlock)"; exit 1; }
           [ "$(gcmd 'git push origin main')" = 0 ] || { echo "::error::deny-ship: base push must NOT be gated here (branch protection's job)"; exit 1; }
           [ "$(gcmd 'git commit -m "add gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: prose mentioning gh pr create wrongly blocked"; exit 1; }
+          [ "$(gcmd 'git commit -m "block bash -c \"gh pr create\" forms"')" = 0 ] || { echo "::error::deny-ship: prose with escaped quotes false-positived (stripper pairing)"; exit 1; }
+          # Deliberately-quoted obfuscation is OUT OF SCOPE by design (client hook can't win the
+          # race; server-side branch protection is the gate) — these must PASS, not block.
+          [ "$(gcmd 'bash -c "gh pr create"')" = 0 ] || { echo "::error::deny-ship: quoted wrapper should be out-of-scope (documented), not blocked"; exit 1; }
+          [ "$(gcmd 'echo "gh pr create" | bash')" = 0 ] || { echo "::error::deny-ship: pipe-to-shell should be out-of-scope, not blocked"; exit 1; }
           printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4" > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 0 ] || { echo "::error::deny-ship: gh pr create blocked despite APPROVED@HEAD"; exit 1; }
           
-          # ── v4.4.0: destructive-command guard catches PREFIXED forms (round-5) ──
+          # ── v4.4.0: destructive-command guard catches PREFIXED forms (round-5/6) ──
           [ "$(gcmd 'sudo rm -rf /tmp/x')" = 2 ] || { echo "::error::guard: sudo rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'command rm -rf x')" = 2 ] || { echo "::error::guard: command rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'env rm -rf x')" = 2 ] || { echo "::error::guard: env rm -rf not blocked"; exit 1; }
@@ -841,7 +848,6 @@ jobs:
           [ "$(gcmd 'env git reset --hard origin/main')" = 2 ] || { echo "::error::guard: prefixed git reset --hard origin not blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
-          # Option-bearing prefixes (round-6): sudo -n / -u root, env -i, command --, nice -n 10.
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'sudo -u root rm -rf x')" = 2 ] || { echo "::error::guard: sudo -u root rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'env -i rm -rf x')" = 2 ] || { echo "::error::guard: env -i rm -rf not blocked"; exit 1; }
@@ -849,52 +855,6 @@ jobs:
           [ "$(gcmd 'nice -n 10 rm -rf x')" = 2 ] || { echo "::error::guard: nice -n 10 rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'time -p git reset --hard origin/main')" = 2 ] || { echo "::error::guard: time -p prefixed hard-reset not blocked"; exit 1; }
           [ "$(gcmd 'sudo -u root ls /root')" = 0 ] || { echo "::error::guard: benign sudo -u root wrongly blocked"; exit 1; }
-          # Prefixed shell wrappers must still hit the ship gate (round-6).
-          rm -f "$GV" 2>/dev/null || true
-          [ "$(gcmd 'env bash -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env-prefixed bash -c wrapper bypassed the gate"; exit 1; }
-          [ "$(gcmd 'sudo bash -c "gh pr merge"')" = 2 ] || { echo "::error::deny-ship: sudo-prefixed bash -c wrapper bypassed the gate"; exit 1; }
-          [ "$(gcmd 'FOO=1 sh -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: VAR=val-prefixed sh -c wrapper bypassed the gate"; exit 1; }
-          [ "$(gcmd 'eval "gh pr merge --squash"')" = 2 ] || { echo "::error::deny-ship: eval-quoted ship action bypassed the gate"; exit 1; }
-          [ "$(gcmd "bash -c 'gh pr create --fill'")" = 2 ] || { echo "::error::deny-ship: single-quoted wrapper payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'echo "env bash -c gh pr create"')" = 0 ] || { echo "::error::deny-ship: prose naming a prefixed wrapper false-positived"; exit 1; }
-          # Prose with punctuation / an unrelated wrapper stays INERT (round-7): the payload
-          # scan requires a quote DIRECTLY after -c / eval, so these must not block.
-          [ "$(gcmd 'git commit -m "use (bash -c gh pr create)"')" = 0 ] || { echo "::error::deny-ship: parenthesized prose false-positived"; exit 1; }
-          [ "$(gcmd 'git commit -m "use ; bash -c gh pr create"')" = 0 ] || { echo "::error::deny-ship: semicolon prose false-positived"; exit 1; }
-          [ "$(gcmd 'echo "use (env bash -c gh pr create)"')" = 0 ] || { echo "::error::deny-ship: echoed prefixed-wrapper prose false-positived"; exit 1; }
-          [ "$(gcmd 'bash -c true && git commit -m "gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: benign wrapper + quoted mention false-positived"; exit 1; }
-          [ "$(gcmd 'bash -c "true; gh pr create"')" = 2 ] || { echo "::error::deny-ship: multi-command wrapper payload bypassed the gate"; exit 1; }
-          # Combined-flag wrapper forms (round-8): -c inside a cluster or after option args.
-          [ "$(gcmd 'bash -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -lc payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'sh -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: sh -lc payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash -ec "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -ec payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'env bash -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env bash -lc payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash -o pipefail -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -o pipefail -c payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash lint.sh -c "gh pr create docs"')" = 0 ] || { echo "::error::deny-ship: script-arg -c false-positived (lint.sh read as sh)"; exit 1; }
-          # Escaped-quote and ANSI-C payloads (round-9): the stripper is escape-aware and the
-          # payload span passes \-escaped chars through; $'...' is a recognized opener.
-          [ "$(gcmd 'bash -c "echo \"x\"; gh pr create"')" = 2 ] || { echo "::error::deny-ship: escaped-quote payload bypassed the gate"; exit 1; }
-          [ "$(gcmd "bash -c \$'gh pr create'")" = 2 ] || { echo "::error::deny-ship: ANSI-C \$'...' payload bypassed the gate"; exit 1; }
-          [ "$(gcmd "eval \$'gh pr merge'")" = 2 ] || { echo "::error::deny-ship: eval \$'...' payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'git commit -m "block bash -c \"gh pr create\" forms"')" = 0 ] || { echo "::error::deny-ship: prose with escaped quoted invocation false-positived (stripper pairing regressed)"; exit 1; }
-          # Opposite-quote payloads (round-10): the span is quote-specific like real shell.
-          [ "$(gcmd "bash -c 'echo \"x\"; gh pr create'")" = 2 ] || { echo "::error::deny-ship: single-opened payload with double quotes bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash -c "echo '"'"'x'"'"'; gh pr create"')" = 2 ] || { echo "::error::deny-ship: double-opened payload with single quotes bypassed the gate"; exit 1; }
-          [ "$(gcmd "eval 'echo \"x\"; gh pr merge'")" = 2 ] || { echo "::error::deny-ship: single-opened eval payload with double quotes bypassed the gate"; exit 1; }
-          # Concatenated / ANSI-escaped payload words (round-11): shell-word segment chains.
-          [ "$(gcmd "bash -c \$'echo \\'x\\'; gh pr create'")" = 2 ] || { echo "::error::deny-ship: ANSI-C escaped-single-quote payload bypassed the gate"; exit 1; }
-          [ "$(gcmd "bash -c 'echo '\\''x'\\''; gh pr create'")" = 2 ] || { echo "::error::deny-ship: quote-concatenated payload bypassed the gate"; exit 1; }
-          [ "$(gcmd "eval 'echo '\\''x'\\''; gh pr merge'")" = 2 ] || { echo "::error::deny-ship: quote-concatenated eval payload bypassed the gate"; exit 1; }
-          # Batched siblings: no-space -c, quoted "-c", herestring, pipe-to-shell.
-          [ "$(gcmd 'bash -c"gh pr create"')" = 2 ] || { echo "::error::deny-ship: no-space -c payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash "-c" "gh pr create"')" = 2 ] || { echo "::error::deny-ship: quoted -c payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash <<< "gh pr create"')" = 2 ] || { echo "::error::deny-ship: herestring payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'echo "gh pr create" | bash')" = 2 ] || { echo "::error::deny-ship: pipe-to-shell payload bypassed the gate"; exit 1; }
-          [ "$(gcmd 'bash <<< "make lint"')" = 0 ] || { echo "::error::deny-ship: benign herestring false-positived"; exit 1; }
-          [ "$(gcmd 'echo "make lint" | bash')" = 0 ] || { echo "::error::deny-ship: benign pipe-to-shell false-positived"; exit 1; }
-          [ "$(gcmd 'git commit -m "echo gh pr create | bash idea"')" = 0 ] || { echo "::error::deny-ship: prose about pipe-to-shell false-positived"; exit 1; }
-          [ "$(gcmd 'echo "gh pr create" | wc -l')" = 0 ] || { echo "::error::deny-ship: plain pipe (no shell) false-positived"; exit 1; }
-          
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh

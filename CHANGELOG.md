@@ -21,24 +21,19 @@
   AND auditor — which holds even on an upgraded project whose preserved legacy CLAUDE.md
   predates the shell's role-scope line. `HARNESS_RE` and the tamper pathlist gain
   `.plinth/reviewer.md` and `CLAUDE.md`.
-- **Deny-ship backstop (vendor-universal).** `guard.sh` (PreToolUse, honored by every
-  vendor) denies `gh pr create`/`gh pr merge` unless the feature branch's verdict is
-  APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS only on Claude/codex.
-  Direct base-branch pushes are left to server-side branch protection (the Stop gate
-  logs+releases them); client-side base detection was fragile (base is not always
-  main/master) and redundant. Heuristic backstop: detection strips quoted prose
-  (escape-aware — a `\"` inside a double-quoted span does not shift the pairing), and
-  additionally scans payloads a shell would EXECUTE: the word after a wrapper's `-c`
-  (flag clusters `-lc`, quoted `"-c"`, and no-space `-c"..."` included), a herestring
-  (`bash <<< "..."`), an `eval` word, and a quoted string piped into a bare shell
-  (`echo "..." | sh`). The payload word is modeled like a real shell word — chains of
-  complete double-quoted (escape-aware), single-quoted, and ANSI-C `$'...'` segments,
-  escapes, and plain chars, ending in an open segment reaching the ship action — so
-  concatenation (`'echo '\''x'\''; gh pr create`), inner opposite quotes, and `\'`
-  ANSI escapes are all caught, while prose mentioning a wrapper plus the command with
-  punctuation in between stays inert. CI + branch
-  protection remain the hard layers. Feature-branch pushes stay allowed so the
-  RUNTIME smoke-receipt loop is not deadlocked.
+- **Deny-ship TRIPWIRE (vendor-universal).** `guard.sh` (PreToolUse, honored by every
+  vendor) refuses the plain `gh pr create`/`gh pr merge` command unless the feature
+  branch's verdict is APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS
+  only on Claude/codex. Detection is on the quote-stripped command (escape-aware pairing)
+  so prose mentioning the command stays inert, and unquoted prefixes (`sudo gh pr create`)
+  still match. SCOPE, stated honestly: a client-side hook is bypassable by definition, so
+  deliberate obfuscation (shell wrappers `bash -c "..."`, eval, herestrings,
+  pipe-to-shell) is OUT OF SCOPE — chasing it in a local hook is security theater. The
+  ACTUAL gate against merging unreviewed work is server-side: required CI checks + branch
+  protection + the cloud review; this tripwire only turns a reflexive "ship without
+  review" into a deliberate act. Direct base-branch pushes are likewise branch
+  protection's job. Feature-branch pushes stay allowed so the RUNTIME smoke-receipt loop
+  is not deadlocked.
 - **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
   non-blocking, driver-initiated consult of a model as good or BETTER than the driver
   (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`
@@ -83,9 +78,7 @@
   `sudo -u root`, `env -i`, `command --`, `nice -n 10`, `time -p`) — and `VAR=val`
   assignment chains before `rm -rf`, `git push --force`, and `git reset --hard origin`
   are now caught (the v4.1.6 command-position anchor required the destructive word
-  immediately at a boundary, so `sudo rm -rf` slipped past). The ship gate's
-  wrapper-payload scan is unanchored, so prefixed wrappers (`env bash -c "gh pr
-  create"`) need no prefix handling and cannot evade. Quoted prose stays inert;
+  immediately at a boundary, so `sudo rm -rf` slipped past). Quoted prose stays inert;
   enumerative by design, not a shell parser — the CI floor is the hard layer.
 
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
