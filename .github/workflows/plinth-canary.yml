@@ -804,6 +804,16 @@ jobs:
           printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4" > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 0 ] || { echo "::error::deny-ship: gh pr create blocked despite APPROVED@HEAD"; exit 1; }
           
+          # ── v4.4.0: destructive-command guard catches PREFIXED forms (round-5) ──
+          [ "$(gcmd 'sudo rm -rf /tmp/x')" = 2 ] || { echo "::error::guard: sudo rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'command rm -rf x')" = 2 ] || { echo "::error::guard: command rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'env rm -rf x')" = 2 ] || { echo "::error::guard: env rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'FOO=1 rm -rf x')" = 2 ] || { echo "::error::guard: VAR=val rm -rf not blocked"; exit 1; }
+          [ "$(gcmd 'sudo git push --force origin feat')" = 2 ] || { echo "::error::guard: sudo git push --force not blocked"; exit 1; }
+          [ "$(gcmd 'env git reset --hard origin/main')" = 2 ] || { echo "::error::guard: prefixed git reset --hard origin not blocked"; exit 1; }
+          [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
+          [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
+          
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh

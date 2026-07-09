@@ -66,6 +66,12 @@
   prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
   mid-token at the 120/160-char cap, leaving a fragment too short for the redaction
   regex that then persisted to `.plinth/session/events.jsonl`.
+- **guard.sh destructive-command anchor tolerates prefixes:** `sudo` / `command` /
+  `env` / `nice` / `nohup` / `time` and `VAR=val` assignment chains before `rm -rf`,
+  `git push --force`, and `git reset --hard origin` are now caught (the v4.1.6
+  command-position anchor required the destructive word immediately at a boundary, so
+  `sudo rm -rf` slipped past). Quoted prose stays inert; still a heuristic layer under
+  the CI floor.
 
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
