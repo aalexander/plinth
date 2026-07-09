@@ -910,6 +910,22 @@ jobs:
           [ "$(gcmd 'git "push" --force origin')" = 2 ] || { echo "::error::guard: quoted-token 'git \"push\" --force' bypassed"; exit 1; }
           [ "$(gcmd 'gh "pr" create')" = 2 ] || { echo "::error::deny-ship: quoted-token 'gh \"pr\" create' bypassed"; exit 1; }
           [ "$(gcmd 'git commit -m "please rm -rf later"')" = 0 ] || { echo "::error::guard: prose mention 'rm -rf' (no delimiter) wrongly blocked after unquoting"; exit 1; }
+          # rm flag variants + git/gh GLOBAL OPTIONS (round-28) — ordinary forms, must be caught:
+          [ "$(gcmd 'rm -fr x')" = 2 ] || { echo "::error::guard: 'rm -fr' bypassed"; exit 1; }
+          [ "$(gcmd 'rm -Rf x')" = 2 ] || { echo "::error::guard: 'rm -Rf' bypassed"; exit 1; }
+          [ "$(gcmd 'rm --recursive --force x')" = 2 ] || { echo "::error::guard: 'rm --recursive --force' bypassed"; exit 1; }
+          [ "$(gcmd 'rm -r dir')" = 2 ] || { echo "::error::guard: 'rm -r' bypassed"; exit 1; }
+          [ "$(gcmd 'rm report.txt')" = 0 ] || { echo "::error::guard: 'rm report.txt' (r in name) wrongly blocked"; exit 1; }
+          [ "$(gcmd 'rm --reflink=always a b')" = 0 ] || { echo "::error::guard: 'rm --reflink' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'git -C . push --force origin main')" = 2 ] || { echo "::error::guard: 'git -C . push --force' bypassed"; exit 1; }
+          [ "$(gcmd 'git -c core.sshCommand=ssh push --force origin main')" = 2 ] || { echo "::error::guard: 'git -c k=v push --force' bypassed"; exit 1; }
+          [ "$(gcmd 'git --git-dir=.git push --force origin main')" = 2 ] || { echo "::error::guard: 'git --git-dir push --force' bypassed"; exit 1; }
+          [ "$(gcmd 'git -C . reset --hard origin/main')" = 2 ] || { echo "::error::guard: 'git -C . reset --hard origin' bypassed"; exit 1; }
+          [ "$(gcmd 'git commit -m push --force')" = 0 ] || { echo "::error::guard: 'git commit -m push --force' wrongly blocked (not a push)"; exit 1; }
+          [ "$(gcmd 'git -C . status')" = 0 ] || { echo "::error::guard: 'git -C . status' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'gh -R owner/repo pr create --fill')" = 2 ] || { echo "::error::deny-ship: 'gh -R o/r pr create' bypassed"; exit 1; }
+          [ "$(gcmd 'gh --repo owner/repo pr merge --squash')" = 2 ] || { echo "::error::deny-ship: 'gh --repo o/r pr merge' bypassed"; exit 1; }
+          [ "$(gcmd 'gh -R owner/repo pr list')" = 0 ] || { echo "::error::deny-ship: 'gh -R o/r pr list' wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }

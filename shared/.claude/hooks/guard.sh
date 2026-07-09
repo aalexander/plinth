@@ -100,18 +100,27 @@ case "$tool" in
     # (; | &) inside quoted prose (`-m "step; rm -rf x"`) exposes it to the matcher and
     # blocks — rare, and fail-closed (run it yourself). \042 " \047 ' \134 backslash.
     stripped="$(printf '%s' "$cmd" | tr -d '\042\047\134')"
-    # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
-    # assignment; PFX is any chain of them (used only by the destructive matcher — the
-    # ship tripwire below matches plain unquoted `gh pr create/merge`, where prefixes
-    # ride on the same line and need no special handling).
+    # PFX: a chain of command PREFIX words (sudo/command/env/... each with optional
+    # -opts + one arg) or VAR=val assignments, before the command. OPT: a chain of a
+    # command's own GLOBAL OPTIONS between it and its subcommand (`git -C . push`, `gh
+    # -R o/r pr create`, `git -c k=v ...`, `--git-dir=…`) — a dash token, optionally
+    # with a following non-dash arg. Both let ordinary invocations match without opening
+    # a prose hole: OPT only accepts dash-led tokens, so `git commit -m push` is not a
+    # `git … push`. Enumerative, not a shell parser (see the header).
     PFX='((sudo|command|env|nice|nohup|time)([[:space:]]+-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+    OPT='([[:space:]]+-[^;&|`[:space:]]*([[:space:]]+[^-][^;&|`[:space:]]*)?)*'
+    # rm: any RECURSIVE flag (-r/-R, combined like -rf/-fr/-Rf, or --recursive) — the
+    # catastrophic axis; force is usually paired but recursive is the danger. A short
+    # flag must start right after a space so `--reflink`/`--version` (contain r, not
+    # recursive) do not trip.
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|-f)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
     # Ship tripwire: block `gh pr create`/`gh pr merge` at COMMAND POSITION on `stripped`
     # (start, or after a ;&|`( boundary, allowing the PFX prefix chain so `sudo gh pr
-    # create` still matches). Anchoring — the same treatment as the destructive check —
+    # create` still matches, and the OPT global-options chain so `gh -R owner/repo pr
+    # create` matches). Anchoring — the same treatment as the destructive check —
     # keeps an unquoted MENTION inert: `echo gh pr create`, `printf %s gh pr merge`, and
     # `gh pr view | grep gh pr create` have the phrase as an ARGUMENT, not the command, so
     # they do not trip — including a commit -m that mentions it (quotes were removed, but
@@ -119,7 +128,7 @@ case "$tool" in
     # obfuscation (`bash -c "gh pr create"` -> `bash -c gh pr create`, gh not at command
     # position) is OUT OF SCOPE by design (see the header): a client-side hook can't win
     # that race; branch protection can.
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr[[:space:]]+(create|merge)'; then
       ship_gate "gh pr create/merge"
     fi
     while IFS= read -r pattern; do

@@ -86,11 +86,17 @@
   `sudo -u root`, `env -i`, `command --`, `nice -n 10`, `time -p`) — and `VAR=val`
   assignment chains before `rm -rf`, a force-push, and `git reset --hard origin` are now
   caught (the v4.1.6 command-position anchor required the destructive word immediately at
-  a boundary, so `sudo rm -rf` slipped past). The force-push matcher also tolerates args
-  before the flag and the flag's variants: `git push origin --force`, `git push origin
-  -f`, `git push origin main --force`, and `--force-with-lease` all match, not just
-  `git push --force`. Quoted prose stays inert; enumerative by design, not a shell parser
-  — the CI floor is the hard layer.
+  a boundary, so `sudo rm -rf` slipped past). It matches the command's own GLOBAL OPTIONS
+  too, so ordinary forms are caught: `rm` with ANY recursive flag (`-rf`/`-fr`/`-Rf`/`-r
+  -f`/`--recursive`); `git` with globals before push/reset (`git -C . push --force`, `git
+  -c k=v push …`, `git --git-dir=… push …`, `git -C . reset --hard origin`); force-flag
+  variants (`git push origin --force`, `-f`, `--force-with-lease`); and `gh` with globals
+  before the ship action (`gh -R owner/repo pr create`, `gh --repo … pr merge`). It also
+  UNQUOTES rather than deleting quoted spans, so a quoted command token (`"rm" -rf`, `gh
+  "pr" create`) that the shell would still run is caught. A mere MENTION mid-argument
+  stays inert (`rm report.txt`, `git commit -m push --force`, `gh -R … pr list`); the
+  global-options chain only accepts dash-led tokens, so `git commit -m push` is not a
+  `git … push`. Enumerative by design, not a shell parser — the CI floor is the hard layer.
 
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
