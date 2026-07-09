@@ -69,6 +69,10 @@ jobs:
           # Security-critical bypass cases (the classifier decides whether review
           # is skipped, so these must not sneak into Tier 0/1):
           [ "$(tier 'echo requests==1 > requirements.txt')" = "2" ] || { echo "::error::classifier: deps manifest != Tier 2"; exit 1; }
+          # Common package/lock manifests the DEPS regex must cover (round-10 gap):
+          [ "$(tier 'echo x > npm-shrinkwrap.json')" = "2" ] || { echo "::error::classifier: npm-shrinkwrap.json (dep manifest) != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > pnpm-workspace.yaml')" = "2" ] || { echo "::error::classifier: pnpm-workspace.yaml (dep manifest) != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p gradle; echo x > gradle/libs.versions.toml')" = "2" ] || { echo "::error::classifier: gradle libs.versions.toml (version catalog) != Tier 2"; exit 1; }
           [ "$(tier 'mkdir -p src; echo x > src/auth_login.py')" = "2" ] || { echo "::error::classifier: security path != Tier 2"; exit 1; }
           [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
           [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
@@ -76,6 +80,10 @@ jobs:
           [ "$(tier 'echo FROM alpine > Dockerfile.prod')" = "2" ] || { echo "::error::classifier: Dockerfile.prod (build/deploy variant) != Tier 2"; exit 1; }
           [ "$(tier 'echo FROM alpine > Containerfile')" = "2" ] || { echo "::error::classifier: Containerfile != Tier 2"; exit 1; }
           [ "$(tier 'echo FROM alpine > prod.dockerfile')" = "2" ] || { echo "::error::classifier: *.dockerfile suffix != Tier 2"; exit 1; }
+          # Gradle Kotlin DSL + properties the BUILD regex must cover (round-10 gap):
+          [ "$(tier 'echo x > build.gradle.kts')" = "2" ] || { echo "::error::classifier: build.gradle.kts (Kotlin DSL) != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > settings.gradle.kts')" = "2" ] || { echo "::error::classifier: settings.gradle.kts != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > gradle.properties')" = "2" ] || { echo "::error::classifier: gradle.properties != Tier 2"; exit 1; }
           [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
           [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
           [ "$(tier 'echo maximize > GOAL.md')" = "2" ] || { echo "::error::classifier: GOAL.md (optimization contract) != Tier 2 — metric-gaming bypass"; exit 1; }

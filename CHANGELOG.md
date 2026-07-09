@@ -101,6 +101,12 @@ here hitting a live PR first:
   `newmode` 160000, so DELETING or type-changing a submodule out (newmode
   000000/100644) fell to Tier 1; it now also checks `oldmode` 160000 — submodule
   add/modify/delete/type-change all stay Tier 2. Canary probes for both.
+- risk-classify.sh: BUILD and DEPS missed common manifests, so a Gradle Kotlin
+  DSL or npm/pnpm supply-chain change could review as ordinary Tier 1. BUILD now
+  covers `build.gradle.kts`/`settings.gradle.kts` (Kotlin DSL is the modern
+  default) and `gradle.properties`; DEPS now covers `npm-shrinkwrap.json`,
+  `pnpm-workspace.yaml`, and the Gradle version catalog `libs.versions.toml`.
+  Canary probes for each.
 - risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
   contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
   matching the generic `.md` docs rule and going Tier 0 (skipping the model round
