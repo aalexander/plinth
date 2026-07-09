@@ -95,10 +95,12 @@
   a boundary, so `sudo rm -rf` slipped past). It matches the command's own GLOBAL OPTIONS
   too, so ordinary forms are caught: `rm` with ANY recursive flag (`-rf`/`-fr`/`-Rf`/`-r
   -f`/`--recursive`); `git` with globals before push/reset (`git -C . push --force`, `git
-  -c k=v push …`, `git --git-dir=… push …`, `git -C . reset --hard origin`); force-push by
-  ANY encoding — the flag forms (`--force`, `-f`, `--force-with-lease`), the refspec form
-  (a `+`-prefixed ref, `git push origin +main`), and `--mirror` (a `+` INSIDE a token like a
-  `feature+x` branch is not a hit); and `gh` with globals
+  -c k=v push …`, `git --git-dir=… push …`, `git -C . reset --hard origin`); a destructive
+  remote-ref push by ANY encoding — force overwrite (`--force`, `-f`, `--force-with-lease`,
+  a `+`-prefixed ref `git push origin +main`, `--mirror`) OR remote-ref deletion/prune
+  (`--delete`, `-d`, a `:`-prefixed ref `git push origin :main`, `--prune`); a mid-token
+  `+`/`:` — an ordinary refspec like a `feature+x` branch or `HEAD:main`/`src:dst` — is not
+  a hit; and `gh` with globals
   before the ship action (`gh -R owner/repo pr create`, `gh --repo … pr merge`). It also
   UNQUOTES rather than deleting quoted spans, so a quoted command token (`"rm" -rf`, `gh
   "pr" create`) that the shell would still run is caught. A mere MENTION mid-argument

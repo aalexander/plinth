@@ -951,6 +951,13 @@ jobs:
           [ "$(gcmd 'git -C . push origin +main')" = 2 ] || { echo "::error::guard: 'git -C . push origin +main' bypassed"; exit 1; }
           [ "$(gcmd 'git push origin feature+x')" = 0 ] || { echo "::error::guard: 'git push origin feature+x' (+ inside token) wrongly blocked"; exit 1; }
           [ "$(gcmd 'git push origin HEAD:main')" = 0 ] || { echo "::error::guard: 'git push origin HEAD:main' (non-force refspec) wrongly blocked"; exit 1; }
+          # Remote-ref DELETION / prune forms (round-32) — data loss on remote refs, no force flag:
+          [ "$(gcmd 'git push origin :main')" = 2 ] || { echo "::error::guard: 'git push origin :main' (colon delete) bypassed"; exit 1; }
+          [ "$(gcmd 'git push origin --delete main')" = 2 ] || { echo "::error::guard: 'git push origin --delete' bypassed"; exit 1; }
+          [ "$(gcmd 'git push -d origin main')" = 2 ] || { echo "::error::guard: 'git push -d' bypassed"; exit 1; }
+          [ "$(gcmd 'git push --prune origin')" = 2 ] || { echo "::error::guard: 'git push --prune' bypassed"; exit 1; }
+          [ "$(gcmd 'git push origin src:dst')" = 0 ] || { echo "::error::guard: 'git push origin src:dst' (mid-token colon) wrongly blocked"; exit 1; }
+          [ "$(gcmd 'git push git@h:repo.git main')" = 0 ] || { echo "::error::guard: 'git push git@h:repo.git' (scp-like remote) wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }
