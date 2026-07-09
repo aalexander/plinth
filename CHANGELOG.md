@@ -23,16 +23,25 @@
 Version bump: the v4.2 branch (below) gained substantial CI supply-chain
 hardening, classifier bypass fixes, and audit-integrity fixes after its first
 APPROVED, so it ships as v4.2.1. Reusable-workflow references:
-- The Plinth repo now calls its OWN reusable workflows by LOCAL path
-  (`./.github/workflows/...`) instead of an external release tag — a PR is gated by
-  the floor/checks in that PR (was pinned to the stale v4.0.1 floor), and there is
-  no external mutable ref to pin or suppress.
+- The Plinth repo's required `floor` gate now pins the PREVIOUS release's floor by
+  IMMUTABLE SHA (v4.1.9) — an independent gate a same-PR edit to this repo's own
+  plinth-floor.yml cannot weaken (was pinned to the stale v4.0.1 floor, 8 releases
+  behind, which also tested none of a PR's floor changes). A second `floor-current`
+  job runs the floor AS EDITED IN THIS PR, so floor changes are still exercised in
+  CI: the gate stays independent AND the current floor gets tested. `checks` (stack
+  detection, not a security gate) stays local. The gate SHA is repinned each release.
 - The template now pins Plinth's reusable workflows by IMMUTABLE COMMIT SHA (no
   mutable tag, no `nosemgrep` anywhere): the shipped file carries a prior-release
   SHA as a placeholder, and `plinth init` repins it to the exact Plinth checkout it installed from
   (alongside the existing OWNER substitution). This closes the reviewer's finding
   that the old tag+suppression shipped mutable-tag trust to every new project —
   downstream now gets an immutable SHA their own floor scans clean.
+- smoke.yml: the base-config read now fetches into the remote-tracking ref
+  explicitly (`git fetch origin +$base:refs/remotes/origin/$base`) at BOTH the
+  precheck and the self-hosted step. A bare `git fetch origin "$base"` only
+  updates FETCH_HEAD in a PR checkout, so the following `git show
+  origin/$base:.plinth/config` could miss and read as no smoke_cmd — a repo with
+  smoke configured would then silently skip its smoke run.
 
 Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - review.sh: the Tier-2 comment said a cross-vendor audit runs "every time

@@ -39,7 +39,11 @@ jobs:
           # be able to make precheck request the self-hosted runner (which would
           # re-queue forever in a repo without one, and no-op anyway).
           base="${GITHUB_BASE_REF:-main}"
-          git fetch --depth 1 origin "$base" 2>/dev/null || true
+          # Explicit refspec: a bare `git fetch origin "$base"` only guarantees
+          # FETCH_HEAD, not refs/remotes/origin/$base, in a PR checkout — the
+          # `git show origin/$base:...` below would then miss and read as no
+          # smoke_cmd, so a configured smoke run would silently skip.
+          git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
           cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
                  | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -n "$cmd" ]; then
@@ -65,8 +69,10 @@ jobs:
           # what executes on this host. PR code still runs UNDER that command;
           # self-hosted smoke assumes a private, no-fork repo where every PR
           # already passed the gated loop.
-          git fetch --depth 1 origin "${GITHUB_BASE_REF:-main}" 2>/dev/null || true
-          cmd="$(git show "origin/${GITHUB_BASE_REF:-main}:.plinth/config" 2>/dev/null \
+          base="${GITHUB_BASE_REF:-main}"
+          # explicit refspec (see the precheck note): guarantees origin/$base exists
+          git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
+          cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
                  | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -z "$cmd" ]; then
             echo "no smoke_cmd in the BASE branch's .plinth/config — nothing to run (green no-op)"
