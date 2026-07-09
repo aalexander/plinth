@@ -65,8 +65,13 @@
   placeholder comment) makes it custom. Anything else — including older template
   revisions — is PRESERVED with a loud NOTE to move notes into
   `.plinth/DRIVER-project.md`: a false "custom" costs a 30-second manual step, a false
-  "stock" would destroy user content. This repo's OWN contract migration is sequenced
-  AFTER release (the pinned instrument must reach v4.4.0 first).
+  "stock" would destroy user content. A preserved custom `CLAUDE.md` is NOT the end
+  state — v4.4 requires `CLAUDE.md` to be the driver shell, and the CI floor verifies it
+  unconditionally, so the migration must be completed (move notes to
+  `.plinth/DRIVER-project.md`, delete `CLAUDE.md`, re-run `plinth update`); update
+  preserves notes so nothing is lost, the floor failure is the pressure to finish. This
+  repo's OWN contract migration is sequenced AFTER release (the pinned instrument must
+  reach v4.4.0 first).
 - **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
   longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
   GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE) and the guard keeps

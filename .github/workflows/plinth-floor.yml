@@ -91,15 +91,17 @@ jobs:
           }
           check shared/plinth-rules.md            .plinth/plinth-rules.md
           check shared/MODELS.md                  .plinth/MODELS.md
-          # v4.4 contract split: reviewer contract -> .plinth/reviewer.md; root
-          # AGENTS.md is the byte-identical driver shell (always regenerated). CLAUDE.md
-          # is the shell only when it carries the marker — a preserved pre-v4.4 CUSTOM
-          # CLAUDE.md (migration NOTE pending) is user-owned, so skip it there.
+          # v4.4 contract split: reviewer contract -> .plinth/reviewer.md; root AGENTS.md
+          # and CLAUDE.md are the byte-identical driver shell. Both are version-pinned and
+          # verified UNCONDITIONALLY — no marker guard (a project could delete the marker to
+          # evade). A pre-v4.4 project mid-migration with a preserved CUSTOM CLAUDE.md will
+          # fail here until it finishes migrating (move notes to .plinth/DRIVER-project.md,
+          # delete CLAUDE.md, re-run `plinth update` to regenerate the shell) — the check IS
+          # the pressure to complete it. (check() still skips when the pinned release
+          # predates driver-shell.md, so pre-v4.4 pinned releases are unaffected.)
           check shared/reviewer.md                .plinth/reviewer.md
           check shared/driver-shell.md            AGENTS.md
-          if grep -qF 'Plinth driver shell (version-pinned)' CLAUDE.md 2>/dev/null; then
-            check shared/driver-shell.md          CLAUDE.md
-          fi
+          check shared/driver-shell.md            CLAUDE.md
           check shared/.plinth/review.sh          .plinth/review.sh
           check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
