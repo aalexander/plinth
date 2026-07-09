@@ -64,39 +64,41 @@ ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
 security-briefed because it reads AGENTS.md; no separate "Codex Security"
 product exists or is assumed.
-Reviewer-swap checklist: review.sh's resume-skip threshold assumes the reviewer's
-context window — PLINTH_RESUME_MAX defaults to 650000 (~65% of GPT-5.5's
-1,005,000). On a reviewer with a different window, set PLINTH_RESUME_MAX to
-~65% of it (env var or wrapper); staying well under the window matters because a
-near-full thread silently auto-compacts away the original diff context.
+Reviewer-swap checklist: review.sh's resume-skip threshold now scales per
+`reviewer_vendor` (~65% of that vendor's context window) automatically;
+PLINTH_RESUME_MAX (env) still overrides. Staying well under the window matters
+because a near-full thread silently auto-compacts away the original diff context.
 
 ## Reviewer assignment across vendors (all subscription-authenticated, no per-use cost)
-Three reviewer CLIs are available; assign by their observed strengths:
-- **codex / GPT-5.5** — goes DEEPEST. Keep it the PRIMARY adversarial reviewer at
-  all tiers, and it does the binding clean-slate confirmation. Slower.
-- **grok / Grok Build (xAI)** — good and noticeably FASTER, and a DIFFERENT vendor.
-  Best as the Tier-2 CROSS-VENDOR second opinion (`audit_vendor = grok`) — a
-  different vendor breaks the reviewer-collusion risk (the primary reviewer is
-  otherwise a sibling of the driver), and speed matters for a check that fires on
-  every Tier-2 approval. This path runs grok's OWN `grok` CLI — nothing goes in
-  codex's config.
-- **agy / Antigravity (Gemini, Google)** — CAUTION: it REFUSES adversarial
-  "find-the-bypass" framing. Fine for the review-loop audit (framed as
-  "audit your own code," which review.sh uses) but do not point red-team prompts
-  at it. Keep as a third cross-vendor option, not the primary adversary.
+Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
+(default codex); assign by their observed strengths:
+- **codex / GPT-5.5** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
+  binding clean-slate confirmation. Slower.
+- **claude / Anthropic** — native, ~1M window, resumes warm threads. A capable
+  primary; reviews with `--bare` so it does not auto-load the repo's CLAUDE.md.
+- **grok / Grok Build (xAI)** — good and noticeably FASTER, and a DIFFERENT vendor
+  from a Claude/Codex driver. Strong either as the FAST primary (`reviewer_vendor =
+  grok`) or as the Tier-2 CROSS-VENDOR second opinion (`audit_vendor = grok`) — a
+  different vendor breaks reviewer-collusion risk. Reports no headless token usage,
+  so it runs fresh/verify each round (no warm resume).
+- **agy / Antigravity (Gemini, Google)** — CAUTION: REFUSES adversarial
+  "find-the-bypass" framing. Fine for the review-loop audit (framed as "audit your
+  own code") but not as the primary adversary — audit_vendor only.
 
-Two SEPARATE integration paths — don't conflate them (a driver did):
-- `audit_vendor` = grok | agy runs that vendor's OWN CLI (a separate binary,
-  subscription-authed), independent of your codex config. If that CLI isn't
-  installed or signed in, the audit is recorded UNAVAILABLE (non-blocking) and the
-  codex primary review stands — surface it (the dashboard shows "audit
-  unavailable"), don't read a missing audit as a pass.
-- `reviewer_model_tier1/tier2` are passed to `codex -m`, so they must be models
-  YOUR codex can actually run. The stock config runs only gpt-5.5; making grok (or
-  any non-OpenAI model) the PRIMARY reviewer means adding an xAI/Google
-  `model_provider` + key to `~/.codex/config.toml` AND resetting `PLINTH_RESUME_MAX`
-  to ~65% of that model's context window (reviewer-swap checklist above). It is not
-  automatic — leave these UNSET to keep gpt-5.5 unless you've done that setup.
+Three SEPARATE integration paths — don't conflate them (a driver did):
+- `reviewer_vendor` = codex | claude | grok picks the PRIMARY reviewer's OWN CLI —
+  who runs the primary adversarial review. Default codex (no setup). claude/grok
+  need only their own CLI installed + signed in; NOTHING goes in codex's config.
+  review.sh sets the resume threshold per vendor automatically.
+- `audit_vendor` = grok | agy runs that vendor's OWN CLI as the cross-vendor SECOND
+  opinion (a separate binary), independent of the primary. If not installed/signed
+  in, the audit is UNAVAILABLE (non-blocking) and the primary review stands —
+  surface it (dashboard shows "audit unavailable"), don't read a missing audit as a
+  pass. Pick a DIFFERENT vendor than `reviewer_vendor`.
+- `reviewer_model_tier1/tier2` set the per-tier MODEL the reviewer_vendor runs (its
+  own model flag; codex/grok `-m`, claude `--model`). Unset = the vendor default.
+  (To make a non-OpenAI model primary, just set `reviewer_vendor` — no
+  `~/.codex/config.toml` model_provider needed anymore.)
 
 Default config (templates/.plinth/config): `audit_vendor = grok` — the separate
 `grok` CLI (needs it signed in; a non-fatal UNAVAILABLE if not). Revisit on any
