@@ -109,6 +109,13 @@ here hitting a live PR first:
   default) and `gradle.properties`; DEPS now covers `npm-shrinkwrap.json`,
   `pnpm-workspace.yaml`, and the Gradle version catalog `libs.versions.toml`.
   Canary probes for each.
+- risk-classify.sh: closed a rename-launder bypass. The rename/copy OLD-path check
+  covered security/migration/tooling/build/test-config but omitted DEPS, public-API,
+  and `tier2_extra` paths — so a dependency manifest, an API path, or a
+  project-declared `tier2_extra` file could be `git mv`'d to a `.md` destination and
+  classify Tier 0 (skipping the model round). The old path is now checked against the
+  full Tier-2 surface. Canary probes for the tier2_extra / dependency / public-API
+  rename-to-docs cases.
 - risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
   contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
   matching the generic `.md` docs rule and going Tier 0 (skipping the model round

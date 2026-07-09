@@ -115,6 +115,10 @@ jobs:
           echo "secret=1" > src/logic.py
           printf 'def test_a():\n    assert f() == 1\n    assert g() == 2\n' > tests/core_test.py
           ln -s /etc/hostname link.md   # a symlink base, for the type-change probe
+          mkdir -p vault api            # high-consequence OLD paths for rename-launder probes
+          printf 'aaa\nbbb\nccc\n' > vault/secret.txt   # tier2_extra ((^|/)vault/, set above)
+          printf 'ddd\neee\nfff\n' > package.json       # DEPS manifest
+          printf 'ggg\nhhh\niii\n' > api/users.py       # PUBAPI path
           git add -A; git commit -qm "base files for bypass tests" >/dev/null
           # Type change (symlink -> regular doc) must not launder into Tier 0.
           git checkout -qB tc main >/dev/null 2>&1; rm link.md; echo "just docs now" > link.md; git add -A; git commit -qm tc >/dev/null
@@ -122,6 +126,14 @@ jobs:
           # Real code renamed to a .md destination must NOT be Tier 0.
           git checkout -qB rn main >/dev/null 2>&1; git mv src/logic.py notes.md; git commit -qm rename >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" != "0" ] || { echo "::error::classifier: code renamed to .md is Tier 0 (bypass)"; exit 1; }
+          # round-14 bypass: a high-consequence OLD path (tier2_extra / dependency
+          # manifest / public-API) renamed to an inert .md must stay Tier 2, not launder.
+          git checkout -qB rnx main >/dev/null 2>&1; git mv vault/secret.txt v-notes.md; git commit -qm rnx >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: tier2_extra path renamed to .md != Tier 2 (bypass)"; exit 1; }
+          git checkout -qB rnd main >/dev/null 2>&1; git mv package.json d-notes.md; git commit -qm rnd >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: dependency manifest renamed to .md != Tier 2 (bypass)"; exit 1; }
+          git checkout -qB rna main >/dev/null 2>&1; git mv api/users.py a-notes.md; git commit -qm rna >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: public API path renamed to .md != Tier 2 (bypass)"; exit 1; }
           # Deleting an existing test must be Tier 2.
           git checkout -qB del main >/dev/null 2>&1; git rm -q tests/core_test.py; git commit -qm del >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: test deletion != Tier 2"; exit 1; }
