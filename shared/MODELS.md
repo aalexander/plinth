@@ -123,11 +123,12 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   who runs the primary adversarial review. Default codex (no setup). claude/grok
   need only their own CLI installed + signed in; NOTHING goes in codex's config.
   review.sh sets the resume threshold per vendor automatically.
-- `audit_vendor` = grok | agy runs that vendor's OWN CLI as the cross-vendor SECOND
-  opinion (a separate binary), independent of the primary. If not installed/signed
+- `audit_vendor` = codex | grok | agy runs that vendor's OWN CLI as the cross-vendor
+  SECOND opinion (a separate binary), independent of the primary. If not installed/signed
   in, the audit is UNAVAILABLE (non-blocking) and the primary review stands —
   surface it (dashboard shows "audit unavailable"), don't read a missing audit as a
-  pass. Pick a DIFFERENT vendor than `reviewer_vendor`.
+  pass. Pick a DIFFERENT vendor than `reviewer_vendor` (the audit is suppressed when
+  they match) — e.g. a grok PRIMARY needs `audit_vendor = codex` (or agy), not grok.
 - `reviewer_model_tier1/tier2` set the per-tier MODEL the reviewer_vendor runs (its
   own model flag; codex/grok `-m`, claude `--model`). Unset = the vendor default.
   (To make a non-OpenAI model primary, just set `reviewer_vendor` — no

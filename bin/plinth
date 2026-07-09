@@ -863,8 +863,14 @@ case "$cmd" in
     migrate_needs_human
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
     # configs are preserved, so remind upgraded projects (MANUAL.md points here).
-    grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null \
-      || echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. Add 'audit_vendor = grok' (or agy) to .plinth/config."
+    # The audit only runs when audit_vendor DIFFERS from the primary reviewer_vendor,
+    # so suggest a different one than whatever this project's primary is.
+    if ! grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null; then
+      rv="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$target/.plinth/config" 2>/dev/null | head -1)"
+      [ -n "$rv" ] || rv=codex
+      case "$rv" in grok) sug="codex (or agy)" ;; *) sug="grok (or agy)" ;; esac
+      echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. It must DIFFER from reviewer_vendor ($rv); add audit_vendor = $sug to .plinth/config."
+    fi
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"

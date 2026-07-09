@@ -192,8 +192,12 @@ inline_contract() {
   #   3. working-tree .plinth/reviewer.md    — brand-new project, nothing ratified yet.
   if git cat-file -e "${baseref}:.plinth/reviewer.md" 2>/dev/null; then
     echo "--- .plinth/reviewer.md (base) ---"; git show "${baseref}:.plinth/reviewer.md" 2>/dev/null
-  elif git cat-file -e "${baseref}:AGENTS.md" 2>/dev/null \
-       && ! git show "${baseref}:AGENTS.md" 2>/dev/null | grep -qF 'Plinth driver shell (version-pinned)'; then
+  elif git show "${baseref}:AGENTS.md" 2>/dev/null | grep -q 'adversarial reviewer'; then
+    # First v4.4 upgrade: the ratified reviewer contract still lives in pre-v4.4 root
+    # AGENTS.md. Require the Plinth-reviewer MARKER ("adversarial reviewer") so a FIRST
+    # ADOPTION into a repo that already has an UNRELATED AGENTS.md (its own agent
+    # instructions, or the driver shell — neither carries this line) does not get that
+    # arbitrary file inlined as the review contract.
     echo "--- AGENTS.md (base — pre-v4.4 reviewer contract) ---"; git show "${baseref}:AGENTS.md" 2>/dev/null
   elif [ -f .plinth/reviewer.md ]; then
     echo "--- .plinth/reviewer.md ---"; cat .plinth/reviewer.md
