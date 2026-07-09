@@ -894,6 +894,11 @@ jobs:
           rm -f "$DE/.plinth/NEEDS-HUMAN.md"; mkdir -p "$DE/docs"; printf -- '- [ ] later\n' > "$DE/docs/NEEDS-HUMAN.md"
           o2="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
           printf '%s' "$o2" | grep -q "working tree is dirty" || { echo "::error::dirty-exemption: subdir/NEEDS-HUMAN.md wrongly exempt (SHA-bound review broken)"; exit 1; }
+          # A filename that merely ENDS in "NEEDS-HUMAN.md" (space in the name) must NOT be exempt
+          # (round-17: the old space-anchored regex matched the porcelain separator OR an in-name space).
+          rm -f "$DE/docs/NEEDS-HUMAN.md"; printf -- '- [ ] x\n' > "$DE/docs/foo NEEDS-HUMAN.md"
+          o3="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
+          printf '%s' "$o3" | grep -q "working tree is dirty" || { echo "::error::dirty-exemption: 'docs/foo NEEDS-HUMAN.md' (space in filename) wrongly exempt"; exit 1; }
           
           # ── v4.4.0: plinth advise — ALL vendors dispatch + model flag + escalation ────
           AB="$(mktemp -d)"; ACAP="$AB/cap"

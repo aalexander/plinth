@@ -46,15 +46,24 @@ command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
 
-# Reviews are SHA-bound. A dirty tree means the diff below would not match the
-# work — the old silent-false-pass path. Refuse instead. Exemption: the
-# NEEDS-HUMAN queue (this script appends to it; it is a human channel, not
-# reviewable code — the driver commits it with its next real commit). Location-
-# tolerant but EXACT: exempt ONLY the canonical .plinth/NEEDS-HUMAN.md or a legacy
-# ROOT NEEDS-HUMAN.md — never a subdir/NEEDS-HUMAN.md (not the queue; a dirty one must
-# still refuse, preserving the SHA-bound review). The leading space is the porcelain
-# "XY " field separator, so it anchors the match to a repo-root or .plinth/ path.
-[ -z "$(git status --porcelain | grep -vE ' (NEEDS-HUMAN\.md|\.plinth/NEEDS-HUMAN\.md)$')" ] \
+# Reviews are SHA-bound. A dirty tree means the diff below would not match the work —
+# the old silent-false-pass path. Refuse instead. Exemption: the NEEDS-HUMAN queue (this
+# script appends to it; it is a human channel, not reviewable code — the driver commits
+# it with its next real commit). Exempt ONLY the canonical .plinth/NEEDS-HUMAN.md or a
+# legacy ROOT NEEDS-HUMAN.md — any OTHER dirty path must still refuse, preserving the
+# SHA-bound review. Parse porcelain -z (NUL-delimited, UNquoted) and compare the EXACT
+# path — a substring/space-anchored regex would wrongly exempt a filename that merely
+# ends in "NEEDS-HUMAN.md" (filenames may contain spaces, e.g. "docs/foo NEEDS-HUMAN.md").
+dirty=0
+while IFS= read -r -d '' entry; do
+  path="${entry:3}"   # porcelain -z prefixes each record with "XY " (2 status + 1 space)
+  case "$path" in
+    NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
+    "") ;;                                       # defensive (e.g. a rename's second field)
+    *) dirty=1; break ;;
+  esac
+done < <(git status --porcelain -z)
+[ "$dirty" = 0 ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
 sha="$(git rev-parse HEAD)"
