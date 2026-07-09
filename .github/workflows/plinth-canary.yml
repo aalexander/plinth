@@ -453,6 +453,11 @@ jobs:
           run_smoke() { wd="$(mktemp -d)"; ec=0; ( cd "$wd" && git init -q . && git remote add origin "$SORG" && GITHUB_BASE_REF="$1" bash "$SJ" >/dev/null 2>&1 ) || ec=$?; echo "$ec"; }
           [ "$(run_smoke nosuchbase)" = "1" ] || { echo "::error::self-hosted smoke: unresolvable base did not fail loud (exit $(run_smoke nosuchbase))"; exit 1; }
           [ "$(run_smoke nocfg)" = "0" ]      || { echo "::error::self-hosted smoke: absent base config did not no-op green (exit $(run_smoke nocfg)) — pipefail regression"; exit 1; }
+          # Configured-smoke_cmd acceptance: base main has `smoke_cmd = echo hi`, so the block
+          # must READ it and reach execution (it echoes `smoke: <cmd>` right before running) —
+          # a regression that skips/misreads a configured smoke_cmd would take the no-op path.
+          swd="$(mktemp -d)"; sout="$( cd "$swd" && git init -q . && git remote add origin "$SORG" && GITHUB_BASE_REF=main bash "$SJ" 2>&1 )" || true
+          printf '%s\n' "$sout" | grep -qx 'smoke: echo hi' || { echo "::error::self-hosted smoke did not read+run configured smoke_cmd from base main (out: $(printf '%s' "$sout" | tr '\n' '|'))"; exit 1; }
           # plinth update backfills managed protected-paths patterns, preserves user lines.
           PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
           # NO trailing newline on the user's last line — this is the exact input
