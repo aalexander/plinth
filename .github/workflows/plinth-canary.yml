@@ -489,6 +489,30 @@ jobs:
             PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || mrc=$?
           v="$(jq -r '.verdict // "none"' "$mgd"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
           { [ "$mrc" != 0 ] && [ "$v" != "APPROVED" ]; } || { echo "::error::malformed grok output (severity 'Major') not rejected (exit=$mrc verdict=$v) — schema-validation gap"; exit 1; }
+          # Claude usage=null: a claude reviewer reporting NO usage must record JSON null
+          # (not the string "null"), so the NEXT round's .usage.input_tokens lookup doesn't
+          # error and abort. A regression to `.usage // "null"` aborts round 2 here.
+          cat > "$RVB/claude" <<'CLN'
+          #!/usr/bin/env bash
+          st="${CLN_STATE:-/tmp/cln_state}"; n=$(( $(cat "$st" 2>/dev/null || echo 0) + 1 )); echo $n > "$st"; cat >/dev/null
+          if [ "$n" = 1 ]; then so='{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"app.py","line":1,"severity":"major","description":"d","status":"open"}]}'; else so='{"verdict":"APPROVED","summary":"x","findings":[]}'; fi
+          printf '{"session_id":"cs","structured_output":%s}' "$so"
+          CLN
+          chmod +x "$RVB/claude"
+          cund="$(mktemp -d)"; export CLN_STATE="$cund/st"; echo 0 > "$CLN_STATE"; curc=0
+          ( cd "$cund"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$cund" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = claude\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            ut="$(jq -r '.usage | type' .plinth/session/review/*/verdict.json 2>/dev/null | head -1)"
+            [ "$ut" = "null" ] || { echo "::error::claude no-usage recorded usage type '$ut', want JSON null"; exit 1; }
+            echo b > app.py; git add -A; git commit -qm r2 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || curc=$?
+          unset CLN_STATE
+          v="$(jq -r '.verdict // "none"' "$cund"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
+          { [ "$curc" = 0 ] && [ "$v" = "APPROVED" ]; } || { echo "::error::claude no-usage round-2 aborted (exit=$curc verdict=$v) — usage string-null regression"; exit 1; }
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
