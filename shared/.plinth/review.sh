@@ -49,8 +49,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 # Reviews are SHA-bound. A dirty tree means the diff below would not match the
 # work — the old silent-false-pass path. Refuse instead. Exemption: the
 # NEEDS-HUMAN queue (this script appends to it; it is a human channel, not
-# reviewable code — the driver commits it with its next real commit).
-[ -z "$(git status --porcelain | grep -vE '\.plinth/NEEDS-HUMAN\.md$')" ] \
+# reviewable code — the driver commits it with its next real commit). Location-
+# tolerant: canonical is .plinth/NEEDS-HUMAN.md, but some projects keep it at repo
+# root — exempt either ([ /] matches the porcelain field separator OR a subdir /).
+[ -z "$(git status --porcelain | grep -vE '[ /]NEEDS-HUMAN\.md$')" ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
 sha="$(git rev-parse HEAD)"
@@ -150,8 +152,8 @@ inline_spec() {
   echo "(spec path not found: ${SPEC_PATH})"
 }
 
-# Inline GOAL.md for the tools-forbidden auditor. AGENTS.md carries the metric-
-# integrity rules; the auditor also needs the GOAL's actual eval/score contract to
+# Inline GOAL.md for the tools-forbidden auditor. The reviewer contract
+# (.plinth/reviewer.md) carries the metric-integrity rules; the auditor also needs the GOAL's actual eval/score contract to
 # judge metric gaming, and it cannot read files. Pure fn -> testable.
 inline_goal() {
   [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
@@ -175,7 +177,7 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
       agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
       perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     codex)
-      printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
+      printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
         --output-schema "$SCHEMA" -o "${out}.j" - > /dev/null 2>&1 || return 1 ;;
     *)
       # Unknown vendor (a config typo like audit_vendor=gork). Do NOT fall
@@ -196,9 +198,10 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
-# NB: protected-paths is DELIBERATELY NOT here — AGENTS.md excludes it from the
-# UPSTREAM/tooling exemption, so a bad protected-paths change must stay blocking.
-HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md)$|^AGENTS\.md$'
+# NB: protected-paths is DELIBERATELY NOT here — the reviewer contract
+# (.plinth/reviewer.md) excludes it from the UPSTREAM/tooling exemption, so a bad
+# protected-paths change must stay blocking.
+HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"
@@ -376,12 +379,16 @@ reviewer_run() {
 }
 
 _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json event stream
+  # -c project_doc_max_bytes=0 ISOLATES the reviewer: it suppresses codex's auto-load
+  # of the repo's AGENTS.md (which is the DRIVER shell post-v4.4.0 — a project-
+  # controlled, PR-modifiable input) so the reviewer runs on the explicit reviewer
+  # contract passed in the prompt, not on driver instructions. (Verified: codex 0.142.5.)
   local m="$1" margs=(); [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
   if [ "$m" = "resume" ]; then
-    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' --json \
+    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' -c project_doc_max_bytes=0 --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" || return 1
   else
-    printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
+    printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
       || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   fi
@@ -396,8 +403,9 @@ _reviewer_claude() {  # hard --json-schema -> .structured_output
   # --safe-mode ISOLATES the reviewer: it disables project customizations including
   # auto-loading the repo's CLAUDE.md (a project-controlled, PR-modifiable input that
   # could otherwise inject instructions into the reviewer) while KEEPING OAuth/keychain
-  # auth — unlike --bare, which needs ANTHROPIC_API_KEY. The reviewer reads AGENTS.md
-  # via the prompt.
+  # auth — unlike --bare, which needs ANTHROPIC_API_KEY. (claude does not auto-load
+  # AGENTS.md at all; --safe-mode also blocks CLAUDE.md.) The reviewer reads its
+  # contract (.plinth/reviewer.md) via the prompt.
   local m="$1" margs=() rargs=(); [ -n "${RV_MODEL:-}" ] && margs=(--model "$RV_MODEL")
   [ "$m" = "resume" ] && rargs=(--resume "$s")
   printf '%s' "$prompt" | claude -p --safe-mode --output-format json \
@@ -489,7 +497,7 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
   fi
 
   if [ "$m" = "fresh" ]; then
-    prompt="You are an independent adversarial reviewer. Follow the rules in AGENTS.md
+    prompt="You are an independent adversarial reviewer. Follow the rules in .plinth/reviewer.md
 AND the project-specific rules in .plinth/AGENTS-project.md — including the
 Verdict policy (blockers/majors in project code block; minors and UPSTREAM
 tooling findings are reported but non-blocking; tooling tampering blocks).
@@ -514,7 +522,7 @@ ${diff}${evidence}${commits}"
     local prior
     prior="$(cat "$SDIR/findings-$((r - 1)).json")"
     prompt="Fix-verification round ${r} (fresh session; your prior thread was too large to
-resume). Apply the Verdict policy in AGENTS.md. This is a FRESH session — assume
+resume). Apply the Verdict policy in .plinth/reviewer.md. This is a FRESH session — assume
 nothing from prior rounds beyond the findings listed. Below: (1) the findings from
 the previous round, (2) the FULL diff (${baseref}...HEAD at ${sha}).
 1) For each prior finding, mark status \"resolved\" or \"open\" — resolved requires
@@ -583,7 +591,7 @@ ${inc}${evidence}${commits}"
     "$SDIR/findings-$r.json")"
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
       .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \
-      .plinth/MODELS.md .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
+      .plinth/MODELS.md .plinth/reviewer.md .plinth/protected-paths CLAUDE.md AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
   RRAW="$RVERDICT"
   if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
     RVERDICT="CHANGES_NEEDED"
@@ -673,12 +681,12 @@ Output ONLY a JSON object (no prose, no markdown fences):
 {\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
 
 === REVIEWER RULES (mandatory project blocking policy — apply these) ===
-$( for f in AGENTS.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
+$( for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
 
 === CANONICAL SPEC (${SPEC_PATH}) ===
 $(inline_spec)
 
-=== OPTIMIZATION GOAL (if present, apply the AGENTS.md metric-integrity rules) ===
+=== OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===

@@ -70,6 +70,30 @@ detect_owner() {
   printf ''
 }
 
+# Materialize the DRIVER contract shell into BOTH CLAUDE.md and AGENTS.md
+# (byte-identical). Whichever a vendor auto-loads delivers the driver role:
+# Claude reads CLAUDE.md (and expands the @import); codex reads AGENTS.md; grok
+# reads both. AGENTS.md was ALWAYS a pinned copy (reviewer contract pre-v4.4.0,
+# driver shell now) — safe to (re)generate unconditionally. CLAUDE.md was
+# historically per-project (held user "Project-specific notes"), so only
+# (re)generate it when absent or already a stock shell; otherwise PRESERVE it and
+# tell the human to move notes into .plinth/DRIVER-project.md (no auto-extraction —
+# marker-parsing a user-edited file is a known bug class).
+DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
+materialize_driver_shell() {
+  cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
+  local c="$target/CLAUDE.md"
+  if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null; then
+    cp "$PLINTH_ROOT/shared/driver-shell.md" "$c"
+  else
+    echo "  NOTE: $c has custom content — NOT overwritten. The v4.4.0 driver"
+    echo "        contract is a pinned shell (CLAUDE.md + AGENTS.md, regenerated)"
+    echo "        plus .plinth/DRIVER-project.md for your notes. Move your"
+    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then"
+    echo "        delete CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+  fi
+}
+
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
   mkdir -p "$target/.plinth" "$target/.claude/hooks"
@@ -82,7 +106,8 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
-  cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
+  cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
+  materialize_driver_shell
   chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
            "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
@@ -163,9 +188,17 @@ ensure_protected_paths() {
   # If the file doesn't end in a newline, appending would concatenate the first
   # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
   [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
+  local sfx
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    grep -qxF "$line" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
+    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
+    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
+    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
+    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
+    # wrongly freezing the PRODUCT. So if the suffix (the path after the anchor)
+    # already appears in any line, it is already covered — skip.
+    sfx="${line#'(^|/)'}"
+    grep -qF -- "$sfx" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
   done <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
@@ -176,7 +209,9 @@ ensure_protected_paths() {
 (^|/)\.plinth/review-schema\.json$
 (^|/)\.plinth/plinth-rules\.md$
 (^|/)\.plinth/MODELS\.md$
+(^|/)\.plinth/reviewer\.md$
 (^|/)\.plinth/protected-paths$
+(^|/)CLAUDE\.md$
 (^|/)AGENTS\.md$
 PATTERNS
   [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
@@ -206,15 +241,18 @@ copy_templates_if_absent() {
     fi
   }
   mkdir -p "$target/.claude" "$target/.github/workflows" "$target/.plinth"
-  place CLAUDE.md CLAUDE.md
+  # CLAUDE.md is no longer a per-project template — it is a pinned driver shell
+  # materialized by copy_shared (materialize_driver_shell). Project-specific driver
+  # notes live in .plinth/DRIVER-project.md instead.
   place SPEC.md SPEC.md
   place .gitignore .gitignore
   place .claude/settings.json .claude/settings.json
   place AGENTS-project.md .plinth/AGENTS-project.md
+  place DRIVER-project.md .plinth/DRIVER-project.md
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
