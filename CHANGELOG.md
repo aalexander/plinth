@@ -7,7 +7,12 @@
   primary-reviewer prompt (fresh/verify) and the auditor prompt (never relied on by
   auto-load — codex runs with project docs disabled), read from the RATIFIED BASE version
   (`git show base:…`, like spec_path/config) so a PR cannot weaken the reviewer.md /
-  AGENTS-project.md policy that judges it. The driver contract is a thin, byte-identical shell
+  AGENTS-project.md policy that judges it. Every inlined contract is prefaced by an
+  authoritative INLINE-ONLY POLICY banner forbidding any working-tree/tool read of a
+  policy or spec file — this neutralizes a first-v4.4-upgrade fallback, where the base
+  contract is the pre-v4.4 root `AGENTS.md` inlined VERBATIM and that text itself says
+  "ALSO read `.plinth/AGENTS-project.md`" (a disk read that would otherwise send the
+  reviewer back to the PR's own weakened copy). The driver contract is a thin, byte-identical shell
   (`shared/driver-shell.md`) materialized into BOTH `CLAUDE.md` and `AGENTS.md` by
   `plinth init/update`; project-specific driver notes move to `.plinth/DRIVER-project.md`
   (new; twin of `AGENTS-project.md`). `templates/CLAUDE.md` retired. Probed vendor
