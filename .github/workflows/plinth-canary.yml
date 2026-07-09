@@ -126,6 +126,9 @@ jobs:
           printf '# vault notes\nalpha\nbeta\ngamma\n' > vault/neutral.md
           printf 'ddd\neee\nfff\n' > package.json       # DEPS manifest
           printf 'ggg\nhhh\niii\n' > api/users.py       # PUBAPI path
+          mkdir -p app                                  # file-named + plural test modules
+          printf 'def test_a():\n    assert f() == 1\n' > app/tests.py     # Django-style tests.py
+          printf 'def test_b():\n    assert g() == 2\n' > user_tests.py    # plural *_tests.py
           git add -A; git commit -qm "base files for bypass tests" >/dev/null
           # Type change (symlink -> regular doc) must not launder into Tier 0.
           git checkout -qB tc main >/dev/null 2>&1; rm link.md; echo "just docs now" > link.md; git add -A; git commit -qm tc >/dev/null
@@ -148,6 +151,12 @@ jobs:
           git checkout -qB tw main >/dev/null 2>&1
           printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null
           [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened test != Tier 2"; exit 1; }
+          # File-named + plural test modules are tests too (round-21 gap): weakening
+          # app/tests.py (Django) or deleting user_tests.py must escalate to Tier 2.
+          git checkout -qB twf main >/dev/null 2>&1; printf 'def test_a():\n    assert True\n' > app/tests.py; git add -A; git commit -qm twf >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened file-named test (app/tests.py) != Tier 2"; exit 1; }
+          git checkout -qB dtf main >/dev/null 2>&1; git rm -q user_tests.py; git commit -qm dtf >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: deleted plural test (user_tests.py) != Tier 2"; exit 1; }
           # test_*.py (pytest PREFIX convention) outside a tests/ dir is a test:
           # modifying it must escalate like any existing test.
           git checkout -q main; printf 'def test_x():\n    assert h() == 3\n' > test_core.py; git add -A; git commit -qm "test_ prefix baseline" >/dev/null

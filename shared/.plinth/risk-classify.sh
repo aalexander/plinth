@@ -55,7 +55,7 @@ SECURITY='(auth|crypto|secret|credential|password|passwd|token|login|session|per
 MIGRATION='(migrat|(^|/)schema\.|\.sql$|alembic|(^|/)prisma/|liquibase|flyway|db_.*update|alter_.*table|(^|/)models?\.py$|(^|/)entities/)'
 PUBAPI='(openapi|swagger|asyncapi|\.proto$|\.graphql$|\.gql$|schema\.(graphql|json)$|(^|/)api/|(^|/)(routes?|controllers?|handlers?|endpoints?)[./])'
 DEPS='(^|/)(requirements[^/]*\.(txt|in|lock)|.*requirements[^/]*\.txt|constraints[^/]*\.txt|package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|Pipfile(\.lock)?|uv\.lock|poetry\.lock|pyproject\.toml|Cargo\.(toml|lock)|go\.(mod|sum|work)|Gemfile(\.lock)?|composer\.(json|lock)|environment\.yml|conda-lock\.yml|mix\.(exs|lock)|Podfile(\.lock)?|Package\.resolved|vcpkg\.json|conanfile\.(txt|py)|gradle\.lockfile|libs\.versions\.toml|bun\.lockb?)$'
-TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(_test|\.test|\.spec|_spec)\.|(^|/)test_'
+TESTS='(^|/)(tests?|specs?|__tests__|testdata|fixtures?|golden|baselines?|snapshots?|__snapshots__|test_helpers?|testing|support)/|(^|/)(tests?|specs?)\.|(_tests?|\.tests?|_specs?|\.specs?)\.|(^|/)test_'
 # Test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*/…). Unlike a test FILE,
 # ADDING one is NOT additive: a new config can disable or narrow existing test
 # discovery (empty testMatch, addopts=--ignore, an autouse skip fixture). So ANY

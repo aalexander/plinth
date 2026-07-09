@@ -125,6 +125,12 @@ here hitting a live PR first:
   REPO-ROOT `models.py`, `entities/`, `schema.*`, or `prisma/` — common ORM/schema
   locations — fell to Tier 1. Anchored them `(^|/)` so root and nested both route to
   Tier 2. Canary probes for root `models.py` and `entities/`.
+- risk-classify.sh: the TESTS regex matched test DIRECTORIES (`tests/`) and the
+  `test_`/`_test.` conventions but missed file-named test modules (`tests.py`,
+  `spec.rb` — Django/RSpec) and plural suffixes (`*_tests.py`, `*.specs.js`), so
+  weakening or deleting a test in one of those escaped the Tier-2 weakened/deleted
+  path and reviewed as Tier 1. Added the file-named and plural forms. Canary probes:
+  weaken `app/tests.py`, delete `user_tests.py`.
 - risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
   contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
   matching the generic `.md` docs rule and going Tier 0 (skipping the model round
