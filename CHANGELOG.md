@@ -13,11 +13,13 @@
   init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only
   firing on the weekly schedule. The redundant floor job is skipped on PRs (the
   project's own ci.yml already runs the floor there).
-- HUMAN TODO (Plinth repo only): set `tier2_extra = (^|/)(shared|templates|bin)/`
-  in its agent-immutable `.plinth/config` so docs-only changes to its OWN product
-  source (e.g. shared/MODELS.md) get Tier-2 review instead of the generic .md → Tier
-  0 path. The generic classifier can't know this repo's scope inversion; only the
-  human can set the config knob (the guard blocks the agent from editing config).
+- The Plinth repo's own `.plinth/config` now sets `tier2_extra =
+  (^|/)(shared|templates|bin)/` so docs-shaped changes to its OWN product source
+  (e.g. shared/MODELS.md, templates/*.md) get Tier-2 review instead of the generic
+  .md → Tier 0 path. The generic classifier can't know this repo's scope inversion,
+  and the guard blocks the agent from editing `.plinth/config`, so the human set the
+  knob directly; it lands here in the labeled v4.2.1 instrument-update commit
+  (installed `.plinth/*` may change only in a release/update commit).
 Version bump: the v4.2 branch (below) gained substantial CI supply-chain
 hardening, classifier bypass fixes, and audit-integrity fixes after its first
 APPROVED, so it ships as v4.2.1. Reusable-workflow references:

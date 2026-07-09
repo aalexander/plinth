@@ -1,9 +1,15 @@
 # Plinth per-project config. Never overwritten by plinth update.
-# Agent-immutable (protected-paths). Three knobs, all set-once:
+# Agent-immutable (protected-paths). Four knobs, all set-once:
 # spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).
 # exec_gated: space-separated grep -E patterns for execution-gated paths;
 #   RUNTIME: review findings there route to the run gate instead of blocking.
 # smoke_cmd: the real-run command the Smoke workflow executes on the
 #   self-hosted runner (empty = smoke job no-ops green).
+# tier2_extra: grep -E pattern; changed paths matching it are forced to Tier 2
+#   (highest-consequence review). Additive only — raises a file's tier, never
+#   lowers it. Invalid regex fails closed (whole change → Tier 2). Here it lifts
+#   this repo's own product source (shared/, templates/, bin/) out of the generic
+#   "docs are inert" default, since those .md/.sh files ARE Plinth.
 # Everything else has working defaults.
 spec_path = MANUAL.md
+tier2_extra = (^|/)(shared|templates|bin)/
