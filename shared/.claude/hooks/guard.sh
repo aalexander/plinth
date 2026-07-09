@@ -102,35 +102,44 @@ case "$tool" in
     fi
     # Ship gate: only pay the git/jq cost when the command IS a ship action. Detect on
     # `stripped` (quoted prose inert, e.g. a commit -m mentioning "gh pr create"), PLUS
-    # quoted PAYLOADS that directly follow a shell wrapper's -c or an eval in the RAW
-    # command (`bash -c "gh pr create"` must not evade via quote-stripping). Scanning
-    # only the wrapper's own payload — not the whole raw command — keeps prose inert
-    # even with punctuation or an unrelated wrapper nearby (`git commit -m "use ; bash
-    # -c gh pr create"` has no quote right after -c, so it does not match). Unanchored,
-    # so prefixed wrappers (env/sudo/VAR=val before bash) need no special handling.
-    # Residual over-match: prose containing the EXACT quoted invocation (e.g. a commit
-    # message quoting `bash -c "gh pr create"` verbatim) fails CLOSED — the human runs
-    # such a command themselves.
-    # The -c may sit inside a flag cluster (`bash -lc`, `-ec`) and earlier options may
-    # carry a non-dash argument (`bash -o pipefail -c`): tolerate "-opt [arg]" groups,
-    # then require a dash-cluster ENDING in c immediately before the quoted payload.
-    # The wrapper name needs a word boundary before it (so `lint.sh` is not read as
-    # `sh`), and a non-dash first token (`bash script.sh -c ...`) does not match —
-    # that -c is the script's argument, not a shell payload.
-    # Payload opener: a quote, optionally $-prefixed ($'...' ANSI-C / $"..." locale
-    # quoting). Payload spans are QUOTE-SPECIFIC, like real shell: a "-opened payload
-    # may contain single quotes and backslash-escaped chars (`-c "echo 'x' \"y\"; gh
-    # pr create"`); a '-opened payload may contain double quotes and takes no escapes
-    # (`-c 'echo "x"; gh pr create'`). Only the matching unescaped closer ends the
-    # span. Prose where a backslash sits right after -c (`-m "... bash -c \"gh pr
-    # create\""`) stays inert — the opener wants a quote, not an escape.
+    # payloads a shell would EXECUTE that quote-stripping hides:
+    #   - a wrapper's -c word (`bash -c ...`), a herestring (`bash <<< ...`), an eval
+    #     word, or a quoted string piped into a bare shell (`echo "..." | sh`).
+    # The payload word is modeled like a real shell WORD: any run of COMPLETE segments
+    # — double-quoted (escape-aware), single-quoted (no escapes), ANSI-C $'...'
+    # (escape-aware), a backslash-escaped char, or plain word chars — followed by an
+    # OPEN segment whose content reaches the ship action. This covers concatenation
+    # ('echo '\''x'\''; gh pr create), inner opposite quotes, \-escapes, and $'...';
+    # an unquoted word cannot span the space inside "gh pr" so unquoted forms are the
+    # stripped scan's job. The -c may sit in a flag cluster (-lc), be quoted ("-c"),
+    # or abut its payload (-c"..."); options may carry a non-dash argument
+    # (-o pipefail). The wrapper name needs a word boundary before it (lint.sh is not
+    # sh), and a non-dash first token (bash script.sh -c ...) does not match.
+    # Prose stays inert because an unquoted mention has no opener at the payload
+    # position (`-m "use ; bash -c gh pr create"` -> no quote after -c). Residual
+    # over-match, documented: prose quoting the EXACT executable invocation verbatim
+    # fails CLOSED — the human runs such a command themselves. Enumerative by design;
+    # CI + branch protection are the hard layers.
     SHIP='gh[[:space:]]+pr[[:space:]]+(create|merge)'
-    PAY="(\\\$?\"((\\\\.)|[^\"\\\\])*|\\\$?'[^']*)"
-    WRAPPAY="(^|[\`[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*[[:space:]]+-[A-Za-z]*c[[:space:]]+${PAY}"
-    EVALPAY="(^|[\`[:space:];&|(])eval[[:space:]]+${PAY}"
+    DQS="\"((\\\\.)|[^\"\\\\])*\"" ; DQO="\"((\\\\.)|[^\"\\\\])*"
+    SQS="'[^']*'"                  ; SQO="'[^']*"
+    AQS="\\\$'((\\\\.)|[^'\\\\])*'"; AQO="\\\$'((\\\\.)|[^'\\\\])*"
+    SEG="(${AQS}|${DQS}|${SQS}|\\\\.|[^\`;&|()[:space:]\"'\\\\])*"
+    OPEN="(${AQO}|${DQO}|${SQO})"
+    BND="(^|[\`[:space:];&|(])"
+    WOPT="([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*"
+    WRAPPAY="${BND}(bash|sh|zsh)${WOPT}[[:space:]]+[\"']?-[A-Za-z]*c[\"']?[[:space:]]*${SEG}${OPEN}${SHIP}"
+    HEREPAY="${BND}(bash|sh|zsh)${WOPT}[[:space:]]*<<<[[:space:]]*${SEG}${OPEN}${SHIP}"
+    EVALPAY="${BND}eval[[:space:]]+${SEG}${OPEN}${SHIP}"
+    # Pipe-to-shell: the pipe and shell must be OUTSIDE quotes (checked on stripped —
+    # prose discussing `... | bash` inside a message stays inert) while the ship
+    # action rides in any quoted span of the raw command.
+    PIPESH='\|[[:space:]]*(bash|sh|zsh)([[:space:]]|$|[;&|)])'
     if printf '%s' "$stripped" | grep -Eq "$SHIP" \
-       || printf '%s' "$cmd" | grep -Eq "${WRAPPAY}${SHIP}" \
-       || printf '%s' "$cmd" | grep -Eq "${EVALPAY}${SHIP}"; then
+       || printf '%s' "$cmd" | grep -Eq "$WRAPPAY" \
+       || printf '%s' "$cmd" | grep -Eq "$HEREPAY" \
+       || printf '%s' "$cmd" | grep -Eq "$EVALPAY" \
+       || { printf '%s' "$stripped" | grep -Eq "$PIPESH" && printf '%s' "$cmd" | grep -Eq "$SHIP"; }; then
       ship_gate "gh pr create/merge"
     fi
     while IFS= read -r pattern; do

@@ -881,6 +881,19 @@ jobs:
           [ "$(gcmd "bash -c 'echo \"x\"; gh pr create'")" = 2 ] || { echo "::error::deny-ship: single-opened payload with double quotes bypassed the gate"; exit 1; }
           [ "$(gcmd 'bash -c "echo '"'"'x'"'"'; gh pr create"')" = 2 ] || { echo "::error::deny-ship: double-opened payload with single quotes bypassed the gate"; exit 1; }
           [ "$(gcmd "eval 'echo \"x\"; gh pr merge'")" = 2 ] || { echo "::error::deny-ship: single-opened eval payload with double quotes bypassed the gate"; exit 1; }
+          # Concatenated / ANSI-escaped payload words (round-11): shell-word segment chains.
+          [ "$(gcmd "bash -c \$'echo \\'x\\'; gh pr create'")" = 2 ] || { echo "::error::deny-ship: ANSI-C escaped-single-quote payload bypassed the gate"; exit 1; }
+          [ "$(gcmd "bash -c 'echo '\\''x'\\''; gh pr create'")" = 2 ] || { echo "::error::deny-ship: quote-concatenated payload bypassed the gate"; exit 1; }
+          [ "$(gcmd "eval 'echo '\\''x'\\''; gh pr merge'")" = 2 ] || { echo "::error::deny-ship: quote-concatenated eval payload bypassed the gate"; exit 1; }
+          # Batched siblings: no-space -c, quoted "-c", herestring, pipe-to-shell.
+          [ "$(gcmd 'bash -c"gh pr create"')" = 2 ] || { echo "::error::deny-ship: no-space -c payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash "-c" "gh pr create"')" = 2 ] || { echo "::error::deny-ship: quoted -c payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash <<< "gh pr create"')" = 2 ] || { echo "::error::deny-ship: herestring payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'echo "gh pr create" | bash')" = 2 ] || { echo "::error::deny-ship: pipe-to-shell payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash <<< "make lint"')" = 0 ] || { echo "::error::deny-ship: benign herestring false-positived"; exit 1; }
+          [ "$(gcmd 'echo "make lint" | bash')" = 0 ] || { echo "::error::deny-ship: benign pipe-to-shell false-positived"; exit 1; }
+          [ "$(gcmd 'git commit -m "echo gh pr create | bash idea"')" = 0 ] || { echo "::error::deny-ship: prose about pipe-to-shell false-positived"; exit 1; }
+          [ "$(gcmd 'echo "gh pr create" | wc -l')" = 0 ] || { echo "::error::deny-ship: plain pipe (no shell) false-positived"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

@@ -28,11 +28,14 @@
   logs+releases them); client-side base detection was fragile (base is not always
   main/master) and redundant. Heuristic backstop: detection strips quoted prose
   (escape-aware — a `\"` inside a double-quoted span does not shift the pairing), and
-  additionally scans quoted payloads that DIRECTLY FOLLOW a shell wrapper's `-c`
-  (flag-cluster forms like `-lc` included) / an `eval` — payload spans are
-  quote-specific like real shell (a "-opened payload may contain single quotes and
-  escapes; a '-opened payload may contain double quotes; ANSI-C `$'...'` recognized)
-  and are still caught, while prose mentioning a wrapper plus the command with
+  additionally scans payloads a shell would EXECUTE: the word after a wrapper's `-c`
+  (flag clusters `-lc`, quoted `"-c"`, and no-space `-c"..."` included), a herestring
+  (`bash <<< "..."`), an `eval` word, and a quoted string piped into a bare shell
+  (`echo "..." | sh`). The payload word is modeled like a real shell word — chains of
+  complete double-quoted (escape-aware), single-quoted, and ANSI-C `$'...'` segments,
+  escapes, and plain chars, ending in an open segment reaching the ship action — so
+  concatenation (`'echo '\''x'\''; gh pr create`), inner opposite quotes, and `\'`
+  ANSI escapes are all caught, while prose mentioning a wrapper plus the command with
   punctuation in between stays inert. CI + branch
   protection remain the hard layers. Feature-branch pushes stay allowed so the
   RUNTIME smoke-receipt loop is not deadlocked.
