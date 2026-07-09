@@ -343,6 +343,34 @@ jobs:
           grep -Eq 'precheck:[[:space:]]*$' "$SMK" && grep -q 'runs-on: ubuntu-latest' "$SMK" || { echo "::error::smoke.yml precheck not on a github-hosted runner"; exit 1; }
           grep -q "if: needs.precheck.outputs.run == 'true'" "$SMK" || { echo "::error::smoke.yml self-hosted job not gated on precheck output"; exit 1; }
           grep -q 'runs-on: \[self-hosted, plinth-smoke\]' "$SMK" || { echo "::error::smoke.yml self-hosted smoke job missing"; exit 1; }
+          # Smoke precheck BEHAVIOR: run the REAL decide script EXTRACTED from the shipped
+          # smoke.yml (not a copied predicate) against controlled bases — catches what the
+          # wiring greps can't, e.g. dropping `|| true` so an absent base .plinth/config
+          # aborts under pipefail instead of the documented run=false green no-op.
+          DEC="$(mktemp)"
+          awk '
+            !s && /- id: decide[[:space:]]*$/ {s=1; next}
+            s && !r && /run: \|/ { match($0,/^ */); ri=RLENGTH; r=1; next }
+            r { if ($0 ~ /^[[:space:]]*$/){print "";next}
+                match($0,/^ */); ind=RLENGTH
+                if (ind<=ri){r=0;s=0;next}
+                if (bi=="") bi=ind
+                print substr($0,bi+1) }
+          ' "$SMK" > "$DEC"
+          grep -q 'smoke_cmd' "$DEC" || { echo "::error::could not extract precheck decide script from smoke.yml"; exit 1; }
+          SORG="$(mktemp -d)"; git init -q --bare "$SORG"
+          SSEED="$(mktemp -d)"; ( cd "$SSEED"; git init -qb main . >/dev/null; mkdir -p .plinth
+            printf 'spec_path = SPEC.md\nsmoke_cmd = echo hi\n' > .plinth/config; git add -A; git commit -qm m >/dev/null; git remote add origin "$SORG"; git push -q origin main
+            git checkout -qb nocmd main >/dev/null 2>&1; printf 'spec_path = SPEC.md\n' > .plinth/config; git commit -qam n >/dev/null; git push -q origin nocmd
+            git checkout -qb nocfg main >/dev/null 2>&1; git rm -q .plinth/config >/dev/null; git commit -qm x >/dev/null; git push -q origin nocfg )
+          smoke_decide() { wd="$(mktemp -d)"; out="$(mktemp)"; ec=0
+            ( cd "$wd"; git init -q .; git remote add origin "$SORG"
+              GITHUB_BASE_REF="$1" GITHUB_OUTPUT="$out" bash "$DEC" >/dev/null 2>&1 ) || ec=$?
+            rv="$(grep -o 'run=[a-z]*' "$out" 2>/dev/null | tail -1 || true)"; echo "${rv:-run=<none>} exit=$ec"; }
+          r="$(smoke_decide main)";       [ "$r" = "run=true exit=0" ]  || { echo "::error::smoke precheck: smoke_cmd set -> $r (want run=true exit=0)"; exit 1; }
+          r="$(smoke_decide nocmd)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: base has no smoke_cmd -> $r (want run=false exit=0)"; exit 1; }
+          r="$(smoke_decide nocfg)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: ABSENT base .plinth/config -> $r — pipefail regression (want run=false exit=0)"; exit 1; }
+          r="$(smoke_decide nosuchbase)"; [ "$r" = "run=<none> exit=1" ] || { echo "::error::smoke precheck: unresolvable base -> $r (want fail-loud run=<none> exit=1)"; exit 1; }
           # plinth update backfills managed protected-paths patterns, preserves user lines.
           PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
           # NO trailing newline on the user's last line — this is the exact input
