@@ -165,10 +165,18 @@ inline_goal() {
 # The reviewer contract, INLINED into the prompt. review.sh passes it explicitly (not
 # by auto-load / by-reference): codex runs with project_doc_max_bytes=0 and grok/claude
 # are isolated too, so the verdict policy must be IN the prompt, not merely pointed at.
-# Same helper feeds the primary reviewer (fresh/verify) and the tools-forbidden auditor.
+# Read from the RATIFIED BASE (git show "${baseref}:…"), never the PR working tree:
+# reviewer.md / AGENTS-project.md are review POLICY, so a same-PR edit must not weaken
+# the review that judges it (mirrors bcfg / spec_path base reads). Falls back to the
+# working tree only when the file is absent at base (first review after install —
+# there is no ratified prior policy to weaken). Same helper feeds the primary reviewer
+# (fresh/verify) and the tools-forbidden auditor.
 inline_contract() {
+  local f base
   for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do
-    [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+    base="$(git show "${baseref}:$f" 2>/dev/null || true)"
+    if [ -n "$base" ]; then echo "--- $f (base) ---"; printf '%s\n' "$base"
+    elif [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi
   done
 }
 

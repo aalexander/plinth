@@ -772,14 +772,24 @@ jobs:
           chmod +x "$RB4/codex"
           RD="$(mktemp -d)"; ( cd "$RD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RD" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # Base ratifies a distinctive project reviewer rule; the PR then WEAKENS it. The
+            # inlined contract must come from BASE, so the weakened rule must NOT reach the prompt.
+            printf 'BASE_PROJECT_RULE: block any TODO in shipped code.\n' > .plinth/AGENTS-project.md
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
-            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf 'WEAKENED_PROJECT_RULE: TODOs are fine now.\n' > .plinth/AGENTS-project.md
+            echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
             PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           # The contract must be INLINED, not merely referenced (project_doc_max_bytes=0 means the
           # reviewer cannot auto-load it): assert unique .plinth/reviewer.md CONTENT is present.
           grep -q "REVIEWER CONTRACT (.plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt lacks the inlined-contract header"; exit 1; }
           grep -q "Security review (always)" "$PR4" || { echo "::error::reviewer prompt does NOT inline .plinth/reviewer.md content (contract only referenced, not passed explicitly)"; exit 1; }
           grep -q "project_doc_max_bytes=0" "$CAP4" || { echo "::error::codex reviewer not invoked with project_doc_max_bytes=0 isolation"; exit 1; }
+          # Self-referential-policy guard, scoped to the inlined CONTRACT section (WEAKENED also
+          # appears in the DIFF, expected): the RATIFIED base rule governs, the PR's weakening does not.
+          CSEC="$(awk '/=== REVIEWER CONTRACT/{f=1} f; /=== END REVIEWER CONTRACT/{f=0}' "$PR4")"
+          printf '%s' "$CSEC" | grep -q "BASE_PROJECT_RULE" || { echo "::error::inlined contract did not read the ratified BASE reviewer policy"; exit 1; }
+          printf '%s' "$CSEC" | grep -q "WEAKENED_PROJECT_RULE" && { echo "::error::inlined contract used the PR's OWN weakened policy (self-referential)"; exit 1; } || true
           
           # ── v4.4.0: grok reviewer + auditor isolated via --rules (round-8) ───────
           # grok auto-loads CLAUDE.md/AGENTS.md with no doc-suppression flag; a preserved legacy
