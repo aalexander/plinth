@@ -786,6 +786,9 @@ jobs:
           printf '%s' "$CSEC" | grep -q "Security review (always)" || { echo "::error::reviewer prompt does not inline .plinth/reviewer.md content"; exit 1; }
           printf '%s' "$CSEC" | grep -q "INLINED into your" || { echo "::error::inlined reviewer.md lacks the use-the-inlined-copy instruction"; exit 1; }
           printf '%s' "$CSEC" | grep -q "INLINE-ONLY POLICY" || { echo "::error::reviewer prompt missing the unconditional INLINE-ONLY override banner"; exit 1; }
+          # The banner bans POLICY reads ONLY — it must NOT forbid the spec (the primary reviewer reads
+          # the working-tree spec for acceptance criteria; only the tools-forbidden auditor gets it inlined):
+          printf '%s' "$CSEC" | grep -q "does NOT limit your" || { echo "::error::INLINE-ONLY banner must carve out the spec/code/diff (primary reviewer needs acceptance criteria)"; exit 1; }
           printf '%s' "$CSEC" | grep -q "ALSO read .\.plinth/AGENTS-project.md. and apply" && { echo "::error::inlined reviewer.md still instructs reading policy from disk"; exit 1; } || true
           printf '%s' "$CSEC" | grep -q "BASE_PROJECT_RULE" || { echo "::error::inlined contract did not read the ratified BASE reviewer policy"; exit 1; }
           printf '%s' "$CSEC" | grep -q "WEAKENED_PROJECT_RULE" && { echo "::error::inlined contract used the PR's OWN weakened policy (self-referential)"; exit 1; } || true

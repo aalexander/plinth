@@ -9,7 +9,8 @@
   (`git show base:…`, like spec_path/config) so a PR cannot weaken the reviewer.md /
   AGENTS-project.md policy that judges it. Every inlined contract is prefaced by an
   authoritative INLINE-ONLY POLICY banner forbidding any working-tree/tool read of a
-  policy or spec file — this neutralizes a first-v4.4-upgrade fallback, where the base
+  policy/contract file (reviewer.md, AGENTS-project.md) — NOT the spec, which the primary
+  reviewer still reads for acceptance criteria — this neutralizes a first-v4.4-upgrade fallback, where the base
   contract is the pre-v4.4 root `AGENTS.md` inlined VERBATIM and that text itself says
   "ALSO read `.plinth/AGENTS-project.md`" (a disk read that would otherwise send the
   reviewer back to the PR's own weakened copy). The driver contract is a thin, byte-identical shell
