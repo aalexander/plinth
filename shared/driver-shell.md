@@ -11,9 +11,11 @@ spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of
 truth — read it before implementing. Model and orchestration guidance:
 `.plinth/MODELS.md`.
 
-**Role scope.** This file is the DRIVER contract. If the review harness invoked
-you with an explicit reviewer prompt, THAT prompt is your contract and this file
-does not apply — you are the reviewer, not the driver.
+**Role scope.** This file is the DRIVER contract. If you are REVIEWING this repo
+rather than implementing it — the review harness passed you an explicit reviewer
+prompt, or you are the PR cloud review reading this as a project doc — then
+`.plinth/reviewer.md` is your contract and this file does not apply: you are the
+reviewer, not the driver.
 
 Your rules are in `.plinth/plinth-rules.md`. Claude auto-loads it through the
 import below. **Any non-Claude agent (codex, grok, …): read

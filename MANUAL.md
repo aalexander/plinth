@@ -5,7 +5,7 @@ A subscription-funded, multi-model dev environment: a frontier Claude model driv
 Codex/GPT-5.5 adversarially reviews (risk-tiered — inert docs are approved by the
 deterministic floor, code and high-consequence changes get the model), and a
 deterministic CI floor (tests + scanners, plus Codex cloud review once connected —
-security-briefed via AGENTS.md) gates every merge. The name is the design:
+security-briefed via the reviewer contract .plinth/reviewer.md) gates every merge. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -45,11 +45,23 @@ Everything between is the model's call.
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
+- `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
+  consults a model as good or BETTER than itself, read-only, for a collaborative,
+  NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
+  the cross-vendor auditor. `--impactful` (architectural / hard-to-reverse decisions)
+  escalates to the stronger model. Vendor-agnostic and cross-family (a Grok driver can
+  consult Fable); see the `advisor_*` knobs below.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
-  round_budget, audit_vendor/audit_model, tier2_extra — the config itself is
-  agent-immutable, so these are yours alone), `protected-paths` (agent-immutable files),
-  `AGENTS-project.md` (project-specific reviewer rules). None is ever
-  overwritten by `plinth update`.
+  round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/
+  advisor_model_max, tier2_extra — the config itself is agent-immutable, so these are
+  yours alone), `protected-paths` (agent-immutable files), `AGENTS-project.md`
+  (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
+  None is ever overwritten by `plinth update`.
+- The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`
+  (byte-identical), so whichever file your driver's CLI auto-loads (Claude→CLAUDE.md,
+  codex→AGENTS.md, grok→both) delivers the driver role; it imports the shared rules and
+  your `.plinth/DRIVER-project.md`. The REVIEWER contract lives in `.plinth/reviewer.md`,
+  which the review harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
   the dashboard shows a red banner while it's non-empty.
@@ -69,8 +81,10 @@ Everything between is the model's call.
    the Plinth repo), work it into a SPEC.md. Paste that into the project,
    commit, push.
 3. Connect Codex cloud review once: chatgpt.com -> Codex (GitHub App with repo
-   access + review on PR open). It reads AGENTS.md, so it arrives
-   security-briefed; there is no separate "Codex Security" product.
+   access + review on PR open). It reads AGENTS.md (the driver shell), whose
+   role-scope line points any reviewer — including this cloud review — at
+   `.plinth/reviewer.md`, so it arrives security-briefed; there is no separate
+   "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
    protection requiring those checks — exact steps in "Branch protection"
@@ -78,9 +92,12 @@ Everything between is the model's call.
    treat them as absent.
 
 ## Kicking off the driver — you have SPEC.md; now what?
-Claude Code loads CLAUDE.md automatically, and CLAUDE.md pulls in the plinth
-rules and points at the spec — the driver knows the whole contract before your
-first word. Your kickoff prompt only selects the work:
+Your driver's CLI auto-loads the driver shell (Claude → CLAUDE.md and expands the
+rules import; codex → AGENTS.md; grok → both), which pulls in the plinth rules and
+your `.plinth/DRIVER-project.md` notes and points at the spec — the driver knows the
+whole contract before your first word. (Non-Claude CLIs follow the shell's explicit
+"read `.plinth/plinth-rules.md` now" line rather than a mechanical import.) Your
+kickoff prompt only selects the work:
 
 - **Scoped start (recommended):** "Implement R1–R4 from SPEC.md." Small slices
   keep review rounds cheap and PRs reviewable.
@@ -193,7 +210,7 @@ Two operator chores the rules generate:
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
      (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
-     reviewer rules in AGENTS.md. A resumed approval binds
+     reviewer rules in `.plinth/reviewer.md`. A resumed approval binds
      directly — the warm reviewer thread still holds its first-pass full read, and
      iterative convergence speed is worth more than a second full read for ordinary
      code. A fallback verify (a fresh session, used when the prior thread is too
@@ -370,7 +387,10 @@ it has run green with a real smoke_cmd.
   each runs its own CLI and the resume threshold scales per vendor automatically.
   Staying on codex but changing its model? Edit `~/.codex/config.toml` instead. (env
   `PLINTH_RESUME_MAX` still overrides the threshold if you ever need to.)
-- New driver: `/model` in Claude Code.
+- New driver: launch whichever vendor CLI you want — claude, codex, or grok — in the
+  project; the byte-identical CLAUDE.md/AGENTS.md driver shell gives each the driver
+  role (see Commands). Swap the Claude MODEL with `/model`. Configure the advisor the
+  driver consults via `advisor_vendor`/`advisor_model`/`advisor_model_max`.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.
 

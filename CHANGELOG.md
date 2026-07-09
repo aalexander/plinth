@@ -1,5 +1,52 @@
 # Plinth changelog
 
+## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
+- **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
+  split so any vendor auto-loads the right role. The reviewer contract moved out of root
+  `AGENTS.md` into `.plinth/reviewer.md`, which `review.sh` passes to the reviewer
+  EXPLICITLY (never by auto-load). The driver contract is a thin, byte-identical shell
+  (`shared/driver-shell.md`) materialized into BOTH `CLAUDE.md` and `AGENTS.md` by
+  `plinth init/update`; project-specific driver notes move to `.plinth/DRIVER-project.md`
+  (new; twin of `AGENTS-project.md`). `templates/CLAUDE.md` retired. Probed vendor
+  auto-load — codex 0.142.5 reads AGENTS.md only; claude reads CLAUDE.md only and expands
+  `@import`; grok reads BOTH; only claude expands `@import` — so the shell carries
+  `@import` (claude) AND an explicit "read `.plinth/plinth-rules.md` NOW" imperative
+  (codex/grok), plus a role-scoping line so a grok reviewer that auto-loads the shell
+  does not mistake it for its contract.
+- **Reviewer isolation per vendor.** codex reviewer/auditor run with
+  `-c project_doc_max_bytes=0` (verified to suppress AGENTS.md auto-load on 0.142.5) so
+  the driver shell cannot leak in; claude keeps `--safe-mode` (and never reads AGENTS.md);
+  grok relies on the explicit reviewer prompt + role-scoping line. `HARNESS_RE` and the
+  tamper pathlist gain `.plinth/reviewer.md` and `CLAUDE.md`.
+- **Deny-ship backstop (vendor-universal).** `guard.sh` (PreToolUse, honored by every
+  vendor) denies `gh pr create`/`gh pr merge` and a push to the BASE branch unless the
+  branch verdict is APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS
+  only on Claude/codex. NARROW: feature-branch pushes stay allowed so the RUNTIME
+  smoke-receipt loop is not deadlocked.
+- **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
+  non-blocking, driver-initiated consult of a model as good or BETTER than the driver
+  (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`
+  (architectural / hard-to-reverse decisions) escalates to `advisor_model_max`.
+  Cross-family: a Grok driver can consult Fable via `advisor_vendor=claude`. Read-only; a
+  missing/unauthed CLI is non-blocking. Distinct from the reviewer (gate) and the auditor
+  (a second opinion on an approval). Router seam left in the knob shape; the native Claude
+  `/advisor` is documented as an optional full-conversation enhancement for a Claude driver.
+- **Subagent + advisor guidance** (plinth-rules.md, MODELS.md): fan out independent work
+  and route each subagent to the best model for its part; consult the advisor before
+  impactful decisions.
+- **NEEDS-HUMAN location tolerance.** The queue/dashboard resolve `.plinth/NEEDS-HUMAN.md`
+  (canonical) or a legacy root copy; `plinth update` migrates a root copy into `.plinth/`
+  (warns instead of clobbering if both exist). `review.sh`'s dirty-tree exemption is
+  location-tolerant too. Fixed: an all-BLOCKING queue crashed `plinth queue`/`watch` under
+  `set -e` (`sort_blocking_first` now returns 0).
+- **ensure_protected_paths** now protects `CLAUDE.md` + `.plinth/reviewer.md` and DEDUPS
+  BY PATH SUFFIX, so a project's custom `(^|plinth/)` anchoring (this repo) is not
+  over-appended with `(^|/)` forms that would freeze `shared/`.
+- Migration: `plinth update` regenerates the `AGENTS.md` shell (safe) and the `CLAUDE.md`
+  shell when it is stock; a CUSTOM `CLAUDE.md` is PRESERVED with a loud NOTE to move notes
+  into `.plinth/DRIVER-project.md`. This repo's OWN contract migration is sequenced AFTER
+  release (the pinned instrument must reach v4.4.0 first).
+
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
   grok`, base config, default codex — no behavior change). A `reviewer_run`
