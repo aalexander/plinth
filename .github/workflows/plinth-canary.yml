@@ -956,6 +956,39 @@ jobs:
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
           
+          # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd), can't read policy (round-23) ──
+          AIB="$(mktemp -d)"; AICAP="$AIB/leak"
+          cat > "$AIB/codex" <<'CXA'
+          #!/usr/bin/env bash
+          out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+          cat >/dev/null
+          [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}' > "$out"
+          echo '{"type":"thread.started","thread_id":"cs"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
+          CXA
+          cat > "$AIB/grok" <<GKA
+          #!/usr/bin/env bash
+          { echo "AUDIT_CWD=\$(pwd)"; echo "AUDIT_READ=\$(cat .plinth/AGENTS-project.md 2>/dev/null)"; } >> "$AICAP"
+          printf '%s' '{"sessionId":"g","structuredOutput":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          GKA
+          chmod +x "$AIB/codex" "$AIB/grok"
+          AID="$(mktemp -d)"; ( cd "$AID"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$AID" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = codex\naudit_vendor = grok\ntier2_extra = (^|/)app\\.py$\n' >> .plinth/config
+            printf 'AUDIT_LEAK_MARKER: secret project rule.\n' > .plinth/AGENTS-project.md
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$AIB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q "AUDIT_CWD=" "$AICAP" || { echo "::error::audit isolation: auditor did not run (no capture)"; exit 1; }
+          grep -q "AUDIT_CWD=$AID" "$AICAP" && { echo "::error::audit isolation: auditor ran in the PROJECT dir, not an isolated one"; exit 1; } || true
+          grep -q "AUDIT_LEAK_MARKER" "$AICAP" && { echo "::error::audit isolation: auditor READ the working-tree .plinth/AGENTS-project.md"; exit 1; } || true
+          
+          # ── v4.4.0: CI floor verifies the v4.4 contract files (round-23) ────────
+          FLOOR="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
+          grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }
+          grep -qE 'check +shared/driver-shell\.md +AGENTS\.md' "$FLOOR" || { echo "::error::floor does not verify root AGENTS.md against the driver shell"; exit 1; }
+          grep -qE 'check +shared/driver-shell\.md +CLAUDE\.md' "$FLOOR" || { echo "::error::floor does not verify root CLAUDE.md (shell) against the driver shell"; exit 1; }
+          grep -qE 'check +shared/AGENTS\.md' "$FLOOR" && { echo "::error::floor still references the removed shared/AGENTS.md source"; exit 1; } || true
+          
           # ── v4.4.0: audit_vendor update warning is vendor-aware (round-19) ─────
           # The audit runs only when audit_vendor != reviewer_vendor, so the "unset" warning must
           # suggest a DIFFERENT vendor than this project's primary.

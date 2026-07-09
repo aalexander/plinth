@@ -91,7 +91,15 @@ jobs:
           }
           check shared/plinth-rules.md            .plinth/plinth-rules.md
           check shared/MODELS.md                  .plinth/MODELS.md
-          check shared/AGENTS.md                  AGENTS.md
+          # v4.4 contract split: reviewer contract -> .plinth/reviewer.md; root
+          # AGENTS.md is the byte-identical driver shell (always regenerated). CLAUDE.md
+          # is the shell only when it carries the marker — a preserved pre-v4.4 CUSTOM
+          # CLAUDE.md (migration NOTE pending) is user-owned, so skip it there.
+          check shared/reviewer.md                .plinth/reviewer.md
+          check shared/driver-shell.md            AGENTS.md
+          if grep -qF 'Plinth driver shell (version-pinned)' CLAUDE.md 2>/dev/null; then
+            check shared/driver-shell.md          CLAUDE.md
+          fi
           check shared/.plinth/review.sh          .plinth/review.sh
           check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
