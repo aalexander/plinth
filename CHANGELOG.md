@@ -1,6 +1,35 @@
 # Plinth changelog
 
+## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
+- **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
+  grok`, base config, default codex — no behavior change). A `reviewer_run`
+  dispatcher + per-vendor adapters replace the hardcoded `codex exec`: codex
+  (`--output-schema`, thread resume, usage from the event stream), claude (`-p
+  --bare --json-schema`, `--resume`, `.session_id`/`.usage`), grok (`--prompt-file
+  --output-format json`, soft schema → extract, no headless usage). `RV_WARM_RESUME`
+  gates warm resume (codex/claude yes; grok runs fresh/verify). Vendor-aware
+  required-CLI check + per-tier `RV_MODEL` mapped to each vendor's model flag. This
+  is DISTINCT from `audit_vendor` (the cross-vendor second opinion): three separate
+  integration paths, now documented in MODELS.md + the config scaffold.
+- **Review-loop efficiency #1 — enumerate the whole class per pass.** The fresh and
+  verify prompts now instruct the reviewer to SWEEP the diff for every sibling
+  instance of a defect class and report them all in one round, instead of the single
+  most-salient one. A missed sibling costs a full extra round-trip; the v4.2.1
+  dogfood took 30+ rounds largely because findings arrived one-class-per-round.
+- **Review-loop efficiency #3 — stop the thin-verify re-derivation.** The resume
+  threshold now scales per `reviewer_vendor` (~65% of that vendor's context window;
+  `PLINTH_RESUME_MAX` still overrides), so a bigger-window reviewer keeps its warm
+  thread far longer. And the verify fallback now reads the FULL diff (anchored on the
+  prior findings) instead of a thin incremental slice — the clean-slate confirmation
+  (unanchored, no prior findings) remains what binds. Docs (review.sh header,
+  binds_directly/resumable_prev, MANUAL) reframed to match.
+- Config scaffold documents `reviewer_vendor` and `round_budget`; dropped the stale
+  "three knobs" count. Canary: per-vendor reviewer adapters drive a Tier-1 review to
+  APPROVED with the right session id/usage; codex resumes, grok can't (verify);
+  the #1 directive and #3b full-diff verify are asserted in the shipped prompts.
+
 ## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
+- review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
 - review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
   `~/.codex/config.toml` was absent**. The REVIEWER_MODEL sed read exits non-zero on
   a missing config, and under `set -o pipefail` that aborted the whole review —
