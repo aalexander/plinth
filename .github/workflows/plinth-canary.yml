@@ -690,27 +690,55 @@ jobs:
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
           
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
-          mk_old_claude() {  # <path> <notes-section-content>
-            printf '# CLAUDE.md\n\nYou are the implementer.\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\n%s\n' "$2" > "$1"
-          }
-          OLDPH='<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
+          # The retired pre-v4.4 templates/CLAUDE.md VERBATIM (shallow CI checkouts cannot
+          # `git show` old commits). Must stay byte-identical to the reference embedded in
+          # bin/plinth's is_stock_old_claude — drift here means the migration reference drifted.
+          OLDT="$(mktemp -d)/old-claude.md"
+          cat > "$OLDT" <<'OLDSTOCKFIX'
+          # CLAUDE.md
+          
+          You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —
+          read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.
+          
+          @.plinth/plinth-rules.md
+          
+          ## Precedence — these rules override defaults
+          Where this file or the plinth rules conflict with harness defaults, output
+          styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
+          you must apply without being asked:
+          - COMMIT your work on feature branches as part of the loop — do not wait for
+            permission. Verdicts bind to commit SHAs and the Stop gate requires an
+            APPROVED review at HEAD; a driver that waits to be asked deadlocks itself.
+            (Opening the PR follows review; pushing follows the rules, not impulse.)
+          - Rule 10 evidence — pasted runner output — overrides any brevity or style
+            preference, always.
+          - If a personal or global instruction conflicts with the plinth rules, follow
+            the plinth rules and SAY you did; never silently blend the two.
+          
+          ## Project-specific notes
+          <!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
                stack quirks. Shared Plinth rules import above; this section is yours and is
-               never overwritten by `plinth update`. -->'
+               never overwritten by `plinth update`. -->
+          OLDSTOCKFIX
           MS="$(mktemp -d)"; ( cd "$MS" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MS" >/dev/null 2>&1 )
-          mk_old_claude "$MS/CLAUDE.md" "$OLDPH"
+          cp "$OLDT" "$MS/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MS" >/dev/null 2>&1
           grep -qF "Plinth driver shell (version-pinned)" "$MS/CLAUDE.md" || { echo "::error::update did not regenerate a STOCK old CLAUDE.md to the shell"; exit 1; }
+          # Custom notes REPLACING the placeholder -> preserved.
           MC="$(mktemp -d)"; ( cd "$MC" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MC" >/dev/null 2>&1 )
-          mk_old_claude "$MC/CLAUDE.md" "CUSTOM: never touch migrations without approval."
+          sed 's/<!-- Anything unique to THIS project.*/CUSTOM: never touch migrations without approval./' "$OLDT" > "$MC/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MC" >/dev/null 2>&1
-          grep -qF "Plinth driver shell (version-pinned)" "$MC/CLAUDE.md" && { echo "::error::update CLOBBERED a CUSTOM CLAUDE.md (data loss)"; exit 1; } || true
           grep -qF "never touch migrations" "$MC/CLAUDE.md" || { echo "::error::custom CLAUDE.md content lost on update"; exit 1; }
-          # Notes INSIDE the placeholder comment are CUSTOM (round-3): must be preserved.
+          # Notes INSIDE the placeholder comment (round-3) -> custom, preserved.
           MK="$(mktemp -d)"; ( cd "$MK" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MK" >/dev/null 2>&1 )
-          mk_old_claude "$MK/CLAUDE.md" '<!-- Anything unique to THIS project: domain constraints,
-               use Postgres 16 ONLY; never edit migrations/. -->'
+          sed 's/stack quirks\./use Postgres 16 ONLY; never edit migrations\/./' "$OLDT" > "$MK/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MK" >/dev/null 2>&1
           grep -qF "Postgres 16" "$MK/CLAUDE.md" || { echo "::error::notes inside the placeholder comment were destroyed (treated as stock)"; exit 1; }
+          # Custom content ABOVE the notes heading (round-4) -> custom, preserved.
+          MA="$(mktemp -d)"; ( cd "$MA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MA" >/dev/null 2>&1 )
+          perl -0777 -pe 's/(## Project-specific notes)/- CUSTOM RULE: always run make lint.\n\n$1/' "$OLDT" > "$MA/CLAUDE.md"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$MA" >/dev/null 2>&1
+          grep -qF "make lint" "$MA/CLAUDE.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (treated as stock)"; exit 1; }
           
           # ── v4.4.0: protected-paths backfill not suppressed by COMMENT lines ────
           CP="$(mktemp -d)"; ( cd "$CP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CP" >/dev/null 2>&1 )
@@ -718,6 +746,11 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$CP" >/dev/null 2>&1
           grep -qxF '(^|/)CLAUDE\.md$' "$CP/.plinth/protected-paths" || { echo "::error::commented suffix suppressed the ACTIVE CLAUDE.md backfill"; exit 1; }
           grep -qxF '(^|/)\.plinth/reviewer\.md$' "$CP/.plinth/protected-paths" || { echo "::error::commented suffix suppressed the ACTIVE reviewer.md backfill"; exit 1; }
+          # Active NON-COVERING substring pattern (round-4): must not suppress the backfill.
+          CS="$(mktemp -d)"; ( cd "$CS" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CS" >/dev/null 2>&1 )
+          printf '(^|/)old-CLAUDE\\.md$\n(^|/)\\.plinth/session/\n' > "$CS/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$CS" >/dev/null 2>&1
+          grep -qxF '(^|/)CLAUDE\.md$' "$CS/.plinth/protected-paths" || { echo "::error::non-covering old-CLAUDE pattern suppressed the real CLAUDE.md backfill"; exit 1; }
           
           # ── v4.4.0: pulse.sh scrubs credentials BEFORE truncation ───────────────
           PU="$(mktemp -d)"; PPAD="$(printf 'a%.0s' $(seq 1 115))"
@@ -744,6 +777,19 @@ jobs:
             PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q "Follow the rules in .plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt does not reference .plinth/reviewer.md"; exit 1; }
           grep -q "project_doc_max_bytes=0" "$CAP4" || { echo "::error::codex reviewer not invoked with project_doc_max_bytes=0 isolation"; exit 1; }
+          
+          # ── v4.4.0: protected-paths edits are PROJECT scope, not auto-tamper ─────
+          # (round-4: the reviewer contract excludes protected-paths from pinned tooling; a
+          # human's project commit editing it must be reviewed as normal code, not auto-blocked.)
+          TP="$(mktemp -d)"; ( cd "$TP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$TP" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf '(^|/)my-eval-script\\.py$\n' >> .plinth/protected-paths
+            git add -A; git commit -qm "expand protections for the eval script" >/dev/null
+            rc=0; PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            v="$(jq -r .verdict .plinth/session/review/feat/verdict.json 2>/dev/null)"
+            { [ "$rc" = 0 ] && [ "$v" = APPROVED ]; } || { echo "::error::a project commit editing .plinth/protected-paths (non-plinth subject) was auto-labeled tampering (verdict=$v exit=$rc, want APPROVED/0)"; exit 1; } )
           
           # ── v4.4.0: guard.sh deny-ship (gh pr create/merge only, wrapper-aware) ──
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"

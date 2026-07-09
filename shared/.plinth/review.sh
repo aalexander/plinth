@@ -591,9 +591,15 @@ ${inc}${evidence}${commits}"
        | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
      ] | length' \
     "$SDIR/findings-$r.json")"
+  # NB: .plinth/protected-paths is DELIBERATELY NOT in this pathlist. The reviewer
+  # contract excludes it from version-pinned tooling (it is project-owned, like
+  # config/GOAL.md), and HARNESS_RE keeps findings on it in blocking PROJECT scope —
+  # so a bad change is caught by normal review arithmetic, not by the tamper label.
+  # The guard already makes it agent-immutable in-session; labeling every human edit
+  # "tampering" unless the subject says 'plinth' would contradict the contract.
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
       .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \
-      .plinth/MODELS.md .plinth/reviewer.md .plinth/protected-paths CLAUDE.md AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
+      .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
   RRAW="$RVERDICT"
   if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
     RVERDICT="CHANGES_NEEDED"

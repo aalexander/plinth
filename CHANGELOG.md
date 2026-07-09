@@ -44,15 +44,24 @@
   location-tolerant too. Fixed: an all-BLOCKING queue crashed `plinth queue`/`watch` under
   `set -e` (`sort_blocking_first` now returns 0).
 - **ensure_protected_paths** now protects `CLAUDE.md` + `.plinth/reviewer.md` and DEDUPS
-  BY PATH SUFFIX, so a project's custom `(^|plinth/)` anchoring (this repo) is not
-  over-appended with `(^|/)` forms that would freeze `shared/`.
+  BY PATH SUFFIX — "covered" means an ACTIVE (non-comment) line, after stripping its
+  leading anchor (`(^|...)` group or `^`), EQUALS the suffix exactly. So a project's
+  custom `(^|plinth/)` anchoring (this repo) is not over-appended with `(^|/)` forms that
+  would freeze `shared/`, while a comment mentioning a path or a different-path pattern
+  like `(^|/)old-CLAUDE\.md$` cannot suppress a real backfill.
 - Migration: `plinth update` regenerates the `AGENTS.md` shell (safe) and the `CLAUDE.md`
-  shell when it is provably stock — the old template whose "Project-specific notes"
-  section is empty or EXACTLY the template placeholder (compared verbatim, never by
-  stripping comments: notes written INSIDE the placeholder comment block count as custom).
-  Anything else is PRESERVED with a loud NOTE to move notes into
-  `.plinth/DRIVER-project.md`. This repo's OWN contract migration is sequenced AFTER
-  release (the pinned instrument must reach v4.4.0 first).
+  shell only when the WHOLE file equals the retired stock template verbatim
+  (whitespace-normalized) — custom content anywhere (above the notes heading, inside the
+  placeholder comment) makes it custom. Anything else — including older template
+  revisions — is PRESERVED with a loud NOTE to move notes into
+  `.plinth/DRIVER-project.md`: a false "custom" costs a 30-second manual step, a false
+  "stock" would destroy user content. This repo's OWN contract migration is sequenced
+  AFTER release (the pinned instrument must reach v4.4.0 first).
+- **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
+  longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
+  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE) and the guard keeps
+  it agent-immutable in-session, so a human's project commit editing it is reviewed as
+  normal code instead of being auto-labeled tampering.
 - **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
   prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
   mid-token at the 120/160-char cap, leaving a fragment too short for the redaction

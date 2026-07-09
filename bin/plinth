@@ -102,26 +102,46 @@ detect_owner() {
 # tell the human to move notes into .plinth/DRIVER-project.md (no auto-extraction —
 # marker-parsing a user-edited file is a known bug class).
 DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
-# True if $1 is a pre-v4.4 STOCK driver CLAUDE.md: it is the old "# CLAUDE.md" template
-# that imports the shared rules, and its "## Project-specific notes" section — the ONLY
-# user-owned part of the old layout ("this section is yours") — is empty or EXACTLY the
-# template's placeholder comment. Such a file has no custom content to lose, so `update`
-# regenerates it as the new shell (the migration the CHANGELOG promises). Anything else —
-# including notes a user wrote INSIDE the placeholder comment block — is NOT stock and is
-# preserved untouched: we compare the section to the exact placeholder (whitespace-
-# normalized) rather than stripping comment content, precisely so commented notes are
-# never mistaken for the empty placeholder and destroyed.
+# True if $1 is the pre-v4.4 STOCK driver CLAUDE.md: the WHOLE file equals the retired
+# templates/CLAUDE.md verbatim (whitespace-normalized: per-line trim, blank lines
+# dropped). Whole-file — not marker/section — comparison, because custom content can
+# live ANYWHERE (a rule added above the notes heading, notes inside the placeholder
+# comment); only a byte-honest match proves there is nothing to lose, so `update` may
+# regenerate it as the new shell (the migration the CHANGELOG promises). ANY deviation
+# — including an older template revision we do not recognize — is treated as custom and
+# preserved with the migration NOTE: a false "custom" costs a 30-second manual step, a
+# false "stock" destroys user content.
 is_stock_old_claude() {
-  local f="$1" rest placeholder
-  grep -qxF '# CLAUDE.md' "$f" 2>/dev/null || return 1
-  grep -qF '@.plinth/plinth-rules.md' "$f" 2>/dev/null || return 1
-  grep -qF '## Project-specific notes' "$f" 2>/dev/null || return 1
-  rest="$(awk '/^## Project-specific notes/{f=1;next} f' "$f" \
-          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' || true)"
-  placeholder='<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
-stack quirks. Shared Plinth rules import above; this section is yours and is
-never overwritten by `plinth update`. -->'
-  [ -z "$rest" ] || [ "$rest" = "$placeholder" ]
+  local f="$1" norm ref
+  norm="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" 2>/dev/null | grep -v '^$' || true)"
+  ref="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<'OLDSTOCK' | grep -v '^$'
+# CLAUDE.md
+
+You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —
+read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.
+
+@.plinth/plinth-rules.md
+
+## Precedence — these rules override defaults
+Where this file or the plinth rules conflict with harness defaults, output
+styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
+you must apply without being asked:
+- COMMIT your work on feature branches as part of the loop — do not wait for
+  permission. Verdicts bind to commit SHAs and the Stop gate requires an
+  APPROVED review at HEAD; a driver that waits to be asked deadlocks itself.
+  (Opening the PR follows review; pushing follows the rules, not impulse.)
+- Rule 10 evidence — pasted runner output — overrides any brevity or style
+  preference, always.
+- If a personal or global instruction conflicts with the plinth rules, follow
+  the plinth rules and SAY you did; never silently blend the two.
+
+## Project-specific notes
+<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
+     stack quirks. Shared Plinth rules import above; this section is yours and is
+     never overwritten by `plinth update`. -->
+OLDSTOCK
+)"
+  [ -n "$norm" ] && [ "$norm" = "$ref" ]
 }
 materialize_driver_shell() {
   cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
@@ -238,12 +258,16 @@ ensure_protected_paths() {
     # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
     # patterns match the INSTALLED copies but NOT the editable shared/ sources.
     # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
-    # wrongly freezing the PRODUCT. So if the suffix (the path after the anchor)
-    # already appears in an ACTIVE (non-comment, non-blank) line, it is covered —
-    # skip. Comments are excluded from the match: an explanatory "#" line that
-    # mentions a path must not suppress backfilling the real protection.
+    # wrongly freezing the PRODUCT. "Covered" therefore means: some ACTIVE
+    # (non-comment, non-blank) line, after stripping its leading anchor — a
+    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
+    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
+    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
+    # not suppress backfilling the real protection. Comments are excluded too.
     sfx="${line#'(^|/)'}"
-    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | grep -qF -- "$sfx" \
+    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
+      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
+      | grep -qxF -- "$sfx" \
       || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
   done <<'PATTERNS'
 (^|/)\.plinth/session/
