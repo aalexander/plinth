@@ -376,8 +376,11 @@ it has run green with a real smoke_cmd.
    reviewer explicitly checks for metric gaming.
 
 ## Hard blocks (don't rely on the model behaving)
-- Guard hook: destructive commands, secret paths, and anything matching
-  `.plinth/protected-paths` are blocked at the tool level — for every subagent too.
+- Guard hook: common destructive commands (an enumerative, heuristic pattern set —
+  prefixed and wrapped forms are caught, but deliberate obfuscation can evade text
+  matching; CI and branch protection are the hard layers), secret paths, and anything
+  matching `.plinth/protected-paths` are blocked at the tool level — for every
+  subagent too.
 - Review gate (Stop hook): a session that created commits cannot end its turn
   until review.sh records APPROVED at HEAD. Scoped to feature branches and
   commit-making sessions; releases loudly on review infrastructure failure or

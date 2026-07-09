@@ -44,11 +44,14 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    detecting the base ref client-side was fragile (the base is not always
 #    main/master) and redundant with protection — so it is not attempted.
 #  - HEURISTIC, not malicious-proof: detection strips quoted spans (so prose that
-#    merely mentions the command is inert) and also scans the raw command when a shell
-#    wrapper (bash -c/eval) is present; a deeper deliberate obfuscation still evades
-#    it, exactly like the destructive-command check. CI + branch protection are the
-#    hard layers; this raises "ship without review" from trivial to deliberate.
-# Fails OPEN (allows) outside a git repo, on the base branch, or with no verdict.
+#    merely mentions the command is inert) and additionally scans quoted payloads
+#    that directly follow a shell wrapper's -c / eval; a deeper deliberate
+#    obfuscation still evades it, exactly like the destructive-command check. CI +
+#    branch protection are the hard layers; this raises "ship without review" from
+#    trivial to deliberate.
+# Fails OPEN (allows) outside a git repo or on the base branch. With no verdict, a
+# stale verdict, or a non-APPROVED verdict for this branch's HEAD it BLOCKS — that
+# is the gate: ship actions require APPROVED@HEAD, everything else passes.
 ship_gate() {  # <what> — called only when the command is a ship action
   git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local branch head slug vf v vsha
@@ -85,8 +88,8 @@ case "$tool" in
     # DROP TABLE still trips it — use a --body-file / heredoc for such text.
     stripped="$(printf '%s' "$cmd" | sed -e "s/'[^']*'//g" -e 's/"[^"]*"//g')"
     # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
-    # assignment; PFX is any chain of them. Shared by the destructive matcher and the
-    # ship gate's shell-wrapper rescan below.
+    # assignment; PFX is any chain of them (used by the destructive matcher; the ship
+    # gate's wrapper-payload scan below is unanchored and needs no prefix handling).
     PFX='((sudo|command|env|nice|nohup|time)([[:space:]]+-[^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
@@ -94,12 +97,21 @@ case "$tool" in
     fi
     # Ship gate: only pay the git/jq cost when the command IS a ship action. Detect on
     # `stripped` (quoted prose inert, e.g. a commit -m mentioning "gh pr create"), PLUS
-    # the raw cmd when a shell wrapper (bash -c/eval) could smuggle it past stripping —
-    # the wrapper itself may be prefixed too (`env bash -c ...`, `sudo sh -c ...`,
-    # `FOO=1 sh -c ...`), so the same PFX chain is tolerated before it.
-    shipsan="$stripped"
-    printf '%s' "$cmd" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(bash|sh|zsh|eval)([[:space:]]|$)' && shipsan="$cmd"
-    if printf '%s' "$shipsan" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+    # quoted PAYLOADS that directly follow a shell wrapper's -c or an eval in the RAW
+    # command (`bash -c "gh pr create"` must not evade via quote-stripping). Scanning
+    # only the wrapper's own payload — not the whole raw command — keeps prose inert
+    # even with punctuation or an unrelated wrapper nearby (`git commit -m "use ; bash
+    # -c gh pr create"` has no quote right after -c, so it does not match). Unanchored,
+    # so prefixed wrappers (env/sudo/VAR=val before bash) need no special handling.
+    # Residual over-match: prose containing the EXACT quoted invocation (e.g. a commit
+    # message quoting `bash -c "gh pr create"` verbatim) fails CLOSED — the human runs
+    # such a command themselves.
+    SHIP='gh[[:space:]]+pr[[:space:]]+(create|merge)'
+    WRAPPAY="(bash|sh|zsh)([[:space:]]+-[^[:space:]]*)*[[:space:]]+-c[[:space:]]+[\"'][^\"']*"
+    EVALPAY="eval[[:space:]]+[\"'][^\"']*"
+    if printf '%s' "$stripped" | grep -Eq "$SHIP" \
+       || printf '%s' "$cmd" | grep -Eq "${WRAPPAY}${SHIP}" \
+       || printf '%s' "$cmd" | grep -Eq "${EVALPAY}${SHIP}"; then
       ship_gate "gh pr create/merge"
     fi
     while IFS= read -r pattern; do

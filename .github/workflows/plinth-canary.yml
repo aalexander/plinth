@@ -826,7 +826,16 @@ jobs:
           [ "$(gcmd 'env bash -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env-prefixed bash -c wrapper bypassed the gate"; exit 1; }
           [ "$(gcmd 'sudo bash -c "gh pr merge"')" = 2 ] || { echo "::error::deny-ship: sudo-prefixed bash -c wrapper bypassed the gate"; exit 1; }
           [ "$(gcmd 'FOO=1 sh -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: VAR=val-prefixed sh -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'eval "gh pr merge --squash"')" = 2 ] || { echo "::error::deny-ship: eval-quoted ship action bypassed the gate"; exit 1; }
+          [ "$(gcmd "bash -c 'gh pr create --fill'")" = 2 ] || { echo "::error::deny-ship: single-quoted wrapper payload bypassed the gate"; exit 1; }
           [ "$(gcmd 'echo "env bash -c gh pr create"')" = 0 ] || { echo "::error::deny-ship: prose naming a prefixed wrapper false-positived"; exit 1; }
+          # Prose with punctuation / an unrelated wrapper stays INERT (round-7): the payload
+          # scan requires a quote DIRECTLY after -c / eval, so these must not block.
+          [ "$(gcmd 'git commit -m "use (bash -c gh pr create)"')" = 0 ] || { echo "::error::deny-ship: parenthesized prose false-positived"; exit 1; }
+          [ "$(gcmd 'git commit -m "use ; bash -c gh pr create"')" = 0 ] || { echo "::error::deny-ship: semicolon prose false-positived"; exit 1; }
+          [ "$(gcmd 'echo "use (env bash -c gh pr create)"')" = 0 ] || { echo "::error::deny-ship: echoed prefixed-wrapper prose false-positived"; exit 1; }
+          [ "$(gcmd 'bash -c true && git commit -m "gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: benign wrapper + quoted mention false-positived"; exit 1; }
+          [ "$(gcmd 'bash -c "true; gh pr create"')" = 2 ] || { echo "::error::deny-ship: multi-command wrapper payload bypassed the gate"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
