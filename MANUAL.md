@@ -57,11 +57,16 @@ Everything between is the model's call.
   yours alone), `protected-paths` (agent-immutable files), `AGENTS-project.md`
   (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
   None is ever overwritten by `plinth update`.
-- The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`
-  (byte-identical), so whichever file your driver's CLI auto-loads (Claude→CLAUDE.md,
-  codex→AGENTS.md, grok→both) delivers the driver role; it imports the shared rules and
-  your `.plinth/DRIVER-project.md`. The REVIEWER contract lives in `.plinth/reviewer.md`,
-  which the review harness passes to the reviewer explicitly.
+- The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`, so
+  whichever file your driver's CLI auto-loads (Claude→CLAUDE.md, codex→AGENTS.md,
+  grok→both) delivers the driver role; it imports the shared rules and your
+  `.plinth/DRIVER-project.md`. `plinth init` writes both shells byte-identical. MIGRATION
+  CAVEAT: on `plinth update`, `AGENTS.md` is regenerated but a pre-existing CUSTOM
+  `CLAUDE.md` (from a pre-v4.4.0 project) is PRESERVED with a loud NOTE to move its notes
+  into `.plinth/DRIVER-project.md` and delete it — so on an upgraded project the two shells
+  are byte-identical only AFTER you complete that one-time migration; until then a Claude
+  driver still auto-loads your old CLAUDE.md. The REVIEWER contract lives in
+  `.plinth/reviewer.md`, which the review harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
   the dashboard shows a red banner while it's non-empty.

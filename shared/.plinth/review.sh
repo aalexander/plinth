@@ -50,9 +50,11 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 # work — the old silent-false-pass path. Refuse instead. Exemption: the
 # NEEDS-HUMAN queue (this script appends to it; it is a human channel, not
 # reviewable code — the driver commits it with its next real commit). Location-
-# tolerant: canonical is .plinth/NEEDS-HUMAN.md, but some projects keep it at repo
-# root — exempt either ([ /] matches the porcelain field separator OR a subdir /).
-[ -z "$(git status --porcelain | grep -vE '[ /]NEEDS-HUMAN\.md$')" ] \
+# tolerant but EXACT: exempt ONLY the canonical .plinth/NEEDS-HUMAN.md or a legacy
+# ROOT NEEDS-HUMAN.md — never a subdir/NEEDS-HUMAN.md (not the queue; a dirty one must
+# still refuse, preserving the SHA-bound review). The leading space is the porcelain
+# "XY " field separator, so it anchors the match to a repo-root or .plinth/ path.
+[ -z "$(git status --porcelain | grep -vE ' (NEEDS-HUMAN\.md|\.plinth/NEEDS-HUMAN\.md)$')" ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
 sha="$(git rev-parse HEAD)"

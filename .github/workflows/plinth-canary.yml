@@ -708,16 +708,30 @@ jobs:
           grep -q "Follow the rules in .plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt does not reference .plinth/reviewer.md"; exit 1; }
           grep -q "project_doc_max_bytes=0" "$CAP4" || { echo "::error::codex reviewer not invoked with project_doc_max_bytes=0 isolation"; exit 1; }
           
-          # ── v4.4.0: guard.sh deny-ship (vendor-universal) ──────────────────────
+          # ── v4.4.0: guard.sh deny-ship (gh pr create/merge only, wrapper-aware) ──
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
           ( cd "$GD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo a>f; git add -A; git commit -qm b >/dev/null; git checkout -qb feat/x >/dev/null 2>&1; echo c>f; git add -A; git commit -qm w >/dev/null )
           GH4="$(git -C "$GD" rev-parse HEAD)"; GV="$GD/.plinth/session/review/feat-x/verdict.json"
           gcmd() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')" | CLAUDE_PROJECT_DIR="$GD" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?; }
           [ "$(gcmd 'gh pr create --fill')" = 2 ] || { echo "::error::deny-ship: gh pr create not blocked without approval"; exit 1; }
-          [ "$(gcmd 'git push origin main')" = 2 ] || { echo "::error::deny-ship: base-branch push not blocked"; exit 1; }
-          [ "$(gcmd 'git push origin feat/x')" = 0 ] || { echo "::error::deny-ship: feature-branch push wrongly blocked (RUNTIME loop deadlock)"; exit 1; }
+          [ "$(gcmd 'bash -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -c wrapper bypassed the gate"; exit 1; }
+          [ "$(gcmd 'git push origin feat/x')" = 0 ] || { echo "::error::deny-ship: feature push wrongly blocked (RUNTIME deadlock)"; exit 1; }
+          [ "$(gcmd 'git push origin main')" = 0 ] || { echo "::error::deny-ship: base push must NOT be gated here (branch protection's job)"; exit 1; }
+          [ "$(gcmd 'git commit -m "add gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: prose mentioning gh pr create wrongly blocked"; exit 1; }
           printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4" > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 0 ] || { echo "::error::deny-ship: gh pr create blocked despite APPROVED@HEAD"; exit 1; }
+          
+          # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
+          DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "y=1" > app.py; git add -A; git commit -qm w >/dev/null )
+          printf -- '- [ ] later\n' > "$DE/.plinth/NEEDS-HUMAN.md"
+          o1="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
+          printf '%s' "$o1" | grep -q "working tree is dirty" && { echo "::error::dirty-exemption: .plinth/NEEDS-HUMAN.md not exempt"; exit 1; } || true
+          rm -f "$DE/.plinth/NEEDS-HUMAN.md"; mkdir -p "$DE/docs"; printf -- '- [ ] later\n' > "$DE/docs/NEEDS-HUMAN.md"
+          o2="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
+          printf '%s' "$o2" | grep -q "working tree is dirty" || { echo "::error::dirty-exemption: subdir/NEEDS-HUMAN.md wrongly exempt (SHA-bound review broken)"; exit 1; }
           
           # ── v4.4.0: plinth advise (vendor-agnostic, --impactful escalation) ────
           AB="$(mktemp -d)"; ACAP="$AB/cap"

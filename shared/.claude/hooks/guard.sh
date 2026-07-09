@@ -34,18 +34,26 @@ each_protected() {  # builtin pattern + project patterns, one per line
 }
 
 # Deny-ship backstop (vendor-universal). The Stop review-gate only BLOCKS on
-# Claude/codex; a grok/gemini driver's Stop is advisory, so it could ship
-# unreviewed work. This PreToolUse hook runs for EVERY vendor (codex/grok/claude
-# all honor .claude/), so gate the SHIP boundary here: refuse `gh pr create`/`gh
-# pr merge` and a push to the BASE branch (main/master) unless the branch's review
-# verdict is APPROVED at HEAD. NARROW BY DESIGN — feature-branch pushes stay
-# allowed, because the RUNTIME loop needs them to land smoke-receipt commits before
-# approval. Fails OPEN (allows) outside a git repo or with no verdict machinery.
+# Claude/codex; a grok/gemini driver's Stop is advisory, so it could open a PR on
+# unreviewed work. This PreToolUse hook runs for EVERY vendor (codex/grok/claude all
+# honor .claude/), so gate the SHIP action here: refuse `gh pr create`/`gh pr merge`
+# unless the feature branch's review verdict is APPROVED at HEAD.
+# SCOPE, deliberately narrow:
+#  - Direct pushes to the base branch are NOT gated here. That is server-side branch
+#    protection's job (and the Stop gate already logs+releases base-branch commits);
+#    detecting the base ref client-side was fragile (the base is not always
+#    main/master) and redundant with protection — so it is not attempted.
+#  - HEURISTIC, not malicious-proof: detection strips quoted spans (so prose that
+#    merely mentions the command is inert) and also scans the raw command when a shell
+#    wrapper (bash -c/eval) is present; a deeper deliberate obfuscation still evades
+#    it, exactly like the destructive-command check. CI + branch protection are the
+#    hard layers; this raises "ship without review" from trivial to deliberate.
+# Fails OPEN (allows) outside a git repo, on the base branch, or with no verdict.
 ship_gate() {  # <what> — called only when the command is a ship action
   git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local branch head slug vf v vsha
   branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
-  case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: not this gate's job
+  case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: PR-from-base is moot; not gated
   head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
   slug="$(printf '%s' "$branch" | tr '/ ' '--')"
   vf="$proj/.plinth/session/review/$slug/verdict.json"
@@ -76,12 +84,13 @@ case "$tool" in
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
-    # Ship gate: only pay the git/jq cost when the command IS a ship action.
-    # (stripped = quotes removed, so a PR body that merely mentions these is inert.)
-    if printf '%s' "$stripped" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+    # Ship gate: only pay the git/jq cost when the command IS a ship action. Detect on
+    # `stripped` (quoted prose inert, e.g. a commit -m mentioning "gh pr create"), PLUS
+    # the raw cmd when a shell wrapper (bash -c/eval) could smuggle it past stripping.
+    shipsan="$stripped"
+    printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*(bash|sh|zsh|eval)([[:space:]]|$)' && shipsan="$cmd"
+    if printf '%s' "$shipsan" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
       ship_gate "gh pr create/merge"
-    elif printf '%s' "$stripped" | grep -Eq 'git[[:space:]]+push([[:space:]]+[^;|&]*)?[[:space:]:](main|master)([[:space:]]|$)'; then
-      ship_gate "push to base branch"
     fi
     while IFS= read -r pattern; do
       # Path patterns are anchored for bare paths ((^|/)…$); in command TEXT a

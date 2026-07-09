@@ -19,10 +19,14 @@
   grok relies on the explicit reviewer prompt + role-scoping line. `HARNESS_RE` and the
   tamper pathlist gain `.plinth/reviewer.md` and `CLAUDE.md`.
 - **Deny-ship backstop (vendor-universal).** `guard.sh` (PreToolUse, honored by every
-  vendor) denies `gh pr create`/`gh pr merge` and a push to the BASE branch unless the
-  branch verdict is APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS
-  only on Claude/codex. NARROW: feature-branch pushes stay allowed so the RUNTIME
-  smoke-receipt loop is not deadlocked.
+  vendor) denies `gh pr create`/`gh pr merge` unless the feature branch's verdict is
+  APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS only on Claude/codex.
+  Direct base-branch pushes are left to server-side branch protection (the Stop gate
+  logs+releases them); client-side base detection was fragile (base is not always
+  main/master) and redundant. Heuristic backstop: detection strips quoted prose AND scans
+  the raw command under a shell wrapper (bash -c/eval), so a trivial wrapper does not
+  evade it — CI + branch protection remain the hard layers. Feature-branch pushes stay
+  allowed so the RUNTIME smoke-receipt loop is not deadlocked.
 - **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
   non-blocking, driver-initiated consult of a model as good or BETTER than the driver
   (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`
