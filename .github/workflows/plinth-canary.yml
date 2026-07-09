@@ -8,6 +8,9 @@ on:
   schedule:
     - cron: "0 14 * * 1"   # Mondays 14:00 UTC
   workflow_dispatch:
+  pull_request:
+    branches: [main]       # scaffold probes RUN on PRs (red on failure); gating needs the
+                           # scaffold job in branch-protection required checks. drift job: schedule-only.
 
 permissions:
   contents: read
@@ -16,24 +19,47 @@ permissions:
   security-events: write
 
 jobs:
-  # Do all pinned floor actions still resolve and run?
+  # Do all pinned floor actions still resolve and run? Drift check — schedule/
+  # dispatch only; on a PR the project's own ci.yml already runs the floor.
   floor:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/plinth-floor.yml
 
   # Does the harness itself still scaffold and fail loud correctly?
   scaffold:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - name: Syntax-check every shipped script
         run: |
           set -euo pipefail
-          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh bin/plinth; do bash -n "$f"; done
+          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh shared/.plinth/risk-classify.sh bin/plinth; do bash -n "$f"; done
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
+          # Fresh runners set no git identity, and git >= 2.54 refuses to commit
+          # with an empty ident — the fixtures below commit, so set one (same fix
+          # as smoke.yml). Global, so it covers every fixture repo this job creates.
+          git config --global user.email "canary@plinth.ci"
+          git config --global user.name  "plinth canary"
           mkdir /tmp/fx && cd /tmp/fx && git init -qb main .
           "$GITHUB_WORKSPACE/bin/plinth" init /tmp/fx
+          # init must SHA-pin the reusable-workflow refs (immutable, no mutable tag,
+          # no scanner suppression) to the SHA of the Plinth checkout it installed.
+          PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          grep -q "plinth-floor.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable FLOOR ref to the plinth checkout SHA"; exit 1; }
+          grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
+          grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
+          grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
+          # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
+          # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
+          # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.
+          NGP="$(mktemp -d)"; cp -R "$GITHUB_WORKSPACE/bin" "$GITHUB_WORKSPACE/templates" "$GITHUB_WORKSPACE/shared" "$GITHUB_WORKSPACE/VERSION" "$NGP/"
+          [ -f "$GITHUB_WORKSPACE/.plinth-version" ] && cp "$GITHUB_WORKSPACE/.plinth-version" "$NGP/" || true
+          NGPROJ="$(mktemp -d)"; ( cd "$NGPROJ" && git init -qb main . >/dev/null && "$NGP/bin/plinth" init "$NGPROJ" >/dev/null 2>&1 )
+          grep -q 'PIN_TO_YOUR_PLINTH_RELEASE_COMMIT' "$NGPROJ/.github/workflows/ci.yml" || { echo "::error::non-git init did not write the UNPINNED sentinel for the reusable refs"; exit 1; }
+          grep -Eq 'plinth-(floor|checks)\.yml@[0-9a-f]{7,}' "$NGPROJ/.github/workflows/ci.yml" && { echo "::error::non-git init left a resolved SHA despite no resolvable Plinth HEAD"; exit 1; } || true
+          printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"
           git checkout -qb feat && echo x > f.txt && git add -A && git commit -qm "canary work"
           # review.sh must fail LOUD (exit 2), never fail open, without codex:
@@ -42,4 +68,408 @@ jobs:
           echo dirty > f.txt
           rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
           [ "$rc" -eq 2 ] || { echo "::error::review.sh dirty-tree path exited $rc (want 2)"; exit 1; }
-          echo "canary: scaffold + fail-loud paths OK"
+          git checkout -- f.txt   # clean the fixture before switching branches
+          # review.sh resolves spec_path from the BASE config, not the working tree — a
+          # PR must not repoint the review target to a weaker spec in its own diff. Run
+          # the REAL resolution block extracted from shared/review.sh (not a copy) with a
+          # base spec_path=BASE.md but a working-tree repoint to EVIL.md; base must win.
+          RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"; SB="$(mktemp)"
+          awk '/^basecfg="\$\(git show/{p=1} p{print} /SPEC_PATH="SPEC\.md"/{if(p)exit}' "$RS" > "$SB"
+          grep -q 'git show' "$SB" && grep -q 'SPEC.md' "$SB" || { echo "::error::could not extract SPEC_PATH resolution from review.sh"; exit 1; }
+          SR="$(mktemp -d)"; SORG2="$(mktemp -d)"; git init -q --bare "$SORG2"
+          ( cd "$SR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'spec_path = BASE.md\n' > .plinth/config
+            git add -A; git commit -qm b >/dev/null; git remote add origin "$SORG2"; git push -q origin main
+            printf 'spec_path = EVIL.md\n' > .plinth/config )
+          SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$SB"; echo "$SPEC_PATH" )"
+          [ "$SPR" = "BASE.md" ] || { echo "::error::review.sh spec_path -> '$SPR': a same-PR working-tree repoint redirected the review target (want BASE.md from base config)"; exit 1; }
+          # review.sh first-adoption fallback: base has NO .plinth/config. The SAME extracted
+          # block must NOT abort under pipefail and must fall back to the working-tree
+          # spec_path (round-24 — the risk-classify probe below does not cover review.sh).
+          SR2="$(mktemp -d)"; SORG3="$(mktemp -d)"; git init -q --bare "$SORG3"
+          ( cd "$SR2"; git init -qb main . >/dev/null; echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git remote add origin "$SORG3"; git push -q origin main
+            mkdir -p .plinth; printf 'spec_path = WORK.md\n' > .plinth/config )   # working-tree only, base has none
+          # Run the extracted block in a REAL subprocess under set -euo pipefail — a `||`
+          # or command-sub wrapper around `source` SUPPRESSES set -e and would HIDE a
+          # pipefail-abort regression (a child bash keeps its own real set -e).
+          DRV="$(mktemp)"; printf '%s\n' 'set -euo pipefail' 'cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }' 'baseref="origin/main"' 'source "$1"' 'printf "%s" "$SPEC_PATH"' > "$DRV"
+          sprc=0; SPR2="$( cd "$SR2" && bash "$DRV" "$SB" )" || sprc=$?
+          [ "$sprc" = "0" ] && [ "$SPR2" = "WORK.md" ] || { echo "::error::review.sh spec_path first-adoption fallback failed (exit=$sprc, got '$SPR2', want WORK.md) — pipefail abort or wrong fallback"; exit 1; }
+          # Classifier must FAIL-SOFT when the BASE lacks .plinth/config (first-adoption PR
+          # that adds it): under set -euo pipefail the base spec_path read must not abort,
+          # else callers get NO tier at all (round-24 pipefail class — same as review.sh).
+          NCR="$(mktemp -d)"; ncrc=0
+          ( cd "$NCR"; git init -qb main . >/dev/null; echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo code > app.py; git add -A; git commit -qm w >/dev/null
+            bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main > "$NCR/o.json" 2>/dev/null ) || ncrc=$?
+          [ "$ncrc" = "0" ] && [ "$(jq -r .tier "$NCR/o.json" 2>/dev/null)" = "1" ] || { echo "::error::classifier aborted / emitted no tier when base lacks .plinth/config (exit=$ncrc, out=$(cat "$NCR/o.json" 2>/dev/null))"; exit 1; }
+          # review.sh reads its GOVERNING knobs (reviewer model, audit vendor/model,
+          # exec-gating, budget) from the BASE config, not the working tree — else a PR
+          # could weaken its OWN review. Behavior: extract the real base-config block and
+          # confirm audit_vendor resolves from base even when the working tree repoints it.
+          BC="$(mktemp)"; awk '/^basecfg="\$\(git show/{p=1} p{print} /^AUDIT_VENDOR=/{if(p)exit}' "$RS" > "$BC"
+          grep -q 'bcfg audit_vendor' "$BC" || { echo "::error::could not extract base-config block (audit_vendor) from review.sh"; exit 1; }
+          BR="$(mktemp -d)"; BORG="$(mktemp -d)"; git init -q --bare "$BORG"
+          ( cd "$BR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'audit_vendor = grok\n' > .plinth/config
+            git add -A; git commit -qm b >/dev/null; git remote add origin "$BORG"; git push -q origin main
+            printf 'audit_vendor = codex\n' > .plinth/config )
+          AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
+          [ "$AV" = "grok" ] || { echo "::error::review.sh audit_vendor -> '$AV': a PR could set audit_vendor=codex to drop its own cross-vendor audit (want grok from base)"; exit 1; }
+          # Wiring: every governing knob reads via bcfg (base) — catches a revert to cfg.
+          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_model_tier1 reviewer_model_tier2; do
+            grep -q "bcfg $k" "$RS" || { echo "::error::review.sh knob '$k' not read from base config (bcfg) — self-referential review-routing"; exit 1; }
+          done
+          # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
+          # starts fresh from main (checkout -qB resets the probe branch).
+          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
+          [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
+          [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
+          [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
+          # Security-critical bypass cases (the classifier decides whether review
+          # is skipped, so these must not sneak into Tier 0/1):
+          [ "$(tier 'echo requests==1 > requirements.txt')" = "2" ] || { echo "::error::classifier: deps manifest != Tier 2"; exit 1; }
+          # Common package/lock manifests the DEPS regex must cover (round-10 gap):
+          [ "$(tier 'echo x > npm-shrinkwrap.json')" = "2" ] || { echo "::error::classifier: npm-shrinkwrap.json (dep manifest) != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > pnpm-workspace.yaml')" = "2" ] || { echo "::error::classifier: pnpm-workspace.yaml (dep manifest) != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p gradle; echo x > gradle/libs.versions.toml')" = "2" ] || { echo "::error::classifier: gradle libs.versions.toml (version catalog) != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p src; echo x > src/auth_login.py')" = "2" ] || { echo "::error::classifier: security path != Tier 2"; exit 1; }
+          [ "$(tier 'ln -s app.py sneaky.md')" = "2" ] || { echo "::error::classifier: symlink-as-doc != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > Makefile')" = "2" ] || { echo "::error::classifier: build file != Tier 2"; exit 1; }
+          [ "$(tier 'printf "all:\n\techo hi\n" > makefile')" = "2" ] || { echo "::error::classifier: lowercase makefile != Tier 2"; exit 1; }
+          [ "$(tier 'echo FROM alpine > Dockerfile.prod')" = "2" ] || { echo "::error::classifier: Dockerfile.prod (build/deploy variant) != Tier 2"; exit 1; }
+          [ "$(tier 'echo FROM alpine > Containerfile')" = "2" ] || { echo "::error::classifier: Containerfile != Tier 2"; exit 1; }
+          [ "$(tier 'echo FROM alpine > prod.dockerfile')" = "2" ] || { echo "::error::classifier: *.dockerfile suffix != Tier 2"; exit 1; }
+          # Gradle Kotlin DSL + properties the BUILD regex must cover (round-10 gap):
+          [ "$(tier 'echo x > build.gradle.kts')" = "2" ] || { echo "::error::classifier: build.gradle.kts (Kotlin DSL) != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > settings.gradle.kts')" = "2" ] || { echo "::error::classifier: settings.gradle.kts != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > gradle.properties')" = "2" ] || { echo "::error::classifier: gradle.properties != Tier 2"; exit 1; }
+          # Migration/schema at REPO ROOT (the regex alternatives must not require a
+          # leading slash — round-17 gap): root models.py / entities/ are common ORM.
+          [ "$(tier 'echo x > models.py')" = "2" ] || { echo "::error::classifier: root-level models.py (ORM/schema) != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p entities; echo x > entities/user.py')" = "2" ] || { echo "::error::classifier: root entities/ dir (schema) != Tier 2"; exit 1; }
+          [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
+          [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
+          [ "$(tier 'echo maximize > GOAL.md')" = "2" ] || { echo "::error::classifier: GOAL.md (optimization contract) != Tier 2 — metric-gaming bypass"; exit 1; }
+          [ "$(tier 'echo more >> SPEC.md')" = "2" ] || { echo "::error::classifier: spec edit != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p vault; echo x > vault/a.md')" = "2" ] || { echo "::error::classifier: tier2_extra path != Tier 2"; exit 1; }
+          [ "$(tier 'echo x > run.md; chmod +x run.md')" = "1" ] || { echo "::error::classifier: executable .md is Tier 0"; exit 1; }
+          [ "$(tier 'mkdir -p tests; printf "@pytest.mark.skip\ndef test_x():\n    assert True\n" > tests/skip_test.py')" = "2" ] || { echo "::error::classifier: skip-added test != Tier 2"; exit 1; }
+          # Submodule gitlink (mode 160000) must never be Tier 0.
+          git checkout -q main; git checkout -qB sm >/dev/null 2>&1
+          git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",subm; git commit -qm sm >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule != Tier 2"; exit 1; }
+          # A submodule DELETED (oldmode 160000, newmode 000000) must stay Tier 2.
+          git checkout -q main; git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",subdel; git commit -qm "seed submodule" >/dev/null
+          git checkout -qB smdel main >/dev/null 2>&1; git update-index --force-remove subdel; git commit -qm smdel >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: DELETED submodule != Tier 2 (oldmode 160000)"; exit 1; }
+          # A submodule TYPE-CHANGED to a regular file (oldmode 160000, newmode 100644) stays Tier 2.
+          # checking out main (which has the subdel gitlink) leaves an empty subdel/
+          # dir on disk; remove it before writing the regular file in its place.
+          git checkout -q main; git checkout -qB smtc main >/dev/null 2>&1; git update-index --force-remove subdel; rm -rf subdel; echo "now a file" > subdel; git add subdel; git commit -qm smtc >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: submodule type-changed to file != Tier 2 (oldmode 160000)"; exit 1; }
+          # NOW (after the classify above) drop the seeded gitlink from main so LATER
+          # probes branch from a clean tree: an uninitialized submodule gitlink reads
+          # as a DIRTY tree in newer git (2.54+), which would make review.sh (dirty-
+          # tree guard) exit 2 on the Tier-0 probe below. Clear the on-disk dir too.
+          git checkout -q main; git update-index --force-remove subdel 2>/dev/null || true; rm -rf subdel; git commit -qm "drop submodule seed" >/dev/null 2>&1 || true
+          # Rename, test-weakening, and test-deletion need the base file ON MAIN
+          # (else the change reads as an added file from main's view). Seed main:
+          git checkout -q main; mkdir -p src tests
+          echo "secret=1" > src/logic.py
+          printf 'def test_a():\n    assert f() == 1\n    assert g() == 2\n' > tests/core_test.py
+          ln -s /etc/hostname link.md   # a symlink base, for the type-change probe
+          mkdir -p vault api            # high-consequence OLD paths for rename-launder probes
+          # doc-shaped + neutral name so ONLY the tier2_extra (^|/)vault/ old-path
+          # check can make it Tier 2 (not SECURITY etc.) — else the probe wouldn't
+          # fail if that check were removed.
+          printf '# vault notes\nalpha\nbeta\ngamma\n' > vault/neutral.md
+          printf 'ddd\neee\nfff\n' > package.json       # DEPS manifest
+          printf 'ggg\nhhh\niii\n' > api/users.py       # PUBAPI path
+          mkdir -p app                                  # file-named + plural test modules
+          printf 'def test_a():\n    assert f() == 1\n' > app/tests.py     # Django-style tests.py
+          printf 'def test_b():\n    assert g() == 2\n' > user_tests.py    # plural *_tests.py
+          git add -A; git commit -qm "base files for bypass tests" >/dev/null
+          # Type change (symlink -> regular doc) must not launder into Tier 0.
+          git checkout -qB tc main >/dev/null 2>&1; rm link.md; echo "just docs now" > link.md; git add -A; git commit -qm tc >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "1" ] || { echo "::error::classifier: type-change symlink->file != Tier 1"; exit 1; }
+          # Real code renamed to a .md destination must NOT be Tier 0.
+          git checkout -qB rn main >/dev/null 2>&1; git mv src/logic.py notes.md; git commit -qm rename >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" != "0" ] || { echo "::error::classifier: code renamed to .md is Tier 0 (bypass)"; exit 1; }
+          # round-14 bypass: a high-consequence OLD path (tier2_extra / dependency
+          # manifest / public-API) renamed to an inert .md must stay Tier 2, not launder.
+          git checkout -qB rnx main >/dev/null 2>&1; git mv vault/neutral.md moved-notes.md; git commit -qm rnx >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: tier2_extra doc-shaped path renamed to .md != Tier 2 (bypass)"; exit 1; }
+          git checkout -qB rnd main >/dev/null 2>&1; git mv package.json d-notes.md; git commit -qm rnd >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: dependency manifest renamed to .md != Tier 2 (bypass)"; exit 1; }
+          git checkout -qB rna main >/dev/null 2>&1; git mv api/users.py a-notes.md; git commit -qm rna >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: public API path renamed to .md != Tier 2 (bypass)"; exit 1; }
+          # Deleting an existing test must be Tier 2.
+          git checkout -qB del main >/dev/null 2>&1; git rm -q tests/core_test.py; git commit -qm del >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: test deletion != Tier 2"; exit 1; }
+          # Removing assertions from an existing test => Tier 2.
+          git checkout -qB tw main >/dev/null 2>&1
+          printf 'def test_a():\n    assert True\n' > tests/core_test.py; git add -A; git commit -qm weaken >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened test != Tier 2"; exit 1; }
+          # File-named + plural test modules are tests too (round-21 gap): weakening
+          # app/tests.py (Django) or deleting user_tests.py must escalate to Tier 2.
+          git checkout -qB twf main >/dev/null 2>&1; printf 'def test_a():\n    assert True\n' > app/tests.py; git add -A; git commit -qm twf >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: weakened file-named test (app/tests.py) != Tier 2"; exit 1; }
+          git checkout -qB dtf main >/dev/null 2>&1; git rm -q user_tests.py; git commit -qm dtf >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: deleted plural test (user_tests.py) != Tier 2"; exit 1; }
+          # test_*.py (pytest PREFIX convention) outside a tests/ dir is a test:
+          # modifying it must escalate like any existing test.
+          git checkout -q main; printf 'def test_x():\n    assert h() == 3\n' > test_core.py; git add -A; git commit -qm "test_ prefix baseline" >/dev/null
+          git checkout -qB tpfx main >/dev/null 2>&1; printf 'def test_x():\n    assert True\n' > test_core.py; git add -A; git commit -qm tpfx >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified test_*.py (prefix, no tests/ dir) != Tier 2"; exit 1; }
+          # ADDITION-ONLY weakening of an existing test (e.g. an early return before
+          # the assertions) has no '-' line and no skip token — must still be Tier 2.
+          git checkout -qB addonly main >/dev/null 2>&1; printf '    return  # early-out weakening\n' >> tests/core_test.py; git add -A; git commit -qm addonly >/dev/null
+          git diff main...addonly -- tests/core_test.py | grep -Eq '^-[^-]' && { echo "::error::addition-only probe setup actually removed a line"; exit 1; } || true
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: addition-only existing-test change != Tier 2"; exit 1; }
+          # A test-RUNNER CONFIG (pytest.ini/conftest.py/jest.config.*) is its own
+          # Tier-2 surface: unlike a test FILE, ADDING one is NOT additive (it can
+          # narrow discovery), so add/modify/delete are ALL Tier 2.
+          git checkout -q main; printf '[pytest]\ntestpaths = tests\n' > pytest.ini; git add -A; git commit -qm "test config baseline" >/dev/null
+          git checkout -qB tcfg main >/dev/null 2>&1; printf '[pytest]\naddopts = --ignore=tests/security\n' > pytest.ini; git add -A; git commit -qm tcfg >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified pytest.ini != Tier 2"; exit 1; }
+          git checkout -qB tcfgnew main >/dev/null 2>&1; printf 'module.exports={testMatch:[]}\n' > jest.config.js; git add -A; git commit -qm tcfgnew >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: NEWLY-ADDED jest.config.js != Tier 2 (a new config can narrow discovery)"; exit 1; }
+          git checkout -qB tcfgdel main >/dev/null 2>&1; git rm -q pytest.ini; git commit -qm tcfgdel >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: DELETED pytest.ini != Tier 2"; exit 1; }
+          git checkout -qB tcfgmv main >/dev/null 2>&1; git mv pytest.ini NOTES.md; git commit -qm tcfgmv >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: runner config RENAMED out of place != Tier 2 (effectively a deletion)"; exit 1; }
+          # A modified BINARY test baseline (snapshot/golden) has no textual '-' line
+          # but is still a weakening surface => Tier 2. A NEW binary test stays Tier 1.
+          git checkout -q main; printf '\000\001\002\003\004' > tests/snap.bin; git add -A; git commit -qm "binary test baseline" >/dev/null
+          git checkout -qB binmod main >/dev/null 2>&1; printf '\000\011\011\011\011' > tests/snap.bin; git add -A; git commit -qm binmod >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: modified binary test baseline != Tier 2"; exit 1; }
+          git checkout -qB binadd main >/dev/null 2>&1; printf '\000\001' > tests/newsnap.bin; git add -A; git commit -qm binadd >/dev/null
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "1" ] || { echo "::error::classifier: newly-added binary test != Tier 1"; exit 1; }
+          # An invalid tier2_extra regex must fail CLOSED (Tier 2), never silently
+          # disable the project Tier-2 surface (grep exit 2 read as 'no match'). The
+          # bad pattern is set in the WORKING config only, so the committed diff is
+          # docs-only (Tier 0 but for the fail-closed).
+          git checkout -q main; git checkout -qB t2bad main >/dev/null 2>&1
+          echo docs > T2DOC.md; git add T2DOC.md; git commit -qm t2bad >/dev/null
+          sed -i 's/^tier2_extra = .*/tier2_extra = [unterminated/' .plinth/config
+          [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = "2" ] || { echo "::error::classifier: invalid tier2_extra did not fail closed to Tier 2"; exit 1; }
+          git checkout -q .plinth/config
+          # Tier 0 needs NO model infrastructure: a docs-only diff approves even
+          # with codex absent (CI runners have no codex). A Tier 1 diff still fails
+          # loud at the deferred codex check when codex is absent.
+          git checkout -q main; git checkout -qB t0nc main >/dev/null 2>&1; echo "docs only" > NOTES.md; git add -A; git commit -qm t0 >/dev/null
+          # Regression guard: a Tier-0 review must approve with NO ~/.codex/config.toml
+          # present (CI runners have none). review.sh once died exit 2 here because the
+          # REVIEWER_MODEL sed read aborted under pipefail when the config was absent.
+          rc=0; ./.plinth/review.sh main >/tmp/t0nc.out 2>&1 || rc=$?
+          [ "$rc" = "0" ] || { echo "::error::Tier-0 docs did not approve without a model round (exit $rc)"; tail -20 /tmp/t0nc.out; exit 1; }
+          if ! command -v codex >/dev/null 2>&1; then
+            git checkout -q main; git checkout -qB t1nc main >/dev/null 2>&1; echo "x=1" > mod.py; git add -A; git commit -qm t1 >/dev/null
+            rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = "2" ] || { echo "::error::Tier-1 without codex did not fail loud at the deferred check (exit $rc)"; exit 1; }
+          fi
+          # Cross-vendor audit path: stub the primary reviewer (codex) and a grok
+          # auditor, run a Tier-2 review, verify the audit verdict is recorded;
+          # then a FAILING auditor is recorded UNAVAILABLE (non-blocking).
+          mkdir -p /tmp/asb
+          cat > /tmp/asb/codex <<'CX'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/asb/codex-args
+          out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+          cat >/dev/null
+          [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"stub","findings":[]}' > "$out"
+          echo '{"type":"thread.started","thread_id":"stub"}'
+          echo '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
+          CX
+          cat > /tmp/asb/grok <<'GK'
+          #!/usr/bin/env bash
+          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x /tmp/asb/codex /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud main >/dev/null 2>&1; echo "new req" >> SPEC.md; git add -A; git commit -qm aud >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          v="$(jq -r '.audit.vendor // "none"' .plinth/session/review/aud/verdict.json 2>/dev/null)"
+          [ "$v" = "grok" ] || { echo "::error::cross-vendor audit not recorded (vendor=$v)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/grok; chmod +x /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          av="$(jq -r '.audit.verdict // "none"' .plinth/session/review/aud2/verdict.json 2>/dev/null)"
+          [ "$av" = "UNAVAILABLE" ] || { echo "::error::failing auditor not recorded UNAVAILABLE (verdict=$av)"; exit 1; }
+          # Blocking-disagreement path: auditor returns a real blocker in project
+          # code — the blocking count must be >= 1 (guards the jq arithmetic).
+          cat > /tmp/asb/grok <<'GK'
+          #!/usr/bin/env bash
+          echo '{"text":"{\"verdict\":\"CHANGES_NEEDED\",\"summary\":\"blk\",\"findings\":[{\"file\":\"src/app.py\",\"line\":1,\"severity\":\"blocker\",\"description\":\"real issue\",\"status\":\"open\"}]}"}'
+          GK
+          chmod +x /tmp/asb/grok
+          git checkout -q main; git checkout -qB aud3 main >/dev/null 2>&1; echo "yet more req" >> SPEC.md; git add -A; git commit -qm aud3 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          ab="$(jq -r '.audit.blocking // 0' .plinth/session/review/aud3/verdict.json 2>/dev/null)"
+          [ "$ab" -ge 1 ] 2>/dev/null || { echo "::error::blocking auditor finding not counted (blocking=$ab)"; exit 1; }
+          # review.sh reads audit config from the BASE, so the config UNDER TEST lives on
+          # MAIN (the base), not the feature branch (round-27 base-config semantics).
+          set_base_audit() {  # <vendor> [model] — deterministically set main's audit config
+            git checkout -q main
+            sed -i '/^audit_vendor = /d; /^audit_model = /d' .plinth/config
+            printf 'audit_vendor = %s\n' "$1" >> .plinth/config
+            [ -n "${2:-}" ] && printf 'audit_model = %s\n' "$2" >> .plinth/config || true
+            git commit -qm "base audit config" .plinth/config >/dev/null 2>&1 || true
+          }
+          # audit_model override must reach the auditor as TWO argv tokens
+          # (-m and the model), not one collapsed "-m model" token.
+          cat > /tmp/asb/grok <<'GK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/asb/grok-args
+          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x /tmp/asb/grok
+          set_base_audit grok testmodel-x
+          git checkout -qB aud4 main >/dev/null 2>&1; echo "req x" >> SPEC.md; git add -A; git commit -qm aud4 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
+            || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # audit_model ALONE with audit_vendor = codex (the primary reviewer's own vendor)
+          # must NOT trigger a same-vendor audit falsely recorded as cross-vendor.
+          set_base_audit codex some-codex-model
+          git checkout -qB audsame main >/dev/null 2>&1; echo "same-vendor req" >> SPEC.md; git add -A; git commit -qm audsame >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          [ "$(jq -r 'has("audit")' .plinth/session/review/audsame/verdict.json 2>/dev/null)" = "false" ] || { echo "::error::audit_model + codex vendor triggered a same-vendor audit (false cross-vendor)"; exit 1; }
+          # reviewer_model_tier1/tier2 must reach the PRIMARY reviewer as `codex -m
+          # <model>` (two argv tokens) on the MATCHING tier — a collapsed "-m model"
+          # token or a wrong-tier pick would silently ship. Seed both on main so the
+          # probe diffs (ordinary code / spec) don't themselves force Tier 2.
+          git checkout -q main
+          printf 'reviewer_model_tier1 = t1model\nreviewer_model_tier2 = t2model\n' >> .plinth/config
+          git commit -qm "reviewer model config" .plinth/config >/dev/null
+          git checkout -qB rmt1 main >/dev/null 2>&1; echo "x=1" > ord.py; git add -A; git commit -qm rmt1 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/codex-args && grep -qx 't1model' /tmp/asb/codex-args \
+            || { echo "::error::reviewer_model_tier1 not passed to codex as -m t1model on a Tier-1 review (args: $(tr '\n' ' ' < /tmp/asb/codex-args 2>/dev/null))"; exit 1; }
+          grep -qx 't2model' /tmp/asb/codex-args && { echo "::error::Tier-1 review used the Tier-2 reviewer model"; exit 1; } || true
+          git checkout -qB rmt2 main >/dev/null 2>&1; echo "req" >> SPEC.md; git add -A; git commit -qm rmt2 >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          grep -qx -- '-m' /tmp/asb/codex-args && grep -qx 't2model' /tmp/asb/codex-args \
+            || { echo "::error::reviewer_model_tier2 not passed to codex as -m t2model on a Tier-2 review (args: $(tr '\n' ' ' < /tmp/asb/codex-args 2>/dev/null))"; exit 1; }
+          # Unknown audit_vendor (a config typo) must be recorded UNAVAILABLE, never
+          # silently fall through to codex — the primary reviewer's OWN vendor, which
+          # would be a false cross-vendor guarantee. With the bug the codex auditor
+          # APPROVES, so this reads APPROVED instead of UNAVAILABLE.
+          set_base_audit zzznotreal
+          git checkout -qB audbogus main >/dev/null 2>&1; echo "vendor typo probe" >> SPEC.md; git add -A; git commit -qm audbogus >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
+          [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
+          # binds_directly() decides whether a round's APPROVED binds or needs a
+          # clean-slate confirmation; bind_note() must tell the reviewer the matching
+          # truth. Extract BOTH real fns and assert the mode x tier matrix (a Tier-1
+          # fallback VERIFY saw only the incremental diff, so it must NOT bind alone).
+          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          bash -c "$FNS; binds_directly fresh 2"  || { echo "::error::a fresh full review must bind"; exit 1; }
+          bash -c "$FNS; binds_directly resume 1" || { echo "::error::a Tier-1 resume (warm thread) must bind directly"; exit 1; }
+          bash -c "$FNS; binds_directly resume 2" && { echo "::error::a Tier-2 resume must get a clean-slate confirmation"; exit 1; } || true
+          bash -c "$FNS; binds_directly verify 1" && { echo "::error::a Tier-1 fallback verify must NOT bind on a narrow view"; exit 1; } || true
+          bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
+          bash -c "$FNS; bind_note verify 1" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-1 verify its verdict does not bind alone"; exit 1; }
+          # A verify-origin session must NOT be resumable — else the next round
+          # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
+          # thread that never read the full diff. resumable_prev enforces it.
+          RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main fresh"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main resume" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main verify" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main ''"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main bogus"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED '' main main fresh"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          # The tools-forbidden auditor must inline the WHOLE canonical spec tree
+          # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
+          # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.
+          IS="$(sed -n '/^inline_spec() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          STD="$(mktemp -d)"; mkdir -p "$STD/spec"
+          printf 'req-in-yaml\n' > "$STD/spec/reqs.yaml"; printf '# md-req\n' > "$STD/spec/a.md"; printf 'BINblob\000\001\002' > "$STD/spec/img.png"
+          SPECOUT="$(cd "$STD" && SPEC_PATH=spec bash -c "$IS"'; inline_spec')"
+          printf '%s' "$SPECOUT" | grep -q 'req-in-yaml' || { echo "::error::inline_spec dropped a non-.md (yaml) spec file — incomplete auditor spec"; exit 1; }
+          printf '%s' "$SPECOUT" | grep -q 'md-req'      || { echo "::error::inline_spec dropped an .md spec file"; exit 1; }
+          printf '%s' "$SPECOUT" | grep -q 'BINblob'     && { echo "::error::inline_spec included a binary blob in the auditor prompt"; exit 1; } || true
+          # The tools-forbidden auditor must ALSO see GOAL.md when present (it can't
+          # read files, and metric-integrity review needs the eval/score contract).
+          IG="$(sed -n '/^inline_goal() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          GTD="$(mktemp -d)"; printf 'REQ: maximize accuracy; eval.py immutable; score must not decrease\n' > "$GTD/GOAL.md"
+          (cd "$GTD" && bash -c "$IG"'; inline_goal') | grep -q 'eval.py immutable' || { echo "::error::inline_goal dropped GOAL.md — auditor blind to metric-integrity contract"; exit 1; }
+          GTD2="$(mktemp -d)"; (cd "$GTD2" && bash -c "$IG"'; inline_goal') | grep -qi 'no GOAL.md' || { echo "::error::inline_goal missing the no-GOAL stub"; exit 1; }
+          # The dashboard must show an UNAVAILABLE audit distinctly, never as
+          # 'audit ✓'. Run the REAL audit-badge expression extracted from bin/plinth.
+          AUDEXPR="$(grep -F 'audit unavailable' "$GITHUB_WORKSPACE/bin/plinth" | sed -E 's/^[[:space:]]*\+ //; s/\)$//')"
+          [ -n "$AUDEXPR" ] || { echo "::error::dashboard audit-badge (UNAVAILABLE handling) not found in bin/plinth"; exit 1; }
+          badge() { jq -rn --argjson V "{\"audit\":$1}" "def R:\"\"; def RD:\"\"; def D:\"\"; def YE:\"\"; $AUDEXPR"; }
+          badge '{"verdict":"UNAVAILABLE","blocking":0}' | grep -qi 'audit unavailable' || { echo "::error::UNAVAILABLE audit not shown distinctly on the dashboard"; exit 1; }
+          badge '{"verdict":"UNAVAILABLE","blocking":0}' | grep -q 'audit ✓' && { echo "::error::UNAVAILABLE audit rendered as 'audit ✓'"; exit 1; } || true
+          badge '{"verdict":"APPROVED","blocking":0}'    | grep -q 'audit ✓' || { echo "::error::concurring audit not shown as 'audit ✓'"; exit 1; }
+          badge '{"verdict":"CHANGES_NEEDED","blocking":2}' | grep -q 'DISAGREES (2)' || { echo "::error::disagreeing audit not shown as AUDIT DISAGREES"; exit 1; }
+          # Smoke no-hang WIRING: the shipped template must gate the self-hosted
+          # job behind a github-hosted precheck (assert the actual structure, not
+          # a copied predicate — so removing the wiring fails the canary).
+          git checkout -q main
+          SMK="$GITHUB_WORKSPACE/templates/.github/workflows/smoke.yml"
+          grep -q '^  precheck:' "$SMK" || { echo "::error::smoke.yml missing precheck job"; exit 1; }
+          grep -Eq 'precheck:[[:space:]]*$' "$SMK" && grep -q 'runs-on: ubuntu-latest' "$SMK" || { echo "::error::smoke.yml precheck not on a github-hosted runner"; exit 1; }
+          grep -q "if: needs.precheck.outputs.run == 'true'" "$SMK" || { echo "::error::smoke.yml self-hosted job not gated on precheck output"; exit 1; }
+          grep -q 'runs-on: \[self-hosted, plinth-smoke\]' "$SMK" || { echo "::error::smoke.yml self-hosted smoke job missing"; exit 1; }
+          # Smoke precheck BEHAVIOR: run the REAL decide script EXTRACTED from the shipped
+          # smoke.yml (not a copied predicate) against controlled bases — catches what the
+          # wiring greps can't, e.g. dropping `|| true` so an absent base .plinth/config
+          # aborts under pipefail instead of the documented run=false green no-op.
+          DEC="$(mktemp)"
+          awk '
+            !s && /- id: decide[[:space:]]*$/ {s=1; next}
+            s && !r && /run: \|/ { match($0,/^ */); ri=RLENGTH; r=1; next }
+            r { if ($0 ~ /^[[:space:]]*$/){print "";next}
+                match($0,/^ */); ind=RLENGTH
+                if (ind<=ri){r=0;s=0;next}
+                if (bi=="") bi=ind
+                print substr($0,bi+1) }
+          ' "$SMK" > "$DEC"
+          grep -q 'smoke_cmd' "$DEC" || { echo "::error::could not extract precheck decide script from smoke.yml"; exit 1; }
+          SORG="$(mktemp -d)"; git init -q --bare "$SORG"
+          SSEED="$(mktemp -d)"; ( cd "$SSEED"; git init -qb main . >/dev/null; mkdir -p .plinth
+            printf 'spec_path = SPEC.md\nsmoke_cmd = echo hi\n' > .plinth/config; git add -A; git commit -qm m >/dev/null; git remote add origin "$SORG"; git push -q origin main
+            git checkout -qb nocmd main >/dev/null 2>&1; printf 'spec_path = SPEC.md\n' > .plinth/config; git commit -qam n >/dev/null; git push -q origin nocmd
+            git checkout -qb nocfg main >/dev/null 2>&1; git rm -q .plinth/config >/dev/null; git commit -qm x >/dev/null; git push -q origin nocfg )
+          smoke_decide() { wd="$(mktemp -d)"; out="$(mktemp)"; ec=0
+            ( cd "$wd"; git init -q .; git remote add origin "$SORG"
+              GITHUB_BASE_REF="$1" GITHUB_OUTPUT="$out" bash "$DEC" >/dev/null 2>&1 ) || ec=$?
+            rv="$(grep -o 'run=[a-z]*' "$out" 2>/dev/null | tail -1 || true)"; echo "${rv:-run=<none>} exit=$ec"; }
+          r="$(smoke_decide main)";       [ "$r" = "run=true exit=0" ]  || { echo "::error::smoke precheck: smoke_cmd set -> $r (want run=true exit=0)"; exit 1; }
+          r="$(smoke_decide nocmd)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: base has no smoke_cmd -> $r (want run=false exit=0)"; exit 1; }
+          r="$(smoke_decide nocfg)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: ABSENT base .plinth/config -> $r — pipefail regression (want run=false exit=0)"; exit 1; }
+          r="$(smoke_decide nosuchbase)"; [ "$r" = "run=<none> exit=1" ] || { echo "::error::smoke precheck: unresolvable base -> $r (want fail-loud run=<none> exit=1)"; exit 1; }
+          # The self-hosted `smoke` job block has its OWN base fetch/read/fail-loud — the
+          # precheck test above does not cover it. Extract and run it too: an unresolvable
+          # base must fail LOUD, an absent base config must be a green no-op (not a pipefail
+          # abort). (The smoke_cmd-set path runs the command, so it's exercised in real CI.)
+          SJ="$(mktemp)"
+          awk '/- name: Run smoke_cmd/{s=1} s&&!r&&/run: \|/{match($0,/^ */);ri=RLENGTH;r=1;next} r{if($0~/^[[:space:]]*$/){print"";next} match($0,/^ */);ind=RLENGTH; if(ind<=ri){exit} if(bi=="")bi=ind; print substr($0,bi+1)}' "$SMK" > "$SJ"
+          grep -q 'refusing to fail open' "$SJ" && grep -q 'nothing to run' "$SJ" || { echo "::error::could not extract self-hosted smoke job block from smoke.yml"; exit 1; }
+          run_smoke() { wd="$(mktemp -d)"; ec=0; ( cd "$wd" && git init -q . && git remote add origin "$SORG" && GITHUB_BASE_REF="$1" bash "$SJ" >/dev/null 2>&1 ) || ec=$?; echo "$ec"; }
+          [ "$(run_smoke nosuchbase)" = "1" ] || { echo "::error::self-hosted smoke: unresolvable base did not fail loud (exit $(run_smoke nosuchbase))"; exit 1; }
+          [ "$(run_smoke nocfg)" = "0" ]      || { echo "::error::self-hosted smoke: absent base config did not no-op green (exit $(run_smoke nocfg)) — pipefail regression"; exit 1; }
+          # Configured-smoke_cmd acceptance: base main has `smoke_cmd = echo hi`. Assert the
+          # block READ it (`smoke: echo hi`) AND actually RAN it — exit 0 and the command's
+          # own `hi` output — not just the pre-exec log line (a removed/broken `sh -c "$cmd"`
+          # would still print `smoke: echo hi`, so grepping only that would miss the regression).
+          swd="$(mktemp -d)"; src=0
+          sout="$( cd "$swd" && git init -q . && git remote add origin "$SORG" && GITHUB_BASE_REF=main bash "$SJ" 2>&1 )" || src=$?
+          { [ "$src" = "0" ] && printf '%s\n' "$sout" | grep -qx 'smoke: echo hi' && printf '%s\n' "$sout" | grep -qx 'hi'; } \
+            || { echo "::error::self-hosted smoke did not READ+RUN a configured smoke_cmd from base main (exit=$src, out: $(printf '%s' "$sout" | tr '\n' '|'))"; exit 1; }
+          # plinth update backfills managed protected-paths patterns, preserves user lines.
+          PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
+          # NO trailing newline on the user's last line — this is the exact input
+          # ensure_protected_paths guards: without the guard the first managed
+          # pattern concatenates onto this line, corrupting BOTH.
+          printf '(^|/)my-custom-secret' > "$PPFX/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PPFX" >/dev/null 2>&1
+          grep -q 'risk-classify' "$PPFX/.plinth/protected-paths" || { echo "::error::update did not backfill managed protected pattern"; exit 1; }
+          # -x (whole line) is load-bearing: a plain substring grep would still
+          # match a corrupted "(^|/)my-custom-secret(^|/)\.plinth/session/" line.
+          grep -qxF '(^|/)my-custom-secret' "$PPFX/.plinth/protected-paths" || { echo "::error::update corrupted a no-trailing-newline user protected-paths line (newline guard regressed)"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths OK"

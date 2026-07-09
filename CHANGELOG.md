@@ -1,5 +1,445 @@
 # Plinth changelog
 
+## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
+- review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
+  `~/.codex/config.toml` was absent**. The REVIEWER_MODEL sed read exits non-zero on
+  a missing config, and under `set -o pipefail` that aborted the whole review —
+  BEFORE the Tier-0 gate, which needs no codex config at all. Real users have codex
+  configured so never hit it; a fresh CI/non-codex environment did. Added `|| true`
+  (absent → falls back to "codex"). Canary now asserts a Tier-0 review approves with
+  no codex config present.
+- review.sh: spec_path (the review TARGET) is now read from the BASE config like the
+  classifier, not the working tree — a PR could otherwise repoint spec_path to a
+  weaker/empty spec in its own diff and the primary/audit prompts would judge against
+  that. The spec-change attack now targets the base (prior) spec path, and when a PR
+  repoints spec_path it attacks BOTH the old and new paths and flags the redirect as
+  high-consequence. Canary extracts and runs the real resolution block (base wins over
+  a working-tree repoint).
+- review.sh + risk-classify.sh: the base-config spec_path read is pipefail-hardened.
+  Under `set -euo pipefail` a failing `git show ${base}:.plinth/config` (base has no
+  config yet — a first-adoption PR that adds it) aborted before the fallback, so
+  review.sh died and the classifier emitted NO tier. Read the blob with `|| true`,
+  then parse the string. Canary: the classifier still emits a tier when the base
+  lacks `.plinth/config`.
+- review.sh: the review-GOVERNING knobs — `reviewer_model_tier1`/`tier2`,
+  `audit_vendor`, `audit_model`, `exec_gated`, `round_budget` — are now read from the
+  BASE config too (via a `bcfg` helper), not the working tree. Otherwise a PR editing
+  `.plinth/config` could pick a weaker Tier-2 reviewer model, set `audit_vendor=codex`
+  to drop its OWN cross-vendor audit, or route its findings to the run gate — the same
+  self-referential bypass closed for spec_path. Canary: audit_vendor resolves from base
+  over a working repoint, and every governing knob is wired to `bcfg`.
+- plinth-canary.yml now runs on `pull_request` too, so the ~40 regression probes
+  (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
+  init SHA-pinning, protected-paths, review.sh base-config resolution) RUN on every
+  PR and show red on failure, instead of only firing on the weekly schedule. Running
+  a check is not the same as requiring it: to make these BLOCK merges, add the canary
+  `scaffold` job to the Plinth repo's branch-protection required checks (a HUMAN repo
+  setting — see the PR body's close-out steps). The redundant floor job is skipped on
+  PRs (the project's own ci.yml already runs the floor there).
+- The Plinth repo's own `.plinth/config` now sets `tier2_extra =
+  (^|/)(shared|templates|bin)/` so docs-shaped changes to its OWN product source
+  (e.g. shared/MODELS.md, templates/*.md) get Tier-2 review instead of the generic
+  .md → Tier 0 path. The generic classifier can't know this repo's scope inversion,
+  and the guard blocks the agent from editing `.plinth/config`, so the human set the
+  knob directly; it lands here in the labeled v4.2.1 instrument-update commit
+  (installed `.plinth/*` may change only in a release/update commit).
+Version bump: the v4.2 branch (below) gained substantial CI supply-chain
+hardening, classifier bypass fixes, and audit-integrity fixes after its first
+APPROVED, so it ships as v4.2.1. Reusable-workflow references:
+- The Plinth repo's required `floor` AND `checks` gates now pin the PREVIOUS release
+  by IMMUTABLE SHA (v4.1.9) — independent gates a same-PR edit to this repo's own
+  plinth-floor.yml / plinth-checks.yml cannot weaken (floor was pinned to the stale
+  v4.0.1 floor, 8 releases behind, which also tested none of a PR's floor changes).
+  SETUP.md/MANUAL.md have operators require BOTH, so BOTH need independence. New
+  `floor-current` / `checks-current` twins run the floor/checks AS EDITED IN THIS PR,
+  so the edits are still exercised in CI: the required gates stay independent AND the
+  current versions get tested. Require `floor`/`checks` (not the `-current` twins).
+  The gate SHAs are repinned each release.
+- The template now pins Plinth's reusable workflows by IMMUTABLE COMMIT SHA (no
+  mutable tag, no `nosemgrep` anywhere): the shipped file carries a prior-release
+  SHA as a placeholder, and `plinth init` repins it to the exact Plinth checkout it installed from
+  (alongside the existing OWNER substitution). This closes the reviewer's finding
+  that the old tag+suppression shipped mutable-tag trust to every new project —
+  downstream now gets an immutable SHA their own floor scans clean.
+- smoke.yml: the base-config read now fetches into the remote-tracking ref
+  explicitly (`git fetch origin +$base:refs/remotes/origin/$base`) at BOTH the
+  precheck and the self-hosted step. A bare `git fetch origin "$base"` only
+  updates FETCH_HEAD in a PR checkout, so the following `git show
+  origin/$base:.plinth/config` could miss and read as no smoke_cmd — a repo with
+  smoke configured would then silently skip its smoke run. It also now FAILS LOUD
+  (exit 1) if the base ref can't be resolved at all, instead of reading a transient
+  fetch/ref failure as "no smoke_cmd" and skipping a configured run as a green
+  no-op. (An absent `.plinth/config` on a resolvable base is still the legitimate
+  no-smoke case.) Guard applied to both the precheck and the self-hosted step.
+
+Stale/overclaimed statements the reviewer rules block on, now matching the code:
+- review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
+  audit_model is set" — false since the gate became `audit_vendor != codex`.
+  Reworded to match (audit_model is a model override, not a trigger).
+- MANUAL.md: the exit-code paragraph claimed too-large/dead reviewer sessions "fall
+  back to a fresh full review automatically" — contradicting the Tier-1 section (and
+  the code): the fallback is a VERIFY round that sees only prior findings plus the
+  incremental diff and does not bind alone; a clean-slate full confirmation runs only
+  after an approval. Reworded to match.
+- review.sh header comment: same overclaim — it still said an oversized/dead resume
+  "falls back to a clean-slate full review". The code falls back to a VERIFY round
+  when prior findings exist (fresh only when there are none). Reworded to match the
+  code and MANUAL.md.
+- Canary now also covers two previously-untested fail-loud paths: the self-hosted
+  `smoke` job block (unresolvable base fails loud; absent base config no-ops green,
+  not a pipefail abort) and the non-git `plinth init` fallback (writes the
+  PIN_TO_YOUR_PLINTH_RELEASE_COMMIT sentinel, never a stale/mutable ref).
+- templates/SPEC.md: dropped the unbacked claim that "the review loop, receipts,
+  and drift detection key off" REQ-<AREA>-<NN> IDs — nothing machine-parses them.
+  They're a stable human/reviewer handle for referencing a requirement across
+  rounds, not automation.
+- bin/plinth config doc: clarified `audit_vendor` — unset => codex (= the primary
+  reviewer, so NO cross-vendor audit); init scaffolds `grok` to enable it (removes
+  the "Default codex" vs scaffolded-grok confusion).
+- review.sh config-block comment: the `audit_model` line still described it as "the
+  optional second model" with "every 5th binding approval gets a cold cross-model
+  audit" — stale. Now documents `audit_vendor` (the trigger, cross-vendor only) and
+  `audit_model` as a model override.
+- bin/plinth `update` header: said per-project files are "never touched" — but
+  update DOES append managed patterns to `.plinth/protected-paths`. Documented that
+  one managed exception (your lines preserved).
+- MODELS.md driver table: dropped "test/dep bump" from the Tier-0–1 row (deps/tests
+  are Tier 2) and added a note that model tier ≠ review tier — you may DRIVE a dep
+  bump or test edit with Sonnet, but the classifier still routes it to Tier-2
+  review (high-consequence to verify, whoever wrote it).
+
+## v4.2 (continued) — CI external-drift fixes (PR #6 red) — July 8, 2026
+Two floor/smoke failures that are exactly the drift the canary exists to catch,
+here hitting a live PR first:
+- smoke.yml AND plinth-canary.yml: the fixture `git commit`s failed with "empty
+  ident name" — fresh runners set no git identity and git >= 2.54 now REFUSES an
+  empty ident (older git allowed it). Both now set `git config --global
+  user.email/name` before scaffolding (the canary would otherwise have failed
+  before ever reaching its probes). Verified locally: the full smoke fail-loud
+  fixture (plinth init + the bad-base and dirty-tree review.sh paths -> exit 2)
+  runs green.
+- semgrep SAST: `p/security-audit` on `semgrep:latest` began enforcing
+  `github-actions-mutable-action-tag` (10 blocking). Fixed the RIGHT way (a first
+  cut disabled the rule in the reusable floor — which would have suppressed it for
+  every DOWNSTREAM project too; reverted): SHA-pinned all third-party actions to
+  their SPECIFIC release tags (checkout@v4.3.0, upload-artifact@v4.6.2,
+  gitleaks@v2.3.9, osv-scanner@v2.3.8) across the repo and templates — NOT the
+  moving major tag, which for actions/checkout had drifted onto v6-line code, so a
+  first pass mispinned `@v4` to a v6 commit (caught in review). First-party
+  reusable-workflow refs: the Plinth repo's own ci.yml now uses LOCAL refs (no tag
+  to pin); only the shipped TEMPLATE keeps a release-tag ref (`# nosemgrep`'d,
+  since a template can't hardcode its own release's SHA — see the v4.2.1 entry).
+  The rule stays active for every third-party action and every downstream project.
+- risk-classify.sh: test-RUNNER CONFIG files (`pytest.ini`, `conftest.py`,
+  `jest.config.*`, `vitest.config.*`, `.mocharc`, …) are now their own Tier-2
+  surface. Unlike a test FILE (where ADDING one is additive → Tier 1), adding a
+  runner config is NOT additive — a new `jest.config.js` with empty `testMatch` or
+  a `pytest.ini` with `addopts=--ignore` narrows existing discovery — so add,
+  modify, AND delete all take Tier 2. (`tox.ini`, `setup.cfg`, `pyproject.toml`
+  were already Tier 2 via BUILD/DEPS.) Canary probes for modify/add/delete.
+- risk-classify.sh: two more supply-chain under-review paths closed. (1) BUILD
+  matched only an exact `Dockerfile` — now `Dockerfile.prod`/`.dev`/`.ci`,
+  `Containerfile`, and `*.dockerfile` too. (2) The submodule check read only
+  `newmode` 160000, so DELETING or type-changing a submodule out (newmode
+  000000/100644) fell to Tier 1; it now also checks `oldmode` 160000 — submodule
+  add/modify/delete/type-change all stay Tier 2. Canary probes for both.
+- risk-classify.sh: BUILD and DEPS missed common manifests, so a Gradle Kotlin
+  DSL or npm/pnpm supply-chain change could review as ordinary Tier 1. BUILD now
+  covers `build.gradle.kts`/`settings.gradle.kts` (Kotlin DSL is the modern
+  default) and `gradle.properties`; DEPS now covers `npm-shrinkwrap.json`,
+  `pnpm-workspace.yaml`, and the Gradle version catalog `libs.versions.toml`.
+  Canary probes for each.
+- risk-classify.sh: closed a rename-launder bypass. The rename/copy OLD-path check
+  covered security/migration/tooling/build/test-config but omitted DEPS, public-API,
+  and `tier2_extra` paths — so a dependency manifest, an API path, or a
+  project-declared `tier2_extra` file could be `git mv`'d to a `.md` destination and
+  classify Tier 0 (skipping the model round). The old path is now checked against the
+  full Tier-2 surface. Canary probes for the tier2_extra / dependency / public-API
+  rename-to-docs cases.
+- risk-classify.sh: the MIGRATION/schema regex required a leading slash on several
+  alternatives (`/models?\.py$`, `/entities/`, `/schema\.`, `/prisma/`), so a
+  REPO-ROOT `models.py`, `entities/`, `schema.*`, or `prisma/` — common ORM/schema
+  locations — fell to Tier 1. Anchored them `(^|/)` so root and nested both route to
+  Tier 2. Canary probes for root `models.py` and `entities/`.
+- risk-classify.sh: the TESTS regex matched test DIRECTORIES (`tests/`) and the
+  `test_`/`_test.` conventions but missed file-named test modules (`tests.py`,
+  `spec.rb` — Django/RSpec) and plural suffixes (`*_tests.py`, `*.specs.js`), so
+  weakening or deleting a test in one of those escaped the Tier-2 weakened/deleted
+  path and reviewed as Tier 1. Added the file-named and plural forms. Canary probes:
+  weaken `app/tests.py`, delete `user_tests.py`.
+- risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
+  contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
+  matching the generic `.md` docs rule and going Tier 0 (skipping the model round
+  entirely). Canary probe added.
+- bin/plinth / templates/ci.yml: `plinth init` ALWAYS rewrites the template's
+  reusable-ref SHA — to the exact commit of the Plinth checkout it installs from
+  (normal git install), or, if it can't resolve one (non-git install), to an
+  UNPINNED sentinel (`PIN_TO_YOUR_PLINTH_RELEASE_COMMIT`) + a loud warning so CI
+  fails until the operator pins it. Never a silently-stale floor. The literal SHA
+  in the shipped template is just a valid placeholder; an init'd project never
+  keeps it. Comments in both files match this behavior.
+
+
+Surfaced by the clean-slate confirmation reviewing this branch:
+- review.sh: an unknown `audit_vendor` (a config typo like `gork`) no longer
+  silently falls through to codex. Falling through ran the SAME vendor as the
+  primary reviewer and recorded it under the bogus name — a false cross-vendor
+  guarantee AND a fail-open. `run_auditor` now returns nonzero for any vendor
+  outside {codex, grok, agy}, so the audit is recorded UNAVAILABLE (non-blocking,
+  primary review still stands) and the message names the misconfiguration.
+- review.sh: the cross-vendor audit no longer runs on `audit_model` ALONE. The gate
+  was `[ -n "$AUDIT_MODEL" ] || [ audit_vendor != codex ]`, so an upgraded project
+  carrying only the legacy `audit_model` (with `audit_vendor` defaulting to codex,
+  the primary reviewer's vendor) got a SAME-vendor codex audit framed + recorded as
+  cross-vendor — the exact false assurance this release closes elsewhere. The gate
+  is now purely `audit_vendor != codex`; `audit_model` is a model override for that
+  different vendor, not a trigger (config doc corrected to match). Canary probe:
+  `audit_model` + codex vendor => no audit recorded.
+- review.sh: the binding rule is now one predicate, `binds_directly(mode, tier)`,
+  shared by the post-round gate and the reviewer-facing note so they can't drift.
+  A fresh full review binds; a warm Tier-1 RESUME binds directly (its thread holds
+  the round-1 full read); a Tier-2 approval and ANY fallback VERIFY (a fresh
+  session that saw only prior findings + the incremental diff — never the full
+  current diff) get a clean-slate confirmation before binding. This closes two
+  gaps: the resume/verify prompts previously told the reviewer a clean-slate pass
+  would confirm even when (for Tier 1) its verdict bound directly, AND a Tier-1
+  fallback verify could bind final APPROVED off that narrow view. `bind_note` now
+  states the truth for the actual (mode, tier).
+- review.sh: closed the lineage leak in the above — a verify round that returned
+  CHANGES_NEEDED recorded its session_id, and the NEXT run resumed it as
+  `mode=resume`, where `binds_directly(resume, tier1)` bound a thread that had only
+  ever seen the incremental diff. A verify-origin session is now non-resumable
+  (`resumable_prev`, and the round's `mode` is recorded in the verdict): the next
+  round goes fresh and re-reads the full diff before any bind. `resumable_prev`
+  fails CLOSED — it resumes only a mode KNOWN to carry a full-diff read (`fresh` or
+  a prior `resume`); an empty/unknown mode (e.g. a verdict.json written before the
+  `mode` field existed, or an in-flight upgrade) goes fresh rather than resuming a
+  possibly-narrow thread.
+- risk-classify.sh: an invalid `tier2_extra` regex (a typo in this agent-immutable
+  routing knob) now fails CLOSED to Tier 2 instead of silently disabling the
+  project Tier-2 surface — `grep -Eq` returns exit 2 on a bad pattern, which the
+  per-file check read as a plain "no match", letting intended Tier-2 paths slip to
+  Tier 0/1. Validated once against empty input at startup.
+- risk-classify.sh: ANY modification of an existing test now escalates to Tier 2,
+  not just ones with a removed line. The prior check keyed on `^-[^-]` (removed
+  text), a binary diff, or an added skip token — so an ADDITION-ONLY weakening
+  (e.g. inserting an early `return` before the assertions) slipped to Tier 1. Now
+  any touch of existing test content (status != added) is Tier 2, matching the
+  classifier's own stated intent that assertion-counting is gameable by padding.
+  This subsumes the removed-line and binary-baseline checks; only a brand-NEW test
+  file stays Tier 1 (unless it lands pre-skipped).
+- risk-classify.sh: the TESTS regex now recognizes the pytest `test_*` PREFIX
+  convention (`test_core.py`, `app/test_core.py`), not just the `*_test`/`*.spec`
+  suffixes — deleting or modifying a `test_*.py` outside a `tests/` dir was
+  slipping through as ordinary Tier-1 code instead of the required Tier-2
+  weakened/deleted-test path.
+- review.sh: the cross-vendor auditor now inlines the WHOLE canonical spec tree
+  (new `inline_spec`): a directory-tree spec had only `.md`/`.rst`/`.txt` files
+  inlined, so a project whose spec tree includes YAML/JSON/other files gave the
+  tools-forbidden auditor an INCOMPLETE spec — a false cross-vendor guarantee. Now
+  every text file in the tree is inlined (binaries skipped); a file spec is
+  unchanged.
+- review.sh: the auditor prompt now inlines GOAL.md when present (new
+  `inline_goal`). The tools-forbidden auditor was given AGENTS.md's metric-
+  integrity RULES but not the GOAL's eval/score contract, so on optimization-loop
+  repos it could falsely concur on metric-gaming it couldn't see. Canary probes for
+  both `inline_spec` and `inline_goal`.
+- plinth watch: an UNAVAILABLE cross-vendor audit rendered as "audit ✓" (its
+  blocking==0 matched the concur branch). The dashboard now shows "audit
+  unavailable" distinctly, so a failed auditor is not mistaken for a passing one.
+- Canary: added the previously-missing `reviewer_model_tier1/tier2` regression
+  test — asserts the primary reviewer receives `codex -m <model>` as two argv
+  tokens on the MATCHING tier (Tier 1 uses tier1's model, Tier 2 uses tier2's),
+  the same argv-collapse class the audit_model probe guards. Also an `inline_spec`
+  unit probe (non-.md spec file inlined, binary skipped).
+- Canary: regression probes for every fix above — unknown `audit_vendor` =>
+  UNAVAILABLE (not a codex fallthrough); the full `binds_directly`/`bind_note`
+  mode×tier matrix (incl. Tier-1 verify must NOT bind); invalid `tier2_extra` =>
+  fail-closed Tier 2; modified-binary-test => Tier 2 (new binary test stays Tier 1);
+  and the dashboard audit badge's three-way discrimination (unavailable / ✓ /
+  DISAGREES).
+- MODELS.md: spelled out the two SEPARATE reviewer integration paths a field driver
+  conflated. `audit_vendor` = grok|agy runs that vendor's OWN CLI (subscription-
+  authed, independent of codex config; missing => non-blocking UNAVAILABLE).
+  `reviewer_model_tier1/tier2` are passed to `codex -m`, so making grok the PRIMARY
+  reviewer needs an xAI `model_provider` + key in `~/.codex/config.toml` plus a
+  `PLINTH_RESUME_MAX` reset — not automatic; leave unset to keep gpt-5.5.
+
+## v4.2 (continued) — explicit driver model routing — July 7, 2026
+- MODELS.md + MANUAL.md: the DRIVER now gets the same explicit routing the reviewer
+  already had. A task-shape → risk-tier → model table replaces the stale two-phase
+  "Fable through July 7 / Opus from July 8" prose (that window closes tomorrow):
+  Sonnet 5 for mechanical/doc work (Tier 0–1), Opus 4.8 default (Tier 1), Opus at
+  high effort or Fable 5 by exception for high-consequence work (Tier 2). The point
+  is speed and efficiency — don't drive a doc tweak on Opus, don't drive a security
+  change on Sonnet.
+- Named the asymmetry the design rests on: driver-model choice is a self-interested
+  speed/cost decision with NO adversarial stakes (the CI floor + cross-model review
+  catch bad work whoever wrote it), so it is GUIDANCE, not a gate — deliberately the
+  opposite of the reviewer's risk tier, which is immutable precisely because it IS
+  the adversarial gate. That is why driver routing stays doc guidance and is not a
+  new knob or script: a driver-writable model gate would be worthless anyway.
+- Made explicit the driver's one real lever over review COST: tier hygiene. A single
+  Tier-2 signal drags the whole diff onto the deep clean-slate + cross-vendor path,
+  so low-risk work belongs in its own commit/PR. The driver never picks the reviewer
+  — the diff does — and that is the only "direction over the reviewer" it has.
+- Canary coverage closes (surfaced reviewing this branch): the classifier canary now
+  probes PLANNING-PROMPT.md => Tier 2 (round 29's TOOLING classification had no test,
+  so the regex could silently regress to Tier 0); and the protected-paths update test
+  now writes a user line with NO trailing newline and asserts whole-line survival
+  (`grep -qxF`), actually exercising round 29's `ensure_protected_paths` concat guard
+  — the prior test wrote a trailing newline and used a substring grep that a corrupted
+  concatenation would still satisfy.
+
+## v4.2 — smoke no-hang fix — July 8, 2026
+- smoke.yml: a github-hosted `precheck` job now decides whether there is anything
+  to smoke (smoke_cmd set in the base config) BEFORE any self-hosted runner is
+  requested. Previously the self-hosted `smoke` job was queued unconditionally,
+  so a repo with no `plinth-smoke` runner (and/or no smoke_cmd) left the job
+  `queued` forever — blocking PR merges. With the gate, no-smoke_cmd repos skip
+  the self-hosted job entirely (green no-op, no runner needed). The precheck
+  reads ONLY the base config (never the PR checkout), so a PR cannot add
+  smoke_cmd to re-trigger the self-hosted job (which reads base and would no-op
+  anyway). Found in the field: certeus PRs hung 2h+ on a queued smoke with no
+  runner and no smoke_cmd.
+  NOTE: smoke.yml is a per-project file (never overwritten by update) — existing
+  projects must copy the new template in.
+
+## v4.2 (continued) — July 7, 2026
+Planning-prompt overhaul + trust-but-verify + optimal cross-vendor assignment.
+- SPEC template + PLANNING-PROMPT (kept in sync): requirements now carry STABLE
+  IDs (REQ-<AREA>-<NN>), explicit `prereqs:` (a dependency DAG, not a linear
+  list — enables small vertical slices + safe parallel work), and a `validate:`
+  line naming unit / integration / RUNTIME-smoke / post-merge checks. "Has a
+  test" is no longer enough — the runtime-smoke question is forced, closing the
+  blindspot class that let the anvil real-run layer go unvalidated. NEW spec
+  sections: Core Invariants (near-immutable), Execution-gated surface
+  (exec_gated + smoke_cmd), High-consequence surface (tier2_extra).
+- DROPPED (built, then removed): trust-but-verify Tier-0 sampling. The dogfood
+  review proved it can't work — any sample computed locally from the commit SHA
+  is grindable (amend the commit until the roll escapes the rate), and any
+  per-run random is re-runnable. Local sampling cannot be unpredictable to an
+  adversarial driver. Real Tier-0 verification belongs in CI (deterministic
+  re-classification of the merge diff — ungameable), deferred with the receipt
+  work. A clean example of the loop killing over-clever hardening that can't
+  deliver what it promised.
+- Optimal reviewer assignment across the three subscription CLIs (MODELS.md):
+  codex/GPT-5.5 primary (deepest) + binding confirmation; grok (fast, xAI) as
+  the default Tier-2 cross-vendor audit (`audit_vendor = grok`) and optional
+  fast tier1 reviewer; agy/Gemini kept as a third option (refuses adversarial
+  framing, so audit-only). New projects default to audit_vendor=grok; plinth
+  update reminds upgraded projects to add it.
+- Hardening from the dogfood-review loop (plinth reviewing its own risk-routing
+  change — 14 rounds, every finding real): classifier now fails CLOSED (a
+  non-empty diff that processes 0 files emits Tier 2, never Tier 0; switched off
+  the here-string that could fail on temp-file creation); the cross-vendor audit
+  prompt inlines the reviewer rules (AGENTS.md + AGENTS-project.md) and
+  directory-tree specs so a tools-forbidden auditor applies mandatory blocking
+  policy; MANUAL.md rewritten to describe the tiered model (Tier 0 floor-approved,
+  Tier 1 warm-binds, Tier 2 clean-slate + cross-vendor); and the classifier
+  canary now exercises 12 bypass
+  classes (deps, security, symlink, build, spec, tier2_extra, executable,
+  skip/delete/weaken tests, submodule, rename-to-doc, type-change).
+- More dogfood fixes: the codex CLI is required only for a model round, so a
+  Tier-0 docs approval genuinely needs no model infrastructure (verified: Tier-0
+  approves with codex off PATH, Tier-1 still fails loud); BUILD classification is
+  case-insensitive (lowercase `makefile` now floors to Tier 2); and `plinth
+  update`'s protected-paths backfill is documented as the one managed exception
+  to "update never touches your per-project files."
+- ensure_protected_paths now ensures a trailing newline before appending, so a
+  user's last protected-paths line lacking a newline isn't concatenated/corrupted
+  by the first managed pattern. PLANNING-PROMPT.md is classified TOOLING/Tier 2
+  (it is prompt-as-code that shapes future specs, not inert docs).
+- audit_model override was silently broken: `${AUDIT_MODEL:+-m "$AUDIT_MODEL"}`
+  collapsed to a single argv token `-m model` instead of two, so a configured
+  audit_model never reached the auditor. Fixed with a proper 2-element array
+  across all three vendor call sites; canary now asserts the auditor receives
+  `-m` and the model as separate tokens.
+- More dogfood fixes: review.sh now fails CLOSED when the classifier is
+  missing/broken (defaults Tier 2, not Tier 1 — an unclassified high-consequence
+  diff is over-reviewed, never under-reviewed); the floor byte-compare skips
+  files the PINNED release predates (so the plinth repo's own canary, whose
+  installed .plinth/ is an older release, is not permanently red on a
+  not-yet-shipped file); and the canary now stubs a primary reviewer + grok
+  auditor to exercise the cross-vendor audit path (records the audit verdict on
+  concur, UNAVAILABLE on a failing auditor). All verified locally.
+- Two more routing holes closed: `CLAUDE.md` (imports the plinth rules, controls
+  the driver) is now classified TOOLING/Tier 2 instead of falling through to the
+  inert-docs rule; and `.plinth/protected-paths` was removed from review.sh's
+  HARNESS_RE so a bad protected-paths change stays BLOCKING (AGENTS.md excludes
+  it from the UPSTREAM/tooling exemption) instead of being filtered as non-blocking.
+- DEFERRED (removed before merge): a CI review-receipt verifier that would
+  recompute tier+digest at merge to close a hypothesized approve-then-swap
+  TOCTOU. Built, but it generated every dogfood-review finding (a gate deadlock,
+  a push-event CI failure, a protected-paths gap, an untested security workflow)
+  without an OBSERVED problem justifying it — the definition of premature
+  hardening. Pulled per "get the core working, then harden." Returns as its own
+  tested increment if real use shows the need. `diff_digest` is still recorded in
+  the verdict as a forensic fingerprint (no longer an enforcement point).
+
+## v4.2 — July 7, 2026
+First increment of the multi-model-panel-converged improvement plan: **risk-based
+review routing** (P1) — the top speed/efficiency win that also closes the worst
+trust hole, with NO new human bottleneck (a deterministic mechanism holds the
+pen, not a human).
+- NEW `shared/.plinth/risk-classify.sh` (version-pinned, agent-immutable): a
+  deterministic classifier that assigns each change a risk Tier from the diff
+  alone — no model, no human, and the driver cannot de-escalate it (guard-
+  protected, in HARNESS_RE, in the CI byte-compare).
+  - Tier 0 (inert docs/text only) → APPROVED by the deterministic floor with
+    ZERO model rounds. A docs change no longer costs reviewer tokens.
+  - Tier 1 (ordinary code) → standard adversarial review (unchanged).
+  - Tier 2 (tooling, spec, security/auth/crypto/secrets, migrations/schema,
+    public API, dependency manifests, DELETED or WEAKENED tests) → full review.
+    Conservative: unknown → Tier 1; Tier 0 only when EVERY file is inert.
+  - Implements the panel's "loosen hides in the test diff" catch mechanically:
+    a test whose diff removes more assertions than it adds is floored to Tier 2.
+- review.sh routes depth AND treatment by tier, recording `risk` + a
+  `diff_digest` (sha256 of the reviewed diff) in verdict.json:
+  - **Tier 1** (ordinary code): may use a cheaper reviewer model
+    (`reviewer_model_tier1`), and a resumed APPROVED binds directly — the
+    clean-slate confirmation round is SKIPPED (faster iterative convergence;
+    the digest binds it). No cross-vendor audit.
+  - **Tier 2** (high-consequence): the frontier model
+    (`reviewer_model_tier2`), ALWAYS a clean-slate confirmation, and a
+    cross-vendor second opinion on EVERY approval when `audit_model` is set
+    (a different-vendor model, not just every 5th) — the reviewer-collusion
+    fix. No human in this path; a different isolated model is the authority.
+- `.plinth/config` gains `tier2_extra`, `reviewer_model_tier1/tier2`. Classifier
+  + config are agent-immutable; per-tier model routing (P2) is now real.
+- HARDENED against a cross-vendor red-team (GPT + Grok + Gemini — all three
+  independently flagged the same Tier-0 bypasses as "critical"):
+  - No global `.txt` in Tier 0 (CMakeLists.txt / constraints.txt were shipping
+    as inert docs). NEW `BUILD` Tier-2 block (Makefile, CMakeLists, Dockerfile,
+    setup.py, gradle, bazel, cmake, release/deploy scripts).
+  - Metadata names (LICENSE/NOTICE/…) anchored — `LICENSE.py` is no longer docs.
+  - Classifier now reads `git diff --raw`: renames classify BOTH paths (moving
+    code/tests into a doc name no longer laundered), and mode is checked —
+    symlinks, submodules, executables, and type-changes can never be Tier 0.
+  - Test heuristic replaced: net assertion counting was gameable by padding.
+    Now ANY modification of an existing test (removed content), a deleted test,
+    a test moved out of the test tree, or an added skip/ignore → Tier 2. Pure
+    new/addition-only tests stay Tier 1. Test surface widened to fixtures,
+    golden, snapshots, testdata, helpers.
+  - Tier-2 path triggers broadened (security synonyms: access/policy/identity/
+    sso/mfa/csrf/cors/cert/tls/…; ORM/model schema; API routes/controllers/
+    *.graphql; more dependency ecosystems; CI/build files).
+- NEW cross-vendor auditor adapters: the Tier-2 second opinion can now run on a
+  GENUINELY DIFFERENT VENDOR, not just a different OpenAI model — closing the
+  reviewer-collusion risk (the reviewer is otherwise a sibling of the driver).
+  `audit_vendor = codex|grok|agy` selects a subscription-authenticated CLI
+  (OpenAI / xAI Grok Build / Google Antigravity) — all no-per-use-cost, same
+  pattern as codex. Agentic auditor CLIs are driven with a self-contained,
+  tools-forbidden prompt (spec + diff inlined) so they answer directly; an
+  unparseable audit FAILS LOUD (never a silent concur). Verified end-to-end
+  with real grok: it independently caught 3 blocking findings a passing primary
+  reviewer missed and recorded the disagreement in verdict.audit.
+- NOT yet done — the one gap all three flagged and confirmed: `diff_digest` is
+  recorded but not VERIFIED at merge (TOCTOU: approve a benign diff, swap the
+  payload before merge). The digest is forensic-only until a CI job recomputes
+  the tier + digest against the real merge SHA and hard-fails on mismatch. That
+  CI verification is the next increment.
+
 ## v4.1.9 — July 7, 2026
 - watch + queue: [BLOCKING] items are sorted to the TOP of the human list
   (order preserved within each group) and rendered in bold red; non-blocking

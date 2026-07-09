@@ -21,11 +21,18 @@ permissions:
   security-events: write
 
 jobs:
+  # These call Plinth's reusable workflows by IMMUTABLE COMMIT SHA — no mutable tag
+  # to trust, nothing to suppress. `plinth init` ALWAYS rewrites the SHA below: to
+  # the exact commit of the Plinth checkout you install from (normal), or — if it
+  # can't resolve one (non-git install) — to an UNPINNED sentinel that fails CI
+  # loudly (never a silently-stale floor). So an init'd project never keeps the
+  # literal SHA below; it's just a valid placeholder for the shipped template.
+  # (`plinth update` never rewrites this per-project file — bump it deliberately.)
   floor:
-    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@v4.1
+    uses: OWNER/plinth/.github/workflows/plinth-floor.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9 (plinth init repins)
 
   checks:
-    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@v4.1
+    uses: OWNER/plinth/.github/workflows/plinth-checks.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9 (plinth init repins)
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest

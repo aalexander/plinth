@@ -32,9 +32,11 @@ first, then draft.
 ## Process
 1. Ask me clarifying questions before drafting — one round, the fewest questions
    that matter most: purpose, users, hard constraints, stack preferences, what is
-   explicitly out of scope, security/privacy sensitivities, and whether any part
-   of this project has a real numeric metric worth optimizing. Don't ask things
-   I've already answered below.
+   explicitly out of scope, security/privacy sensitivities, whether any part of
+   this project has a real numeric metric worth optimizing, and — critically —
+   **which capabilities can only be verified by RUNNING them on real
+   dependencies/hardware** (not by a CI unit test), since those need a runtime
+   smoke check named in the spec. Don't ask things I've already answered below.
 2. Draft the files. Iterate with me until I say "final."
 3. On "final," output each file in its own clearly labeled code block, ready to
    save verbatim, with no commentary inside the blocks.
@@ -46,9 +48,27 @@ Use exactly this structure:
 - # <Project> — Spec
 - ## Purpose (one tight paragraph)
 - ## Non-goals (bulleted; be aggressive — agents over-build without these)
-- ## Requirements (EARS form; each must map cleanly to a test; include
-  security/privacy requirements explicitly if the domain has them)
-- ## Acceptance criteria (checkbox list; each one a testable assertion, not a vibe)
+- ## Core Invariants (near-immutable security/determinism/data-integrity/safety
+  properties, `INV-N`; short and load-bearing — these loosen only by explicit
+  human escalation)
+- ## Requirements — each has a STABLE ID `REQ-<AREA>-<NN>` (never renumber), EARS
+  phrasing, its `prereqs:` (so requirements form a dependency DAG, not just a
+  list — this enables small vertical slices and safe parallel work), and a
+  `validate:` line naming HOW it's checked at each needed level:
+  `unit=… · integration=… · runtime=<smoke cmd | n/a> · post-merge=…`. "Has a
+  test" is NOT enough — for anything whose correctness depends on real libraries,
+  hardware, or external services, name the RUNTIME smoke check, because CI unit
+  tests will not exercise it. Include security/privacy requirements explicitly.
+- ## Acceptance criteria (checkbox list; each references a REQ id and is a
+  testable assertion, not a vibe)
+- ## Execution-gated surface — `exec_gated:` (grep -E patterns for paths only
+  confirmable by running on real deps/hardware) and `smoke_cmd:` (the command
+  that exercises them). These mirror into .plinth/config; "none" if no real-run
+  layer. This is the section that prevents the most common blindspot — a
+  real-run layer nothing validates until it breaks.
+- ## High-consequence surface — `tier2_extra:` (project paths that must always
+  get full + cross-vendor review; auth/crypto/secrets/migrations/public-API/
+  tooling are already covered by default). "none" if nothing extra.
 - ## Noticed (leave empty with this comment: <!-- The driver logs unrelated
   issues here instead of fixing them. Triage yourself. -->)
 
@@ -83,13 +103,21 @@ Use exactly this structure:
 ### 4. protected-paths additions (only if GOAL.md exists)
 The exact lines to append to .plinth/protected-paths.
 
+### 5. .plinth/config values to set (report them for me to paste)
+From the spec's Execution-gated and High-consequence sections, give the exact
+`.plinth/config` lines: `exec_gated`, `smoke_cmd`, `tier2_extra` (omit any that
+are "none"). These are agent-immutable; they are mine to set.
+
 ## Quality bar
-Order requirements and acceptance criteria in dependency order: each must be
-testable using only requirements that precede it, so the build surfaces spec
-gaps layer by layer instead of at integration. Terse and unambiguous beats
-thorough and vague. Every requirement either maps to
-a test or gets cut. If I give you a fuzzy goal, push back and make me sharpen it
-before you draft. Do not pad any file with content I didn't ask for.
+Requirements form a dependency DAG via `prereqs:` — each must be testable using
+only its prerequisites, so the build surfaces spec gaps layer by layer instead of
+at integration, and independent requirements can be built as small parallel
+slices. Prefer many small vertical slices over few large ones. Every requirement
+either names a real validation (including a runtime smoke check where its
+correctness depends on real deps/hardware) or gets cut. Terse and unambiguous
+beats thorough and vague. If I give you a fuzzy goal, push back and make me
+sharpen it before you draft. Do not pad any file with content I didn't ask for —
+these sections are cheap forcing functions, not license to bloat the spec.
 
 ## My project
 <Describe the project here: what it is, who it's for, rough stack if known, and

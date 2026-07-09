@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.1.9 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.2.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -9,8 +9,11 @@
 #   plinth update <project-path>  Propagate a Plinth version to an existing project:
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
-#                                 (created only if absent — yours are never touched),
-#                                 report the version transition. Refuses to run on a
+#                                 (created only if absent). Your per-project files are
+#                                 not rewritten, with ONE managed exception:
+#                                 .plinth/protected-paths gets new plinth-managed
+#                                 security patterns appended (your lines preserved).
+#                                 Reports the version transition. Refuses to run on a
 #                                 directory that isn't already a Plinth project.
 #   plinth goal   <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
 #
@@ -73,13 +76,15 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
   cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
   cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
+  cp "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
   cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
   cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
-  chmod +x "$target/.plinth/review.sh" "$target/.claude/hooks/guard.sh" \
+  chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
+           "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
            "$target/.claude/hooks/pulse.sh"
   echo "$PLINTH_VERSION" > "$target/.plinth-version"
@@ -148,6 +153,36 @@ github_preflight() {
 
 # settings.json is per-project (never overwritten), so new hook wiring cannot
 # propagate silently. Warn when the shared hooks exist but aren't wired.
+# protected-paths is per-project (never overwritten), so security-critical
+# patterns plinth ships in newer versions do not reach upgraded projects on
+# their own. Append any missing plinth-managed patterns (idempotent); user-added
+# lines are left untouched.
+ensure_protected_paths() {
+  local f="$target/.plinth/protected-paths"; [ -f "$f" ] || return 0
+  local added=0 line
+  # If the file doesn't end in a newline, appending would concatenate the first
+  # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
+  [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -qxF "$line" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
+  done <<'PATTERNS'
+(^|/)\.plinth/session/
+(^|/)\.plinth/config$
+(^|/)\.claude/hooks/
+(^|/)\.claude/settings\.json$
+(^|/)\.plinth/review\.sh$
+(^|/)\.plinth/risk-classify\.sh$
+(^|/)\.plinth/review-schema\.json$
+(^|/)\.plinth/plinth-rules\.md$
+(^|/)\.plinth/MODELS\.md$
+(^|/)\.plinth/protected-paths$
+(^|/)AGENTS\.md$
+PATTERNS
+  [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
+  return 0
+}
+
 warn_missing_gate_wiring() {
   if ! grep -q 'review-gate.sh' "$target/.claude/settings.json" 2>/dev/null; then
     echo "NOTE: .claude/settings.json (yours, never overwritten) lacks the review-gate"
@@ -179,13 +214,13 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Three knobs, all set-once:\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# Everything else has working defaults.\nspec_path = SPEC.md\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Three knobs, all set-once:\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to codex -m). Unset = whatever ~/.codex/config.toml runs. Set a\n#   cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). Unset => codex, which\n#   EQUALS the primary reviewer, so no cross-vendor audit runs; init scaffolds\n#   audit_vendor = grok (below) to enable it. Use a DIFFERENT vendor than the\n#   primary reviewer. All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than the\n#   primary codex reviewer). When it runs: every Tier 2 approval, every 5th else.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
@@ -199,6 +234,31 @@ copy_templates_if_absent() {
       echo "  created:       .github/workflows/ci.yml (OWNER='$owner' auto-detected)"
     else
       echo "  created:       .github/workflows/ci.yml — WARNING: owner undetected, edit OWNER manually"
+    fi
+    # Pin the reusable-workflow refs to the SHA of the Plinth release being
+    # installed (immutable — no mutable tag to trust or suppress). If HEAD can't be
+    # resolved (non-git checkout), fail LOUD instead: the else branch rewrites the
+    # refs to an unpinned sentinel so CI errors until the operator pins them — never
+    # a silently-stale floor. BRE-portable sed (no alternation) for macOS BSD sed.
+    psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "$psha" ]; then
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|plinth-floor\.yml@[0-9a-f]*|plinth-floor.yml@${psha}|g" \
+        -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned by plinth init from this checkout)|g"
+    else
+      # Fail LOUD, never silently-stale: if we can't resolve the release commit,
+      # replace the shipped fallback SHA with an UNPINNED sentinel so CI errors on
+      # the unresolved ref until the operator pins it — rather than quietly running
+      # a prior release's floor/checks. BRE-portable sed (backref, no alternation).
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|\(plinth-floor\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|\(plinth-checks\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# UNPINNED — set to your Plinth release commit SHA|g"
+      echo "  ci.yml:        WARNING — could not resolve the Plinth commit SHA (PLINTH_ROOT is not a"
+      echo "                 git checkout?). Left the reusable-workflow refs UNPINNED"
+      echo "                 (PIN_TO_YOUR_PLINTH_RELEASE_COMMIT) so CI fails loudly until you set"
+      echo "                 them to this Plinth version's commit SHA — no silently-stale floor."
     fi
   fi
 }
@@ -432,7 +492,7 @@ render_frame() {
          + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end)
          + (($us | map(.usage.input_tokens // 0) | add // 0) as $rtot
             | if $rtot > 0 then D + " · Σ " + ($rtot | hum_k) + " in" + R else "" end)
-         + (if $V.audit then (if ($V.audit.blocking // 0) > 0 then RD + " · AUDIT DISAGREES (\($V.audit.blocking))" + R else D + " · audit ✓" + R end) else "" end))
+         + (if $V.audit then (if ($V.audit.verdict // "") == "UNAVAILABLE" then YE + " · audit unavailable" + R elif ($V.audit.blocking // 0) > 0 then RD + " · AUDIT DISAGREES (\($V.audit.blocking))" + R else D + " · audit ✓" + R end) else "" end))
        end) as $review
     | (if ($rc | length) == 0 then D + "no run receipt — RUNTIME findings await plinth smoke" + R
        else ($rc[0]) as $R
@@ -646,6 +706,11 @@ case "$cmd" in
     old="$(cat "$target/.plinth-version")"
     copy_templates_if_absent
     copy_shared
+    ensure_protected_paths
+    # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
+    # configs are preserved, so remind upgraded projects (MANUAL.md points here).
+    grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null \
+      || echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. Add 'audit_vendor = grok' (or agy) to .plinth/config."
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"

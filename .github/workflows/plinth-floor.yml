@@ -28,10 +28,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2.3.9
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     container: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - run: semgrep scan --metrics=off --error --config p/owasp-top-ten --config p/security-audit .
 
   # osv v2 dropped the configurable root action; the documented usage is its
@@ -54,7 +54,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       scan-args: "-r ./"
       upload-sarif: false
@@ -69,7 +69,7 @@ jobs:
   harness:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - name: Verify version-pinned Plinth tooling matches the pinned release
         run: |
           set -euo pipefail
@@ -80,6 +80,10 @@ jobs:
             || { echo "::error::cannot fetch plinth@v${ver} — missing tag, or plinth repo not readable from Actions"; exit 1; }
           fail=0
           check() {  # check <plinth-shared-path> <project-path>
+            # Skip files the PINNED release predates (version skew) — there is
+            # nothing to compare. If the release ships the file but the project
+            # deleted it, cmp still fails below (that IS tampering).
+            [ -f "/tmp/plinth/$1" ] || return 0
             if ! cmp -s "/tmp/plinth/$1" "$2"; then
               echo "::error file=$2::differs from plinth v${ver} ($1) — version-pinned tooling was modified"
               fail=1
@@ -89,6 +93,7 @@ jobs:
           check shared/MODELS.md                  .plinth/MODELS.md
           check shared/AGENTS.md                  AGENTS.md
           check shared/.plinth/review.sh          .plinth/review.sh
+          check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
           check shared/.claude/hooks/guard.sh         .claude/hooks/guard.sh
           check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh

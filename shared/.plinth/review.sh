@@ -8,8 +8,11 @@
 # INCREMENTAL diff only. If the thread is too large to resume safely
 # (PLINTH_RESUME_MAX input tokens; default 650000 ≈ 65% of GPT-5.5's 1,005,000
 # window — revisit on reviewer swap, see MODELS.md), the anchor commit is gone,
-# or the resume itself fails, the round falls back to a clean-slate full
-# review in a fresh session — the loop can never deadlock on a dead thread.
+# or the resume itself fails, the round falls back to a VERIFY round (prior
+# findings + the incremental diff, which does NOT bind on its own) — or a
+# clean-slate full review when there are no prior findings to verify. Either way
+# an approval still gets a clean-slate full confirmation before it binds, so the
+# loop can never deadlock on a dead thread.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -36,7 +39,9 @@ die_infra() {
   die "$@"
 }
 
-command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
+# NB: the codex CLI is required only for a model round (Tier 1/2); the check is
+# deferred to just before the first round so a Tier-0 (deterministic-floor)
+# approval genuinely needs no model infrastructure.
 command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
@@ -65,24 +70,112 @@ diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD 
 #                RUNTIME: findings on these don't block — they join the run gate
 #   round_budget advisory warning threshold for per-round input tokens
 #                (default 4000000; warns and continues — never blocks)
-#   audit_model  optional second model; every 5th binding approval gets a cold
-#                cross-model audit round (disagreement reported, not adjudicated)
+#   audit_vendor a DIFFERENT-vendor CLI for the cross-vendor second opinion; the
+#                audit runs only when audit_vendor != codex (the primary reviewer),
+#                on every Tier-2 approval (and every 5th otherwise). Disagreement
+#                reported, not adjudicated.
+#   audit_model  optional MODEL OVERRIDE for audit_vendor (not a trigger)
 cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
 # Reviewer model (for the dashboard): whatever codex actually runs — the model
 # line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
 # alongside the driver model without reading the user's codex config.
-REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1)"
+# `|| true`: sed exits non-zero when the config is ABSENT, and under
+# `set -o pipefail` that would abort the whole review here — before the Tier-0
+# gate, which needs no codex config at all. Absent/unset just falls back to "codex".
+REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 || true)"
 [ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
-SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
-EXEC_GATED="$(cfg exec_gated || true)"
-ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
-AUDIT_MODEL="$(cfg audit_model || true)"
+# spec_path from the BASE config (like risk-classify.sh): a PR must not repoint the
+# review target to a weaker/empty spec in its own diff. Read the base config with
+# `|| true` FIRST — under set -euo pipefail a failing `git show` (base has no
+# .plinth/config: first spec / new project) would abort before the fallback runs.
+basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+# bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
+# path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
+# come from the ratified base, NOT the working tree: else a PR could weaken its OWN
+# review (pick a weak reviewer model, set audit_vendor=codex to drop the cross-vendor
+# audit, route its own findings to the run gate). Mirrors risk-classify.sh + spec_path.
+bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
+SPEC_PATH="$(bcfg spec_path)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
+EXEC_GATED="$(bcfg exec_gated)"
+ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
+AUDIT_MODEL="$(bcfg audit_model)"
+# Cross-vendor auditor: which subscription-authenticated CLI runs the Tier-2
+# second opinion. codex (OpenAI), grok (xAI), agy (Google Antigravity). Default
+# codex. Using a DIFFERENT vendor here is what makes the second opinion a real
+# cross-vendor check rather than same-vendor-different-model.
+AUDIT_VENDOR="$(bcfg audit_vendor)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
 EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
+
+# Runs the audit prompt through the configured vendor's CLI (read-only,
+# subscription-auth, no per-use cost) and writes a schema-shaped findings JSON
+# to $2. Returns nonzero on failure. grok/agy emit free-form text, so we extract
+# the JSON object; codex forces the schema directly.
+# Inline the canonical spec for the tools-forbidden auditor. A file spec is cat'd;
+# a directory-tree spec has EVERY text file inlined (any extension) so the auditor
+# judges against the WHOLE spec — MANUAL documents spec_path as a file or a tree
+# with no extension restriction, and .md/.rst/.txt-only would silently drop
+# YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
+# the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
+inline_spec() {
+  if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH"; return; fi
+  if [ -d "$SPEC_PATH" ]; then
+    find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
+      grep -Iq . "$sf" 2>/dev/null || continue
+      echo "--- $sf ---"; cat "$sf"
+    done
+    return
+  fi
+  echo "(spec path not found: ${SPEC_PATH})"
+}
+
+# Inline GOAL.md for the tools-forbidden auditor. AGENTS.md carries the metric-
+# integrity rules; the auditor also needs the GOAL's actual eval/score contract to
+# judge metric gaming, and it cannot read files. Pure fn -> testable.
+inline_goal() {
+  [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
+  echo "--- GOAL.md ---"; cat GOAL.md
+}
+
+run_auditor() {  # run_auditor <prompt> <out-findings-json>
+  local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
+  printf '%s' "$prompt" > "$pf"
+  # Model flag as a proper 2-element array — an unquoted ${VAR:+-m "$VAR"} would
+  # collapse to a SINGLE argv token "-m model" and the override would be ignored.
+  local mflag margs=()
+  case "$AUDIT_VENDOR" in agy|gemini) mflag="--model" ;; *) mflag="-m" ;; esac
+  [ -n "$AUDIT_MODEL" ] && margs=("$mflag" "$AUDIT_MODEL")
+  case "$AUDIT_VENDOR" in
+    grok)
+      grok --prompt-file "$pf" --output-format json --disallowed-tools 'Bash,Edit,Write' \
+        ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
+      jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' > "${out}.j" 2>/dev/null || return 1 ;;
+    agy|gemini)
+      agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
+      perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
+    codex)
+      printf '%s' "$prompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
+        --output-schema "$SCHEMA" -o "${out}.j" - > /dev/null 2>&1 || return 1 ;;
+    *)
+      # Unknown vendor (a config typo like audit_vendor=gork). Do NOT fall
+      # through to codex: that would silently run the SAME vendor as the primary
+      # reviewer and record it under the bogus name — a false cross-vendor
+      # guarantee AND a fail-open. Fail so the caller records it UNAVAILABLE.
+      return 1 ;;
+  esac
+  jq . "${out}.j" > "$out" 2>/dev/null || return 1
+  # Fail loud, not open: an unparseable/incomplete audit must NOT be treated as
+  # a concurrence. Require a real verdict + findings array.
+  jq -e '(.verdict=="APPROVED" or .verdict=="CHANGES_NEEDED") and (.findings|type=="array")' "$out" >/dev/null 2>&1
+}
 
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
-HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|protected-paths)$|^AGENTS\.md$'
+# NB: protected-paths is DELIBERATELY NOT here — AGENTS.md excludes it from the
+# UPSTREAM/tooling exemption, so a bad protected-paths change must stay blocking.
+HARNESS_RE='^\.claude/hooks/|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md)$|^AGENTS\.md$'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"
@@ -92,14 +185,86 @@ RECEIPT=".plinth/session/run/${slug}/receipt.json"
 mkdir -p "$SDIR"
 [ -f ".plinth/session/.gitignore" ] || printf '*\n' > ".plinth/session/.gitignore"
 
-# Round bookkeeping. A CHANGES_NEEDED verdict with a live session continues the
-# thread (fix-verification round); anything else starts a fresh task.
+# ── Risk routing ────────────────────────────────────────────────────────────
+# The tier is computed deterministically from the diff by version-pinned tooling
+# the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
+# docs/text) is granted by the deterministic floor without a model round; Tier
+# 1/2 get adversarial review. diff_digest is recorded in the verdict as a
+# forensic fingerprint of the reviewed diff (dashboard/audit only — it is not
+# a merge-time enforcement point; that hardening is deferred until real use
+# shows it is needed).
+diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+[ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+# Fail CLOSED: a missing/broken classifier must not de-escalate. Default Tier 2
+# (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
+# high-consequence diff is over-reviewed, never under-reviewed.
+RISK=2; RISK_JSON='{"tier":2,"reasons":["classifier unavailable — failing closed to Tier 2"]}'
+if [ -x ".plinth/risk-classify.sh" ]; then
+  out="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || true)"
+  t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
+  case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
+fi
+echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
+
+
+# Tier 0: granted by the floor, no model round. Records a bound verdict so the
+# Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
+# still run at PR; any code file would have bumped the tier above 0.
+if [ "$RISK" = "0" ]; then
+  jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
+        --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
+          round:0, session_id:"", model:"deterministic-floor", risk:$risk,
+          diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
+  rm -f "$SDIR/last-error"
+  echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
+  exit 0
+fi
+
+# Past here a model round WILL run (Tier 1/2) — now the codex CLI is required.
+command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
+
+# ── Tier 1 vs Tier 2 treatment ──────────────────────────────────────────────
+# Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed
+#   APPROVED binds directly (skip the clean-slate confirmation) — faster
+#   iterative convergence, acceptable for ordinary code with a bound digest.
+# Tier 2 (high-consequence): the frontier reviewer, ALWAYS a clean-slate
+#   confirmation, and — when a genuinely cross-vendor auditor is configured
+#   (audit_vendor != codex) — a cross-vendor second opinion on EVERY Tier-2
+#   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
+#   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
+MODEL_ARGS=()
+if [ "$RISK" = "2" ]; then tmodel="$(bcfg reviewer_model_tier2)"
+else tmodel="$(bcfg reviewer_model_tier1)"; fi
+if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel"; fi
+
+# Only resume a prior session that (a) asked for changes, (b) has a live thread on
+# the SAME base, and (c) actually holds a full-diff read. A VERIFY session is a
+# fresh, narrow session (prior findings + incremental diff only); resuming it and
+# treating the continued thread as "warm" would let a Tier-1 approval bind without
+# any full read (binds_directly trusts that a resume carries the round-1 full
+# read). So a verify-origin session is NOT resumable — the next round goes fresh
+# and re-reads the full diff before binding. Pure fn -> testable.
+resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode>
+  [ "$1" = "CHANGES_NEEDED" ] || return 1
+  [ -n "$2" ] || return 1
+  [ "$3" = "$4" ] || return 1
+  # Only resume a mode KNOWN to hold a full-diff read: fresh, or a prior resume
+  # that continues such a thread. verify is narrow; an empty/unknown mode (e.g. a
+  # verdict.json written before the `mode` field existed) is treated the same —
+  # fail CLOSED, go fresh, re-read the full diff before any bind.
+  case "${5:-}" in fresh|resume) return 0 ;; *) return 1 ;; esac
+}
+
+# Round bookkeeping. A CHANGES_NEEDED verdict with a live (resumable) session
+# continues the thread (fix-verification round); anything else starts a fresh task.
 mode="fresh"; round=1; sid=""
 if [ -f "$SDIR/verdict.json" ]; then
   prev_verdict="$(jq -r '.verdict // empty'    "$SDIR/verdict.json")"
   prev_sha="$(jq -r '.sha // empty'            "$SDIR/verdict.json")"
   prev_base="$(jq -r '.base_ref // empty'      "$SDIR/verdict.json")"
   prev_sid="$(jq -r '.session_id // empty'     "$SDIR/verdict.json")"
+  prev_mode="$(jq -r '.mode // empty'          "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
@@ -116,7 +281,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
     die "HEAD unchanged since round ${prev_round} returned CHANGES_NEEDED — commit fixes before re-running"
   fi
-  if [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ -n "$prev_sid" ] && [ "$prev_base" = "$baseref" ]; then
+  if resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
     # Resume only when it can plausibly work; otherwise a cheap verify round
     # (fresh session, prior findings + incremental diff — non-binding) instead
@@ -139,6 +304,31 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
 fi
 
+# Whether a completed round's APPROVED binds on its own, or a clean-slate
+# confirmation must run first. A fresh full review binds. A warm RESUME holds the
+# full round-1 read in its thread, so a Tier-1 resume binds directly (Tier 2 still
+# gets a frontier reconfirm). A fallback VERIFY is a FRESH session that saw only
+# the prior findings plus the incremental diff — it never read the full current
+# diff, so it never binds on its own, at ANY tier. Single source of truth for both
+# the post-round gate and the reviewer-facing note. Pure fn -> testable.
+binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
+  case "${1:-}" in
+    fresh)  return 0 ;;
+    resume) [ "${2:-}" != "2" ] ;;
+    *)      return 1 ;;
+  esac
+}
+
+# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
+# expecting a later pass that won't come, nor treats a non-binding round as final.
+bind_note() {  # bind_note <mode> <risk-tier>
+  if binds_directly "${1:-}" "${2:-}"; then
+    printf '%s' "You hold the full diff from your first pass in this thread and this is an ordinary-code (Tier 1) change: your verdict BINDS DIRECTLY — no separate confirmation follows, so apply full first-pass rigor now."
+  else
+    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
+  fi
+}
+
 # Runs one review round. Sets RVERDICT/RSID; writes the round's protocol files.
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
@@ -159,12 +349,28 @@ $(git log --format='%h %s' "${baseref}..HEAD" 2>/dev/null | head -50)"
 LATEST RUN RECEIPT (execution evidence — verify RUNTIME findings against it):
 $(cat "$RECEIPT")"
   fi
-  # The spec is an instrument too: when the diff changes it, attack it.
-  if git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${SPEC_PATH}"; then
+  # The spec is an instrument too: when the diff changes it, attack it. SPEC_PATH is
+  # the BASE spec_path, so this catches edits/deletions to the PRIOR canonical spec.
+  # If the PR also repoints spec_path, attack the new path too and flag the repoint.
+  WSPEC="$(cfg spec_path)"
+  spec_changed=""
+  for sp in "$SPEC_PATH" "$WSPEC"; do
+    [ -n "$sp" ] || continue
+    git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${sp}" && spec_changed=1
+  done
+  [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ] && spec_changed=1
+  if [ -n "$spec_changed" ]; then
     specatk="
 The canonical spec itself changed in this diff: additionally ATTACK the spec
-changes for ambiguity, untestability, and internal contradiction; report such
-findings against the spec file at observed severity."
+changes for ambiguity, untestability, internal contradiction, and any weakening
+or deletion of the prior contract; report such findings against the spec file at
+observed severity."
+    if [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ]; then
+      specatk="${specatk}
+NOTE: this PR REPOINTS spec_path from '${SPEC_PATH}' (base) to '${WSPEC}' — a
+same-PR redirect of the review target. Treat as high-consequence and attack BOTH
+the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
+    fi
   fi
 
   if [ "$m" = "fresh" ]; then
@@ -194,8 +400,7 @@ previous round, (2) the INCREMENTAL diff from the commit that round reviewed
    evidence in the incremental diff, not the driver's claim.
 2) Review the incremental diff itself with first-pass rigor; new findings status
    \"open\".
-This round is verification only — if everything blocking is resolved, a separate
-clean-slate full review will confirm before anything binds.
+$(bind_note "$m" "$RISK")
 
 PRIOR FINDINGS:
 ${prior}
@@ -216,8 +421,7 @@ diff in this conversation.
    or \"open\" — resolved requires evidence in the changes, not the driver's claim.
 2) Review the new changes below with the same rigor as a first pass; report new
    findings with status \"open\".
-Verdict is APPROVED only if no finding remains open. (A clean-slate full review
-still confirms before approval binds.)
+Verdict is APPROVED only if no finding remains open. $(bind_note "$m" "$RISK")
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
@@ -237,8 +441,8 @@ ${inc}${evidence}${commits}"
       echo "Plinth review: resume of the reviewer session failed ($(tail -1 "$errlog" 2>/dev/null | cut -c1-100)) — falling back."
       return 1
     fi
-  else  # fresh and verify both start a new session
-    printf '%s' "$prompt" | codex exec --sandbox read-only --json \
+  else  # fresh and verify both start a new session (per-tier model if configured)
+    printf '%s' "$prompt" | codex exec ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --sandbox read-only --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
       || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   fi
@@ -267,8 +471,8 @@ ${inc}${evidence}${commits}"
      ] | length' \
     "$SDIR/findings-$r.json")"
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
-      .plinth/review.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md \
-      .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
+      .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \
+      .plinth/MODELS.md .plinth/protected-paths AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"
   RRAW="$RVERDICT"
   if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
     RVERDICT="CHANGES_NEEDED"
@@ -285,9 +489,10 @@ ${inc}${evidence}${commits}"
   usage="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"
   [ -n "$usage" ] || usage="null"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
-        --argjson round "$r" --arg sid "$RSID" --argjson usage "$usage" \
-        --arg model "$REVIEWER_MODEL" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, model:$model, usage:$usage, ts:$ts}' \
+        --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
+        --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}' \
         > "$SDIR/verdict.json"
   jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
     '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true
@@ -306,10 +511,14 @@ case "$mode" in
 esac
 
 # A warm (resume) or delta-scoped (verify) approval only says "my findings were
-# addressed". Bind APPROVED via a clean-slate full pass so neither continuity
-# nor a narrow view can soften the adversarial read.
-if [ "$RMODE" != "fresh" ] && [ "$RVERDICT" = "APPROVED" ]; then
-  echo "Plinth review: round ${round} findings resolved — running clean-slate confirmation review..."
+# addressed". Bind it directly only when the round that produced it actually held
+# the full current diff: a Tier-1 RESUME does (its thread carries the round-1 full
+# read). A Tier-2 approval, and ANY fallback VERIFY (a fresh session that saw only
+# prior findings + the incremental diff), get a clean-slate full pass first so
+# neither continuity nor a narrow view can soften the adversarial read.
+# binds_directly() is the single source of truth, shared with the reviewer note.
+if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
+  echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
 fi
@@ -328,43 +537,73 @@ if [ -n "$nonblocking" ]; then
   printf '%s\n' "$nonblocking"
 fi
 
-# Reviewer error bar: every 5th binding approval gets a cold cross-model audit
-# (config: audit_model). Disagreement is reported, never adjudicated here.
-if [ -n "$AUDIT_MODEL" ]; then
+# Reviewer error bar (cross-vendor second opinion). Fires on EVERY Tier 2
+# approval (high-consequence -> always a second, DIFFERENT-VENDOR adversary), and
+# on every 5th approval otherwise. Runs ONLY when a genuinely cross-vendor auditor
+# is configured (audit_vendor != the primary reviewer's codex) — audit_model alone
+# must NOT trigger it, or a project carrying only the legacy audit_model would get
+# a SAME-vendor codex audit falsely framed/recorded as cross-vendor. audit_model
+# is a model override for that different vendor, not a trigger. Disagreement is
+# reported, never adjudicated here — a different isolated model is the authority.
+if [ "$AUDIT_VENDOR" != "codex" ]; then
   ac="$(cat .plinth/session/audit-count 2>/dev/null || echo 0)"
   case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
   ac=$((ac + 1)); echo "$ac" > .plinth/session/audit-count
-  if [ $((ac % 5)) -eq 0 ]; then
-    echo "Plinth review: cross-model audit due (approval #$ac) — cold audit by ${AUDIT_MODEL}..."
-    araw="$SDIR/raw-audit-$round.json"
-    aprompt="You are a cold AUDIT reviewer (a different model from the primary). Follow
-AGENTS.md and .plinth/AGENTS-project.md, including the Verdict policy. Review
-this diff (${baseref}...HEAD at ${sha}) against the spec at ${SPEC_PATH} from
-scratch. Your job is to catch what the primary reviewer systematically misses.
+  if [ "$RISK" = "2" ] || [ $((ac % 5)) -eq 0 ]; then
+    echo "Plinth review: cross-vendor audit (Tier ${RISK}, approval #$ac) — ${AUDIT_VENDOR}${AUDIT_MODEL:+ / $AUDIT_MODEL}..."
+    afind="$SDIR/findings-audit-$round.json"
+    # Self-contained: agentic auditor CLIs (grok/agy) would otherwise try to
+    # READ the spec/rules as tool calls. Everything is inlined; tools forbidden.
+    aprompt="You are a cold AUDIT reviewer from a DIFFERENT vendor than the primary
+reviewer. Everything you need is INLINE below. Do NOT use any tools, do NOT try
+to read files or gather more context — output your verdict directly and NOW.
+Apply the reviewer Verdict policy: open blocker/major findings in PROJECT code
+block; findings in version-pinned tooling are UPSTREAM (non-blocking). Catch
+what the primary reviewer systematically misses.
+Output ONLY a JSON object (no prose, no markdown fences):
+{\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
 
-DIFF:
+=== REVIEWER RULES (mandatory project blocking policy — apply these) ===
+$( for f in AGENTS.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
+
+=== CANONICAL SPEC (${SPEC_PATH}) ===
+$(inline_spec)
+
+=== OPTIMIZATION GOAL (if present, apply the AGENTS.md metric-integrity rules) ===
+$(inline_goal)
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"
-    if printf '%s' "$aprompt" | codex exec -m "$AUDIT_MODEL" --sandbox read-only --json \
-         --output-schema "$SCHEMA" -o "$araw" - > "$SDIR/events-audit-$round.jsonl" 2> "$SDIR/stderr-audit-$round.log" \
-       && jq . "$araw" > "$SDIR/findings-audit-$round.json" 2>/dev/null; then
+    if run_auditor "$aprompt" "$afind"; then
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
-         ] | length' "$SDIR/findings-audit-$round.json")"
-      averd="$(jq -r '.verdict // "?"' "$SDIR/findings-audit-$round.json")"
-      jq --arg m "$AUDIT_MODEL" --arg v "$averd" --argjson b "$ablk" \
-        '. + {audit: {model: $m, verdict: $v, blocking: $b}}' "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
+         ] | length' "$afind" 2>/dev/null || echo 0)"
+      case "$ablk" in ''|*[!0-9]*) ablk=0 ;; esac
+      averd="$(jq -r '.verdict // "?"' "$afind" 2>/dev/null || echo '?')"
+      jq --arg vn "$AUDIT_VENDOR" --arg m "${AUDIT_MODEL:-default}" --arg v "$averd" --argjson b "$ablk" \
+        '. + {audit: {vendor: $vn, model: $m, verdict: $v, blocking: $b}}' "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
         && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
       if [ "$ablk" -gt 0 ]; then
-        echo "PLINTH AUDIT DISAGREEMENT: ${AUDIT_MODEL} found ${ablk} blocking project finding(s) the primary reviewer did not — see $SDIR/findings-audit-$round.json. Verdict unchanged; adjudication is the human's."
+        echo "PLINTH AUDIT DISAGREEMENT: cross-vendor ${AUDIT_VENDOR} found ${ablk} blocking project finding(s) the primary reviewer did not — see $afind. Verdict unchanged; a different isolated model flagged it; adjudicate."
       else
-        echo "Plinth review: audit concurs (${averd}, 0 blocking)."
+        echo "Plinth review: cross-vendor audit concurs (${averd}, 0 blocking)."
       fi
     else
-      echo "Plinth review: audit round failed (non-fatal) — see $SDIR/stderr-audit-$round.log"
+      # The audit is best-effort defense-in-depth ON TOP of a COMPLETED full
+      # primary review (the Tier-2 gate that already approved) — not a second
+      # gate. run_auditor never false-concurs (it returns error rather than
+      # treating an unparseable/empty audit as agreement), so this branch means
+      # the audit could not RUN, not that it concurred. We record that it was
+      # unavailable (no silent omission) but do NOT block: a hard dependency on a
+      # second vendor's availability would be exactly the tool bottleneck the
+      # no-bottleneck axiom forbids. The primary review remains the gate.
+      jq --arg vn "$AUDIT_VENDOR" '. + {audit: {vendor: $vn, verdict: "UNAVAILABLE", blocking: 0}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' a supported vendor (codex|grok|agy) and signed in? see $SDIR/*.raw"
     fi
   fi
 fi
-echo "APPROVED recorded in $SDIR/verdict.json — open the PR. The CI floor runs automatically; verify the Codex cloud review posted (requires the per-repo connection, SETUP step 4)."
+echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0

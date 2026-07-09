@@ -6,6 +6,13 @@ name: Smoke
 # generate on every PR without waiting on a human.
 # Per-project file (never overwritten). Not a required check by default —
 # make it required in branch protection once it has run green.
+#
+# A github-hosted `precheck` decides whether there is anything to smoke BEFORE
+# any self-hosted runner is requested. With no smoke_cmd configured, the
+# self-hosted `smoke` job is SKIPPED (never queued) — so a repo without a
+# plinth-smoke runner does NOT hang a PR waiting for a runner that will never
+# arrive. Enable smoke by setting smoke_cmd in .plinth/config AND registering a
+# self-hosted runner labeled `plinth-smoke`.
 # SECURITY: self-hosted runners execute PR code on your machine. Keep the
 # repo private (no fork PRs), or restrict who can trigger workflows.
 
@@ -15,11 +22,55 @@ on:
   workflow_dispatch:
 
 jobs:
+  precheck:
+    # github-hosted: no self-hosted runner needed just to decide run/skip.
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          set -euo pipefail
+          # Read ONLY the BASE branch config — never the PR checkout. The smoke
+          # job itself reads the base config, so a PR that adds smoke_cmd must NOT
+          # be able to make precheck request the self-hosted runner (which would
+          # re-queue forever in a repo without one, and no-op anyway).
+          base="${GITHUB_BASE_REF:-main}"
+          # Explicit refspec: a bare `git fetch origin "$base"` only guarantees
+          # FETCH_HEAD, not refs/remotes/origin/$base, in a PR checkout — the
+          # `git show origin/$base:...` below would then miss and read as no
+          # smoke_cmd, so a configured smoke run would silently skip.
+          git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
+          # Fail LOUD if the base ref can't be resolved: a transient fetch/ref failure
+          # must NOT read as "no smoke_cmd" and silently skip a CONFIGURED smoke run.
+          # (An absent .plinth/config on a RESOLVABLE base is the legitimate no-smoke
+          # case below — git show returns empty, cmd empty, run=false green.)
+          git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
+            || { echo "::error::smoke precheck: cannot resolve origin/$base to read .plinth/config — refusing to fail open (would skip a configured smoke run)"; exit 1; }
+          # Read tolerating ABSENCE (|| true): under `set -euo pipefail` a failing
+          # `git show` (no .plinth/config in the base) would abort the step. The base
+          # ref is proven resolvable above, so absence is the legitimate no-smoke case —
+          # the parse below yields an empty cmd => run=false green.
+          cfg="$(git show "origin/${base}:.plinth/config" 2>/dev/null || true)"
+          cmd="$(printf '%s' "$cfg" | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
+          if [ -n "$cmd" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "smoke_cmd is set — dispatching the self-hosted smoke job."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no smoke_cmd in .plinth/config — smoke skipped (green no-op). No self-hosted runner requested."
+          fi
+
   smoke:
+    needs: precheck
+    if: needs.precheck.outputs.run == 'true'
     runs-on: [self-hosted, plinth-smoke]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - name: Run smoke_cmd (execution evidence, not narration)
         run: |
           set -euo pipefail
@@ -28,9 +79,18 @@ jobs:
           # what executes on this host. PR code still runs UNDER that command;
           # self-hosted smoke assumes a private, no-fork repo where every PR
           # already passed the gated loop.
-          git fetch --depth 1 origin "${GITHUB_BASE_REF:-main}" 2>/dev/null || true
-          cmd="$(git show "origin/${GITHUB_BASE_REF:-main}:.plinth/config" 2>/dev/null \
-                 | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
+          base="${GITHUB_BASE_REF:-main}"
+          # explicit refspec (see the precheck note): guarantees origin/$base exists
+          git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
+          # Fail LOUD on an unresolvable base ref (same reason as precheck): this job
+          # was dispatched BECAUSE smoke_cmd was set, so an unreadable base is an error,
+          # not a "nothing to run". A resolvable base with no smoke_cmd stays green below.
+          git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
+            || { echo "::error::smoke: cannot resolve origin/$base to read .plinth/config — refusing to fail open"; exit 1; }
+          # tolerate an absent .plinth/config (|| true) — see the precheck note; under
+          # pipefail a failing git show would otherwise abort before the no-op check.
+          cfg="$(git show "origin/${base}:.plinth/config" 2>/dev/null || true)"
+          cmd="$(printf '%s' "$cfg" | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -z "$cmd" ]; then
             echo "no smoke_cmd in the BASE branch's .plinth/config — nothing to run (green no-op)"
             exit 0
@@ -43,7 +103,7 @@ jobs:
           fi
       - name: Upload receipt + log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-receipt
           path: |
