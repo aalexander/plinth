@@ -16,9 +16,13 @@ Everything between is the model's call.
   for high-consequence work (Tier 2), **Fable 5 by exception** on usage credits for
   the heaviest long-context tasks (no automatic fallback — enable credits with a
   monthly cap first). This is the driver's own speed/cost call: GUIDANCE, not a gate.
-- **Reviewer: GPT-5.5** (one line in `~/.codex/config.toml`), risk-tiered, with
-  **grok** (xAI) as the default Tier-2 cross-vendor second opinion. GPT-5.6 is
-  gov-only for now; evaluate when it reaches Codex GA (mid-July earliest).
+- **Reviewer: `reviewer_vendor`** — codex / GPT-5.5 by default (one line in
+  `~/.codex/config.toml`), or `claude` / `grok`, each its own CLI (no codex config
+  needed). Risk-tiered, with a Tier-2 cross-vendor second opinion (`audit_vendor`,
+  default grok). Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a
+  match disables the cross-vendor audit (review.sh notes it on Tier 2), so if you
+  make grok the primary, switch `audit_vendor` to codex or agy. The resume threshold
+  scales per vendor automatically. GPT-5.6 is gov-only for now; evaluate at Codex GA.
 - The reviewer's risk tier is the immutable adversarial gate; the driver's model is
   not. The driver's only lever over review cost is tier hygiene — keep low-risk work
   in its own change so it takes the cheap path, don't bundle it into a Tier-2 diff.
@@ -188,12 +192,14 @@ Two operator chores the rules generate:
      changed file is an inert doc blob; any code, tooling, or spec would have
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
-     (Codex) with the reviewer rules in AGENTS.md. A resumed approval binds
+     (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
+     reviewer rules in AGENTS.md. A resumed approval binds
      directly — the warm reviewer thread still holds its first-pass full read, and
      iterative convergence speed is worth more than a second full read for ordinary
      code. A fallback verify (a fresh session, used when the prior thread is too
-     large to resume) saw only the prior findings plus the incremental diff, so it
-     does NOT bind on its own — like Tier 2 it gets a clean-slate confirmation first.
+     large to resume) reads the prior findings plus the FULL diff — thorough, but
+     anchored on those findings, so it does NOT bind on its own; like Tier 2 it gets
+     a clean-slate confirmation first.
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
@@ -206,9 +212,9 @@ Two operator chores the rules generate:
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is too
-   large or dead — a verify round that sees only prior findings plus the incremental
-   diff and does NOT bind on its own, so an approval still gets a clean-slate full
-   confirmation first), 2 = the review DID NOT RUN.
+   large or dead — a verify round that reads prior findings plus the FULL diff
+   (anchored on those findings) and does NOT bind on its own, so an approval still
+   gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
    *Background, enforcement:* if the model tries to end its turn with commits
    but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
    refuses and sends it back with instructions. It cannot skip the review.
@@ -360,9 +366,10 @@ it has run green with a real smoke_cmd.
   or GitHub Pro; the preflight reports which state you're in).
 
 ## When models change (they will)
-- New reviewer: one line in `~/.codex/config.toml`, then revisit
-  `PLINTH_RESUME_MAX` (~65% of the new reviewer's context window — see the
-  reviewer-swap checklist in `shared/MODELS.md`).
+- New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —
+  each runs its own CLI and the resume threshold scales per vendor automatically.
+  Staying on codex but changing its model? Edit `~/.codex/config.toml` instead. (env
+  `PLINTH_RESUME_MAX` still overrides the threshold if you ever need to.)
 - New driver: `/model` in Claude Code.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.

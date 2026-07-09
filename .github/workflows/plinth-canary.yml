@@ -116,7 +116,7 @@ jobs:
           AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
           [ "$AV" = "grok" ] || { echo "::error::review.sh audit_vendor -> '$AV': a PR could set audit_vendor=codex to drop its own cross-vendor audit (want grok from base)"; exit 1; }
           # Wiring: every governing knob reads via bcfg (base) — catches a revert to cfg.
-          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_model_tier1 reviewer_model_tier2; do
+          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_vendor reviewer_model_tier1 reviewer_model_tier2; do
             grep -q "bcfg $k" "$RS" || { echo "::error::review.sh knob '$k' not read from base config (bcfg) — self-referential review-routing"; exit 1; }
           done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
@@ -359,6 +359,209 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
           [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
+          # Audit schema validation: a malformed grok AUDIT finding (severity "Major") must be
+          # recorded UNAVAILABLE, not silently dropped to zero blocking — same schema-drop class
+          # the primary reviewer validator closes. run_auditor: .text -> extract -> validate.
+          cat > /tmp/asb/grok <<'GKA'
+          #!/usr/bin/env bash
+          printf '%s' '{"text":"{\"verdict\":\"CHANGES_NEEDED\",\"summary\":\"x\",\"findings\":[{\"file\":\"a\",\"line\":1,\"severity\":\"Major\",\"description\":\"d\",\"status\":\"open\"}]}"}'
+          GKA
+          chmod +x /tmp/asb/grok
+          set_base_audit grok
+          git checkout -qB audmal main >/dev/null 2>&1; echo "malformed audit probe" >> SPEC.md; git add -A; git commit -qm audmal >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          amv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audmal/verdict.json 2>/dev/null)"
+          [ "$amv" = "UNAVAILABLE" ] || { echo "::error::malformed grok AUDIT output (severity 'Major') not recorded UNAVAILABLE (verdict=$amv) — audit schema-validation gap"; exit 1; }
+          RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+
+          # ── Vendor-agnostic reviewer (reviewer_vendor = codex|claude|grok) ──
+          # Efficiency #1: the fresh AND verify prompts must instruct the reviewer to sweep the
+          # whole diff for every sibling of a defect class (prompt-only change → content assert).
+          grep -q 'SWEEP the entire diff for EVERY sibling' "$RS" || { echo "::error::fresh prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
+          grep -q 'SWEEP the whole diff for EVERY sibling' "$RS" || { echo "::error::verify prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
+          # Efficiency #3b: the verify fallback must send the FULL diff, not a thin incremental slice.
+          grep -q 'Re-review the FULL diff with first-pass rigor' "$RS" || { echo "::error::verify prompt no longer sends the FULL diff (#3b)"; exit 1; }
+
+          # Stub each vendor CLI; assert review.sh drives a Tier-1 review to APPROVED via the
+          # REAL dispatch, recording the right session id + usage handling (grok: null).
+          RVB="$(mktemp -d)"
+          cat > "$RVB/codex" <<'CX'
+          #!/usr/bin/env bash
+          out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+          cat >/dev/null
+          [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"stub","findings":[]}' > "$out"
+          echo '{"type":"thread.started","thread_id":"codex-s"}'
+          echo '{"type":"turn.completed","usage":{"input_tokens":50}}'
+          CX
+          cat > "$RVB/claude" <<'CL'
+          #!/usr/bin/env bash
+          cat >/dev/null
+          printf '%s' '{"session_id":"claude-s","structured_output":{"verdict":"APPROVED","summary":"stub","findings":[]},"usage":{"input_tokens":50}}'
+          CL
+          cat > "$RVB/grok" <<'GK'
+          #!/usr/bin/env bash
+          printf '%s' '{"sessionId":"grok-s","structuredOutput":{"verdict":"APPROVED","summary":"stub","findings":[]}}'
+          GK
+          chmod +x "$RVB/codex" "$RVB/claude" "$RVB/grok"
+          rv_probe() {  # <vendor> <expect-sid> <expect-usage-null:0|1>
+            local vendor="$1" esid="$2" unull="$3" d; d="$(mktemp -d)"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+              cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = %s\n' "$vendor" >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+              rc=0; PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+              vj="$(ls .plinth/session/review/*/verdict.json 2>/dev/null | head -1)"
+              v="$(jq -r .verdict "$vj" 2>/dev/null)"; sid="$(jq -r .session_id "$vj" 2>/dev/null)"; u="$(jq -r '.usage' "$vj" 2>/dev/null)"
+              [ "$rc" = 0 ] && [ "$v" = APPROVED ] && [ "$sid" = "$esid" ] \
+                || { echo "::error::reviewer_vendor=$vendor: verdict=$v sid=$sid exit=$rc (want APPROVED/$esid)"; exit 1; }
+              if [ "$unull" = 1 ]; then [ "$u" = "null" ] || { echo "::error::reviewer_vendor=$vendor should record null usage (got $u)"; exit 1; }; fi )
+          }
+          rv_probe codex  codex-s  0
+          rv_probe claude claude-s 0
+          rv_probe grok   grok-s   1
+
+          # RV_WARM_RESUME: codex resumes across rounds; grok (no usage) can't → verify/confirm.
+          mkstate() { echo 0 > "$1/state"; }
+          mk_seq_codex() { cat > "$1/codex" <<CX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$1/state") + 1 )); echo \$n > "$1/state"
+          for a in "\$@"; do [ "\$a" = resume ] && echo resume >> "$1/modes"; done
+          [ -f "$1/modes" ] || true
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          if [ "\$n" = 1 ]; then b='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else b='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"cs"}'; echo '{"type":"turn.completed","usage":{"input_tokens":10}}'
+          CX
+          chmod +x "$1/codex"; }
+          mk_seq_grok() { cat > "$1/grok" <<GK
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$1/state") + 1 )); echo \$n > "$1/state"
+          for a in "\$@"; do [ "\$a" = resume ] && echo resume >> "$1/modes"; done
+          if [ "\$n" = 1 ]; then so='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else so='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          printf '{"sessionId":"gs","structuredOutput":%s}' "\$so"
+          GK
+          chmod +x "$1/grok"; }
+          mk_seq_claude() { cat > "$1/claude" <<CL
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$1/state") + 1 )); echo \$n > "$1/state"
+          for a in "\$@"; do [ "\$a" = --resume ] && echo resume >> "$1/modes"; done
+          cat >/dev/null
+          if [ "\$n" = 1 ]; then so='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else so='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          printf '{"session_id":"cs","structured_output":%s,"usage":{"input_tokens":10}}' "\$so"
+          CL
+          chmod +x "$1/claude"; }
+          seq_probe() {  # <vendor> <want-round2-mode>
+            local vendor="$1" want="$2" SBD; SBD="$(mktemp -d)"; mkstate "$SBD"
+            [ "$vendor" = codex ] && mk_seq_codex "$SBD"
+            [ "$vendor" = grok ] && mk_seq_grok "$SBD"
+            [ "$vendor" = claude ] && mk_seq_claude "$SBD"
+            local d; d="$(mktemp -d)"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = %s\n' "$vendor" >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+              PATH="$SBD:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+              echo b > app.py; git add -A; git commit -qm r2 >/dev/null
+              PATH="$SBD:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+              [ -f "$SBD/modes" ] && got=resume || got=noresume
+              [ "$got" = "$want" ] || { echo "::error::reviewer_vendor=$vendor round-2 resume=$got (want $want)"; exit 1; } )
+          }
+          seq_probe codex  resume
+          seq_probe claude resume
+          seq_probe grok   noresume
+          # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
+          # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
+          # "cross-vendor" audit runs (Tier-2 change; grok primary + grok audit).
+          agd="$(mktemp -d)"
+          ( cd "$agd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$agd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = grok\naudit_vendor = grok\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            vj="$(ls .plinth/session/review/*/verdict.json | head -1)"
+            [ "$(jq -r 'has("audit")' "$vj")" = "false" ] || { echo "::error::audit gate: reviewer_vendor==audit_vendor (grok/grok) ran a false cross-vendor audit"; exit 1; } )
+          # Schema validation: grok's soft-schema fallback must NOT let a schema-invalid
+          # finding through — the verdict arithmetic matches exact enums, so a bad severity,
+          # non-integer line, or extra property would be dropped or mis-shaped. review.sh
+          # must REJECT each (die), never approve. The grok stub emits whatever $BADSO holds.
+          cat > "$RVB/grok" <<'GKB'
+          #!/usr/bin/env bash
+          printf '{"sessionId":"gs","structuredOutput":%s}' "${BADSO:-null}"
+          GKB
+          chmod +x "$RVB/grok"
+          reject_probe() {  # <bad structuredOutput> — review.sh must reject (die), never approve
+            local so="$1" d rc=0; d="$(mktemp -d)"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = grok\n' >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+              BADSO="$so" PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || rc=$?
+            local v; v="$(jq -r '.verdict // "none"' "$d"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
+            # Must FAIL-LOUD (die_infra, exit 2), not merely non-APPROVED: a valid-severity
+            # leak (line 1.5 / extra prop) would still yield CHANGES_NEEDED (exit 1) and pass
+            # a `!= APPROVED` check — so require exit 2 to prove schema rejection.
+            [ "$rc" = 2 ] || { echo "::error::malformed grok output not fail-loud rejected (want exit 2 die_infra; got exit=$rc verdict=$v): $so"; exit 1; }
+          }
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"Major","description":"d","status":"open"}]}'
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1.5,"severity":"major","description":"d","status":"open"}]}'
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"major","description":"d","status":"open","foo":1}]}'
+          # Claude usage=null: a claude reviewer reporting NO usage must record JSON null
+          # (not the string "null"), so the NEXT round's .usage.input_tokens lookup doesn't
+          # error and abort. A regression to `.usage // "null"` aborts round 2 here.
+          cat > "$RVB/claude" <<'CLN'
+          #!/usr/bin/env bash
+          st="${CLN_STATE:-/tmp/cln_state}"; n=$(( $(cat "$st" 2>/dev/null || echo 0) + 1 )); echo $n > "$st"; cat >/dev/null
+          if [ "$n" = 1 ]; then so='{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"app.py","line":1,"severity":"major","description":"d","status":"open"}]}'; else so='{"verdict":"APPROVED","summary":"x","findings":[]}'; fi
+          printf '{"session_id":"cs","structured_output":%s}' "$so"
+          CLN
+          chmod +x "$RVB/claude"
+          cund="$(mktemp -d)"; export CLN_STATE="$cund/st"; echo 0 > "$CLN_STATE"; curc=0
+          ( cd "$cund"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$cund" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = claude\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            ut="$(jq -r '.usage | type' .plinth/session/review/*/verdict.json 2>/dev/null | head -1)"
+            [ "$ut" = "null" ] || { echo "::error::claude no-usage recorded usage type '$ut', want JSON null"; exit 1; }
+            echo b > app.py; git add -A; git commit -qm r2 >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || curc=$?
+          unset CLN_STATE
+          v="$(jq -r '.verdict // "none"' "$cund"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
+          { [ "$curc" = 0 ] && [ "$v" = "APPROVED" ]; } || { echo "::error::claude no-usage round-2 aborted (exit=$curc verdict=$v) — usage string-null regression"; exit 1; }
+          # reviewer_model_tier* maps to each vendor's OWN model flag: codex tested above,
+          # claude --model, grok -m. Stub each to RECORD argv; assert the flag+model reach it.
+          cat > "$RVB/claude" <<'RMCL'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > "$RMDIR/args"; cat >/dev/null
+          printf '%s' '{"session_id":"cs","structured_output":{"verdict":"APPROVED","summary":"x","findings":[]}}'
+          RMCL
+          cat > "$RVB/grok" <<'RMGK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > "$RMDIR/args"
+          printf '%s' '{"sessionId":"gs","structuredOutput":{"verdict":"APPROVED","summary":"x","findings":[]}}'
+          RMGK
+          chmod +x "$RVB/claude" "$RVB/grok"
+          rmodel_probe() {  # <vendor> <flag>
+            local vendor="$1" flag="$2" rmcd; rmcd="$(mktemp -d)"
+            ( cd "$rmcd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmcd" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = %s\nreviewer_model_tier1 = t1model\n' "$vendor" >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo "x=1" > ord.py; git add -A; git commit -qm w >/dev/null
+              RMDIR="$rmcd" PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+            { grep -qx -- "$flag" "$rmcd/args" && grep -qx 't1model' "$rmcd/args"; } \
+              || { echo "::error::$vendor reviewer_model not passed as $flag t1model (args: $(tr '\n' ' ' < "$rmcd/args" 2>/dev/null))"; exit 1; }
+          }
+          rmodel_probe claude --model
+          rmodel_probe grok   -m
+          echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
           # truth. Extract BOTH real fns and assert the mode x tier matrix (a Tier-1
