@@ -33,6 +33,30 @@ each_protected() {  # builtin pattern + project patterns, one per line
   fi
 }
 
+# Deny-ship backstop (vendor-universal). The Stop review-gate only BLOCKS on
+# Claude/codex; a grok/gemini driver's Stop is advisory, so it could ship
+# unreviewed work. This PreToolUse hook runs for EVERY vendor (codex/grok/claude
+# all honor .claude/), so gate the SHIP boundary here: refuse `gh pr create`/`gh
+# pr merge` and a push to the BASE branch (main/master) unless the branch's review
+# verdict is APPROVED at HEAD. NARROW BY DESIGN — feature-branch pushes stay
+# allowed, because the RUNTIME loop needs them to land smoke-receipt commits before
+# approval. Fails OPEN (allows) outside a git repo or with no verdict machinery.
+ship_gate() {  # <what> — called only when the command is a ship action
+  git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local branch head slug vf v vsha
+  branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
+  case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: not this gate's job
+  head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
+  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+  vf="$proj/.plinth/session/review/$slug/verdict.json"
+  if [ -f "$vf" ]; then
+    v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
+    vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
+    [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+  fi
+  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Vendor-universal backstop; the Stop gate is advisory on some vendors.)"
+}
+
 case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
@@ -51,6 +75,13 @@ case "$tool" in
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*(rm[[:space:]]+-rf|git[[:space:]]+push[[:space:]]+(--force|-f)([[:space:]]|$)|git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
+    fi
+    # Ship gate: only pay the git/jq cost when the command IS a ship action.
+    # (stripped = quotes removed, so a PR body that merely mentions these is inert.)
+    if printf '%s' "$stripped" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+      ship_gate "gh pr create/merge"
+    elif printf '%s' "$stripped" | grep -Eq 'git[[:space:]]+push([[:space:]]+[^;|&]*)?[[:space:]:](main|master)([[:space:]]|$)'; then
+      ship_gate "push to base branch"
     fi
     while IFS= read -r pattern; do
       # Path patterns are anchored for bare paths ((^|/)…$); in command TEXT a
