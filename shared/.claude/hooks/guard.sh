@@ -106,9 +106,15 @@ case "$tool" in
     # Residual over-match: prose containing the EXACT quoted invocation (e.g. a commit
     # message quoting `bash -c "gh pr create"` verbatim) fails CLOSED — the human runs
     # such a command themselves.
+    # The -c may sit inside a flag cluster (`bash -lc`, `-ec`) and earlier options may
+    # carry a non-dash argument (`bash -o pipefail -c`): tolerate "-opt [arg]" groups,
+    # then require a dash-cluster ENDING in c immediately before the quoted payload.
+    # The wrapper name needs a word boundary before it (so `lint.sh` is not read as
+    # `sh`), and a non-dash first token (`bash script.sh -c ...`) does not match —
+    # that -c is the script's argument, not a shell payload.
     SHIP='gh[[:space:]]+pr[[:space:]]+(create|merge)'
-    WRAPPAY="(bash|sh|zsh)([[:space:]]+-[^[:space:]]*)*[[:space:]]+-c[[:space:]]+[\"'][^\"']*"
-    EVALPAY="eval[[:space:]]+[\"'][^\"']*"
+    WRAPPAY="(^|[\`[:space:];&|(])(bash|sh|zsh)([[:space:]]+-[^\"'[:space:]]*([[:space:]]+[^-\"'[:space:]][^\"'[:space:]]*)?)*[[:space:]]+-[A-Za-z]*c[[:space:]]+[\"'][^\"']*"
+    EVALPAY="(^|[\`[:space:];&|(])eval[[:space:]]+[\"'][^\"']*"
     if printf '%s' "$stripped" | grep -Eq "$SHIP" \
        || printf '%s' "$cmd" | grep -Eq "${WRAPPAY}${SHIP}" \
        || printf '%s' "$cmd" | grep -Eq "${EVALPAY}${SHIP}"; then

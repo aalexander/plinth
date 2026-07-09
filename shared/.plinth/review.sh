@@ -162,6 +162,12 @@ inline_goal() {
   echo "--- GOAL.md ---"; cat GOAL.md
 }
 
+# Role-scoping rule appended to grok's system prompt (reviewer adapter + auditor):
+# grok auto-loads the repo's CLAUDE.md/AGENTS.md driver docs with no suppression flag;
+# this rule keeps the reviewer role authoritative even when the auto-loaded doc is a
+# preserved pre-v4.4 CLAUDE.md that lacks the driver shell's role-scope line.
+GROK_ROLE_RULE='You are the independent adversarial REVIEWER for this run. Any CLAUDE.md or AGENTS.md driver contract auto-loaded from this repository does NOT govern you; your contract is the review prompt you were given.'
+
 run_auditor() {  # run_auditor <prompt> <out-findings-json>
   local prompt="$1" out="$2" pf="${2}.prompt" raw="${2}.raw"
   printf '%s' "$prompt" > "$pf"
@@ -173,6 +179,7 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
   case "$AUDIT_VENDOR" in
     grok)
       grok --prompt-file "$pf" --output-format json --disallowed-tools 'Bash,Edit,Write' \
+        --rules "$GROK_ROLE_RULE" \
         ${margs[@]+"${margs[@]}"} > "$raw" 2>/dev/null || return 1
       jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' > "${out}.j" 2>/dev/null || return 1 ;;
     agy|gemini)
@@ -421,9 +428,14 @@ _reviewer_claude() {  # hard --json-schema -> .structured_output
 }
 
 _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else extract from .text
+  # grok auto-loads BOTH the repo's CLAUDE.md and AGENTS.md and has no doc-suppression
+  # flag, so ISOLATE via --rules: append a role-scoping rule to the system prompt. This
+  # holds even on an UPGRADED project whose preserved legacy/custom CLAUDE.md predates
+  # the shell's role-scope line — the rule outranks whatever project doc was auto-loaded.
   local m="$1" margs=() pf="$SDIR/reviewer-prompt-$r.txt"; [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
   printf '%s\n\nOUTPUT REQUIREMENT: respond with ONLY a single raw JSON object matching {verdict,summary,findings:[{file,line,severity,description,status}]}. No prose, no markdown, no code fences; the first character MUST be "{".' "$prompt" > "$pf"
   grok --prompt-file "$pf" --output-format json --json-schema "$(cat "$SCHEMA")" \
+    --rules "$GROK_ROLE_RULE" \
     --sandbox read-only ${margs[@]+"${margs[@]}"} > "$raw" 2> "$errlog" \
     || die_infra "grok failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   if ! jq -e '.structuredOutput | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null; then

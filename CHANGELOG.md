@@ -16,8 +16,11 @@
 - **Reviewer isolation per vendor.** codex reviewer/auditor run with
   `-c project_doc_max_bytes=0` (verified to suppress AGENTS.md auto-load on 0.142.5) so
   the driver shell cannot leak in; claude keeps `--safe-mode` (and never reads AGENTS.md);
-  grok relies on the explicit reviewer prompt + role-scoping line. `HARNESS_RE` and the
-  tamper pathlist gain `.plinth/reviewer.md` and `CLAUDE.md`.
+  grok (which auto-loads BOTH CLAUDE.md and AGENTS.md and has no doc-suppression flag)
+  gets a role-scoping rule appended to its system prompt via `--rules` — reviewer adapter
+  AND auditor — which holds even on an upgraded project whose preserved legacy CLAUDE.md
+  predates the shell's role-scope line. `HARNESS_RE` and the tamper pathlist gain
+  `.plinth/reviewer.md` and `CLAUDE.md`.
 - **Deny-ship backstop (vendor-universal).** `guard.sh` (PreToolUse, honored by every
   vendor) denies `gh pr create`/`gh pr merge` unless the feature branch's verdict is
   APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS only on Claude/codex.

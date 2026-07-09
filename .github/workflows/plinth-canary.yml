@@ -778,6 +778,34 @@ jobs:
           grep -q "Follow the rules in .plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt does not reference .plinth/reviewer.md"; exit 1; }
           grep -q "project_doc_max_bytes=0" "$CAP4" || { echo "::error::codex reviewer not invoked with project_doc_max_bytes=0 isolation"; exit 1; }
           
+          # ── v4.4.0: grok reviewer + auditor isolated via --rules (round-8) ───────
+          # grok auto-loads CLAUDE.md/AGENTS.md with no doc-suppression flag; a preserved legacy
+          # CLAUDE.md (upgraded project) lacks the shell's role-scope line, so review.sh must
+          # append the role-scoping rule itself.
+          GB4="$(mktemp -d)"; GCAP4="$GB4/argv"
+          cat > "$GB4/grok" <<GK4
+          #!/usr/bin/env bash
+          printf '%s\n' "\$*" >> "$GCAP4"
+          printf '%s' '{"sessionId":"g4","structuredOutput":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          GK4
+          chmod +x "$GB4/grok"
+          GRV="$(mktemp -d)"; ( cd "$GRV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GRV" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = grok\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$GB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q -- '--rules' "$GCAP4" || { echo "::error::grok reviewer not invoked with --rules role-scoping isolation"; exit 1; }
+          grep -q 'adversarial REVIEWER' "$GCAP4" || { echo "::error::grok --rules content lacks the role-scoping rule"; exit 1; }
+          GAU="$(mktemp -d)"; : > "$GCAP4"
+          ( cd "$GAU"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GAU" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'audit_vendor = grok\ntier2_extra = (^|/)app\\.py$\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$RB4:$GB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q -- '--rules' "$GCAP4" || { echo "::error::grok AUDITOR not invoked with --rules role-scoping isolation"; exit 1; }
+          
           # ── v4.4.0: protected-paths edits are PROJECT scope, not auto-tamper ─────
           # (round-4: the reviewer contract excludes protected-paths from pinned tooling; a
           # human's project commit editing it must be reviewed as normal code, not auto-blocked.)
@@ -836,6 +864,13 @@ jobs:
           [ "$(gcmd 'echo "use (env bash -c gh pr create)"')" = 0 ] || { echo "::error::deny-ship: echoed prefixed-wrapper prose false-positived"; exit 1; }
           [ "$(gcmd 'bash -c true && git commit -m "gh pr create gate"')" = 0 ] || { echo "::error::deny-ship: benign wrapper + quoted mention false-positived"; exit 1; }
           [ "$(gcmd 'bash -c "true; gh pr create"')" = 2 ] || { echo "::error::deny-ship: multi-command wrapper payload bypassed the gate"; exit 1; }
+          # Combined-flag wrapper forms (round-8): -c inside a cluster or after option args.
+          [ "$(gcmd 'bash -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -lc payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'sh -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: sh -lc payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash -ec "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -ec payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'env bash -lc "gh pr create"')" = 2 ] || { echo "::error::deny-ship: env bash -lc payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash -o pipefail -c "gh pr create"')" = 2 ] || { echo "::error::deny-ship: bash -o pipefail -c payload bypassed the gate"; exit 1; }
+          [ "$(gcmd 'bash lint.sh -c "gh pr create docs"')" = 0 ] || { echo "::error::deny-ship: script-arg -c false-positived (lint.sh read as sh)"; exit 1; }
           
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
