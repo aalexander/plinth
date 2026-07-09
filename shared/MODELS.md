@@ -75,7 +75,8 @@ Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 - **codex / GPT-5.5** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
   binding clean-slate confirmation. Slower.
 - **claude / Anthropic** — native, ~1M window, resumes warm threads. A capable
-  primary; reviews with `--bare` so it does not auto-load the repo's CLAUDE.md.
+  primary; runs signed-in (no `--bare` — that would disable OAuth auth), so it loads
+  the repo's CLAUDE.md, but the review prompt frames the reviewer role explicitly.
 - **grok / Grok Build (xAI)** — good and noticeably FASTER, and a DIFFERENT vendor
   from a Claude/Codex driver. Strong either as the FAST primary (`reviewer_vendor =
   grok`) or as the Tier-2 CROSS-VENDOR second opinion (`audit_vendor = grok`) — a

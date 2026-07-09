@@ -5,7 +5,7 @@
   grok`, base config, default codex — no behavior change). A `reviewer_run`
   dispatcher + per-vendor adapters replace the hardcoded `codex exec`: codex
   (`--output-schema`, thread resume, usage from the event stream), claude (`-p
-  --bare --json-schema`, `--resume`, `.session_id`/`.usage`), grok (`--prompt-file
+  --json-schema`, `--resume`, `.session_id`/`.usage`), grok (`--prompt-file
   --output-format json`, soft schema → extract, no headless usage). `RV_WARM_RESUME`
   gates warm resume (codex/claude yes; grok runs fresh/verify). Vendor-aware
   required-CLI check + per-tier `RV_MODEL` mapped to each vendor's model flag. This

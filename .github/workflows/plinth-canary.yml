@@ -490,7 +490,10 @@ jobs:
               git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
               BADSO="$so" PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || rc=$?
             local v; v="$(jq -r '.verdict // "none"' "$d"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
-            { [ "$rc" != 0 ] && [ "$v" != "APPROVED" ]; } || { echo "::error::malformed grok output not rejected (exit=$rc verdict=$v): $so"; exit 1; }
+            # Must FAIL-LOUD (die_infra, exit 2), not merely non-APPROVED: a valid-severity
+            # leak (line 1.5 / extra prop) would still yield CHANGES_NEEDED (exit 1) and pass
+            # a `!= APPROVED` check — so require exit 2 to prove schema rejection.
+            [ "$rc" = 2 ] || { echo "::error::malformed grok output not fail-loud rejected (want exit 2 die_infra; got exit=$rc verdict=$v): $so"; exit 1; }
           }
           reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"Major","description":"d","status":"open"}]}'
           reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1.5,"severity":"major","description":"d","status":"open"}]}'
@@ -519,6 +522,32 @@ jobs:
           unset CLN_STATE
           v="$(jq -r '.verdict // "none"' "$cund"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
           { [ "$curc" = 0 ] && [ "$v" = "APPROVED" ]; } || { echo "::error::claude no-usage round-2 aborted (exit=$curc verdict=$v) — usage string-null regression"; exit 1; }
+          # reviewer_model_tier* maps to each vendor's OWN model flag: codex tested above,
+          # claude --model, grok -m. Stub each to RECORD argv; assert the flag+model reach it.
+          cat > "$RVB/claude" <<'RMCL'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > "$RMDIR/args"; cat >/dev/null
+          printf '%s' '{"session_id":"cs","structured_output":{"verdict":"APPROVED","summary":"x","findings":[]}}'
+          RMCL
+          cat > "$RVB/grok" <<'RMGK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > "$RMDIR/args"
+          printf '%s' '{"sessionId":"gs","structuredOutput":{"verdict":"APPROVED","summary":"x","findings":[]}}'
+          RMGK
+          chmod +x "$RVB/claude" "$RVB/grok"
+          rmodel_probe() {  # <vendor> <flag>
+            local vendor="$1" flag="$2" rmcd; rmcd="$(mktemp -d)"
+            ( cd "$rmcd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmcd" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = %s\nreviewer_model_tier1 = t1model\n' "$vendor" >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo "x=1" > ord.py; git add -A; git commit -qm w >/dev/null
+              RMDIR="$rmcd" PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+            { grep -qx -- "$flag" "$rmcd/args" && grep -qx 't1model' "$rmcd/args"; } \
+              || { echo "::error::$vendor reviewer_model not passed as $flag t1model (args: $(tr '\n' ' ' < "$rmcd/args" 2>/dev/null))"; exit 1; }
+          }
+          rmodel_probe claude --model
+          rmodel_probe grok   -m
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
