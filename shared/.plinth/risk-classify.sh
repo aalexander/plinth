@@ -39,7 +39,11 @@ fi
 # spec_path is read from the BASE config, not the working tree: repointing
 # spec_path in the same PR must not downgrade that PR's own spec edits. The
 # canonical spec paths are ALWAYS Tier 2 regardless of config (defense in depth).
-SPEC_PATH="$(git show "${baseref}:.plinth/config" 2>/dev/null | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
+# `|| true` first: under set -euo pipefail a failing `git show` (base has no
+# .plinth/config — a first-adoption PR that adds it) would abort the classifier here,
+# emitting no tier at all. Read the blob soft, then parse the string.
+basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'

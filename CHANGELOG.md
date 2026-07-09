@@ -15,6 +15,12 @@
   repoints spec_path it attacks BOTH the old and new paths and flags the redirect as
   high-consequence. Canary extracts and runs the real resolution block (base wins over
   a working-tree repoint).
+- review.sh + risk-classify.sh: the base-config spec_path read is pipefail-hardened.
+  Under `set -euo pipefail` a failing `git show ${base}:.plinth/config` (base has no
+  config yet — a first-adoption PR that adds it) aborted before the fallback, so
+  review.sh died and the classifier emitted NO tier. Read the blob with `|| true`,
+  then parse the string. Canary: the classifier still emits a tier when the base
+  lacks `.plinth/config`.
 - plinth-canary.yml now runs on `pull_request` too, so the ~30 regression probes
   (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
   init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only

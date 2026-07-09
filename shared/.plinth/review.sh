@@ -82,10 +82,12 @@ cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | 
 REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 || true)"
 [ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
 # spec_path from the BASE config (like risk-classify.sh): a PR must not repoint the
-# review target to a weaker/empty spec in its own diff. Fall back to the working tree
-# only when the base has none (first spec / new project), then the default.
-SPEC_PATH="$(git show "${baseref}:.plinth/config" 2>/dev/null | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
-[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path)"
+# review target to a weaker/empty spec in its own diff. Read the base config with
+# `|| true` FIRST — under set -euo pipefail a failing `git show` (base has no
+# .plinth/config: first spec / new project) would abort before the fallback runs.
+basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(cfg exec_gated || true)"
 ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac

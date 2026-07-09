@@ -65,7 +65,7 @@ jobs:
           # the REAL resolution block extracted from shared/review.sh (not a copy) with a
           # base spec_path=BASE.md but a working-tree repoint to EVIL.md; base must win.
           RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"; SB="$(mktemp)"
-          awk '/^SPEC_PATH="\$\(git show/{p=1} p{print} /SPEC_PATH="SPEC\.md"/{if(p)exit}' "$RS" > "$SB"
+          awk '/^basecfg="\$\(git show/{p=1} p{print} /SPEC_PATH="SPEC\.md"/{if(p)exit}' "$RS" > "$SB"
           grep -q 'git show' "$SB" && grep -q 'SPEC.md' "$SB" || { echo "::error::could not extract SPEC_PATH resolution from review.sh"; exit 1; }
           SR="$(mktemp -d)"; SORG2="$(mktemp -d)"; git init -q --bare "$SORG2"
           ( cd "$SR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'spec_path = BASE.md\n' > .plinth/config
@@ -73,6 +73,14 @@ jobs:
             printf 'spec_path = EVIL.md\n' > .plinth/config )
           SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$SB"; echo "$SPEC_PATH" )"
           [ "$SPR" = "BASE.md" ] || { echo "::error::review.sh spec_path -> '$SPR': a same-PR working-tree repoint redirected the review target (want BASE.md from base config)"; exit 1; }
+          # Classifier must FAIL-SOFT when the BASE lacks .plinth/config (first-adoption PR
+          # that adds it): under set -euo pipefail the base spec_path read must not abort,
+          # else callers get NO tier at all (round-24 pipefail class — same as review.sh).
+          NCR="$(mktemp -d)"; ncrc=0
+          ( cd "$NCR"; git init -qb main . >/dev/null; echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo code > app.py; git add -A; git commit -qm w >/dev/null
+            bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main > "$NCR/o.json" 2>/dev/null ) || ncrc=$?
+          [ "$ncrc" = "0" ] && [ "$(jq -r .tier "$NCR/o.json" 2>/dev/null)" = "1" ] || { echo "::error::classifier aborted / emitted no tier when base lacks .plinth/config (exit=$ncrc, out=$(cat "$NCR/o.json" 2>/dev/null))"; exit 1; }
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
           tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
