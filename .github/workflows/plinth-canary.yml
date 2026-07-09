@@ -775,7 +775,10 @@ jobs:
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
             PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
-          grep -q "Follow the rules in .plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt does not reference .plinth/reviewer.md"; exit 1; }
+          # The contract must be INLINED, not merely referenced (project_doc_max_bytes=0 means the
+          # reviewer cannot auto-load it): assert unique .plinth/reviewer.md CONTENT is present.
+          grep -q "REVIEWER CONTRACT (.plinth/reviewer.md" "$PR4" || { echo "::error::reviewer prompt lacks the inlined-contract header"; exit 1; }
+          grep -q "Security review (always)" "$PR4" || { echo "::error::reviewer prompt does NOT inline .plinth/reviewer.md content (contract only referenced, not passed explicitly)"; exit 1; }
           grep -q "project_doc_max_bytes=0" "$CAP4" || { echo "::error::codex reviewer not invoked with project_doc_max_bytes=0 isolation"; exit 1; }
           
           # ── v4.4.0: grok reviewer + auditor isolated via --rules (round-8) ───────
@@ -867,19 +870,37 @@ jobs:
           o2="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
           printf '%s' "$o2" | grep -q "working tree is dirty" || { echo "::error::dirty-exemption: subdir/NEEDS-HUMAN.md wrongly exempt (SHA-bound review broken)"; exit 1; }
           
-          # ── v4.4.0: plinth advise (vendor-agnostic, --impactful escalation) ────
+          # ── v4.4.0: plinth advise — ALL vendors dispatch + model flag + escalation ────
           AB="$(mktemp -d)"; ACAP="$AB/cap"
-          cat > "$AB/claude" <<AC4
+          for v in claude codex grok agy; do
+            cat > "$AB/$v" <<EOF
           #!/usr/bin/env bash
-          printf 'claude %s\n' "\$*" >> "$ACAP"; echo "advice"
-          AC4
-          chmod +x "$AB/claude"
-          AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\nadvisor_model = opus\nadvisor_model_max = fable\n' > "$AP/.plinth/config"
-          : > "$ACAP"; ( cd "$AP" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 )
-          grep -q -- "--model opus" "$ACAP" || { echo "::error::plinth advise peer tier did not use advisor_model"; exit 1; }
-          : > "$ACAP"; ( cd "$AP" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "q" >/dev/null 2>&1 )
-          grep -q -- "--model fable" "$ACAP" || { echo "::error::plinth advise --impactful did not escalate to advisor_model_max"; exit 1; }
+          printf '$v %s\n' "\$*" >> "$ACAP"; cat >/dev/null 2>/dev/null || true; echo "advice-from-$v"
+          EOF
+            chmod +x "$AB/$v"
+          done
+          adv() {  # <config-lines-file-content> <args...> -> runs advise, echoes captured argv
+            local vend="$1"; shift; local mmax="$1"; shift
+            local d; d="$(mktemp -d)"; mkdir -p "$d/.plinth"
+            printf 'advisor_vendor = %s\nadvisor_model = peermodel\nadvisor_model_max = %s\n' "$vend" "$mmax" > "$d/.plinth/config"
+            : > "$ACAP"; ( cd "$d" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "$@" >/dev/null 2>&1 )
+          }
+          # Each vendor dispatches to its OWN CLI with the right model flag (claude/agy: --model,
+          # codex/grok: -m). Peer tier uses advisor_model; --impactful uses advisor_model_max.
+          adv claude maxmodel "q";              grep -q '^claude .*--model peermodel' "$ACAP" || grep -q '^claude ' "$ACAP" || { echo "::error::advise: claude not dispatched"; exit 1; }
+          adv codex  maxmodel "q";              grep -q '^codex ' "$ACAP" || { echo "::error::advise: codex vendor not dispatched"; exit 1; }
+          grep -q -- '-m peermodel' "$ACAP" || { echo "::error::advise: codex peer tier did not pass -m advisor_model"; exit 1; }
+          adv codex  maxmodel --impactful "q"; grep -q -- '-m maxmodel' "$ACAP" || { echo "::error::advise: codex --impactful did not escalate to advisor_model_max via -m"; exit 1; }
+          adv grok   maxmodel "q";             grep -q '^grok ' "$ACAP" || { echo "::error::advise: grok vendor not dispatched"; exit 1; }
+          grep -q -- '-m peermodel' "$ACAP" || { echo "::error::advise: grok peer tier did not pass -m advisor_model"; exit 1; }
+          adv agy    maxmodel --impactful "q"; grep -q '^agy ' "$ACAP" || { echo "::error::advise: agy vendor not dispatched"; exit 1; }
+          grep -q -- '--model maxmodel' "$ACAP" || { echo "::error::advise: agy --impactful did not escalate via --model"; exit 1; }
+          # claude peer tier + --impactful model flags (round-1 coverage retained)
+          adv claude fable "q";                grep -q -- '--model peermodel' "$ACAP" || { echo "::error::advise: claude peer tier did not pass --model advisor_model"; exit 1; }
+          adv claude fable --impactful "q";    grep -q -- '--model fable' "$ACAP" || { echo "::error::advise: claude --impactful did not escalate to advisor_model_max"; exit 1; }
+          # Non-blocking when the advisor CLI fails (exit 0, informative).
           FB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 1\n' > "$FB/claude"; chmod +x "$FB/claude"
+          AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
           

@@ -162,6 +162,16 @@ inline_goal() {
   echo "--- GOAL.md ---"; cat GOAL.md
 }
 
+# The reviewer contract, INLINED into the prompt. review.sh passes it explicitly (not
+# by auto-load / by-reference): codex runs with project_doc_max_bytes=0 and grok/claude
+# are isolated too, so the verdict policy must be IN the prompt, not merely pointed at.
+# Same helper feeds the primary reviewer (fresh/verify) and the tools-forbidden auditor.
+inline_contract() {
+  for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do
+    [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+  done
+}
+
 # Role-scoping rule appended to grok's system prompt (reviewer adapter + auditor):
 # grok auto-loads the repo's CLAUDE.md/AGENTS.md driver docs with no suppression flag;
 # this rule keeps the reviewer role authoritative even when the auto-loaded doc is a
@@ -511,10 +521,15 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
   fi
 
   if [ "$m" = "fresh" ]; then
-    prompt="You are an independent adversarial reviewer. Follow the rules in .plinth/reviewer.md
-AND the project-specific rules in .plinth/AGENTS-project.md — including the
-Verdict policy (blockers/majors in project code block; minors and UPSTREAM
+    prompt="You are an independent adversarial reviewer. Your CONTRACT is inlined below
+(the shared reviewer rules + this project's specific rules); apply every rule in it,
+including the Verdict policy (blockers/majors in project code block; minors and UPSTREAM
 tooling findings are reported but non-blocking; tooling tampering blocks).
+
+=== REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
+$(inline_contract)
+=== END REVIEWER CONTRACT ===
+
 Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${SPEC_PATH}
 (and GOAL.md if present). Find bugs, missing or hollow tests, security issues,
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
@@ -536,8 +551,14 @@ ${diff}${evidence}${commits}"
     local prior
     prior="$(cat "$SDIR/findings-$((r - 1)).json")"
     prompt="Fix-verification round ${r} (fresh session; your prior thread was too large to
-resume). Apply the Verdict policy in .plinth/reviewer.md. This is a FRESH session — assume
-nothing from prior rounds beyond the findings listed. Below: (1) the findings from
+resume). Your CONTRACT is inlined below; apply its Verdict policy. This is a FRESH
+session — assume nothing from prior rounds beyond the findings listed.
+
+=== REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
+$(inline_contract)
+=== END REVIEWER CONTRACT ===
+
+Below: (1) the findings from
 the previous round, (2) the FULL diff (${baseref}...HEAD at ${sha}).
 1) For each prior finding, mark status \"resolved\" or \"open\" — resolved requires
    evidence in the diff, not the driver's claim.
@@ -701,7 +722,7 @@ Output ONLY a JSON object (no prose, no markdown fences):
 {\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
 
 === REVIEWER RULES (mandatory project blocking policy — apply these) ===
-$( for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }; done )
+$(inline_contract)
 
 === CANONICAL SPEC (${SPEC_PATH}) ===
 $(inline_spec)

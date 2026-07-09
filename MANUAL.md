@@ -1,9 +1,11 @@
 # Plinth — User Manual (v3)
 
 ## What Plinth is
-A subscription-funded, multi-model dev environment: a frontier Claude model drives,
-Codex/GPT-5.5 adversarially reviews (risk-tiered — inert docs are approved by the
-deterministic floor, code and high-consequence changes get the model), and a
+A subscription-funded, multi-model dev environment: a frontier model drives (any
+vendor — see the driver contract below), a DIFFERENT model adversarially reviews (the
+`reviewer_vendor` — codex/GPT by default, or claude/grok; risk-tiered — inert docs are
+approved by the deterministic floor, code and high-consequence changes get the model),
+and a
 deterministic CI floor (tests + scanners, plus Codex cloud review once connected —
 security-briefed via the reviewer contract .plinth/reviewer.md) gates every merge. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You

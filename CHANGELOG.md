@@ -3,8 +3,9 @@
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
   split so any vendor auto-loads the right role. The reviewer contract moved out of root
-  `AGENTS.md` into `.plinth/reviewer.md`, which `review.sh` passes to the reviewer
-  EXPLICITLY (never by auto-load). The driver contract is a thin, byte-identical shell
+  `AGENTS.md` into `.plinth/reviewer.md`, whose CONTENT `review.sh` INLINES into every
+  primary-reviewer prompt (fresh/verify) and the auditor prompt (never relied on by
+  auto-load — codex runs with project docs disabled). The driver contract is a thin, byte-identical shell
   (`shared/driver-shell.md`) materialized into BOTH `CLAUDE.md` and `AGENTS.md` by
   `plinth init/update`; project-specific driver notes move to `.plinth/DRIVER-project.md`
   (new; twin of `AGENTS-project.md`). `templates/CLAUDE.md` retired. Probed vendor
