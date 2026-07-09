@@ -21,14 +21,15 @@ permissions:
   security-events: write
 
 jobs:
-  # CI-floor independence. The Plinth repo IS Plinth, so its own plinth-floor.yml
-  # is editable in any PR — which means a required floor called by LOCAL path would
-  # let a PR weaken the very scanners gating its own merge (self-referential gate).
-  # So the required `floor` pins the PREVIOUS release's floor by IMMUTABLE SHA: an
-  # independent gate a same-PR floor edit cannot touch. The `floor-current` job then
-  # runs the floor AS EDITED IN THIS PR, so floor changes are still exercised in CI —
-  # the gate stays independent AND the current floor gets tested. Repin the SHA each
-  # release. Downstream projects pin a Plinth release the same way (see templates/ci.yml).
+  # Required-gate independence. The Plinth repo IS Plinth, so its own plinth-floor.yml
+  # and plinth-checks.yml are editable in any PR — a required gate called by LOCAL path
+  # would let a PR weaken the very scanners/checks gating its own merge (self-referential
+  # gate). SETUP.md/MANUAL.md tell operators to require BOTH `floor` and `checks`, so BOTH
+  # pin the PREVIOUS release by IMMUTABLE SHA: independent gates a same-PR edit cannot
+  # touch. The `-current` twins run the floor/checks AS EDITED IN THIS PR, so the edits are
+  # still exercised in CI — the required gate stays independent AND the current version gets
+  # tested. Repin the SHA each release. Downstream pins a Plinth release the same way
+  # (see templates/ci.yml). Require `floor` and `checks` (the pinned jobs), not the `-current` twins.
   floor:
     uses: aalexander/plinth/.github/workflows/plinth-floor.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9
 
@@ -36,6 +37,9 @@ jobs:
     uses: ./.github/workflows/plinth-floor.yml
 
   checks:
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9
+
+  checks-current:
     uses: ./.github/workflows/plinth-checks.yml
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:

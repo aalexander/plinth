@@ -23,13 +23,15 @@
 Version bump: the v4.2 branch (below) gained substantial CI supply-chain
 hardening, classifier bypass fixes, and audit-integrity fixes after its first
 APPROVED, so it ships as v4.2.1. Reusable-workflow references:
-- The Plinth repo's required `floor` gate now pins the PREVIOUS release's floor by
-  IMMUTABLE SHA (v4.1.9) — an independent gate a same-PR edit to this repo's own
-  plinth-floor.yml cannot weaken (was pinned to the stale v4.0.1 floor, 8 releases
-  behind, which also tested none of a PR's floor changes). A second `floor-current`
-  job runs the floor AS EDITED IN THIS PR, so floor changes are still exercised in
-  CI: the gate stays independent AND the current floor gets tested. `checks` (stack
-  detection, not a security gate) stays local. The gate SHA is repinned each release.
+- The Plinth repo's required `floor` AND `checks` gates now pin the PREVIOUS release
+  by IMMUTABLE SHA (v4.1.9) — independent gates a same-PR edit to this repo's own
+  plinth-floor.yml / plinth-checks.yml cannot weaken (floor was pinned to the stale
+  v4.0.1 floor, 8 releases behind, which also tested none of a PR's floor changes).
+  SETUP.md/MANUAL.md have operators require BOTH, so BOTH need independence. New
+  `floor-current` / `checks-current` twins run the floor/checks AS EDITED IN THIS PR,
+  so the edits are still exercised in CI: the required gates stay independent AND the
+  current versions get tested. Require `floor`/`checks` (not the `-current` twins).
+  The gate SHAs are repinned each release.
 - The template now pins Plinth's reusable workflows by IMMUTABLE COMMIT SHA (no
   mutable tag, no `nosemgrep` anywhere): the shipped file carries a prior-release
   SHA as a placeholder, and `plinth init` repins it to the exact Plinth checkout it installed from
