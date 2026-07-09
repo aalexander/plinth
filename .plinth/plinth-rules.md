@@ -64,8 +64,13 @@ approved; use your judgment. Every subagent you spawn is subject to the same gua
 hooks and gates.
 
 ## Review before PR (required)
-When the work is complete: commit, then run `./.plinth/review.sh` (allow up to 10
-minutes). It reviews committed work only and refuses a dirty tree or an empty diff.
+Work on a feature branch — never commit directly to the base branch. The Stop
+gate deliberately does not guard base branches (it logs and releases), and the
+PR needs a branch to exist. Branch first, then build.
+When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
+large diffs can exceed 10 minutes — if your shell tool caps there, run it in
+the background and read the result; an interrupted round is safe to re-run
+(resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer session when feasible; oversized or dead
@@ -75,7 +80,7 @@ pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (the guard enforces both). Verdict policy: blockers/majors in project code block;
 minor findings don't block but MUST be appended to the spec's `## Noticed` before
 the PR; findings in Plinth tooling are UPSTREAM — surface them to the human,
-never fix the instrument in-session. Then open the PR; CI and the security agent
+never fix the instrument in-session. Then open the PR; CI and the Codex cloud review
 run automatically. The PR body is the audit summary of the loop, derived from
 .plinth/session/review/ — not narrated: rounds and modes, final verdict + SHA,
 real check output, open minors with their `## Noticed` entries, tooling-update
@@ -86,6 +91,17 @@ session that created commits until the verdict at HEAD is APPROVED. The gate has
 two pressure valves — a recent mechanical review failure, and a per-session block
 cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red.
+
+## Upstream channel — two-way, with the Plinth maintainer
+Tooling findings and improvement proposals are never fixed in-project (that is
+tampering). File them upstream as a GitHub issue:
+  gh issue create -R aalexander/plinth --title "UPSTREAM: <symptom>" \
+    --body "<symptom / root-cause hypothesis / proposed fix / session+round refs>"
+This is a conversation, not a drop-box: at session start, check your open
+upstream issues for maintainer replies (gh issue list -R aalexander/plinth
+--search "UPSTREAM in:title") and answer what was asked. Proposals are
+evaluated — including for security — before anything ships; never assume one
+landed until `plinth update` delivers it.
 
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it
@@ -100,7 +116,10 @@ API changes, or adding a dependency. Otherwise proceed on your own judgment.
 When blocked on something only the human can supply (credentials, artifact
 hashes, hardware runs, spend approvals), add a checkbox line to
 `.plinth/NEEDS-HUMAN.md` — what, why, and the exact format needed — and keep
-working on whatever isn't blocked. The dashboard surfaces the file; clear each
-line once supplied. RUNTIME review findings are burned down the same way: ask
+working on whatever isn't blocked. Prioritize the queue by blocking impact:
+prefix any item that stalls work RIGHT NOW with `[BLOCKING]` and keep those at
+the top; everything else (needed eventually, nice-to-have) goes below. The
+dashboard surfaces the file and the blocking count; check items off the moment
+they're supplied. RUNTIME review findings are burned down the same way: ask
 the human for a `plinth smoke` run (execution receipts feed the next review
 round), not more review rounds.
