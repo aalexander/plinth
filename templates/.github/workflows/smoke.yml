@@ -44,6 +44,12 @@ jobs:
           # `git show origin/$base:...` below would then miss and read as no
           # smoke_cmd, so a configured smoke run would silently skip.
           git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
+          # Fail LOUD if the base ref can't be resolved: a transient fetch/ref failure
+          # must NOT read as "no smoke_cmd" and silently skip a CONFIGURED smoke run.
+          # (An absent .plinth/config on a RESOLVABLE base is the legitimate no-smoke
+          # case below — git show returns empty, cmd empty, run=false green.)
+          git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
+            || { echo "::error::smoke precheck: cannot resolve origin/$base to read .plinth/config — refusing to fail open (would skip a configured smoke run)"; exit 1; }
           cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
                  | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -n "$cmd" ]; then
@@ -72,6 +78,11 @@ jobs:
           base="${GITHUB_BASE_REF:-main}"
           # explicit refspec (see the precheck note): guarantees origin/$base exists
           git fetch --depth 1 origin "+$base:refs/remotes/origin/$base" 2>/dev/null || true
+          # Fail LOUD on an unresolvable base ref (same reason as precheck): this job
+          # was dispatched BECAUSE smoke_cmd was set, so an unreadable base is an error,
+          # not a "nothing to run". A resolvable base with no smoke_cmd stays green below.
+          git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
+            || { echo "::error::smoke: cannot resolve origin/$base to read .plinth/config — refusing to fail open"; exit 1; }
           cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
                  | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -z "$cmd" ]; then

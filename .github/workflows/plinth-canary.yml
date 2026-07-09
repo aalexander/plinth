@@ -84,6 +84,10 @@ jobs:
           [ "$(tier 'echo x > build.gradle.kts')" = "2" ] || { echo "::error::classifier: build.gradle.kts (Kotlin DSL) != Tier 2"; exit 1; }
           [ "$(tier 'echo x > settings.gradle.kts')" = "2" ] || { echo "::error::classifier: settings.gradle.kts != Tier 2"; exit 1; }
           [ "$(tier 'echo x > gradle.properties')" = "2" ] || { echo "::error::classifier: gradle.properties != Tier 2"; exit 1; }
+          # Migration/schema at REPO ROOT (the regex alternatives must not require a
+          # leading slash — round-17 gap): root models.py / entities/ are common ORM.
+          [ "$(tier 'echo x > models.py')" = "2" ] || { echo "::error::classifier: root-level models.py (ORM/schema) != Tier 2"; exit 1; }
+          [ "$(tier 'mkdir -p entities; echo x > entities/user.py')" = "2" ] || { echo "::error::classifier: root entities/ dir (schema) != Tier 2"; exit 1; }
           [ "$(tier 'echo instructions > CLAUDE.md')" = "2" ] || { echo "::error::classifier: CLAUDE.md != Tier 2"; exit 1; }
           [ "$(tier 'echo plan > PLANNING-PROMPT.md')" = "2" ] || { echo "::error::classifier: PLANNING-PROMPT.md != Tier 2 (TOOLING regex regressed)"; exit 1; }
           [ "$(tier 'echo maximize > GOAL.md')" = "2" ] || { echo "::error::classifier: GOAL.md (optimization contract) != Tier 2 — metric-gaming bypass"; exit 1; }

@@ -43,7 +43,11 @@ APPROVED, so it ships as v4.2.1. Reusable-workflow references:
   precheck and the self-hosted step. A bare `git fetch origin "$base"` only
   updates FETCH_HEAD in a PR checkout, so the following `git show
   origin/$base:.plinth/config` could miss and read as no smoke_cmd — a repo with
-  smoke configured would then silently skip its smoke run.
+  smoke configured would then silently skip its smoke run. It also now FAILS LOUD
+  (exit 1) if the base ref can't be resolved at all, instead of reading a transient
+  fetch/ref failure as "no smoke_cmd" and skipping a configured run as a green
+  no-op. (An absent `.plinth/config` on a resolvable base is still the legitimate
+  no-smoke case.) Guard applied to both the precheck and the self-hosted step.
 
 Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
@@ -116,6 +120,11 @@ here hitting a live PR first:
   classify Tier 0 (skipping the model round). The old path is now checked against the
   full Tier-2 surface. Canary probes for the tier2_extra / dependency / public-API
   rename-to-docs cases.
+- risk-classify.sh: the MIGRATION/schema regex required a leading slash on several
+  alternatives (`/models?\.py$`, `/entities/`, `/schema\.`, `/prisma/`), so a
+  REPO-ROOT `models.py`, `entities/`, `schema.*`, or `prisma/` — common ORM/schema
+  locations — fell to Tier 1. Anchored them `(^|/)` so root and nested both route to
+  Tier 2. Canary probes for root `models.py` and `entities/`.
 - risk-classify.sh: `GOAL.md` is now Tier 2 (TOOLING). It's the optimization
   contract the reviewer attacks for metric gaming, but a GOAL.md-only diff was
   matching the generic `.md` docs rule and going Tier 0 (skipping the model round
