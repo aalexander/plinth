@@ -896,6 +896,13 @@ jobs:
           [ "$(gcmd 'FOO=1 rm -rf x')" = 2 ] || { echo "::error::guard: VAR=val rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'sudo git push --force origin feat')" = 2 ] || { echo "::error::guard: sudo git push --force not blocked"; exit 1; }
           [ "$(gcmd 'env git reset --hard origin/main')" = 2 ] || { echo "::error::guard: prefixed git reset --hard origin not blocked"; exit 1; }
+          # Force flag AFTER the remote / short / --force-with-lease / prefixed (round-26):
+          [ "$(gcmd 'git push origin --force')" = 2 ] || { echo "::error::guard: 'git push origin --force' not blocked"; exit 1; }
+          [ "$(gcmd 'git push origin -f')" = 2 ] || { echo "::error::guard: 'git push origin -f' not blocked"; exit 1; }
+          [ "$(gcmd 'git push origin main --force')" = 2 ] || { echo "::error::guard: 'git push origin main --force' not blocked"; exit 1; }
+          [ "$(gcmd 'sudo git push origin --force')" = 2 ] || { echo "::error::guard: 'sudo git push origin --force' not blocked"; exit 1; }
+          [ "$(gcmd 'git push --force-with-lease origin')" = 2 ] || { echo "::error::guard: 'git push --force-with-lease' not blocked"; exit 1; }
+          [ "$(gcmd 'git push origin main')" = 0 ] || { echo "::error::guard: plain 'git push origin main' wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }

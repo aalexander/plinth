@@ -84,10 +84,13 @@
 - **guard.sh destructive-command anchor tolerates prefixes:** `sudo` / `command` /
   `env` / `nice` / `nohup` / `time` — including option-bearing forms (`sudo -n`,
   `sudo -u root`, `env -i`, `command --`, `nice -n 10`, `time -p`) — and `VAR=val`
-  assignment chains before `rm -rf`, `git push --force`, and `git reset --hard origin`
-  are now caught (the v4.1.6 command-position anchor required the destructive word
-  immediately at a boundary, so `sudo rm -rf` slipped past). Quoted prose stays inert;
-  enumerative by design, not a shell parser — the CI floor is the hard layer.
+  assignment chains before `rm -rf`, a force-push, and `git reset --hard origin` are now
+  caught (the v4.1.6 command-position anchor required the destructive word immediately at
+  a boundary, so `sudo rm -rf` slipped past). The force-push matcher also tolerates args
+  before the flag and the flag's variants: `git push origin --force`, `git push origin
+  -f`, `git push origin main --force`, and `--force-with-lease` all match, not just
+  `git push --force`. Quoted prose stays inert; enumerative by design, not a shell parser
+  — the CI floor is the hard layer.
 
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |

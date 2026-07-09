@@ -2,7 +2,9 @@
 # Plinth adversarial review (shared, version-pinned; v3.12). Read-only review of
 # committed work on the current branch vs base, by the second model, recording
 # a SHA-bound structured verdict that hooks/CI/humans can consume.
-# Reviewer model is set in ~/.codex/config.toml — swap it there.
+# The reviewer VENDOR is reviewer_vendor (codex|claude|grok) and its per-tier MODEL is
+# reviewer_model_tier1/tier2 in .plinth/config; a codex reviewer with no per-tier model
+# falls back to ~/.codex/config.toml. See MODELS.md.
 #
 # Fix-verification rounds resume the prior reviewer session with the
 # INCREMENTAL diff only. If the thread is too large to resume safely
