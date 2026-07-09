@@ -55,6 +55,26 @@ edit_file() {  # edit_file <file> <sed-expr>...
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# NEEDS-HUMAN queue path — canonical is .plinth/NEEDS-HUMAN.md; tolerate a legacy
+# root copy (some projects kept it there) so the queue and dashboard still find it.
+# `plinth update` migrates a root copy into .plinth/ (see migrate_needs_human).
+needs_human_file() {  # <dir> -> active NEEDS-HUMAN.md path (canonical preferred)
+  if [ -f "$1/.plinth/NEEDS-HUMAN.md" ]; then echo "$1/.plinth/NEEDS-HUMAN.md"
+  elif [ -f "$1/NEEDS-HUMAN.md" ]; then echo "$1/NEEDS-HUMAN.md"
+  else echo "$1/.plinth/NEEDS-HUMAN.md"; fi
+}
+migrate_needs_human() {  # move a legacy root NEEDS-HUMAN.md into .plinth/ (canonical)
+  local root="$target/NEEDS-HUMAN.md" canon="$target/.plinth/NEEDS-HUMAN.md"
+  [ -f "$root" ] || return 0
+  if [ -f "$canon" ]; then
+    echo "  NOTE: NEEDS-HUMAN.md exists at BOTH repo root and .plinth/ — canonical is"
+    echo "        .plinth/; merge the root copy in by hand and delete it."
+  else
+    mkdir -p "$target/.plinth"; mv "$root" "$canon"
+    echo "  migrated: NEEDS-HUMAN.md -> .plinth/NEEDS-HUMAN.md (canonical location)"
+  fi
+}
+
 # Detect the GitHub owner for ci.yml injection. Chain: target repo's origin ->
 # this Plinth checkout's origin -> git config github.user -> empty (warn).
 # Parses both git@github.com:owner/repo.git and https://github.com/owner/repo(.git).
@@ -326,12 +346,15 @@ sort_blocking_first() {
   non="$(printf '%s\n' "$all" | grep -v '^\[BLOCKING\]' || true)"
   [ -n "$blk" ] && printf '%s\n' "$blk"
   [ -n "$non" ] && printf '%s\n' "$non"
+  return 0   # never fail the caller's `x="$(... | sort_blocking_first)"` under set -e:
+             # an all-BLOCKING (or all-non-blocking) queue leaves the final test false,
+             # which would otherwise abort `plinth queue`/`watch` mid-render.
 }
 
 # Full queue, every item, folded to terminal width — the readable, scrollable
 # home for long queues (the watch banner caps to what fits the screen).
 run_queue() {
-  local f="$target/.plinth/NEEDS-HUMAN.md"
+  local f; f="$(needs_human_file "$target")"
   [ -s "$f" ] || { echo "plinth queue: nothing pending in $f"; exit 0; }
   local cols wrapw items
   cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
@@ -377,15 +400,15 @@ render_frame() {
   rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
-  local nh="" nhn=0 nhb=0
-  if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
+  local nh="" nhn=0 nhb=0 nhf; nhf="$(needs_human_file "$target")"
+  if [ -s "$nhf" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
     # Full text, every item, SOFTWARE-WRAPPED to the terminal width with a
     # hanging indent: the in-place repaint assumes one logical line per
     # physical row, so we must never rely on the terminal to wrap.
     local raw cols wrapw item rows budget used=0 shown=0 folded flines
-    raw="$(open_items "$target/.plinth/NEEDS-HUMAN.md")"
-    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
+    raw="$(open_items "$nhf")"
+    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
     nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
     raw="$(printf '%s\n' "$raw" | sort_blocking_first)"   # blocking to the top
@@ -632,10 +655,10 @@ statusline_render() {
   local sslug nh=""
   sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
   vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
-  local nhblk=""
-  if [ -s "$dir/.plinth/NEEDS-HUMAN.md" ]; then
-    nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
-    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || true)"
+  local nhblk="" nhf; nhf="$(needs_human_file "$dir")"
+  if [ -s "$nhf" ]; then
+    nh="$(grep -cE '^- \[ \]' "$nhf" 2>/dev/null || echo 1)"
+    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$nhf" 2>/dev/null || true)"
     [ "$nhblk" != "0" ] && [ -n "$nhblk" ] && nh="${nh}⛔${nhblk}"
   fi
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
@@ -789,6 +812,7 @@ case "$cmd" in
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths
+    migrate_needs_human
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
     # configs are preserved, so remind upgraded projects (MANUAL.md points here).
     grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null \
