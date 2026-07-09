@@ -113,7 +113,11 @@ case "$tool" in
     # catastrophic axis; force is usually paired but recursive is the danger. A short
     # flag must start right after a space so `--reflink`/`--version` (contain r, not
     # recursive) do not trip.
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|-f)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+    # git push: a force overwrite by ANY encoding — the flag forms (--force*, -f), the
+    # refspec form (a token starting with `+`, e.g. `git push origin +main`), and --mirror
+    # (force-replaces all remote refs). The `+` alternative starts right after a space
+    # (the prefix group ends in whitespace), so a branch named `feature+x` is not a hit.
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|-f|--mirror|[+][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi

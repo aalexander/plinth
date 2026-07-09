@@ -943,6 +943,14 @@ jobs:
           [ "$(gcmd 'gh -R owner/repo pr create --fill')" = 2 ] || { echo "::error::deny-ship: 'gh -R o/r pr create' bypassed"; exit 1; }
           [ "$(gcmd 'gh --repo owner/repo pr merge --squash')" = 2 ] || { echo "::error::deny-ship: 'gh --repo o/r pr merge' bypassed"; exit 1; }
           [ "$(gcmd 'gh -R owner/repo pr list')" = 0 ] || { echo "::error::deny-ship: 'gh -R o/r pr list' wrongly blocked"; exit 1; }
+          # FLAGLESS force-push forms (round-31) — force encoded in the refspec or mode, no force flag:
+          [ "$(gcmd 'git push origin +main')" = 2 ] || { echo "::error::guard: 'git push origin +main' (refspec force) bypassed"; exit 1; }
+          [ "$(gcmd 'git push origin +HEAD:main')" = 2 ] || { echo "::error::guard: 'git push origin +HEAD:main' bypassed"; exit 1; }
+          [ "$(gcmd 'git push --mirror origin')" = 2 ] || { echo "::error::guard: 'git push --mirror' bypassed"; exit 1; }
+          [ "$(gcmd 'git push origin --mirror')" = 2 ] || { echo "::error::guard: 'git push origin --mirror' bypassed"; exit 1; }
+          [ "$(gcmd 'git -C . push origin +main')" = 2 ] || { echo "::error::guard: 'git -C . push origin +main' bypassed"; exit 1; }
+          [ "$(gcmd 'git push origin feature+x')" = 0 ] || { echo "::error::guard: 'git push origin feature+x' (+ inside token) wrongly blocked"; exit 1; }
+          [ "$(gcmd 'git push origin HEAD:main')" = 0 ] || { echo "::error::guard: 'git push origin HEAD:main' (non-force refspec) wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }
