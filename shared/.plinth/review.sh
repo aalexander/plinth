@@ -172,10 +172,13 @@ inline_goal() {
 # there is no ratified prior policy to weaken). Same helper feeds the primary reviewer
 # (fresh/verify) and the tools-forbidden auditor.
 inline_contract() {
-  local f base
+  local f
   for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do
-    base="$(git show "${baseref}:$f" 2>/dev/null || true)"
-    if [ -n "$base" ]; then echo "--- $f (base) ---"; printf '%s\n' "$base"
+    # Test base OBJECT EXISTENCE (git cat-file -e), NOT content: a policy file that
+    # exists-but-empty at base must inline the (empty) BASE, never fall through to the
+    # PR working tree — else a PR could add weakening to a previously-empty policy file.
+    if git cat-file -e "${baseref}:$f" 2>/dev/null; then
+      echo "--- $f (base) ---"; git show "${baseref}:$f" 2>/dev/null
     elif [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi
   done
 }
