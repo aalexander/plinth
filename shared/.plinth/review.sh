@@ -181,15 +181,29 @@ inline_goal() {
 # there is no ratified prior policy to weaken). Same helper feeds the primary reviewer
 # (fresh/verify) and the tools-forbidden auditor.
 inline_contract() {
-  local f
-  for f in .plinth/reviewer.md .plinth/AGENTS-project.md; do
-    # Test base OBJECT EXISTENCE (git cat-file -e), NOT content: a policy file that
-    # exists-but-empty at base must inline the (empty) BASE, never fall through to the
-    # PR working tree — else a PR could add weakening to a previously-empty policy file.
-    if git cat-file -e "${baseref}:$f" 2>/dev/null; then
-      echo "--- $f (base) ---"; git show "${baseref}:$f" 2>/dev/null
-    elif [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi
-  done
+  # Always the RATIFIED (base) policy; test OBJECT EXISTENCE (git cat-file -e), not
+  # content, so an exists-but-empty base file still wins over the working tree.
+  # Reviewer contract, in fallback order:
+  #   1. base .plinth/reviewer.md            — normal (v4.4 already ratified)
+  #   2. base root AGENTS.md, IF not the driver shell — FIRST v4.4 upgrade: the ratified
+  #      reviewer contract still lives in pre-v4.4 AGENTS.md; using the PR's own new
+  #      reviewer.md would let it judge itself. (Skip when base AGENTS.md is already the
+  #      driver shell — post-migration reviewer.md is expected, absence is tampering.)
+  #   3. working-tree .plinth/reviewer.md    — brand-new project, nothing ratified yet.
+  if git cat-file -e "${baseref}:.plinth/reviewer.md" 2>/dev/null; then
+    echo "--- .plinth/reviewer.md (base) ---"; git show "${baseref}:.plinth/reviewer.md" 2>/dev/null
+  elif git cat-file -e "${baseref}:AGENTS.md" 2>/dev/null \
+       && ! git show "${baseref}:AGENTS.md" 2>/dev/null | grep -qF 'Plinth driver shell (version-pinned)'; then
+    echo "--- AGENTS.md (base — pre-v4.4 reviewer contract) ---"; git show "${baseref}:AGENTS.md" 2>/dev/null
+  elif [ -f .plinth/reviewer.md ]; then
+    echo "--- .plinth/reviewer.md ---"; cat .plinth/reviewer.md
+  fi
+  # Project-specific reviewer rules (same path pre- and post-v4.4): base, else working tree.
+  if git cat-file -e "${baseref}:.plinth/AGENTS-project.md" 2>/dev/null; then
+    echo "--- .plinth/AGENTS-project.md (base) ---"; git show "${baseref}:.plinth/AGENTS-project.md" 2>/dev/null
+  elif [ -f .plinth/AGENTS-project.md ]; then
+    echo "--- .plinth/AGENTS-project.md ---"; cat .plinth/AGENTS-project.md
+  fi
 }
 
 # Role-scoping rule appended to grok's system prompt (reviewer adapter + auditor):
