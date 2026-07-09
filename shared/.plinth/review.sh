@@ -8,8 +8,11 @@
 # INCREMENTAL diff only. If the thread is too large to resume safely
 # (PLINTH_RESUME_MAX input tokens; default 650000 ≈ 65% of GPT-5.5's 1,005,000
 # window — revisit on reviewer swap, see MODELS.md), the anchor commit is gone,
-# or the resume itself fails, the round falls back to a clean-slate full
-# review in a fresh session — the loop can never deadlock on a dead thread.
+# or the resume itself fails, the round falls back to a VERIFY round (prior
+# findings + the incremental diff, which does NOT bind on its own) — or a
+# clean-slate full review when there are no prior findings to verify. Either way
+# an approval still gets a clean-slate full confirmation before it binds, so the
+# loop can never deadlock on a dead thread.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}

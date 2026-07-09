@@ -81,6 +81,14 @@ Stale/overclaimed statements the reviewer rules block on, now matching the code:
   the code): the fallback is a VERIFY round that sees only prior findings plus the
   incremental diff and does not bind alone; a clean-slate full confirmation runs only
   after an approval. Reworded to match.
+- review.sh header comment: same overclaim — it still said an oversized/dead resume
+  "falls back to a clean-slate full review". The code falls back to a VERIFY round
+  when prior findings exist (fresh only when there are none). Reworded to match the
+  code and MANUAL.md.
+- Canary now also covers two previously-untested fail-loud paths: the self-hosted
+  `smoke` job block (unresolvable base fails loud; absent base config no-ops green,
+  not a pipefail abort) and the non-git `plinth init` fallback (writes the
+  PIN_TO_YOUR_PLINTH_RELEASE_COMMIT sentinel, never a stale/mutable ref).
 - templates/SPEC.md: dropped the unbacked claim that "the review loop, receipts,
   and drift detection key off" REQ-<AREA>-<NN> IDs — nothing machine-parses them.
   They're a stable human/reviewer handle for referencing a requirement across

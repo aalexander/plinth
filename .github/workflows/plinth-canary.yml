@@ -51,6 +51,14 @@ jobs:
           grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
           grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
+          # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
+          # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
+          # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.
+          NGP="$(mktemp -d)"; cp -R "$GITHUB_WORKSPACE/bin" "$GITHUB_WORKSPACE/templates" "$GITHUB_WORKSPACE/shared" "$GITHUB_WORKSPACE/VERSION" "$NGP/"
+          [ -f "$GITHUB_WORKSPACE/.plinth-version" ] && cp "$GITHUB_WORKSPACE/.plinth-version" "$NGP/" || true
+          NGPROJ="$(mktemp -d)"; ( cd "$NGPROJ" && git init -qb main . >/dev/null && "$NGP/bin/plinth" init "$NGPROJ" >/dev/null 2>&1 )
+          grep -q 'PIN_TO_YOUR_PLINTH_RELEASE_COMMIT' "$NGPROJ/.github/workflows/ci.yml" || { echo "::error::non-git init did not write the UNPINNED sentinel for the reusable refs"; exit 1; }
+          grep -Eq 'plinth-(floor|checks)\.yml@[0-9a-f]{7,}' "$NGPROJ/.github/workflows/ci.yml" && { echo "::error::non-git init left a resolved SHA despite no resolvable Plinth HEAD"; exit 1; } || true
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"
           git checkout -qb feat && echo x > f.txt && git add -A && git commit -qm "canary work"
@@ -435,6 +443,16 @@ jobs:
           r="$(smoke_decide nocmd)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: base has no smoke_cmd -> $r (want run=false exit=0)"; exit 1; }
           r="$(smoke_decide nocfg)";      [ "$r" = "run=false exit=0" ] || { echo "::error::smoke precheck: ABSENT base .plinth/config -> $r — pipefail regression (want run=false exit=0)"; exit 1; }
           r="$(smoke_decide nosuchbase)"; [ "$r" = "run=<none> exit=1" ] || { echo "::error::smoke precheck: unresolvable base -> $r (want fail-loud run=<none> exit=1)"; exit 1; }
+          # The self-hosted `smoke` job block has its OWN base fetch/read/fail-loud — the
+          # precheck test above does not cover it. Extract and run it too: an unresolvable
+          # base must fail LOUD, an absent base config must be a green no-op (not a pipefail
+          # abort). (The smoke_cmd-set path runs the command, so it's exercised in real CI.)
+          SJ="$(mktemp)"
+          awk '/- name: Run smoke_cmd/{s=1} s&&!r&&/run: \|/{match($0,/^ */);ri=RLENGTH;r=1;next} r{if($0~/^[[:space:]]*$/){print"";next} match($0,/^ */);ind=RLENGTH; if(ind<=ri){exit} if(bi=="")bi=ind; print substr($0,bi+1)}' "$SMK" > "$SJ"
+          grep -q 'refusing to fail open' "$SJ" && grep -q 'nothing to run' "$SJ" || { echo "::error::could not extract self-hosted smoke job block from smoke.yml"; exit 1; }
+          run_smoke() { wd="$(mktemp -d)"; ec=0; ( cd "$wd" && git init -q . && git remote add origin "$SORG" && GITHUB_BASE_REF="$1" bash "$SJ" >/dev/null 2>&1 ) || ec=$?; echo "$ec"; }
+          [ "$(run_smoke nosuchbase)" = "1" ] || { echo "::error::self-hosted smoke: unresolvable base did not fail loud (exit $(run_smoke nosuchbase))"; exit 1; }
+          [ "$(run_smoke nocfg)" = "0" ]      || { echo "::error::self-hosted smoke: absent base config did not no-op green (exit $(run_smoke nocfg)) — pipefail regression"; exit 1; }
           # plinth update backfills managed protected-paths patterns, preserves user lines.
           PPFX="$(mktemp -d)"; ( cd "$PPFX" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PPFX" >/dev/null 2>&1 )
           # NO trailing newline on the user's last line — this is the exact input
