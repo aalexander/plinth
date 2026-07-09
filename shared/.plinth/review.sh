@@ -399,7 +399,7 @@ _reviewer_claude() {  # hard --json-schema -> .structured_output; --bare skips t
   jq -e '.structured_output | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
     || die_infra "claude returned no schema-structured verdict — see $raw"
   RSID="$(jq -r '.session_id // empty' "$raw" 2>/dev/null)"
-  RUSAGE="$(jq -c '.usage // "null"' "$raw" 2>/dev/null)"; [ -n "$RUSAGE" ] || RUSAGE="null"
+  RUSAGE="$(jq -c '.usage // null' "$raw" 2>/dev/null)"; [ -n "$RUSAGE" ] || RUSAGE="null"
 }
 
 _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else extract from .text

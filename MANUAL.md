@@ -364,9 +364,10 @@ it has run green with a real smoke_cmd.
   or GitHub Pro; the preflight reports which state you're in).
 
 ## When models change (they will)
-- New reviewer: one line in `~/.codex/config.toml`, then revisit
-  `PLINTH_RESUME_MAX` (~65% of the new reviewer's context window — see the
-  reviewer-swap checklist in `shared/MODELS.md`).
+- New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —
+  each runs its own CLI and the resume threshold scales per vendor automatically.
+  Staying on codex but changing its model? Edit `~/.codex/config.toml` instead. (env
+  `PLINTH_RESUME_MAX` still overrides the threshold if you ever need to.)
 - New driver: `/model` in Claude Code.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.

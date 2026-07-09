@@ -431,10 +431,20 @@ jobs:
           printf '{"sessionId":"gs","structuredOutput":%s}' "\$so"
           GK
           chmod +x "$1/grok"; }
+          mk_seq_claude() { cat > "$1/claude" <<CL
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$1/state") + 1 )); echo \$n > "$1/state"
+          for a in "\$@"; do [ "\$a" = --resume ] && echo resume >> "$1/modes"; done
+          cat >/dev/null
+          if [ "\$n" = 1 ]; then so='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else so='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          printf '{"session_id":"cs","structured_output":%s,"usage":{"input_tokens":10}}' "\$so"
+          CL
+          chmod +x "$1/claude"; }
           seq_probe() {  # <vendor> <want-round2-mode>
             local vendor="$1" want="$2" SBD; SBD="$(mktemp -d)"; mkstate "$SBD"
             [ "$vendor" = codex ] && mk_seq_codex "$SBD"
             [ "$vendor" = grok ] && mk_seq_grok "$SBD"
+            [ "$vendor" = claude ] && mk_seq_claude "$SBD"
             local d; d="$(mktemp -d)"
             ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
               cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
@@ -447,8 +457,9 @@ jobs:
               [ -f "$SBD/modes" ] && got=resume || got=noresume
               [ "$got" = "$want" ] || { echo "::error::reviewer_vendor=$vendor round-2 resume=$got (want $want)"; exit 1; } )
           }
-          seq_probe codex resume
-          seq_probe grok  noresume
+          seq_probe codex  resume
+          seq_probe claude resume
+          seq_probe grok   noresume
           # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
           # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
           # "cross-vendor" audit runs (Tier-2 change; grok primary + grok audit).
