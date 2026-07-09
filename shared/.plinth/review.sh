@@ -185,9 +185,12 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
       return 1 ;;
   esac
   jq . "${out}.j" > "$out" 2>/dev/null || return 1
-  # Fail loud, not open: an unparseable/incomplete audit must NOT be treated as
-  # a concurrence. Require a real verdict + findings array.
-  jq -e '(.verdict=="APPROVED" or .verdict=="CHANGES_NEEDED") and (.findings|type=="array")' "$out" >/dev/null 2>&1
+  # Fail loud, not open: an unparseable/incomplete/schema-invalid audit must NOT be
+  # treated as a concurrence. Full schema check (same as the primary reviewer) — the
+  # audit blocking count below matches exact severity/status enums, so a malformed
+  # finding (severity "Major", non-integer line, extra props) would drop to zero
+  # blocking. An invalid audit is recorded UNAVAILABLE by the caller, not as a pass.
+  validate_findings "$out"
 }
 
 # Root-anchored (^, not (^|/)): finding paths are repo-relative, and a looser
@@ -390,13 +393,14 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
 }
 
 _reviewer_claude() {  # hard --json-schema -> .structured_output
-  # NB: NO --bare — bare mode disables OAuth/keychain auth (needs ANTHROPIC_API_KEY),
-  # which breaks the subscription-signed-in setup. claude will auto-load the repo's
-  # CLAUDE.md (driver contract), but the prompt explicitly frames the reviewer role +
-  # names AGENTS.md, and the schema forces the output — that steer dominates.
+  # --safe-mode ISOLATES the reviewer: it disables project customizations including
+  # auto-loading the repo's CLAUDE.md (a project-controlled, PR-modifiable input that
+  # could otherwise inject instructions into the reviewer) while KEEPING OAuth/keychain
+  # auth — unlike --bare, which needs ANTHROPIC_API_KEY. The reviewer reads AGENTS.md
+  # via the prompt.
   local m="$1" margs=() rargs=(); [ -n "${RV_MODEL:-}" ] && margs=(--model "$RV_MODEL")
   [ "$m" = "resume" ] && rargs=(--resume "$s")
-  printf '%s' "$prompt" | claude -p --output-format json \
+  printf '%s' "$prompt" | claude -p --safe-mode --output-format json \
     --json-schema "$(cat "$SCHEMA")" --allowed-tools "Read,Grep,Glob" --permission-mode dontAsk \
     ${margs[@]+"${margs[@]}"} ${rargs[@]+"${rargs[@]}"} > "$raw" 2> "$errlog" \
     || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"; }

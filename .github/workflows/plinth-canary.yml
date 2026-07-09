@@ -359,8 +359,21 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           bv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audbogus/verdict.json 2>/dev/null)"
           [ "$bv" = "UNAVAILABLE" ] || { echo "::error::unknown audit_vendor not recorded UNAVAILABLE (verdict=$bv) — silent codex fallthrough?"; exit 1; }
+          # Audit schema validation: a malformed grok AUDIT finding (severity "Major") must be
+          # recorded UNAVAILABLE, not silently dropped to zero blocking — same schema-drop class
+          # the primary reviewer validator closes. run_auditor: .text -> extract -> validate.
+          cat > /tmp/asb/grok <<'GKA'
+          #!/usr/bin/env bash
+          printf '%s' '{"text":"{\"verdict\":\"CHANGES_NEEDED\",\"summary\":\"x\",\"findings\":[{\"file\":\"a\",\"line\":1,\"severity\":\"Major\",\"description\":\"d\",\"status\":\"open\"}]}"}'
+          GKA
+          chmod +x /tmp/asb/grok
+          set_base_audit grok
+          git checkout -qB audmal main >/dev/null 2>&1; echo "malformed audit probe" >> SPEC.md; git add -A; git commit -qm audmal >/dev/null
+          PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+          amv="$(jq -r '.audit.verdict // "none"' .plinth/session/review/audmal/verdict.json 2>/dev/null)"
+          [ "$amv" = "UNAVAILABLE" ] || { echo "::error::malformed grok AUDIT output (severity 'Major') not recorded UNAVAILABLE (verdict=$amv) — audit schema-validation gap"; exit 1; }
           RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
-          
+
           # ── Vendor-agnostic reviewer (reviewer_vendor = codex|claude|grok) ──
           # Efficiency #1: the fresh AND verify prompts must instruct the reviewer to sweep the
           # whole diff for every sibling of a defect class (prompt-only change → content assert).
@@ -368,7 +381,7 @@ jobs:
           grep -q 'SWEEP the whole diff for EVERY sibling' "$RS" || { echo "::error::verify prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
           # Efficiency #3b: the verify fallback must send the FULL diff, not a thin incremental slice.
           grep -q 'Re-review the FULL diff with first-pass rigor' "$RS" || { echo "::error::verify prompt no longer sends the FULL diff (#3b)"; exit 1; }
-          
+
           # Stub each vendor CLI; assert review.sh drives a Tier-1 review to APPROVED via the
           # REAL dispatch, recording the right session id + usage handling (grok: null).
           RVB="$(mktemp -d)"
@@ -408,7 +421,7 @@ jobs:
           rv_probe codex  codex-s  0
           rv_probe claude claude-s 0
           rv_probe grok   grok-s   1
-          
+
           # RV_WARM_RESUME: codex resumes across rounds; grok (no usage) can't → verify/confirm.
           mkstate() { echo 0 > "$1/state"; }
           mk_seq_codex() { cat > "$1/codex" <<CX

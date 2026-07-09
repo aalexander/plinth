@@ -5,7 +5,8 @@
   grok`, base config, default codex — no behavior change). A `reviewer_run`
   dispatcher + per-vendor adapters replace the hardcoded `codex exec`: codex
   (`--output-schema`, thread resume, usage from the event stream), claude (`-p
-  --json-schema`, `--resume`, `.session_id`/`.usage`), grok (`--prompt-file
+  --safe-mode --json-schema`, `--resume`, `.session_id`/`.usage`; --safe-mode isolates
+  it from repo CLAUDE.md while keeping auth), grok (`--prompt-file
   --output-format json`, soft schema → extract, no headless usage). `RV_WARM_RESUME`
   gates warm resume (codex/claude yes; grok runs fresh/verify). Vendor-aware
   required-CLI check + per-tier `RV_MODEL` mapped to each vendor's model flag. This
@@ -14,10 +15,12 @@
   cross-vendor audit now gates on `audit_vendor != reviewer_vendor` (was hardcoded
   `!= codex`), so it stays a genuine DIFFERENT-vendor check whatever the primary is
   (e.g. grok primary + grok audit is correctly NOT a cross-vendor audit). Every
-  reviewer's normalized output is now schema-validated (verdict/severity/status enums
-  + required fields) before the verdict arithmetic — grok's soft-schema fallback could
-  otherwise slip a malformed severity (e.g. "Major") past the exact-match blocking
-  count and turn a CHANGES_NEEDED into APPROVED.
+  reviewer's AND the cross-vendor auditor's normalized output is now fully
+  schema-validated (verdict/severity/status enums, INTEGER line, required fields, no
+  extra props) before the verdict/blocking arithmetic — a soft-schema fallback could
+  otherwise slip a malformed finding (e.g. severity "Major") past the exact-match
+  count and flip a verdict or drop a blocking audit finding. An invalid primary review
+  fails loud (die); an invalid audit is recorded UNAVAILABLE.
 - **Review-loop efficiency #1 — enumerate the whole class per pass.** The fresh and
   verify prompts now instruct the reviewer to SWEEP the diff for every sibling
   instance of a defect class and report them all in one round, instead of the single
