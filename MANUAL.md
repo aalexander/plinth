@@ -205,9 +205,10 @@ Two operator chores the rules generate:
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
-   same reviewer session with just the incremental diff, and fall back to a fresh
-   full review automatically if that session is too large or dead), 2 = the
-   review DID NOT RUN.
+   same reviewer session with just the incremental diff, or — if that session is too
+   large or dead — a verify round that sees only prior findings plus the incremental
+   diff and does NOT bind on its own, so an approval still gets a clean-slate full
+   confirmation first), 2 = the review DID NOT RUN.
    *Background, enforcement:* if the model tries to end its turn with commits
    but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
    refuses and sends it back with instructions. It cannot skip the review.

@@ -60,6 +60,19 @@ jobs:
           rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
           [ "$rc" -eq 2 ] || { echo "::error::review.sh dirty-tree path exited $rc (want 2)"; exit 1; }
           git checkout -- f.txt   # clean the fixture before switching branches
+          # review.sh resolves spec_path from the BASE config, not the working tree — a
+          # PR must not repoint the review target to a weaker spec in its own diff. Run
+          # the REAL resolution block extracted from shared/review.sh (not a copy) with a
+          # base spec_path=BASE.md but a working-tree repoint to EVIL.md; base must win.
+          RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"; SB="$(mktemp)"
+          awk '/^SPEC_PATH="\$\(git show/{p=1} p{print} /SPEC_PATH="SPEC\.md"/{if(p)exit}' "$RS" > "$SB"
+          grep -q 'git show' "$SB" && grep -q 'SPEC.md' "$SB" || { echo "::error::could not extract SPEC_PATH resolution from review.sh"; exit 1; }
+          SR="$(mktemp -d)"; SORG2="$(mktemp -d)"; git init -q --bare "$SORG2"
+          ( cd "$SR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'spec_path = BASE.md\n' > .plinth/config
+            git add -A; git commit -qm b >/dev/null; git remote add origin "$SORG2"; git push -q origin main
+            printf 'spec_path = EVIL.md\n' > .plinth/config )
+          SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$SB"; echo "$SPEC_PATH" )"
+          [ "$SPR" = "BASE.md" ] || { echo "::error::review.sh spec_path -> '$SPR': a same-PR working-tree repoint redirected the review target (want BASE.md from base config)"; exit 1; }
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
           tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }

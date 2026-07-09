@@ -81,7 +81,12 @@ cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | 
 # gate, which needs no codex config at all. Absent/unset just falls back to "codex".
 REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 || true)"
 [ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
-SPEC_PATH="$(cfg spec_path)";        [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
+# spec_path from the BASE config (like risk-classify.sh): a PR must not repoint the
+# review target to a weaker/empty spec in its own diff. Fall back to the working tree
+# only when the base has none (first spec / new project), then the default.
+SPEC_PATH="$(git show "${baseref}:.plinth/config" 2>/dev/null | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path)"
+[ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(cfg exec_gated || true)"
 ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
 AUDIT_MODEL="$(cfg audit_model || true)"
@@ -333,12 +338,28 @@ $(git log --format='%h %s' "${baseref}..HEAD" 2>/dev/null | head -50)"
 LATEST RUN RECEIPT (execution evidence — verify RUNTIME findings against it):
 $(cat "$RECEIPT")"
   fi
-  # The spec is an instrument too: when the diff changes it, attack it.
-  if git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${SPEC_PATH}"; then
+  # The spec is an instrument too: when the diff changes it, attack it. SPEC_PATH is
+  # the BASE spec_path, so this catches edits/deletions to the PRIOR canonical spec.
+  # If the PR also repoints spec_path, attack the new path too and flag the repoint.
+  WSPEC="$(cfg spec_path)"
+  spec_changed=""
+  for sp in "$SPEC_PATH" "$WSPEC"; do
+    [ -n "$sp" ] || continue
+    git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${sp}" && spec_changed=1
+  done
+  [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ] && spec_changed=1
+  if [ -n "$spec_changed" ]; then
     specatk="
 The canonical spec itself changed in this diff: additionally ATTACK the spec
-changes for ambiguity, untestability, and internal contradiction; report such
-findings against the spec file at observed severity."
+changes for ambiguity, untestability, internal contradiction, and any weakening
+or deletion of the prior contract; report such findings against the spec file at
+observed severity."
+    if [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ]; then
+      specatk="${specatk}
+NOTE: this PR REPOINTS spec_path from '${SPEC_PATH}' (base) to '${WSPEC}' — a
+same-PR redirect of the review target. Treat as high-consequence and attack BOTH
+the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
+    fi
   fi
 
   if [ "$m" = "fresh" ]; then

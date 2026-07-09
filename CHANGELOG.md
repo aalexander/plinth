@@ -8,6 +8,13 @@
   configured so never hit it; a fresh CI/non-codex environment did. Added `|| true`
   (absent → falls back to "codex"). Canary now asserts a Tier-0 review approves with
   no codex config present.
+- review.sh: spec_path (the review TARGET) is now read from the BASE config like the
+  classifier, not the working tree — a PR could otherwise repoint spec_path to a
+  weaker/empty spec in its own diff and the primary/audit prompts would judge against
+  that. The spec-change attack now targets the base (prior) spec path, and when a PR
+  repoints spec_path it attacks BOTH the old and new paths and flags the redirect as
+  high-consequence. Canary extracts and runs the real resolution block (base wins over
+  a working-tree repoint).
 - plinth-canary.yml now runs on `pull_request` too, so the ~30 regression probes
   (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
   init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only
@@ -53,6 +60,11 @@ Stale/overclaimed statements the reviewer rules block on, now matching the code:
 - review.sh: the Tier-2 comment said a cross-vendor audit runs "every time
   audit_model is set" — false since the gate became `audit_vendor != codex`.
   Reworded to match (audit_model is a model override, not a trigger).
+- MANUAL.md: the exit-code paragraph claimed too-large/dead reviewer sessions "fall
+  back to a fresh full review automatically" — contradicting the Tier-1 section (and
+  the code): the fallback is a VERIFY round that sees only prior findings plus the
+  incremental diff and does not bind alone; a clean-slate full confirmation runs only
+  after an approval. Reworded to match.
 - templates/SPEC.md: dropped the unbacked claim that "the review loop, receipts,
   and drift detection key off" REQ-<AREA>-<NN> IDs — nothing machine-parses them.
   They're a stable human/reviewer handle for referencing a requirement across
