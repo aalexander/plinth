@@ -868,8 +868,10 @@ case "$cmd" in
     if ! grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null; then
       rv="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$target/.plinth/config" 2>/dev/null | head -1)"
       [ -n "$rv" ] || rv=codex
-      case "$rv" in grok) sug="codex (or agy)" ;; *) sug="grok (or agy)" ;; esac
-      echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. It must DIFFER from reviewer_vendor ($rv); add audit_vendor = $sug to .plinth/config."
+      case "$rv" in grok) sug=codex ;; *) sug=grok ;; esac
+      # The suggested value is a SINGLE valid vendor (copy-pastable); agy is offered in
+      # prose OUTSIDE the config line so it is never pasted as part of the value.
+      echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. It must DIFFER from reviewer_vendor ($rv); add 'audit_vendor = $sug' (or 'agy') to .plinth/config."
     fi
     github_preflight
     warn_missing_gate_wiring

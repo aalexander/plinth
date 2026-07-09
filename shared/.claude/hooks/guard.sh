@@ -76,9 +76,10 @@ case "$tool" in
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
     # rm/git patterns are anchored to command position. Upstream issue #1
     # hardenings (driver-reported): backticks open command substitutions —
-    # they are boundaries too; and QUOTED spans are stripped before matching,
-    # so prose that merely mentions these commands (printf'd notes, issue
-    # bodies) no longer false-positives. Command position tolerates a PREFIX
+    # they are boundaries too; and quotes are REMOVED (not the spans — the shell
+    # concatenates quoted tokens, so `"rm" -rf` really runs rm) before matching,
+    # so a mere MENTION mid-argument (a printf'd note, an issue body) is not at a
+    # command boundary and no longer false-positives. Command position tolerates a PREFIX
     # CHAIN — sudo/command/env/nice/nohup/time, each with optional -opts and
     # one optional non-dash argument per option (`sudo -u root`, `nice -n 10`,
     # `env -i`, `command --`), plus VAR=val assignments — so prefixed forms
@@ -89,12 +90,16 @@ case "$tool" in
     # line of a multiline command. DROP stays unanchored and UNstripped:
     # real destructive SQL sits inside quotes (psql -c "..."); prose naming
     # DROP TABLE still trips it — use a --body-file / heredoc for such text.
-    # Quote-stripping is escape-aware for double quotes: a \" inside a "..." span
-    # must not terminate it, or the pairing shifts and quoted prose leaks into (or
-    # hides from) `stripped` — e.g. -m "block bash -c \"gh pr create\" forms" would
-    # otherwise strand `gh pr create` outside any span. Single quotes take no
-    # escapes in shell, so their span stays simple.
-    stripped="$(printf '%s' "$cmd" | sed -E -e "s/'[^']*'//g" -e 's/"(\\.|[^"\\])*"//g')"
+    # UNQUOTE (remove quote/backslash chars, keep content), do NOT delete quoted spans:
+    # the shell CONCATENATES quoted tokens, so `"rm" -rf`, `git "push" --force`, and
+    # `gh "pr" create` really run rm/git/gh — deleting the spans would drop the command
+    # word and let them bypass. Unquoting + the command-position anchor below keeps prose
+    # inert (a MENTION like -m "please rm -rf x" leaves rm mid-line, not at a command
+    # boundary) and keeps wrapper payloads out of scope (`bash -c "gh pr create"` becomes
+    # `bash -c gh pr create`, gh not at command position). Residual: a command DELIMITER
+    # (; | &) inside quoted prose (`-m "step; rm -rf x"`) exposes it to the matcher and
+    # blocks — rare, and fail-closed (run it yourself). \042 " \047 ' \134 backslash.
+    stripped="$(printf '%s' "$cmd" | tr -d '\042\047\134')"
     # One prefix unit: a prefix word with optional "-opt [arg]" groups, OR a VAR=val
     # assignment; PFX is any chain of them (used only by the destructive matcher — the
     # ship tripwire below matches plain unquoted `gh pr create/merge`, where prefixes
@@ -109,9 +114,11 @@ case "$tool" in
     # create` still matches). Anchoring — the same treatment as the destructive check —
     # keeps an unquoted MENTION inert: `echo gh pr create`, `printf %s gh pr merge`, and
     # `gh pr view | grep gh pr create` have the phrase as an ARGUMENT, not the command, so
-    # they do not trip. Quoted spans are already stripped, so a commit -m mentioning it is
-    # inert too. Deliberately-quoted obfuscation (`bash -c "gh pr create"`) is OUT OF SCOPE
-    # by design (see the header): a client-side hook can't win that race; branch protection can.
+    # they do not trip — including a commit -m that mentions it (quotes were removed, but
+    # the phrase is still mid-argument, not at a command boundary). Deliberately-quoted
+    # obfuscation (`bash -c "gh pr create"` -> `bash -c gh pr create`, gh not at command
+    # position) is OUT OF SCOPE by design (see the header): a client-side hook can't win
+    # that race; branch protection can.
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
       ship_gate "gh pr create/merge"
     fi

@@ -903,6 +903,13 @@ jobs:
           [ "$(gcmd 'sudo git push origin --force')" = 2 ] || { echo "::error::guard: 'sudo git push origin --force' not blocked"; exit 1; }
           [ "$(gcmd 'git push --force-with-lease origin')" = 2 ] || { echo "::error::guard: 'git push --force-with-lease' not blocked"; exit 1; }
           [ "$(gcmd 'git push origin main')" = 0 ] || { echo "::error::guard: plain 'git push origin main' wrongly blocked"; exit 1; }
+          # DIRECT quoted-token forms — the shell concatenates them, so they must still be caught (round-27):
+          [ "$(gcmd '"rm" -rf x')" = 2 ] || { echo "::error::guard: quoted-token '\"rm\" -rf' bypassed"; exit 1; }
+          [ "$(gcmd 'rm "-rf" x')" = 2 ] || { echo "::error::guard: quoted-token 'rm \"-rf\"' bypassed"; exit 1; }
+          [ "$(gcmd 'git push "--force" origin')" = 2 ] || { echo "::error::guard: quoted-token 'git push \"--force\"' bypassed"; exit 1; }
+          [ "$(gcmd 'git "push" --force origin')" = 2 ] || { echo "::error::guard: quoted-token 'git \"push\" --force' bypassed"; exit 1; }
+          [ "$(gcmd 'gh "pr" create')" = 2 ] || { echo "::error::deny-ship: quoted-token 'gh \"pr\" create' bypassed"; exit 1; }
+          [ "$(gcmd 'git commit -m "please rm -rf later"')" = 0 ] || { echo "::error::guard: prose mention 'rm -rf' (no delimiter) wrongly blocked after unquoting"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }
@@ -1033,12 +1040,15 @@ jobs:
           printf 'reviewer_vendor = grok\n' >> "$AW/.plinth/config"
           awgrok="$("$GITHUB_WORKSPACE/bin/plinth" update "$AW" 2>&1)"
           printf '%s' "$awgrok" | grep -q "audit_vendor unset" || { echo "::error::audit_vendor warning missing after removing it"; exit 1; }
-          printf '%s' "$awgrok" | grep -q "codex" || { echo "::error::grok-primary audit warning did not suggest a DIFFERENT vendor (codex)"; exit 1; }
-          printf '%s' "$awgrok" | grep -qE 'audit_vendor = grok' && { echo "::error::grok-primary audit warning still suggested grok (== reviewer_vendor, suppressed)"; exit 1; } || true
+          # The suggested config line must be a VALID single vendor (copy-pastable), not
+          # "audit_vendor = codex (or agy)" which review.sh would read as an unknown vendor (round-27).
+          printf '%s' "$awgrok" | grep -qF "'audit_vendor = codex'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = codex'"; exit 1; }
+          printf '%s' "$awgrok" | grep -qE 'audit_vendor = codex[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = codex (...'"; exit 1; } || true
+          printf '%s' "$awgrok" | grep -qE "'audit_vendor = grok'" && { echo "::error::grok-primary audit warning suggested grok (== reviewer_vendor)"; exit 1; } || true
           CW="$(mktemp -d)"; ( cd "$CW" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CW" >/dev/null 2>&1 )
           grep -v '^audit_vendor' "$CW/.plinth/config" > "$CW/.plinth/config.tmp" && mv "$CW/.plinth/config.tmp" "$CW/.plinth/config"
           printf 'reviewer_vendor = codex\n' >> "$CW/.plinth/config"
-          "$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1 | grep -q 'audit_vendor = grok' || { echo "::error::codex-primary audit warning did not suggest grok"; exit 1; }
+          "$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1 | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
           
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
