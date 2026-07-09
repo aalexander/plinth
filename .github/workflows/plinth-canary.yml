@@ -690,15 +690,41 @@ jobs:
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
           
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
+          mk_old_claude() {  # <path> <notes-section-content>
+            printf '# CLAUDE.md\n\nYou are the implementer.\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\n%s\n' "$2" > "$1"
+          }
+          OLDPH='<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
+               stack quirks. Shared Plinth rules import above; this section is yours and is
+               never overwritten by `plinth update`. -->'
           MS="$(mktemp -d)"; ( cd "$MS" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MS" >/dev/null 2>&1 )
-          printf '# CLAUDE.md\n\nYou are the implementer.\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\n<!-- placeholder\n     only -->\n' > "$MS/CLAUDE.md"
+          mk_old_claude "$MS/CLAUDE.md" "$OLDPH"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MS" >/dev/null 2>&1
           grep -qF "Plinth driver shell (version-pinned)" "$MS/CLAUDE.md" || { echo "::error::update did not regenerate a STOCK old CLAUDE.md to the shell"; exit 1; }
           MC="$(mktemp -d)"; ( cd "$MC" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MC" >/dev/null 2>&1 )
-          printf '# CLAUDE.md\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\nCUSTOM: never touch migrations without approval.\n' > "$MC/CLAUDE.md"
+          mk_old_claude "$MC/CLAUDE.md" "CUSTOM: never touch migrations without approval."
           "$GITHUB_WORKSPACE/bin/plinth" update "$MC" >/dev/null 2>&1
           grep -qF "Plinth driver shell (version-pinned)" "$MC/CLAUDE.md" && { echo "::error::update CLOBBERED a CUSTOM CLAUDE.md (data loss)"; exit 1; } || true
           grep -qF "never touch migrations" "$MC/CLAUDE.md" || { echo "::error::custom CLAUDE.md content lost on update"; exit 1; }
+          # Notes INSIDE the placeholder comment are CUSTOM (round-3): must be preserved.
+          MK="$(mktemp -d)"; ( cd "$MK" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MK" >/dev/null 2>&1 )
+          mk_old_claude "$MK/CLAUDE.md" '<!-- Anything unique to THIS project: domain constraints,
+               use Postgres 16 ONLY; never edit migrations/. -->'
+          "$GITHUB_WORKSPACE/bin/plinth" update "$MK" >/dev/null 2>&1
+          grep -qF "Postgres 16" "$MK/CLAUDE.md" || { echo "::error::notes inside the placeholder comment were destroyed (treated as stock)"; exit 1; }
+          
+          # ── v4.4.0: protected-paths backfill not suppressed by COMMENT lines ────
+          CP="$(mktemp -d)"; ( cd "$CP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CP" >/dev/null 2>&1 )
+          printf '# note: CLAUDE\\.md$ and \\.plinth/reviewer\\.md$ are pinned in v4.4\n(^|/)\\.plinth/session/\n' > "$CP/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$CP" >/dev/null 2>&1
+          grep -qxF '(^|/)CLAUDE\.md$' "$CP/.plinth/protected-paths" || { echo "::error::commented suffix suppressed the ACTIVE CLAUDE.md backfill"; exit 1; }
+          grep -qxF '(^|/)\.plinth/reviewer\.md$' "$CP/.plinth/protected-paths" || { echo "::error::commented suffix suppressed the ACTIVE reviewer.md backfill"; exit 1; }
+          
+          # ── v4.4.0: pulse.sh scrubs credentials BEFORE truncation ───────────────
+          PU="$(mktemp -d)"; PPAD="$(printf 'a%.0s' $(seq 1 115))"
+          printf '{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"%s"}' "${PPAD}sk-AAAABBBBCCCCDDDD1111" \
+            | CLAUDE_PROJECT_DIR="$PU" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/pulse.sh"
+          grep -q 'sk-' "$PU/.plinth/session/events.jsonl" && { echo "::error::pulse: credential fragment survived the truncation cap (scrub ran after cut)"; exit 1; } || true
+          grep -q '•••' "$PU/.plinth/session/events.jsonl" || { echo "::error::pulse: secret not redacted at all"; exit 1; }
           
           # ── v4.4.0: review.sh reads .plinth/reviewer.md + codex isolation flag ──
           RB4="$(mktemp -d)"; CAP4="$RB4/argv"; PR4="$RB4/prompt"

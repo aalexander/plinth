@@ -104,20 +104,24 @@ detect_owner() {
 DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
 # True if $1 is a pre-v4.4 STOCK driver CLAUDE.md: it is the old "# CLAUDE.md" template
 # that imports the shared rules, and its "## Project-specific notes" section — the ONLY
-# user-owned part of the old layout ("this section is yours") — holds nothing but the
-# placeholder comment. Such a file has no custom content to lose, so `update` regenerates
-# it as the new shell (the migration the CHANGELOG promises). A file with real notes, or
-# any unrecognized shape, is NOT stock and is preserved untouched.
+# user-owned part of the old layout ("this section is yours") — is empty or EXACTLY the
+# template's placeholder comment. Such a file has no custom content to lose, so `update`
+# regenerates it as the new shell (the migration the CHANGELOG promises). Anything else —
+# including notes a user wrote INSIDE the placeholder comment block — is NOT stock and is
+# preserved untouched: we compare the section to the exact placeholder (whitespace-
+# normalized) rather than stripping comment content, precisely so commented notes are
+# never mistaken for the empty placeholder and destroyed.
 is_stock_old_claude() {
-  local f="$1" rest
+  local f="$1" rest placeholder
   grep -qxF '# CLAUDE.md' "$f" 2>/dev/null || return 1
   grep -qF '@.plinth/plinth-rules.md' "$f" 2>/dev/null || return 1
   grep -qF '## Project-specific notes' "$f" 2>/dev/null || return 1
-  # Everything after the notes heading, minus HTML comments and blank lines:
   rest="$(awk '/^## Project-specific notes/{f=1;next} f' "$f" \
-          | sed -e 's/<!--.*-->//' -e '/<!--/,/-->/d' -e 's/[[:space:]]*$//' \
-          | grep -v '^[[:space:]]*$' || true)"
-  [ -z "$rest" ]
+          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' || true)"
+  placeholder='<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
+stack quirks. Shared Plinth rules import above; this section is yours and is
+never overwritten by `plinth update`. -->'
+  [ -z "$rest" ] || [ "$rest" = "$placeholder" ]
 }
 materialize_driver_shell() {
   cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
@@ -235,9 +239,12 @@ ensure_protected_paths() {
     # patterns match the INSTALLED copies but NOT the editable shared/ sources.
     # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
     # wrongly freezing the PRODUCT. So if the suffix (the path after the anchor)
-    # already appears in any line, it is already covered — skip.
+    # already appears in an ACTIVE (non-comment, non-blank) line, it is covered —
+    # skip. Comments are excluded from the match: an explanatory "#" line that
+    # mentions a path must not suppress backfilling the real protection.
     sfx="${line#'(^|/)'}"
-    grep -qF -- "$sfx" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
+    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | grep -qF -- "$sfx" \
+      || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
   done <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$

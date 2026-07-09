@@ -47,9 +47,16 @@
   BY PATH SUFFIX, so a project's custom `(^|plinth/)` anchoring (this repo) is not
   over-appended with `(^|/)` forms that would freeze `shared/`.
 - Migration: `plinth update` regenerates the `AGENTS.md` shell (safe) and the `CLAUDE.md`
-  shell when it is stock; a CUSTOM `CLAUDE.md` is PRESERVED with a loud NOTE to move notes
-  into `.plinth/DRIVER-project.md`. This repo's OWN contract migration is sequenced AFTER
+  shell when it is provably stock — the old template whose "Project-specific notes"
+  section is empty or EXACTLY the template placeholder (compared verbatim, never by
+  stripping comments: notes written INSIDE the placeholder comment block count as custom).
+  Anything else is PRESERVED with a loud NOTE to move notes into
+  `.plinth/DRIVER-project.md`. This repo's OWN contract migration is sequenced AFTER
   release (the pinned instrument must reach v4.4.0 first).
+- **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
+  prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
+  mid-token at the 120/160-char cap, leaving a fragment too short for the redaction
+  regex that then persisted to `.plinth/session/events.jsonl`.
 
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
