@@ -50,8 +50,12 @@ jobs:
           # case below — git show returns empty, cmd empty, run=false green.)
           git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
             || { echo "::error::smoke precheck: cannot resolve origin/$base to read .plinth/config — refusing to fail open (would skip a configured smoke run)"; exit 1; }
-          cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
-                 | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
+          # Read tolerating ABSENCE (|| true): under `set -euo pipefail` a failing
+          # `git show` (no .plinth/config in the base) would abort the step. The base
+          # ref is proven resolvable above, so absence is the legitimate no-smoke case —
+          # the parse below yields an empty cmd => run=false green.
+          cfg="$(git show "origin/${base}:.plinth/config" 2>/dev/null || true)"
+          cmd="$(printf '%s' "$cfg" | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -n "$cmd" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "smoke_cmd is set — dispatching the self-hosted smoke job."
@@ -83,8 +87,10 @@ jobs:
           # not a "nothing to run". A resolvable base with no smoke_cmd stays green below.
           git rev-parse --verify -q "refs/remotes/origin/$base^{commit}" >/dev/null \
             || { echo "::error::smoke: cannot resolve origin/$base to read .plinth/config — refusing to fail open"; exit 1; }
-          cmd="$(git show "origin/${base}:.plinth/config" 2>/dev/null \
-                 | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
+          # tolerate an absent .plinth/config (|| true) — see the precheck note; under
+          # pipefail a failing git show would otherwise abort before the no-op check.
+          cfg="$(git show "origin/${base}:.plinth/config" 2>/dev/null || true)"
+          cmd="$(printf '%s' "$cfg" | sed -n 's/^smoke_cmd[[:space:]]*=[[:space:]]*//p' | head -1)"
           if [ -z "$cmd" ]; then
             echo "no smoke_cmd in the BASE branch's .plinth/config — nothing to run (green no-op)"
             exit 0
