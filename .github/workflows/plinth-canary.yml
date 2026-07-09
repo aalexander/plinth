@@ -94,6 +94,22 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo code > app.py; git add -A; git commit -qm w >/dev/null
             bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main > "$NCR/o.json" 2>/dev/null ) || ncrc=$?
           [ "$ncrc" = "0" ] && [ "$(jq -r .tier "$NCR/o.json" 2>/dev/null)" = "1" ] || { echo "::error::classifier aborted / emitted no tier when base lacks .plinth/config (exit=$ncrc, out=$(cat "$NCR/o.json" 2>/dev/null))"; exit 1; }
+          # review.sh reads its GOVERNING knobs (reviewer model, audit vendor/model,
+          # exec-gating, budget) from the BASE config, not the working tree — else a PR
+          # could weaken its OWN review. Behavior: extract the real base-config block and
+          # confirm audit_vendor resolves from base even when the working tree repoints it.
+          BC="$(mktemp)"; awk '/^basecfg="\$\(git show/{p=1} p{print} /^AUDIT_VENDOR=/{if(p)exit}' "$RS" > "$BC"
+          grep -q 'bcfg audit_vendor' "$BC" || { echo "::error::could not extract base-config block (audit_vendor) from review.sh"; exit 1; }
+          BR="$(mktemp -d)"; BORG="$(mktemp -d)"; git init -q --bare "$BORG"
+          ( cd "$BR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'audit_vendor = grok\n' > .plinth/config
+            git add -A; git commit -qm b >/dev/null; git remote add origin "$BORG"; git push -q origin main
+            printf 'audit_vendor = codex\n' > .plinth/config )
+          AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
+          [ "$AV" = "grok" ] || { echo "::error::review.sh audit_vendor -> '$AV': a PR could set audit_vendor=codex to drop its own cross-vendor audit (want grok from base)"; exit 1; }
+          # Wiring: every governing knob reads via bcfg (base) — catches a revert to cfg.
+          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_model_tier1 reviewer_model_tier2; do
+            grep -q "bcfg $k" "$RS" || { echo "::error::review.sh knob '$k' not read from base config (bcfg) — self-referential review-routing"; exit 1; }
+          done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
           tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }

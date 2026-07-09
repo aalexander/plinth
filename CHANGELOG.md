@@ -21,11 +21,21 @@
   review.sh died and the classifier emitted NO tier. Read the blob with `|| true`,
   then parse the string. Canary: the classifier still emits a tier when the base
   lacks `.plinth/config`.
-- plinth-canary.yml now runs on `pull_request` too, so the ~30 regression probes
+- review.sh: the review-GOVERNING knobs — `reviewer_model_tier1`/`tier2`,
+  `audit_vendor`, `audit_model`, `exec_gated`, `round_budget` — are now read from the
+  BASE config too (via a `bcfg` helper), not the working tree. Otherwise a PR editing
+  `.plinth/config` could pick a weaker Tier-2 reviewer model, set `audit_vendor=codex`
+  to drop its OWN cross-vendor audit, or route its findings to the run gate — the same
+  self-referential bypass closed for spec_path. Canary: audit_vendor resolves from base
+  over a working repoint, and every governing knob is wired to `bcfg`.
+- plinth-canary.yml now runs on `pull_request` too, so the ~40 regression probes
   (classifier tiers & bypasses, binds_directly/resumable_prev, auditor routing,
-  init SHA-pinning, protected-paths) actually GATE merges (Rule 7) instead of only
-  firing on the weekly schedule. The redundant floor job is skipped on PRs (the
-  project's own ci.yml already runs the floor there).
+  init SHA-pinning, protected-paths, review.sh base-config resolution) RUN on every
+  PR and show red on failure, instead of only firing on the weekly schedule. Running
+  a check is not the same as requiring it: to make these BLOCK merges, add the canary
+  `scaffold` job to the Plinth repo's branch-protection required checks (a HUMAN repo
+  setting — see the PR body's close-out steps). The redundant floor job is skipped on
+  PRs (the project's own ci.yml already runs the floor there).
 - The Plinth repo's own `.plinth/config` now sets `tier2_extra =
   (^|/)(shared|templates|bin)/` so docs-shaped changes to its OWN product source
   (e.g. shared/MODELS.md, templates/*.md) get Tier-2 review instead of the generic

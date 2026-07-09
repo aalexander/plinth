@@ -86,17 +86,23 @@ REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0
 # `|| true` FIRST — under set -euo pipefail a failing `git show` (base has no
 # .plinth/config: first spec / new project) would abort before the fallback runs.
 basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
-SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
+# bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
+# path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
+# come from the ratified base, NOT the working tree: else a PR could weaken its OWN
+# review (pick a weak reviewer model, set audit_vendor=codex to drop the cross-vendor
+# audit, route its own findings to the run gate). Mirrors risk-classify.sh + spec_path.
+bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
+SPEC_PATH="$(bcfg spec_path)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
-EXEC_GATED="$(cfg exec_gated || true)"
-ROUND_BUDGET="$(cfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
-AUDIT_MODEL="$(cfg audit_model || true)"
+EXEC_GATED="$(bcfg exec_gated)"
+ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
+AUDIT_MODEL="$(bcfg audit_model)"
 # Cross-vendor auditor: which subscription-authenticated CLI runs the Tier-2
 # second opinion. codex (OpenAI), grok (xAI), agy (Google Antigravity). Default
 # codex. Using a DIFFERENT vendor here is what makes the second opinion a real
 # cross-vendor check rather than same-vendor-different-model.
-AUDIT_VENDOR="$(cfg audit_vendor || true)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
+AUDIT_VENDOR="$(bcfg audit_vendor)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
 EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 
 # Runs the audit prompt through the configured vendor's CLI (read-only,
@@ -225,8 +231,8 @@ command -v codex >/dev/null 2>&1 || die_infra "codex CLI not found"
 #   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
 #   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
 MODEL_ARGS=()
-if [ "$RISK" = "2" ]; then tmodel="$(cfg reviewer_model_tier2 || true)"
-else tmodel="$(cfg reviewer_model_tier1 || true)"; fi
+if [ "$RISK" = "2" ]; then tmodel="$(bcfg reviewer_model_tier2)"
+else tmodel="$(bcfg reviewer_model_tier1)"; fi
 if [ -n "${tmodel:-}" ]; then MODEL_ARGS=(-m "$tmodel"); REVIEWER_MODEL="$tmodel"; fi
 
 # Only resume a prior session that (a) asked for changes, (b) has a live thread on
