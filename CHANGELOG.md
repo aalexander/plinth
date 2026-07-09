@@ -37,7 +37,6 @@
 
 ## v4.2.1 — CI supply-chain hardening + claim accuracy — July 8, 2026
 - review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
-- review.sh bug (found by PR-gating the canary): a **Tier-0 review died exit 2 when
   `~/.codex/config.toml` was absent**. The REVIEWER_MODEL sed read exits non-zero on
   a missing config, and under `set -o pipefail` that aborted the whole review —
   BEFORE the Tier-0 gate, which needs no codex config at all. Real users have codex

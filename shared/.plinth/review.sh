@@ -389,10 +389,14 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
   RUSAGE="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"; [ -n "$RUSAGE" ] || RUSAGE="null"
 }
 
-_reviewer_claude() {  # hard --json-schema -> .structured_output; --bare skips the repo's CLAUDE.md
+_reviewer_claude() {  # hard --json-schema -> .structured_output
+  # NB: NO --bare — bare mode disables OAuth/keychain auth (needs ANTHROPIC_API_KEY),
+  # which breaks the subscription-signed-in setup. claude will auto-load the repo's
+  # CLAUDE.md (driver contract), but the prompt explicitly frames the reviewer role +
+  # names AGENTS.md, and the schema forces the output — that steer dominates.
   local m="$1" margs=() rargs=(); [ -n "${RV_MODEL:-}" ] && margs=(--model "$RV_MODEL")
   [ "$m" = "resume" ] && rargs=(--resume "$s")
-  printf '%s' "$prompt" | claude -p --bare --output-format json \
+  printf '%s' "$prompt" | claude -p --output-format json \
     --json-schema "$(cat "$SCHEMA")" --allowed-tools "Read,Grep,Glob" --permission-mode dontAsk \
     ${margs[@]+"${margs[@]}"} ${rargs[@]+"${rargs[@]}"} > "$raw" 2> "$errlog" \
     || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"; }
@@ -421,17 +425,19 @@ _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else 
 # schema fallback (extract from .text) does NOT — a finding with severity "Major" or a
 # missing status would be silently DROPPED by the exact-match blocking count, turning a
 # CHANGES_NEEDED into APPROVED. Validate here, for EVERY vendor, and fail loud.
-validate_findings() {  # <findings-json>
+validate_findings() {  # <findings-json> — full schema shape: enums, integer line, no extra props
   jq -e '
     (.verdict == "APPROVED" or .verdict == "CHANGES_NEEDED")
     and (.summary | type == "string")
     and (.findings | type == "array")
+    and (((keys) - ["verdict","summary","findings"]) == [])
     and all(.findings[];
           (.severity == "blocker" or .severity == "major" or .severity == "minor")
           and (.status == "open" or .status == "resolved")
           and (.file | type == "string")
           and (.description | type == "string")
-          and (.line | type == "number"))
+          and (.line | (type == "number") and (. == floor))
+          and (((keys) - ["file","line","severity","description","status"]) == []))
   ' "$1" >/dev/null 2>&1
 }
 
@@ -639,9 +645,9 @@ fi
 # Reviewer error bar (cross-vendor second opinion). Fires on EVERY Tier 2
 # approval (high-consequence -> always a second, DIFFERENT-VENDOR adversary), and
 # on every 5th approval otherwise. Runs ONLY when a genuinely cross-vendor auditor
-# is configured (audit_vendor != the primary reviewer's codex) — audit_model alone
+# is configured (audit_vendor != reviewer_vendor, the primary) — audit_model alone
 # must NOT trigger it, or a project carrying only the legacy audit_model would get
-# a SAME-vendor codex audit falsely framed/recorded as cross-vendor. audit_model
+# a SAME-vendor audit falsely framed/recorded as cross-vendor. audit_model
 # is a model override for that different vendor, not a trigger. Disagreement is
 # reported, never adjudicated here — a different isolated model is the authority.
 if [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
@@ -703,6 +709,11 @@ $(git diff "${baseref}...HEAD")"
       echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' a supported vendor (codex|grok|agy) and signed in? see $SDIR/*.raw"
     fi
   fi
+elif [ "$RISK" = "2" ]; then
+  # Same-vendor audit is not cross-vendor, so it is suppressed — surface it so a Tier-2
+  # change doesn't silently lose the promised independent second opinion (e.g. grok
+  # primary + the default audit_vendor=grok).
+  echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|grok|agy) for an independent second opinion."
 fi
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0

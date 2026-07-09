@@ -472,23 +472,29 @@ jobs:
             PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
             vj="$(ls .plinth/session/review/*/verdict.json | head -1)"
             [ "$(jq -r 'has("audit")' "$vj")" = "false" ] || { echo "::error::audit gate: reviewer_vendor==audit_vendor (grok/grok) ran a false cross-vendor audit"; exit 1; } )
-          # Schema validation: grok's soft-schema fallback must NOT let a malformed finding
-          # through — the verdict arithmetic matches exact enums, so severity "Major" (wrong
-          # case) would be silently dropped. review.sh must REJECT it (die), never approve.
-          cat > "$RVB/grok" <<'GKM'
+          # Schema validation: grok's soft-schema fallback must NOT let a schema-invalid
+          # finding through — the verdict arithmetic matches exact enums, so a bad severity,
+          # non-integer line, or extra property would be dropped or mis-shaped. review.sh
+          # must REJECT each (die), never approve. The grok stub emits whatever $BADSO holds.
+          cat > "$RVB/grok" <<'GKB'
           #!/usr/bin/env bash
-          printf '%s' '{"sessionId":"gs","structuredOutput":{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"app.py","line":1,"severity":"Major","description":"d","status":"open"}]}}'
-          GKM
+          printf '{"sessionId":"gs","structuredOutput":%s}' "${BADSO:-null}"
+          GKB
           chmod +x "$RVB/grok"
-          mgd="$(mktemp -d)"; mrc=0
-          ( cd "$mgd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$mgd" >/dev/null 2>&1
-            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
-            printf 'reviewer_vendor = grok\n' >> .plinth/config
-            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
-            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
-            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || mrc=$?
-          v="$(jq -r '.verdict // "none"' "$mgd"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
-          { [ "$mrc" != 0 ] && [ "$v" != "APPROVED" ]; } || { echo "::error::malformed grok output (severity 'Major') not rejected (exit=$mrc verdict=$v) — schema-validation gap"; exit 1; }
+          reject_probe() {  # <bad structuredOutput> — review.sh must reject (die), never approve
+            local so="$1" d rc=0; d="$(mktemp -d)"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              printf 'reviewer_vendor = grok\n' >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+              BADSO="$so" PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || rc=$?
+            local v; v="$(jq -r '.verdict // "none"' "$d"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
+            { [ "$rc" != 0 ] && [ "$v" != "APPROVED" ]; } || { echo "::error::malformed grok output not rejected (exit=$rc verdict=$v): $so"; exit 1; }
+          }
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"Major","description":"d","status":"open"}]}'
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1.5,"severity":"major","description":"d","status":"open"}]}'
+          reject_probe '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"major","description":"d","status":"open","foo":1}]}'
           # Claude usage=null: a claude reviewer reporting NO usage must record JSON null
           # (not the string "null"), so the NEXT round's .usage.input_tokens lookup doesn't
           # error and abort. A regression to `.usage // "null"` aborts round 2 here.
