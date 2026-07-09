@@ -13,7 +13,11 @@
   integration paths, now documented in MODELS.md + the config scaffold. The
   cross-vendor audit now gates on `audit_vendor != reviewer_vendor` (was hardcoded
   `!= codex`), so it stays a genuine DIFFERENT-vendor check whatever the primary is
-  (e.g. grok primary + grok audit is correctly NOT a cross-vendor audit).
+  (e.g. grok primary + grok audit is correctly NOT a cross-vendor audit). Every
+  reviewer's normalized output is now schema-validated (verdict/severity/status enums
+  + required fields) before the verdict arithmetic — grok's soft-schema fallback could
+  otherwise slip a malformed severity (e.g. "Major") past the exact-match blocking
+  count and turn a CHANGES_NEEDED into APPROVED.
 - **Review-loop efficiency #1 — enumerate the whole class per pass.** The fresh and
   verify prompts now instruct the reviewer to SWEEP the diff for every sibling
   instance of a defect class and report them all in one round, instead of the single

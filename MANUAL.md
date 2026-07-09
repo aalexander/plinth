@@ -16,9 +16,11 @@ Everything between is the model's call.
   for high-consequence work (Tier 2), **Fable 5 by exception** on usage credits for
   the heaviest long-context tasks (no automatic fallback — enable credits with a
   monthly cap first). This is the driver's own speed/cost call: GUIDANCE, not a gate.
-- **Reviewer: GPT-5.5** (one line in `~/.codex/config.toml`), risk-tiered, with
-  **grok** (xAI) as the default Tier-2 cross-vendor second opinion. GPT-5.6 is
-  gov-only for now; evaluate when it reaches Codex GA (mid-July earliest).
+- **Reviewer: `reviewer_vendor`** — codex / GPT-5.5 by default (one line in
+  `~/.codex/config.toml`), or `claude` / `grok`, each its own CLI (no codex config
+  needed). Risk-tiered, with a DIFFERENT-vendor Tier-2 cross-vendor second opinion
+  (`audit_vendor`, default grok). The resume threshold scales per vendor
+  automatically. GPT-5.6 is gov-only for now; evaluate when it reaches Codex GA.
 - The reviewer's risk tier is the immutable adversarial gate; the driver's model is
   not. The driver's only lever over review cost is tier hygiene — keep low-risk work
   in its own change so it takes the cheap path, don't bundle it into a Tier-2 diff.

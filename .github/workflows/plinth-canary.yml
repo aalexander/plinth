@@ -116,7 +116,7 @@ jobs:
           AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
           [ "$AV" = "grok" ] || { echo "::error::review.sh audit_vendor -> '$AV': a PR could set audit_vendor=codex to drop its own cross-vendor audit (want grok from base)"; exit 1; }
           # Wiring: every governing knob reads via bcfg (base) — catches a revert to cfg.
-          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_model_tier1 reviewer_model_tier2; do
+          for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_vendor reviewer_model_tier1 reviewer_model_tier2; do
             grep -q "bcfg $k" "$RS" || { echo "::error::review.sh knob '$k' not read from base config (bcfg) — self-referential review-routing"; exit 1; }
           done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
@@ -461,6 +461,23 @@ jobs:
             PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
             vj="$(ls .plinth/session/review/*/verdict.json | head -1)"
             [ "$(jq -r 'has("audit")' "$vj")" = "false" ] || { echo "::error::audit gate: reviewer_vendor==audit_vendor (grok/grok) ran a false cross-vendor audit"; exit 1; } )
+          # Schema validation: grok's soft-schema fallback must NOT let a malformed finding
+          # through — the verdict arithmetic matches exact enums, so severity "Major" (wrong
+          # case) would be silently dropped. review.sh must REJECT it (die), never approve.
+          cat > "$RVB/grok" <<'GKM'
+          #!/usr/bin/env bash
+          printf '%s' '{"sessionId":"gs","structuredOutput":{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"app.py","line":1,"severity":"Major","description":"d","status":"open"}]}}'
+          GKM
+          chmod +x "$RVB/grok"
+          mgd="$(mktemp -d)"; mrc=0
+          ( cd "$mgd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$mgd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = grok\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 ) || mrc=$?
+          v="$(jq -r '.verdict // "none"' "$mgd"/.plinth/session/review/*/verdict.json 2>/dev/null | head -1 || echo none)"
+          { [ "$mrc" != 0 ] && [ "$v" != "APPROVED" ]; } || { echo "::error::malformed grok output (severity 'Major') not rejected (exit=$mrc verdict=$v) — schema-validation gap"; exit 1; }
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching

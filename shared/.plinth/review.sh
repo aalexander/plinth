@@ -416,6 +416,25 @@ _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else 
   RUSAGE="null"   # grok headless reports no token usage
 }
 
+# Enforce the review schema's critical shape on the NORMALIZED reviewer output before
+# the verdict arithmetic runs. codex/claude force the schema at the CLI; grok's soft-
+# schema fallback (extract from .text) does NOT — a finding with severity "Major" or a
+# missing status would be silently DROPPED by the exact-match blocking count, turning a
+# CHANGES_NEEDED into APPROVED. Validate here, for EVERY vendor, and fail loud.
+validate_findings() {  # <findings-json>
+  jq -e '
+    (.verdict == "APPROVED" or .verdict == "CHANGES_NEEDED")
+    and (.summary | type == "string")
+    and (.findings | type == "array")
+    and all(.findings[];
+          (.severity == "blocker" or .severity == "major" or .severity == "minor")
+          and (.status == "open" or .status == "resolved")
+          and (.file | type == "string")
+          and (.description | type == "string")
+          and (.line | type == "number"))
+  ' "$1" >/dev/null 2>&1
+}
+
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
   local m="$1" r="$2" s="${3:-}"
   local evfile="$SDIR/events-$r.jsonl" raw="$SDIR/raw-$r.json" errlog="$SDIR/stderr-$r.log"
@@ -532,6 +551,8 @@ ${inc}${evidence}${commits}"
   # + RUSAGE. A recoverable resume failure returns 1 → the caller falls back.
   reviewer_run "$m" \
     || { echo "Plinth review: resume of the reviewer session failed — falling back."; return 1; }
+  validate_findings "$SDIR/findings-$r.json" \
+    || die_infra "reviewer output violates the verdict schema (verdict/severity/status enum or a missing required field) — a schema-invalid finding would be silently dropped by the verdict arithmetic; see $SDIR/findings-$r.json"
   RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
 
