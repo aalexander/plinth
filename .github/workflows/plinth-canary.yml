@@ -689,6 +689,17 @@ jobs:
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
           
+          # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
+          MS="$(mktemp -d)"; ( cd "$MS" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MS" >/dev/null 2>&1 )
+          printf '# CLAUDE.md\n\nYou are the implementer.\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\n<!-- placeholder\n     only -->\n' > "$MS/CLAUDE.md"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$MS" >/dev/null 2>&1
+          grep -qF "Plinth driver shell (version-pinned)" "$MS/CLAUDE.md" || { echo "::error::update did not regenerate a STOCK old CLAUDE.md to the shell"; exit 1; }
+          MC="$(mktemp -d)"; ( cd "$MC" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MC" >/dev/null 2>&1 )
+          printf '# CLAUDE.md\n\n@.plinth/plinth-rules.md\n\n## Project-specific notes\nCUSTOM: never touch migrations without approval.\n' > "$MC/CLAUDE.md"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$MC" >/dev/null 2>&1
+          grep -qF "Plinth driver shell (version-pinned)" "$MC/CLAUDE.md" && { echo "::error::update CLOBBERED a CUSTOM CLAUDE.md (data loss)"; exit 1; } || true
+          grep -qF "never touch migrations" "$MC/CLAUDE.md" || { echo "::error::custom CLAUDE.md content lost on update"; exit 1; }
+          
           # ── v4.4.0: review.sh reads .plinth/reviewer.md + codex isolation flag ──
           RB4="$(mktemp -d)"; CAP4="$RB4/argv"; PR4="$RB4/prompt"
           cat > "$RB4/codex" <<CX4

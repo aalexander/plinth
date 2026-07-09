@@ -1,5 +1,6 @@
 <!-- Plinth shared rules v2. Managed centrally; do not edit per-project.
-     Update via `plinth update`. Project-specific rules go in CLAUDE.md, not here. -->
+     Update via `plinth update`. Project-specific driver notes go in
+     .plinth/DRIVER-project.md (not here, and not in the pinned CLAUDE.md shell). -->
 # Plinth Rules
 
 These rules apply to every task unless explicitly overridden. Bias: caution over

@@ -102,17 +102,34 @@ detect_owner() {
 # tell the human to move notes into .plinth/DRIVER-project.md (no auto-extraction —
 # marker-parsing a user-edited file is a known bug class).
 DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
+# True if $1 is a pre-v4.4 STOCK driver CLAUDE.md: it is the old "# CLAUDE.md" template
+# that imports the shared rules, and its "## Project-specific notes" section — the ONLY
+# user-owned part of the old layout ("this section is yours") — holds nothing but the
+# placeholder comment. Such a file has no custom content to lose, so `update` regenerates
+# it as the new shell (the migration the CHANGELOG promises). A file with real notes, or
+# any unrecognized shape, is NOT stock and is preserved untouched.
+is_stock_old_claude() {
+  local f="$1" rest
+  grep -qxF '# CLAUDE.md' "$f" 2>/dev/null || return 1
+  grep -qF '@.plinth/plinth-rules.md' "$f" 2>/dev/null || return 1
+  grep -qF '## Project-specific notes' "$f" 2>/dev/null || return 1
+  # Everything after the notes heading, minus HTML comments and blank lines:
+  rest="$(awk '/^## Project-specific notes/{f=1;next} f' "$f" \
+          | sed -e 's/<!--.*-->//' -e '/<!--/,/-->/d' -e 's/[[:space:]]*$//' \
+          | grep -v '^[[:space:]]*$' || true)"
+  [ -z "$rest" ]
+}
 materialize_driver_shell() {
   cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
   local c="$target/CLAUDE.md"
-  if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null; then
-    cp "$PLINTH_ROOT/shared/driver-shell.md" "$c"
+  if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null || is_stock_old_claude "$c"; then
+    cp "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
   else
-    echo "  NOTE: $c has custom content — NOT overwritten. The v4.4.0 driver"
-    echo "        contract is a pinned shell (CLAUDE.md + AGENTS.md, regenerated)"
-    echo "        plus .plinth/DRIVER-project.md for your notes. Move your"
-    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then"
-    echo "        delete CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+    echo "  NOTE: $c has CUSTOM content — NOT overwritten. The v4.4.0 driver contract"
+    echo "        is a pinned shell (CLAUDE.md + AGENTS.md, regenerated) plus"
+    echo "        .plinth/DRIVER-project.md for your notes. Move your"
+    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
+    echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
   fi
 }
 
