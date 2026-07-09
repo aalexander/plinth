@@ -35,11 +35,13 @@ PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
 usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project-path> [--once]
        plinth smoke <project-path> -- <command...>   (run + write execution receipt)
-       plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)"; exit 1; }
+       plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
+       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ]; then
-  :  # project path optional — falls back to the statusLine JSON on stdin
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ]; then
+  :  # statusline: project path optional (falls back to statusLine JSON on stdin).
+     # advise: operates on the CWD; its args are the question, not a project path.
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -258,7 +260,7 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary), so it stays off\n#   by default; init scaffolds audit_vendor = grok (below) to enable it against the\n#   default codex primary. Use a DIFFERENT vendor than reviewer_vendor. All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary), so it stays off\n#   by default; init scaffolds audit_vendor = grok (below) to enable it against the\n#   default codex primary. Use a DIFFERENT vendor than reviewer_vendor. All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
@@ -726,8 +728,50 @@ watch_project() {
   done
 }
 
+# plinth advise [--impactful] "<question>" — consult a model as good or BETTER than
+# the driver, READ-ONLY, and print its guidance. COLLABORATIVE + non-blocking +
+# driver-initiated (distinct from the adversarial reviewer and the auditor). Works
+# for ANY driver and cross-family: a grok driver with advisor_vendor=claude consults
+# Fable. --impactful (architectural / high-consequence / irreversible-shape decisions,
+# NOT merely "hard") escalates to advisor_model_max. A router could later replace this
+# dispatch without changing the surface (advisor_vendor/advisor_model/_max). If the
+# advisor CLI is missing or unauthed, say so and let the driver proceed — never a hard
+# dependency.
+run_advise() {
+  shift  # drop 'advise'
+  local impactful=0
+  if [ "${1:-}" = "--impactful" ]; then impactful=1; shift; fi
+  local question="${1:-}"
+  [ -n "$question" ] || { echo "usage: plinth advise [--impactful] \"<question>\"" >&2; exit 1; }
+  aval() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" ".plinth/config" 2>/dev/null | head -1; }
+  local vendor model model_max use
+  vendor="$(aval advisor_vendor)"; [ -n "$vendor" ] || vendor="claude"
+  model="$(aval advisor_model)"; model_max="$(aval advisor_model_max)"
+  if [ "$impactful" = 1 ]; then use="${model_max:-$model}"; else use="$model"; fi
+  local tier="peer"; [ "$impactful" = 1 ] && tier="IMPACTFUL"
+  local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
+  echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
+  local margs=()
+  case "$vendor" in
+    claude) [ -n "$use" ] && margs=(--model "$use")
+      claude -p ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" "$question" 2>/dev/null || { echo "$unavail"; return 0; } ;;
+    codex)  [ -n "$use" ] && margs=(-m "$use")
+      printf '%s' "$question" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    grok)   [ -n "$use" ] && margs=(-m "$use")
+      grok -p "$question" --sandbox read-only ${margs[@]+"${margs[@]}"} 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    agy|gemini) [ -n "$use" ] && margs=(--model "$use")
+      agy -p "$question" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
+  esac
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
+  advise) run_advise "$@" ;;
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;

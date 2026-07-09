@@ -55,6 +55,37 @@ capacity allows" — check before buying credits in bulk.
 default effort for routine ones. The model chooses decomposition; the gates make
 that safe.
 
+## Advisor — consult a model as good or BETTER than the driver
+`plinth advise [--impactful] "<question>"` is a COLLABORATIVE, non-blocking,
+driver-initiated consult — distinct from the adversarial reviewer (the gate) and the
+auditor (a second opinion on an approval). Vendor-agnostic and cross-family: any driver
+can consult any advisor CLI, so a Grok driver can ask Fable.
+- `advisor_vendor` (claude|codex|grok|agy) picks the advisor CLI (default claude).
+- `advisor_model` is the PEER tier; `advisor_model_max` the ESCALATED tier. `plinth
+  advise` uses the peer model; `plinth advise --impactful` uses the max model. Both
+  should be >= the driver model.
+- Reserve `--impactful` for IMPACTFUL, ARCHITECTURAL, or hard-to-reverse decisions (a
+  schema, a public interface, a security boundary, a migration strategy) — not merely
+  "hard" problems. Recommended: peer = your driver's own frontier (e.g. Opus 4.8); max =
+  Fable 5 — its 1M-context, cross-family perspective earns the credit cost on exactly
+  these calls (see Fable-by-exception).
+- Claude driver, OPTIONAL enhancement: Claude Code's native advisor (`advisorModel:
+  fable` / `--advisor` / `/advisor`) consults a stronger model over the FULL conversation
+  and enforces advisor >= main automatically. Use it when the advisor should see the
+  whole session; `plinth advise` is the vendor-neutral floor that works for every driver.
+- Router seam: the knob shape (advisor_vendor / advisor_model / advisor_model_max) is
+  structured so an external "route to the best model for this task" service could drop in
+  later without changing the surface. Not built now — native selection suffices.
+
+## Subagent routing
+Fan out independent work to subagents for speed; route EACH to the best model for its
+part. Cheap/fast (Sonnet, or a lighter model) for mechanical or heavily-parallel fan-out
+where the diff is its own proof; a strong model (Opus at high effort, Fable by exception)
+for the hard or high-consequence pieces. Prefer in-family for parallel fan-out; a guarded
+cross-family CLI shell-out routes a single subtask to another family's strength. As with
+the driver, model tier != review tier: the classifier routes the RESULT by risk
+regardless of which model wrote it.
+
 ## Reviewer: Codex / GPT-5.5 (unchanged)
 Set in `~/.codex/config.toml` (`model = "gpt-5.5"`, `model_reasoning_effort =
 "high"`). GPT-5.6 launched June 26 to ~20 US-government-approved organizations

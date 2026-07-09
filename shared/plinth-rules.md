@@ -63,6 +63,29 @@ workflow (ultracode). Choose whatever fits the task. No need to get orchestratio
 approved; use your judgment. Every subagent you spawn is subject to the same guard
 hooks and gates.
 
+## Subagents and the advisor (speed, and a stronger opinion)
+Fan out independent work to SUBAGENTS for speed and parallelism — the moment a task
+splits into parts that do not depend on each other (survey N files, write M
+independent tests, apply one refactor across many sites), run them concurrently
+instead of in sequence. Route each subagent to the BEST model for THAT part: cheap and
+fast for mechanical or heavily-parallel fan-out, a strong model for the hard or
+high-consequence pieces. Use your harness's native model selection (Claude: the Agent
+`model` param / opusplan; other drivers: their equivalent). Prefer IN-FAMILY subagents
+for parallel fan-out; when one subtask genuinely wants another family's strength, a
+guarded cross-family CLI shell-out is fine. Every subagent and delegate inherits the
+same guard hooks and gates (codex/grok/claude all honor `.claude/` PreToolUse) — no
+orchestration escapes them.
+
+Before an IMPACTFUL or architectural decision — one expensive to reverse or that
+shapes the design (a schema, a public interface, a security boundary, a migration
+strategy) — consult the ADVISOR: `plinth advise --impactful "<question>"` calls a model
+as good or better than you (config: `advisor_vendor` / `advisor_model` /
+`advisor_model_max`; cross-family is fine — a Grok driver can consult Fable). Drop
+`--impactful` for an ordinary second opinion. The advisor is COLLABORATIVE and
+NON-BLOCKING — it informs your call; it is neither the adversarial reviewer (the gate)
+nor the auditor (a second opinion on an approval). Use it on the calls that matter, not
+reflexively.
+
 ## Review before PR (required)
 Work on a feature branch — never commit directly to the base branch. The Stop
 gate deliberately does not guard base branches (it logs and releases), and the
@@ -115,8 +138,10 @@ Irreversible means: auth, crypto, secrets, database migrations, data deletion, p
 API changes, or adding a dependency. Otherwise proceed on your own judgment.
 When blocked on something only the human can supply (credentials, artifact
 hashes, hardware runs, spend approvals), add a checkbox line to
-`.plinth/NEEDS-HUMAN.md` — what, why, and the exact format needed — and keep
-working on whatever isn't blocked. Prioritize the queue by blocking impact:
+`.plinth/NEEDS-HUMAN.md` (the canonical location — always write it there; the
+dashboard and review tooling tolerate a legacy root copy but new items go in
+`.plinth/`) — what, why, and the exact format needed — and keep working on
+whatever isn't blocked. Prioritize the queue by blocking impact:
 prefix any item that stalls work RIGHT NOW with `[BLOCKING]` and keep those at
 the top; everything else (needed eventually, nice-to-have) goes below. The
 dashboard surfaces the file and the blocking count; check items off the moment
