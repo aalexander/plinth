@@ -2,10 +2,13 @@
 
 ## What Plinth is
 A subscription-funded, multi-model dev environment: a frontier model drives (any
-vendor — see the driver contract below), a DIFFERENT model adversarially reviews (the
-`reviewer_vendor` — codex/GPT by default, or claude/grok; risk-tiered — inert docs are
-approved by the deterministic floor, code and high-consequence changes get the model),
-and a
+vendor — see the driver contract below), and an INDEPENDENT adversarial reviewer — a
+fresh session that did not write the code — scrutinizes it (the `reviewer_vendor`:
+codex/GPT by default, or claude/grok; risk-tiered — inert docs are approved by the
+deterministic floor, code and high-consequence changes get the model). The reviewer MAY
+be a different vendor than the driver but need not be; the guaranteed cross-vendor second
+opinion is the auditor, which runs when `audit_vendor` differs from `reviewer_vendor`.
+Then a
 deterministic CI floor (tests + scanners) gates every merge as a required status check;
 a Codex cloud review, once connected, additionally posts adversarial findings on each PR
 (security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop, though it

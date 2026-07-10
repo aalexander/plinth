@@ -103,7 +103,8 @@ When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
 large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
-Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
+Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (branch-keyed;
+`<slug>` is the branch name with `/` and spaces turned to `-`). Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer thread when it fits the vendor's window; an
 oversized or dead thread instead runs a VERIFY round — a fresh session seeded with

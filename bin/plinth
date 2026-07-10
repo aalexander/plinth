@@ -849,6 +849,11 @@ case "$cmd" in
   init)
     copy_templates_if_absent
     copy_shared
+    # Backfill security patterns even on init: a re-run (or a partially-scaffolded repo)
+    # may already have a pre-v4.4 .plinth/protected-paths that copy_templates_if_absent
+    # keeps as-is, so the new contract-file patterns (reviewer.md, CLAUDE.md, AGENTS.md)
+    # would otherwise be missing. Idempotent — a fresh template already has them.
+    ensure_protected_paths
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth $PLINTH_VERSION initialized in $target"
