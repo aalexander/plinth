@@ -167,20 +167,18 @@ PATTERNS
     # so a bash redirect / tee / touch / … targeting them must block too — else
     # `printf X > .env`, `tee secrets/key`, `touch .ssh/id_rsa` slip past despite the docs
     # promising secret paths are blocked at the tool level. Same 3 write-forms as above.
-    for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519'; do
+    # `.env` is included WHOLE (no .env.example carve-out here): the Edit/Write TOOL gets an
+    # exact path and safely allows .env.example/.sample/.template, but in FREE-FORM command
+    # text a target-vs-mention carve-out is bypassable (`printf X > .env # .env.example`),
+    # so the Bash branch fails CLOSED on the entire .env family. Write .env.example via the
+    # Write tool, or the human runs the bash form.
+    for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519' '\.env'; do
       if printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${sp}" \
          || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" \
          || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}"; then
         block "bash write targeting a secret path (matched '${sp}'). Secret paths need explicit human action; if intended, the human runs it."
       fi
     done
-    # .env is secret too, but .env.example/.sample/.template are conventionally committed docs.
-    if { printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*\.env" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*\.env" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*\.env"; } \
-       && ! printf '%s' "$cmd" | grep -Eq '\.env[^;|& ]*\.(example|sample|template)([[:space:]]|$)'; then
-      block "bash write targeting .env (secret). If it is .env.example/.sample/.template name it explicitly; otherwise the human runs it."
-    fi
     ;;
   Edit|Write|MultiEdit)
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')

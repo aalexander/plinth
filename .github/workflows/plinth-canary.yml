@@ -1008,8 +1008,13 @@ jobs:
           [ "$(gcmd 'tee secrets/key')" = 2 ] || { echo "::error::guard: bash write 'tee secrets/key' bypassed"; exit 1; }
           [ "$(gcmd 'touch .ssh/id_rsa')" = 2 ] || { echo "::error::guard: bash write 'touch .ssh/id_rsa' bypassed"; exit 1; }
           [ "$(gcmd 'echo x > id_rsa')" = 2 ] || { echo "::error::guard: bash write 'echo > id_rsa' bypassed"; exit 1; }
-          [ "$(gcmd 'printf X > .env.example')" = 0 ] || { echo "::error::guard: '.env.example' bash write wrongly blocked"; exit 1; }
+          # .env family fails CLOSED in the Bash branch (target-vs-mention carve-out is bypassable in
+          # free-form command text); the Edit/Write TOOL keeps the .env.example carve-out via exact path.
+          [ "$(gcmd 'printf X > .env.example')" = 2 ] || { echo "::error::guard: bash '.env.example' write should fail closed (Bash branch)"; exit 1; }
+          [ "$(gcmd 'printf S > .env # .env.example')" = 2 ] || { echo "::error::guard: '.env.example' comment bypassed the .env write block"; exit 1; }
+          [ "$(gcmd 'printf S > .env; printf X > .env.example')" = 2 ] || { echo "::error::guard: trailing '.env.example' write bypassed the real .env write block"; exit 1; }
           [ "$(gcmd 'echo x > out.txt')" = 0 ] || { echo "::error::guard: non-secret bash write 'echo > out.txt' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'echo x > environments.md')" = 0 ] || { echo "::error::guard: 'environments.md' (no .env substring) wrongly blocked"; exit 1; }
           [ "$(gcmd 'cat secrets/key')" = 0 ] || { echo "::error::guard: 'cat secrets/key' (read, not write) wrongly blocked"; exit 1; }
           # Case-INSENSITIVE destructive SQL DROP (round-50):
           [ "$(gcmd 'psql -c "drop table users"')" = 2 ] || { echo "::error::guard: lowercase 'drop table' bypassed"; exit 1; }

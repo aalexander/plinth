@@ -149,8 +149,11 @@
   `.ssh/`, `.aws/`, `id_rsa`, `.env`, but the Bash branch only checked protected-paths, so
   `printf X > .env` / `tee secrets/key` / `touch .ssh/id_rsa` slipped past the tool-level
   block the docs promise; the same three write-forms (redirect, mutating command, `sed -i`)
-  now apply the secret denylist, with the `.env.example`/`.sample`/`.template` carve-out and
-  reads (`cat secrets/key`) left alone. (2) the destructive-SQL `DROP TABLE`/`DROP DATABASE`
+  now apply the secret denylist, with reads (`cat secrets/key`) left alone. The Bash branch
+  fails CLOSED on the WHOLE `.env` family (no `.env.example` carve-out): in free-form command
+  text a target-vs-mention carve-out is bypassable (`printf X > .env # .env.example`), so only
+  the Edit/Write TOOL — which gets an exact path — keeps the `.env.example`/`.sample`/`.template`
+  allowance. (2) the destructive-SQL `DROP TABLE`/`DROP DATABASE`
   tripwire is now case-INSENSITIVE, so lowercase `drop table` and mixed `Drop Database` are
   caught (SQL keywords are case-insensitive).
 
