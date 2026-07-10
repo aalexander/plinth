@@ -6,8 +6,10 @@ vendor — see the driver contract below), a DIFFERENT model adversarially revie
 `reviewer_vendor` — codex/GPT by default, or claude/grok; risk-tiered — inert docs are
 approved by the deterministic floor, code and high-consequence changes get the model),
 and a
-deterministic CI floor (tests + scanners, plus Codex cloud review once connected —
-security-briefed via the reviewer contract .plinth/reviewer.md) gates every merge. The name is the design:
+deterministic CI floor (tests + scanners) gates every merge as a required status check;
+a Codex cloud review, once connected, additionally posts adversarial findings on each PR
+(security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop, though it
+is advisory unless you make it a required gate. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -254,9 +256,10 @@ Two operator chores the rules generate:
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
    driver does not run this hook, so nothing LOCAL forces it to review — it is bound
-   by the driver rules and, at merge, by the SERVER-SIDE gate (branch protection
-   requiring the cloud review's APPROVED). Either way, an unreviewed release cannot
-   reach the base branch through a protected repo.
+   by the driver rules (trusted to run the loop) and, at merge, by the required CI
+   status checks that branch protection enforces. The Codex cloud review posts findings
+   as a backstop but is not a required gate by default, so for a non-Claude driver the
+   review discipline itself is the primary safeguard, not a server-side block.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -406,16 +409,18 @@ it has run green with a real smoke_cmd.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
   fires only under a Claude driver (codex/grok do not read `.claude/`), so for a grok/gemini
-  driver this hook does NOT fire — their ship gate is purely SERVER-SIDE (branch protection
-  + the cloud review). Deliberately-quoted obfuscation is out of scope (see above); the
-  merge gate proper is branch protection.
+  driver this hook does NOT fire — their merge gate is the required CI status checks that
+  branch protection enforces (the cloud review posts findings but is not required by
+  default). Deliberately-quoted obfuscation is out of scope (see above); the merge gate
+  proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
-  can't trap a session. Codex/grok drivers do not run this hook — for them the hard
-  block against merging unreviewed work is SERVER-SIDE (branch protection + the cloud
-  review), not this local gate
+  can't trap a session. Codex/grok drivers do not run this hook — for them there is no
+  local hard block; the server-side hard gate is branch protection's required CI status
+  checks (the cloud review is an advisory backstop), and the driver is trusted to run the
+  review loop
   on a broken pipeline — and every release is logged as a `gate_release` event
   the dashboard shows in red.
 - Branch protection: `floor` + `checks` required to merge (requires public repo

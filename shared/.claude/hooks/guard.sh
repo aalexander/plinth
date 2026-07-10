@@ -51,8 +51,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    (an UNQUOTE: quote/backslash chars deleted, token CONTENT kept — not span removal)
 #    so quoted PROSE mentioning the command stays inert; a `bash -c "gh pr create"`
 #    deliberately hidden in quotes is OUT OF SCOPE.
-#  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: required CI checks
-#    + branch protection + the cloud review. A client hook can never replace those.
+#  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection
+#    requiring the CI status checks (the Codex cloud review posts findings as a backstop
+#    but is not a required merge gate by default). A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate
@@ -73,7 +74,7 @@ ship_gate() {  # <what> — called only when the command is a ship action
     vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
     [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
   fi
-  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection + the cloud review.)"
+  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
 }
 
 case "$tool" in

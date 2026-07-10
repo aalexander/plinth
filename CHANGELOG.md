@@ -36,16 +36,19 @@
   `.claude/` Stop review-gate fire for them. It refuses the plain `gh pr create`/`gh pr merge`
   command unless the feature branch's verdict is APPROVED at HEAD, complementing the Stop
   review-gate with an IMMEDIATE mid-turn block for a Claude driver. For a non-Claude driver
-  the ship gate is purely SERVER-SIDE (branch protection + required CI + cloud review);
-  porting the guard to codex's own hook system is deferred future work. Detection is on the
+  the ship gate is purely SERVER-SIDE — branch protection's required CI status checks (the
+  cloud review posts findings but is not a required gate by default), plus the trusted
+  driver running the loop; porting the guard to codex's own hook system is deferred future
+  work. Detection is on the
   UNQUOTED command (quote and backslash characters deleted, token CONTENT kept, so the
   shell's concatenated quoted tokens like `"gh" pr create` still match)
   so prose mentioning the command stays inert, and unquoted prefixes (`sudo gh pr create`)
   still match. SCOPE, stated honestly: a client-side hook is bypassable by definition, so
   deliberate obfuscation (shell wrappers `bash -c "..."`, eval, herestrings,
   pipe-to-shell) is OUT OF SCOPE — chasing it in a local hook is security theater. The
-  ACTUAL gate against merging unreviewed work is server-side: required CI checks + branch
-  protection + the cloud review; this tripwire only turns a reflexive "ship without
+  ACTUAL gate against merging unreviewed work is server-side: branch protection's required
+  CI status checks (the cloud review is an advisory backstop, not required by default);
+  this tripwire only turns a reflexive "ship without
   review" into a deliberate act. Direct base-branch pushes are likewise branch
   protection's job. Feature-branch pushes stay allowed so the RUNTIME smoke-receipt loop
   is not deadlocked.
@@ -55,8 +58,9 @@
   rules, MANUAL, and hook comments no longer claim otherwise — each place that described a
   hook as unconditional/vendor-universal enforcement now says so only for the Claude driver
   and names the vendor-independent hard layer for all drivers (the driver rules they follow
-  + the SERVER-SIDE gate: branch protection + required CI + the cloud review). Porting the
-  guard/gate to codex's own hook system is called out as future work. This includes the
+  + the SERVER-SIDE gate: branch protection's required CI status checks; the cloud review is
+  an advisory backstop, not a required merge gate by default). Porting the guard/gate to
+  codex's own hook system is called out as future work. This includes the
   "immutable"/"agent-immutable" language for `.plinth/protected-paths`, `.plinth/config`, and
   GOAL eval scripts (the generated `protected-paths`/`config` headers, the GOAL template, the
   guard's own block messages, and MANUAL): those paths are now described as off-limits to the
