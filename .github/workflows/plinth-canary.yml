@@ -868,6 +868,28 @@ jobs:
             PATH="$RB4:$GB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q -- '--rules' "$GCAP4" || { echo "::error::grok AUDITOR not invoked with --rules role-scoping isolation"; exit 1; }
           
+          # ── v4.4.0: claude reviewer isolated via --safe-mode (round-35) ───────────
+          # claude auto-loads the repo's CLAUDE.md (a PR-modifiable input that could inject reviewer
+          # instructions); --safe-mode disables that while keeping OAuth. Capture argv and assert the
+          # flag is really passed — a real check like the codex (project_doc_max_bytes=0) and grok
+          # (--rules) isolation siblings, so silently dropping --safe-mode from review.sh fails here.
+          CB4="$(mktemp -d)"; CCAP4="$CB4/argv"
+          cat > "$CB4/claude" <<CL4
+          #!/usr/bin/env bash
+          printf '%s\n' "\$*" >> "$CCAP4"
+          cat >/dev/null
+          printf '%s' '{"structured_output":{"verdict":"APPROVED","summary":"s","findings":[]},"session_id":"c4","usage":{"input_tokens":9}}'
+          CL4
+          chmod +x "$CB4/claude"
+          CRV="$(mktemp -d)"; ( cd "$CRV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$CRV" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(reviewer_vendor|audit_vendor)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'reviewer_vendor = claude\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$CB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q -- '--safe-mode' "$CCAP4" || { echo "::error::claude reviewer not invoked with --safe-mode isolation"; exit 1; }
+          
           # ── v4.4.0: protected-paths edits are PROJECT scope, not auto-tamper ─────
           # (round-4: the reviewer contract excludes protected-paths from pinned tooling; a
           # human's project commit editing it must be reviewed as normal code, not auto-blocked.)
