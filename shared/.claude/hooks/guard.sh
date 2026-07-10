@@ -48,8 +48,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    NOT try to catch deliberate obfuscation (shell wrappers `bash -c "..."`, eval,
 #    herestrings, pipes-into-a-shell, base64, …). Chasing those in a local hook is
 #    security theater — a determined bypass always wins. Detection is on `stripped`
-#    (quoted spans removed) so quoted PROSE mentioning the command stays inert; a
-#    `bash -c "gh pr create"` deliberately hidden in quotes is OUT OF SCOPE.
+#    (an UNQUOTE: quote/backslash chars deleted, token CONTENT kept — not span removal)
+#    so quoted PROSE mentioning the command stays inert; a `bash -c "gh pr create"`
+#    deliberately hidden in quotes is OUT OF SCOPE.
 #  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: required CI checks
 #    + branch protection + the cloud review. A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a

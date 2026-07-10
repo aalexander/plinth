@@ -79,8 +79,9 @@ fi
 diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
 [ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
 
-# Per-project config (.plinth/config — the driver must not edit it; protected-paths +
-# the review enforce that, and a Claude driver's guard also blocks it at the tool level):
+# Per-project config (.plinth/config — the driver must not edit it; it is in protected-paths,
+# so a Claude driver's guard blocks edits at the tool level; a change is otherwise reviewed as
+# normal project code):
 #   spec_path    canonical spec (file or directory)
 #   exec_gated   grep -E patterns (space-separated) for execution-gated paths;
 #                RUNTIME: findings on these don't block — they join the run gate
@@ -705,9 +706,10 @@ ${inc}${evidence}${commits}"
   # contract excludes it from version-pinned tooling (it is project-owned, like
   # config/GOAL.md), and HARNESS_RE keeps findings on it in blocking PROJECT scope —
   # so a bad change is caught by normal review arithmetic, not by the tamper label.
-  # A driver edit to it is already rejected as tampering by the review (any vendor), and a
-  # Claude driver's guard also blocks it in-session; labeling every human edit
-  # "tampering" unless the subject says 'plinth' would contradict the contract.
+  # It is NOT auto-labeled tampering: a change to it is reviewed as normal project code
+  # (findings block via the HARNESS_RE project scope above). A Claude driver's guard also
+  # blocks driver edits in-session; labeling every human edit "tampering" unless the
+  # subject says 'plinth' would contradict the contract.
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
       .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \
       .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md 2>/dev/null | { grep -civ 'plinth' || true; })"

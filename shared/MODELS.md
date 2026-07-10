@@ -81,8 +81,9 @@ can consult any advisor CLI, so a Grok driver can ask Fable.
 Fan out independent work to subagents for speed; route EACH to the best model for its
 part. Cheap/fast (Sonnet, or a lighter model) for mechanical or heavily-parallel fan-out
 where the diff is its own proof; a strong model (Opus at high effort, Fable by exception)
-for the hard or high-consequence pieces. Prefer in-family for parallel fan-out; a guarded
-cross-family CLI shell-out routes a single subtask to another family's strength. As with
+for the hard or high-consequence pieces. Prefer in-family for parallel fan-out; a
+cross-family CLI shell-out routes a single subtask to another family's strength (such a
+codex/grok delegate does not inherit the `.claude/` hooks — see plinth-rules.md). As with
 the driver, model tier != review tier: the classifier routes the RESULT by risk
 regardless of which model wrote it.
 

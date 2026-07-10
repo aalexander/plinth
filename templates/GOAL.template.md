@@ -12,7 +12,8 @@ Command that produces the score (the ONLY source of truth — never narrate a sc
 ## Immutable
 The eval/scoring path(s) below must NOT be edited by the driver. Add them to
 `.plinth/protected-paths`: under a Claude driver the guard then blocks edits at the
-tool level, and for EVERY driver the review rejects an edit to them as tampering.
+tool level, and for EVERY driver the reviewer checks GOAL runs for metric-gaming —
+an eval-script change to inflate the score is caught there.
 - <e.g. (^|/)bench/score\.sh$>   <!-- use (^|/) not ^: agent paths are often absolute -->
 
 ## Constraints

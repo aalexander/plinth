@@ -38,7 +38,8 @@
   review-gate with an IMMEDIATE mid-turn block for a Claude driver. For a non-Claude driver
   the ship gate is purely SERVER-SIDE (branch protection + required CI + cloud review);
   porting the guard to codex's own hook system is deferred future work. Detection is on the
-  quote-stripped command (escape-aware pairing)
+  UNQUOTED command (quote and backslash characters deleted, token CONTENT kept, so the
+  shell's concatenated quoted tokens like `"gh" pr create` still match)
   so prose mentioning the command stays inert, and unquoted prefixes (`sudo gh pr create`)
   still match. SCOPE, stated honestly: a client-side hook is bypassable by definition, so
   deliberate obfuscation (shell wrappers `bash -c "..."`, eval, herestrings,
@@ -59,8 +60,9 @@
   "immutable"/"agent-immutable" language for `.plinth/protected-paths`, `.plinth/config`, and
   GOAL eval scripts (the generated `protected-paths`/`config` headers, the GOAL template, the
   guard's own block messages, and MANUAL): those paths are now described as off-limits to the
-  driver — the review rejects an edit as tampering for EVERY driver, and a Claude driver's
-  guard additionally blocks it at the tool level — rather than as physically immutable.
+  driver — a Claude driver's guard blocks such edits at the tool level, and (being
+  project-owned) a change is otherwise reviewed as normal project code / GOAL metric-gaming,
+  NOT auto-labeled tampering — rather than as physically immutable.
 - **Cloud reviewer reads its contract explicitly.** Since the reviewer contract moved to
   `.plinth/reviewer.md` and the PR cloud review auto-loads `AGENTS.md` (now the driver
   shell) — not `.plinth/reviewer.md` — the shell's role-scope block now INSTRUCTS any
@@ -109,10 +111,10 @@
   pinned release; the canary now requires the fallback rather than forbidding it.
 - **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
   longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
-  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE), and a driver edit is
-  rejected as tampering by the review regardless of vendor (a Claude driver's guard also
-  blocks it at the tool level), so a human's project commit editing it is reviewed as
-  normal code instead of being auto-labeled tampering.
+  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE), so a change to it is
+  reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
+  auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
+  tool level; a human's project commit editing it is reviewed as normal code.
 - **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
   prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
   mid-token at the 120/160-char cap, leaving a fragment too short for the redaction

@@ -57,7 +57,8 @@ Everything between is the model's call.
   round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/
   advisor_model_max, tier2_extra — the config itself is off-limits to the driver, so
   these are yours alone), `protected-paths` (paths the driver must not edit —
-  review-enforced, and tool-blocked under a Claude driver), `AGENTS-project.md`
+  tool-blocked under a Claude driver; project-owned entries reviewed as normal project
+  code), `AGENTS-project.md`
   (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
   None is ever overwritten by `plinth update`.
 - The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`, so
@@ -387,9 +388,9 @@ it has run green with a real smoke_cmd.
 1. `plinth goal <repo>`; have the driver draft the metric, constraints, action
    catalog. 2. **You ratify** (set `STATUS: RATIFIED`) — agents never self-ratify.
 3. Add the eval-script pattern to `.plinth/protected-paths` (a Claude driver's
-   guard then blocks edits to it at the tool level; every driver is bound by the
-   review, which rejects an eval-script edit as tampering). 4. Have Codex attack
-   the rubric for gameability first.
+   guard then blocks edits to it at the tool level; for every driver the reviewer
+   checks GOAL runs for metric-gaming, so an eval-script change to inflate the score
+   is caught in review). 4. Have Codex attack the rubric for gameability first.
 5. Let the driver loop. It exits into the normal review -> PR -> CI path, where the
    reviewer explicitly checks for metric gaming.
 
