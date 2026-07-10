@@ -848,6 +848,21 @@ jobs:
           printf '%s' "$fcout" | grep -q "corruption/tampering" || { echo "::error::fail-closed: missing corruption message"; exit 1; }
           [ -s "$PR4" ] && { echo "::error::fail-closed: a reviewer prompt was built despite the missing ratified contract"; exit 1; } || true
 
+          # ── v4.4.0: reviewer prompt lists the COMPLETE, path-filtered TOOLING COMMITS (round-53/54) ──
+          # For the tamper policy the reviewer must see EVERY commit touching version-pinned tooling
+          # (judged by subject label), not head -50 of all commits. Prove it is path-filtered to tooling
+          # (a non-tooling commit's subject must NOT appear) and complete/labeled.
+          TC="$(mktemp -d)"; mkrev4 "$TC"
+          ( cd "$TC"; echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf '\n<!-- note -->\n' >> CLAUDE.md; git add -A; git commit -qm 'plinth: TOOLINGTOUCHX edit shell' >/dev/null
+            echo "x=1" > app.py; git add -A; git commit -qm 'PLAINCODEY app change' >/dev/null )
+          : > "$PR4"; ( cd "$TC" && PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q "TOOLING COMMITS IN RANGE" "$PR4" || { echo "::error::reviewer prompt lacks the TOOLING COMMITS label"; exit 1; }
+          grep -q "TOOLINGTOUCHX" "$PR4" || { echo "::error::tooling-touching commit (CLAUDE.md) missing from the TOOLING COMMITS list"; exit 1; }
+          grep -q "PLAINCODEY" "$PR4" && { echo "::error::non-tooling commit (app.py) leaked into TOOLING COMMITS — not path-filtered"; exit 1; } || true
+          grep -q "head -50" "$GITHUB_WORKSPACE/shared/.plinth/review.sh" && { echo "::error::review.sh still caps the commit list with head -50"; exit 1; } || true
+
           # ── v4.4.0: grok reviewer + auditor isolated via --rules (round-8) ───────
           # grok auto-loads CLAUDE.md/AGENTS.md with no doc-suppression flag; a preserved legacy
           # CLAUDE.md (upgraded project) lacks the shell's role-scope line, so review.sh must
