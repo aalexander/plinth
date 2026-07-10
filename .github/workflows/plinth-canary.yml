@@ -1082,7 +1082,10 @@ jobs:
           grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }
           grep -qE 'check +shared/driver-shell\.md +AGENTS\.md' "$FLOOR" || { echo "::error::floor does not verify root AGENTS.md against the driver shell"; exit 1; }
           grep -qE 'check +shared/driver-shell\.md +CLAUDE\.md' "$FLOOR" || { echo "::error::floor does not verify root CLAUDE.md (shell) against the driver shell"; exit 1; }
-          grep -qE 'check +shared/AGENTS\.md' "$FLOOR" && { echo "::error::floor still references the removed shared/AGENTS.md source"; exit 1; } || true
+          # Version-complementary fallback: pre-v4.4 pins ship shared/AGENTS.md (root reviewer contract)
+          # and no driver-shell.md, so the floor MUST keep this check or a pre-v4.4 pin's root AGENTS.md
+          # goes unverified. It skips naturally on v4.4+ pins (shared/AGENTS.md renamed to reviewer.md).
+          grep -qE 'check +shared/AGENTS\.md +AGENTS\.md' "$FLOOR" || { echo "::error::floor dropped the pre-v4.4 fallback 'check shared/AGENTS.md AGENTS.md' — a pre-v4.4 pin's root AGENTS.md would be unverified"; exit 1; }
           
           # ── v4.4.0: audit_vendor update warning is vendor-aware (round-19) ─────
           # The audit runs only when audit_vendor != reviewer_vendor, so the "unset" warning must

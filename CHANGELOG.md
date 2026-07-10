@@ -78,6 +78,12 @@
   preserves notes so nothing is lost, the floor failure is the pressure to finish. This
   repo's OWN contract migration is sequenced AFTER release (the pinned instrument must
   reach v4.4.0 first).
+- **Floor back-compat for pre-v4.4 pins.** The floor verifies root `AGENTS.md` against BOTH
+  `shared/AGENTS.md` (pre-v4.4 source, where the reviewer contract lived at root) and
+  `shared/driver-shell.md` (v4.4+ source) — `check()` skips whichever the pinned release
+  lacks, so exactly one fires. Dropping the `shared/AGENTS.md` fallback (as the first cut
+  did) would leave a pre-v4.4-pinned project's root `AGENTS.md` UNVERIFIED against its
+  pinned release; the canary now requires the fallback rather than forbidding it.
 - **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
   longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
   GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE) and the guard keeps
