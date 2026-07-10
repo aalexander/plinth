@@ -119,6 +119,18 @@
   reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
   auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
   tool level; a human's project commit editing it is reviewed as normal code.
+- **Self-referential Tier-0 bypass closed:** the risk classifier is version-pinned but is EXECUTED
+  from the PR working tree, and the Tier-0 gate exits APPROVED before the tooling-tamper block — so
+  a PR could rewrite `.plinth/risk-classify.sh` to emit Tier 0 and auto-approve itself, skipping both
+  the model round and the tamper check. Now, independently of the classifier, if the diff touches ANY
+  version-pinned tooling path (root-anchored HARNESS_RE) it is floored to Tier 2, so the full review +
+  tamper arithmetic always run. (This repo's own `shared/` product edits don't match the root-anchored
+  regex, so they are unaffected.)
+- **First-adoption guards key on config FILE existence, not content:** the `spec_path` / `audit_vendor`
+  first-adoption fallbacks used `[ -n "$basecfg" ]`, which treats an existing-but-EMPTY base config as
+  missing — so a PR against a project with a blank base config could add `spec_path = EVIL.md` /
+  `audit_vendor = <primary>` and repoint/suppress its own review. Now they check `git cat-file -e
+  base:.plinth/config` (file existence); an empty base config is not first adoption.
 - **spec_path can't be repointed by the PR under review (defaulted-key case):** `SPEC_PATH`'s
   working-tree fallback is now first-adoption-only (guarded by `$basecfg`). Before, a project whose
   base config existed but OMITTED `spec_path` (valid — it defaults to SPEC.md) could have a PR add

@@ -106,6 +106,12 @@ REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0
 # `|| true` FIRST — under set -euo pipefail a failing `git show` (base has no
 # .plinth/config: first spec / new project) would abort before the fallback runs.
 basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+# Whether the base config FILE exists — distinct from its CONTENT being non-empty. The
+# first-adoption fallbacks (spec_path/audit_vendor) key on FILE existence: an existing but
+# empty/blank/all-comment base config is VALID (every knob is optional), and must NOT be
+# treated as first adoption — else a PR could add spec_path=EVIL.md / audit_vendor=<primary>
+# to a project with an empty base config and repoint/suppress its own review.
+base_has_config=0; git cat-file -e "${baseref}:.plinth/config" 2>/dev/null && base_has_config=1
 # bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
 # path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
 # come from the ratified base, NOT the working tree: else a PR could weaken its OWN
@@ -114,11 +120,11 @@ basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
 # risk-classify.sh + spec_path.
 bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
 SPEC_PATH="$(bcfg spec_path)"
-# First ADOPTION only (base has NO config at all — $basecfg empty): honor the working-tree
-# spec_path. If the base HAS a config but omits spec_path (valid — it defaults to SPEC.md),
-# stay base-only so a PR cannot repoint its OWN review target to a PR-controlled EVIL.md. Same
-# guard as AUDIT_VENDOR below.
-[ -n "$SPEC_PATH" ] || [ -n "$basecfg" ] || SPEC_PATH="$(cfg spec_path || true)"
+# First ADOPTION only (base config FILE absent): honor the working-tree spec_path. If the base
+# config FILE exists but omits spec_path (valid — it defaults to SPEC.md, even when the file is
+# empty), stay base-only so a PR cannot repoint its OWN review target to a PR-controlled EVIL.md.
+# Same guard as AUDIT_VENDOR below.
+[ -n "$SPEC_PATH" ] || [ "$base_has_config" = 1 ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
@@ -128,12 +134,12 @@ AUDIT_MODEL="$(bcfg audit_model)"
 # codex. Using a DIFFERENT vendor here is what makes the second opinion a real
 # cross-vendor check rather than same-vendor-different-model.
 AUDIT_VENDOR="$(bcfg audit_vendor)"
-# First ADOPTION only (base has NO .plinth/config at all — $basecfg empty): honor the
-# scaffolded working-tree audit_vendor (grok) so a fresh project still gets its cross-vendor
-# Tier-2 audit instead of silently defaulting to codex == the default codex primary. There is
-# no ratified prior config to weaken. If the base HAS a config, stay base-only — a PR must not
-# repoint audit_vendor to the primary's own vendor to drop the cross-vendor check.
-[ -n "$AUDIT_VENDOR" ] || [ -n "$basecfg" ] || AUDIT_VENDOR="$(cfg audit_vendor || true)"
+# First ADOPTION only (base config FILE absent): honor the scaffolded working-tree audit_vendor
+# (grok) so a fresh project still gets its cross-vendor Tier-2 audit instead of silently
+# defaulting to codex == the default codex primary. There is no ratified prior config to weaken.
+# If the base config FILE exists (even empty), stay base-only — a PR must not repoint audit_vendor
+# to the primary's own vendor to drop the cross-vendor check.
+[ -n "$AUDIT_VENDOR" ] || [ "$base_has_config" = 1 ] || AUDIT_VENDOR="$(cfg audit_vendor || true)"
 [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
 # Primary reviewer VENDOR — codex | claude | grok. DISTINCT from audit_vendor (the
 # cross-vendor second opinion): this is who runs the PRIMARY adversarial review.
@@ -317,6 +323,15 @@ if [ -x ".plinth/risk-classify.sh" ]; then
   out="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || true)"
   t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
   case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
+fi
+# SELF-REFERENTIAL FLOOR (independent of the classifier): the classifier is version-pinned
+# tooling but is EXECUTED from the PR working tree, so a PR could rewrite it to emit Tier 0 and
+# skip BOTH the model round AND the tooling-tamper block (Tier 0 exits APPROVED before that
+# arithmetic). Check the diff directly: if it touches ANY version-pinned tooling path, it CANNOT
+# be Tier 0 — floor to Tier 2 so the full review + tamper arithmetic run. (This repo's own shared/
+# product edits do not match the root-anchored HARNESS_RE, so they are unaffected.)
+if [ "$RISK" = "0" ] && git diff --name-only "${baseref}..HEAD" 2>/dev/null | grep -Eq "$HARNESS_RE"; then
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the working-tree classifier to prevent a self-referential Tier-0 bypass"]}'
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 

@@ -1191,6 +1191,30 @@ jobs:
           grep -q "canonical spec at: SPEC.md" "$PR4" || { echo "::error::spec_path: base-config-defaulted review target not held at SPEC.md"; exit 1; }
           grep -q "canonical spec at: EVIL.md" "$PR4" && { echo "::error::spec_path: a PR repointed the review target to its own EVIL.md (base config omitted spec_path)"; exit 1; } || true
 
+          # ── v4.4.0: an EMPTY (but present) base config is NOT first-adoption (round-58) ──
+          # The fallback keys on base config FILE existence, not content — an empty/blank base config is
+          # valid (knobs optional) and must not let a PR repoint spec_path via the working tree.
+          SPE="$(mktemp -d)"; mkrev4 "$SPE"
+          ( cd "$SPE"; : > .plinth/config
+            echo "REAL SPEC" > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf 'spec_path = EVIL.md\n' >> .plinth/config; echo "EVIL" > EVIL.md
+            echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null )
+          : > "$PR4"; ( cd "$SPE" && PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q "canonical spec at: SPEC.md" "$PR4" || { echo "::error::spec_path: an EMPTY base config was treated as first-adoption — PR repointed the review target"; exit 1; }
+
+          # ── v4.4.0: a PR rewriting the working-tree classifier to Tier 0 is floored (round-58) ──
+          # The classifier is version-pinned but EXECUTED from the PR working tree; Tier 0 exits APPROVED
+          # before the tamper block. A tooling-touching diff must be floored to Tier 2 regardless.
+          T0="$(mktemp -d)"; mkrev4 "$T0"
+          ( cd "$T0"; echo x > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf '#!/usr/bin/env bash\necho '\''{"tier":0,"reasons":["inert"]}'\''\n' > .plinth/risk-classify.sh; chmod +x .plinth/risk-classify.sh
+            git add -A; git commit -qm 'sneaky: force tier 0' >/dev/null )
+          t0out="$( cd "$T0" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 || true )"
+          printf '%s' "$t0out" | grep -q "risk Tier 2" || { echo "::error::Tier-0 bypass: tooling-touching diff (classifier emits 0) not floored to Tier 2"; exit 1; }
+          printf '%s' "$t0out" | grep -qi "TIER0_AUTO" && { echo "::error::Tier-0 bypass: review auto-approved at Tier 0 despite a tooling edit"; exit 1; } || true
+
           # ── v4.4.0: CI floor verifies the v4.4 contract files (round-23) ────────
           FLOOR="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
           grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }
