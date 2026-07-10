@@ -1178,6 +1178,19 @@ jobs:
             PATH="$FAB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q AUDIT_RAN "$facap" 2>/dev/null || { echo "::error::first-adoption: cross-vendor audit did NOT run (audit_vendor lost to codex default when base has no .plinth/config)"; exit 1; }
 
+          # ── v4.4.0: an EXISTING-config project defaulting spec_path can't be repointed by the PR (round-56) ──
+          # The working-tree fallback is first-adoption-ONLY: if the base config exists but OMITS spec_path
+          # (valid — defaults to SPEC.md), a PR adding spec_path = EVIL.md must NOT move the review target.
+          SP="$(mktemp -d)"; mkrev4 "$SP"
+          ( cd "$SP"; grep -v '^spec_path' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            echo "REAL SPEC" > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf 'spec_path = EVIL.md\n' >> .plinth/config; echo "EVIL" > EVIL.md
+            echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null )
+          : > "$PR4"; ( cd "$SP" && PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q "canonical spec at: SPEC.md" "$PR4" || { echo "::error::spec_path: base-config-defaulted review target not held at SPEC.md"; exit 1; }
+          grep -q "canonical spec at: EVIL.md" "$PR4" && { echo "::error::spec_path: a PR repointed the review target to its own EVIL.md (base config omitted spec_path)"; exit 1; } || true
+
           # ── v4.4.0: CI floor verifies the v4.4 contract files (round-23) ────────
           FLOOR="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
           grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }

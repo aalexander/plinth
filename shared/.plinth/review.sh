@@ -114,7 +114,11 @@ basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
 # risk-classify.sh + spec_path.
 bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
 SPEC_PATH="$(bcfg spec_path)"
-[ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
+# First ADOPTION only (base has NO config at all — $basecfg empty): honor the working-tree
+# spec_path. If the base HAS a config but omits spec_path (valid — it defaults to SPEC.md),
+# stay base-only so a PR cannot repoint its OWN review target to a PR-controlled EVIL.md. Same
+# guard as AUDIT_VENDOR below.
+[ -n "$SPEC_PATH" ] || [ -n "$basecfg" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac

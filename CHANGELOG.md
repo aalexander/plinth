@@ -119,6 +119,12 @@
   reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
   auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
   tool level; a human's project commit editing it is reviewed as normal code.
+- **spec_path can't be repointed by the PR under review (defaulted-key case):** `SPEC_PATH`'s
+  working-tree fallback is now first-adoption-only (guarded by `$basecfg`). Before, a project whose
+  base config existed but OMITTED `spec_path` (valid — it defaults to SPEC.md) could have a PR add
+  `spec_path = EVIL.md` and get itself reviewed against the PR-controlled spec. Now, if the base has
+  a config, spec_path stays base-only (defaults to SPEC.md); the working-tree value is honored ONLY
+  on true first adoption (no base config). Canary covers the existing-config/defaulted-key case.
 - **First adoption keeps its cross-vendor audit:** on the first Plinth PR the BASE branch has
   no `.plinth/config`, so `bcfg audit_vendor` was empty and `AUDIT_VENDOR` defaulted to codex —
   which, with the default codex primary, silently SUPPRESSED the scaffolded `audit_vendor = grok`
