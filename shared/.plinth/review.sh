@@ -79,7 +79,8 @@ fi
 diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
 [ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
 
-# Per-project config (.plinth/config — agent-immutable via protected-paths):
+# Per-project config (.plinth/config — the driver must not edit it; protected-paths +
+# the review enforce that, and a Claude driver's guard also blocks it at the tool level):
 #   spec_path    canonical spec (file or directory)
 #   exec_gated   grep -E patterns (space-separated) for execution-gated paths;
 #                RUNTIME: findings on these don't block — they join the run gate
@@ -704,7 +705,8 @@ ${inc}${evidence}${commits}"
   # contract excludes it from version-pinned tooling (it is project-owned, like
   # config/GOAL.md), and HARNESS_RE keeps findings on it in blocking PROJECT scope —
   # so a bad change is caught by normal review arithmetic, not by the tamper label.
-  # The guard already makes it agent-immutable in-session; labeling every human edit
+  # A driver edit to it is already rejected as tampering by the review (any vendor), and a
+  # Claude driver's guard also blocks it in-session; labeling every human edit
   # "tampering" unless the subject says 'plinth' would contradict the contract.
   tamper="$(git log --format='%s' "${baseref}..HEAD" -- .claude/hooks .claude/settings.json \
       .plinth/review.sh .plinth/risk-classify.sh .plinth/review-schema.json .plinth/plinth-rules.md \

@@ -55,7 +55,12 @@
   hook as unconditional/vendor-universal enforcement now says so only for the Claude driver
   and names the vendor-independent hard layer for all drivers (the driver rules they follow
   + the SERVER-SIDE gate: branch protection + required CI + the cloud review). Porting the
-  guard/gate to codex's own hook system is called out as future work.
+  guard/gate to codex's own hook system is called out as future work. This includes the
+  "immutable"/"agent-immutable" language for `.plinth/protected-paths`, `.plinth/config`, and
+  GOAL eval scripts (the generated `protected-paths`/`config` headers, the GOAL template, the
+  guard's own block messages, and MANUAL): those paths are now described as off-limits to the
+  driver — the review rejects an edit as tampering for EVERY driver, and a Claude driver's
+  guard additionally blocks it at the tool level — rather than as physically immutable.
 - **Cloud reviewer reads its contract explicitly.** Since the reviewer contract moved to
   `.plinth/reviewer.md` and the PR cloud review auto-loads `AGENTS.md` (now the driver
   shell) — not `.plinth/reviewer.md` — the shell's role-scope block now INSTRUCTS any
@@ -104,8 +109,9 @@
   pinned release; the canary now requires the fallback rather than forbidding it.
 - **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
   longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
-  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE) and the guard keeps
-  it agent-immutable in-session, so a human's project commit editing it is reviewed as
+  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE), and a driver edit is
+  rejected as tampering by the review regardless of vendor (a Claude driver's guard also
+  blocks it at the tool level), so a human's project commit editing it is reviewed as
   normal code instead of being auto-labeled tampering.
 - **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
   prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential

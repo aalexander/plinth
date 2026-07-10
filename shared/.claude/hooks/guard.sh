@@ -153,7 +153,7 @@ case "$tool" in
       if printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${bp}" \
          || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" \
          || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}"; then
-        block "bash write targeting protected path (pattern '${pattern}'). Protected files are agent-immutable; if genuinely intended, the human runs it."
+        block "bash write targeting protected path (pattern '${pattern}'). Protected files are off-limits to the driver; if genuinely intended, the human runs it."
       fi
     done <<PATTERNS
 $(each_protected)
@@ -172,7 +172,7 @@ PATTERNS
     fi
     while IFS= read -r pattern; do
       if printf '%s' "$path" | grep -Eq "$pattern"; then
-        block "path matches protected pattern '$pattern': $path. This file is immutable by agents."
+        block "path matches protected pattern '$pattern': $path. This file is off-limits to the driver."
       fi
     done <<PATTERNS
 $(each_protected)
