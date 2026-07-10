@@ -73,9 +73,11 @@ fast for mechanical or heavily-parallel fan-out, a strong model for the hard or
 high-consequence pieces. Use your harness's native model selection (Claude: the Agent
 `model` param / opusplan; other drivers: their equivalent). Prefer IN-FAMILY subagents
 for parallel fan-out; when one subtask genuinely wants another family's strength, a
-guarded cross-family CLI shell-out is fine. Every subagent and delegate inherits the
-same guard hooks and gates (codex/grok/claude all honor `.claude/` PreToolUse) — no
-orchestration escapes them.
+guarded cross-family CLI shell-out is fine. CLAUDE subagents inherit the `.claude/` guard
+hooks and gates automatically; a cross-family shell-out to a codex/grok delegate does NOT
+(those CLIs do not read `.claude/`), so keep any ship or destructive authority for such
+delegations narrow — the SERVER-SIDE gate (branch protection + required CI + the cloud
+review) is what actually binds them, not the local hook.
 
 Before an IMPACTFUL or architectural decision — one expensive to reverse or that
 shapes the design (a schema, a public interface, a security boundary, a migration

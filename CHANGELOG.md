@@ -30,10 +30,15 @@
   AND auditor — which holds even on an upgraded project whose preserved legacy CLAUDE.md
   predates the shell's role-scope line. `HARNESS_RE` and the tamper pathlist gain
   `.plinth/reviewer.md` and `CLAUDE.md`.
-- **Deny-ship TRIPWIRE (vendor-universal).** `guard.sh` (PreToolUse, honored by every
-  vendor) refuses the plain `gh pr create`/`gh pr merge` command unless the feature
-  branch's verdict is APPROVED at HEAD — closing the gap that the Stop review-gate BLOCKS
-  only on Claude/codex. Detection is on the quote-stripped command (escape-aware pairing)
+- **Deny-ship TRIPWIRE (Claude driver).** `guard.sh` is a `.claude/` PreToolUse hook, so it
+  fires under a Claude driver and its Claude subagents ONLY — codex/grok do not read
+  `.claude/` (codex has its own, un-wired hook system; grok has none), and neither does the
+  `.claude/` Stop review-gate fire for them. It refuses the plain `gh pr create`/`gh pr merge`
+  command unless the feature branch's verdict is APPROVED at HEAD, complementing the Stop
+  review-gate with an IMMEDIATE mid-turn block for a Claude driver. For a non-Claude driver
+  the ship gate is purely SERVER-SIDE (branch protection + required CI + cloud review);
+  porting the guard to codex's own hook system is deferred future work. Detection is on the
+  quote-stripped command (escape-aware pairing)
   so prose mentioning the command stays inert, and unquoted prefixes (`sudo gh pr create`)
   still match. SCOPE, stated honestly: a client-side hook is bypassable by definition, so
   deliberate obfuscation (shell wrappers `bash -c "..."`, eval, herestrings,

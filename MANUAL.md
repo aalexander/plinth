@@ -384,13 +384,16 @@ it has run green with a real smoke_cmd.
   bare and prefixed forms like `sudo rm -rf` are caught, but a command hidden inside a
   shell wrapper's quotes such as `bash -c "..."` is NOT — deliberate obfuscation evades
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
-  are blocked at the tool level — for every subagent too. The guard is a CLIENT-SIDE
-  tripwire, not the security boundary: CI required-checks and branch protection are the
-  hard layers.
+  are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
+  hook, so it binds Claude drivers/subagents; codex/grok do not read it). The guard is a
+  CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
+  are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
-  refused unless the branch has an APPROVED review at HEAD — a vendor-universal backstop
-  for a grok/gemini driver whose Stop gate is only advisory. Deliberately-quoted
-  obfuscation is out of scope (see above); the merge gate proper is branch protection.
+  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
+  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a grok/gemini
+  driver this hook does NOT fire — their ship gate is purely SERVER-SIDE (branch protection
+  + the cloud review). Deliberately-quoted obfuscation is out of scope (see above); the
+  merge gate proper is branch protection.
 - Review gate (Stop hook): a session that created commits cannot end its turn
   until review.sh records APPROVED at HEAD. Scoped to feature branches and
   commit-making sessions; releases loudly on review infrastructure failure or

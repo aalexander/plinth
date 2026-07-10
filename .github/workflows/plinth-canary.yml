@@ -881,7 +881,12 @@ jobs:
             v="$(jq -r .verdict .plinth/session/review/feat/verdict.json 2>/dev/null)"
             { [ "$rc" = 0 ] && [ "$v" = APPROVED ]; } || { echo "::error::a project commit editing .plinth/protected-paths (non-plinth subject) was auto-labeled tampering (verdict=$v exit=$rc, want APPROVED/0)"; exit 1; } )
           
-          # ── v4.4.0: guard.sh deny-ship TRIPWIRE (plain command; obfuscation out of scope) ──
+          # ── v4.4.0: guard.sh deny-ship TRIPWIRE — guard LOGIC test (Claude-style PreToolUse JSON) ──
+          # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
+          # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
+          # that codex or grok invoke `.claude/` hooks: they do not (codex uses its own hook system,
+          # grok has none), so a non-Claude driver's ship gate is SERVER-SIDE, not this hook. Deliberate
+          # obfuscation is out of scope (a client hook cannot win that race).
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
           ( cd "$GD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo a>f; git add -A; git commit -qm b >/dev/null; git checkout -qb feat/x >/dev/null 2>&1; echo c>f; git add -A; git commit -qm w >/dev/null )
           GH4="$(git -C "$GD" rev-parse HEAD)"; GV="$GD/.plinth/session/review/feat-x/verdict.json"

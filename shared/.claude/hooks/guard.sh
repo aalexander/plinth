@@ -33,11 +33,15 @@ each_protected() {  # builtin pattern + project patterns, one per line
   fi
 }
 
-# Deny-ship TRIPWIRE (vendor-universal). The Stop review-gate only BLOCKS on
-# Claude/codex; a grok/gemini driver's Stop is advisory, so it could open a PR on
-# unreviewed work. This PreToolUse hook runs for EVERY vendor (codex/grok/claude all
-# honor .claude/), so it refuses the plain `gh pr create`/`gh pr merge` command unless
-# the feature branch's review verdict is APPROVED at HEAD.
+# Deny-ship TRIPWIRE. This is a CLAUDE `.claude/` PreToolUse hook: it fires for a Claude
+# driver and its Claude subagents ONLY. Codex and grok do not read `.claude/` (codex has
+# its own hook system, which Plinth does not wire; grok has no PreToolUse mechanism at
+# all), so neither this hook NOR the `.claude/` Stop review-gate fires for a non-Claude
+# driver — for them the ship gate is purely SERVER-SIDE (branch protection + required CI
+# + the cloud review). For a Claude driver this hook complements the Stop review-gate by
+# refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
+# the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
+# own hook system (so a codex driver gets it too) is deferred future work.
 # WHAT THIS IS, AND IS NOT — read before "hardening" it:
 #  - It is a CLIENT-SIDE hook, therefore bypassable BY DEFINITION: the driver controls
 #    its own machine. It catches the HONEST ship command a trusted driver runs; it does
@@ -68,7 +72,7 @@ ship_gate() {  # <what> — called only when the command is a ship action
     vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
     [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
   fi
-  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Vendor-universal backstop; the Stop gate is advisory on some vendors.)"
+  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection + the cloud review.)"
 }
 
 case "$tool" in
