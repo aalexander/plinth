@@ -123,7 +123,14 @@ AUDIT_MODEL="$(bcfg audit_model)"
 # second opinion. codex (OpenAI), grok (xAI), agy (Google Antigravity). Default
 # codex. Using a DIFFERENT vendor here is what makes the second opinion a real
 # cross-vendor check rather than same-vendor-different-model.
-AUDIT_VENDOR="$(bcfg audit_vendor)"; [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
+AUDIT_VENDOR="$(bcfg audit_vendor)"
+# First ADOPTION only (base has NO .plinth/config at all — $basecfg empty): honor the
+# scaffolded working-tree audit_vendor (grok) so a fresh project still gets its cross-vendor
+# Tier-2 audit instead of silently defaulting to codex == the default codex primary. There is
+# no ratified prior config to weaken. If the base HAS a config, stay base-only — a PR must not
+# repoint audit_vendor to the primary's own vendor to drop the cross-vendor check.
+[ -n "$AUDIT_VENDOR" ] || [ -n "$basecfg" ] || AUDIT_VENDOR="$(cfg audit_vendor || true)"
+[ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
 # Primary reviewer VENDOR — codex | claude | grok. DISTINCT from audit_vendor (the
 # cross-vendor second opinion): this is who runs the PRIMARY adversarial review.
 # Default codex (no behavior change). RV_WARM_RESUME=1 means the vendor reports

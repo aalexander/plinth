@@ -119,6 +119,13 @@
   reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
   auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
   tool level; a human's project commit editing it is reviewed as normal code.
+- **First adoption keeps its cross-vendor audit:** on the first Plinth PR the BASE branch has
+  no `.plinth/config`, so `bcfg audit_vendor` was empty and `AUDIT_VENDOR` defaulted to codex —
+  which, with the default codex primary, silently SUPPRESSED the scaffolded `audit_vendor = grok`
+  cross-vendor Tier-2 audit exactly when a new project is highest-consequence. Now `AUDIT_VENDOR`
+  falls back to the scaffolded WORKING-TREE value, but ONLY when the base has no config at all
+  (nothing to weaken) — if the base has a config, it stays base-only so a PR still cannot repoint
+  audit_vendor to the primary's own vendor to drop the check. Canary covers the first-adoption path.
 - **Reviewer sees the COMPLETE tooling-commit list for the tamper policy:** the prompt's
   commit list was `head -50` of ALL commits, so on a large range an older tooling-touching
   commit could be truncated away even though the tamper policy judges commits by label. It

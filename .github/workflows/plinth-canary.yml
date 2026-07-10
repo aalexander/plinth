@@ -1149,6 +1149,35 @@ jobs:
           audit_iso grok  codex
           audit_iso codex agy
 
+          # ── v4.4.0: first-adoption reads the scaffolded audit_vendor (round-55) ──
+          # When the BASE has NO .plinth/config, audit_vendor must fall back to the SCAFFOLDED working-tree
+          # value (grok) so a fresh project still gets its cross-vendor Tier-2 audit — not silently default
+          # to codex == the default codex primary and suppress the audit.
+          FAB="$(mktemp -d)"; facap="$FAB/audit"
+          cat > "$FAB/codex" <<'FRC'
+          #!/usr/bin/env bash
+          out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; cat >/dev/null
+          [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}' > "$out"
+          echo '{"type":"thread.started","thread_id":"c"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
+          FRC
+          cat > "$FAB/grok" <<FAG
+          #!/usr/bin/env bash
+          echo AUDIT_RAN >> "$facap"
+          printf '%s' '{"text":"{\\"verdict\\":\\"APPROVED\\",\\"summary\\":\\"s\\",\\"findings\\":[]}"}'
+          FAG
+          chmod +x "$FAB"/*
+          FAD="$(mktemp -d)"; ( cd "$FAD"; git init -qb main . >/dev/null
+            echo REQ > SPEC.md; echo "y=1" > app.py; git add -A; git commit -qm 'base: pre-plinth (no .plinth/config)' >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            "$GITHUB_WORKSPACE/bin/plinth" init "$FAD" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # scaffold already sets audit_vendor = grok; reviewer_vendor unset -> defaults to codex; force Tier 2 on app.py
+            printf 'tier2_extra = (^|/)app\\.py$\n' >> .plinth/config
+            # 'plinth' in the subject so the init commit adding tooling is a legit update, not tampering
+            echo "x=2" > app.py; git add -A; git commit -qm 'plinth: adopt Plinth + tweak app' >/dev/null
+            PATH="$FAB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
+          grep -q AUDIT_RAN "$facap" 2>/dev/null || { echo "::error::first-adoption: cross-vendor audit did NOT run (audit_vendor lost to codex default when base has no .plinth/config)"; exit 1; }
+
           # ── v4.4.0: CI floor verifies the v4.4 contract files (round-23) ────────
           FLOOR="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
           grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }
