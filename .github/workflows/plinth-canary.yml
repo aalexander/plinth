@@ -958,6 +958,10 @@ jobs:
           [ "$(gcmd 'git push --prune origin')" = 2 ] || { echo "::error::guard: 'git push --prune' bypassed"; exit 1; }
           [ "$(gcmd 'git push origin src:dst')" = 0 ] || { echo "::error::guard: 'git push origin src:dst' (mid-token colon) wrongly blocked"; exit 1; }
           [ "$(gcmd 'git push git@h:repo.git main')" = 0 ] || { echo "::error::guard: 'git push git@h:repo.git' (scp-like remote) wrongly blocked"; exit 1; }
+          # Bundled short flags: -f/-d matched inside a cluster (like rm), non-destructive bundles allowed:
+          [ "$(gcmd 'git push -fu origin main')" = 2 ] || { echo "::error::guard: bundled 'git push -fu' (= -f -u) bypassed"; exit 1; }
+          [ "$(gcmd 'git push -df origin main')" = 2 ] || { echo "::error::guard: bundled 'git push -df' bypassed"; exit 1; }
+          [ "$(gcmd 'git push -u origin main')" = 0 ] || { echo "::error::guard: 'git push -u' (set-upstream, non-destructive) wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }

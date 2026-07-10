@@ -113,15 +113,17 @@ case "$tool" in
     # catastrophic axis; force is usually paired but recursive is the danger. A short
     # flag must start right after a space so `--reflink`/`--version` (contain r, not
     # recursive) do not trip.
-    # git push: a destructive remote-ref op by ANY encoding — FORCE overwrite (flag forms
-    # --force*/-f, the +refspec form `git push origin +main`, --mirror) OR remote-ref
-    # DELETION/prune (--delete/-d, a :refspec `git push origin :main`, --prune). Deletion is
-    # a soft "run it yourself" speed-bump: it is not in the autonomous loop (which pushes
-    # feature branches and ships via gh, never `git push --delete`), so the false-block cost
-    # is a few seconds vs. data loss on a miss. The +/: alternatives start right after a
-    # space (the prefix group ends in whitespace), so a mid-token plus/colon — an ordinary
-    # non-destructive refspec like `feature+x` or `HEAD:main` — is NOT a hit.
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|-f|--mirror|--prune|--delete|-d|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+    # git push: a destructive remote-ref op by ANY encoding — FORCE overwrite (--force*, the
+    # +refspec form `git push origin +main`, --mirror) OR remote-ref DELETION/prune (--delete,
+    # a :refspec `git push origin :main`, --prune). The short flags -f (force) / -d (delete)
+    # are matched WITHIN a bundle like rm's — `-[A-Za-z]*[fd][A-Za-z]*` catches `-fu` (=`-f -u`)
+    # or `-df`, while a bundle with neither (`-u`, `-n`, `-v`) stays allowed. Deletion is a
+    # soft "run it yourself" speed-bump: it is not in the autonomous loop (which pushes feature
+    # branches and ships via gh, never `git push --delete`), so the false-block cost is a few
+    # seconds vs. data loss on a miss. The +/: alternatives start right after a space (the
+    # prefix group ends in whitespace), so a mid-token plus/colon — an ordinary non-destructive
+    # refspec like `feature+x` or `HEAD:main` — is NOT a hit.
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
        || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi

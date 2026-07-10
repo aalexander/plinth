@@ -98,9 +98,10 @@
   -c k=v push …`, `git --git-dir=… push …`, `git -C . reset --hard origin`); a destructive
   remote-ref push by ANY encoding — force overwrite (`--force`, `-f`, `--force-with-lease`,
   a `+`-prefixed ref `git push origin +main`, `--mirror`) OR remote-ref deletion/prune
-  (`--delete`, `-d`, a `:`-prefixed ref `git push origin :main`, `--prune`); a mid-token
-  `+`/`:` — an ordinary refspec like a `feature+x` branch or `HEAD:main`/`src:dst` — is not
-  a hit; and `gh` with globals
+  (`--delete`, `-d`, a `:`-prefixed ref `git push origin :main`, `--prune`) — the short `-f`/`-d`
+  matched inside a bundle like rm's (`-fu` = `-f -u`), while a bundle with neither (`-u`/`-n`/`-v`)
+  is allowed; a mid-token `+`/`:` — an ordinary refspec like a `feature+x` branch or
+  `HEAD:main`/`src:dst` — is not a hit; and `gh` with globals
   before the ship action (`gh -R owner/repo pr create`, `gh --repo … pr merge`). It also
   UNQUOTES rather than deleting quoted spans, so a quoted command token (`"rm" -rf`, `gh
   "pr" create`) that the shell would still run is caught. A mere MENTION mid-argument
