@@ -1003,6 +1003,17 @@ jobs:
           [ "$(gcmd 'git push -fu origin main')" = 2 ] || { echo "::error::guard: bundled 'git push -fu' (= -f -u) bypassed"; exit 1; }
           [ "$(gcmd 'git push -df origin main')" = 2 ] || { echo "::error::guard: bundled 'git push -df' bypassed"; exit 1; }
           [ "$(gcmd 'git push -u origin main')" = 0 ] || { echo "::error::guard: 'git push -u' (set-upstream, non-destructive) wrongly blocked"; exit 1; }
+          # Secret-path bash WRITES (round-50) — the Bash branch must apply the secret denylist too:
+          [ "$(gcmd 'printf SECRET > .env')" = 2 ] || { echo "::error::guard: bash write 'printf > .env' bypassed secret denylist"; exit 1; }
+          [ "$(gcmd 'tee secrets/key')" = 2 ] || { echo "::error::guard: bash write 'tee secrets/key' bypassed"; exit 1; }
+          [ "$(gcmd 'touch .ssh/id_rsa')" = 2 ] || { echo "::error::guard: bash write 'touch .ssh/id_rsa' bypassed"; exit 1; }
+          [ "$(gcmd 'echo x > id_rsa')" = 2 ] || { echo "::error::guard: bash write 'echo > id_rsa' bypassed"; exit 1; }
+          [ "$(gcmd 'printf X > .env.example')" = 0 ] || { echo "::error::guard: '.env.example' bash write wrongly blocked"; exit 1; }
+          [ "$(gcmd 'echo x > out.txt')" = 0 ] || { echo "::error::guard: non-secret bash write 'echo > out.txt' wrongly blocked"; exit 1; }
+          [ "$(gcmd 'cat secrets/key')" = 0 ] || { echo "::error::guard: 'cat secrets/key' (read, not write) wrongly blocked"; exit 1; }
+          # Case-INSENSITIVE destructive SQL DROP (round-50):
+          [ "$(gcmd 'psql -c "drop table users"')" = 2 ] || { echo "::error::guard: lowercase 'drop table' bypassed"; exit 1; }
+          [ "$(gcmd 'mysql -e "Drop Database app"')" = 2 ] || { echo "::error::guard: mixed-case 'Drop Database' bypassed"; exit 1; }
           [ "$(gcmd 'echo "how to sudo rm -rf safely"')" = 0 ] || { echo "::error::guard: quoted destructive prose false-positived"; exit 1; }
           [ "$(gcmd 'sudo rm /tmp/one-file')" = 0 ] || { echo "::error::guard: plain sudo rm (no -rf) wrongly blocked"; exit 1; }
           [ "$(gcmd 'sudo -n rm -rf x')" = 2 ] || { echo "::error::guard: sudo -n rm -rf not blocked"; exit 1; }

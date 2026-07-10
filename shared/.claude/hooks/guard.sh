@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Plinth guard v3 (shared, version-pinned). Blocks destructive commands, edits
-# to protected paths, and bash-level WRITES to protected paths (redirections or
-# mutating commands whose text targets a protected pattern). Receives Claude
-# Code PreToolUse JSON on stdin. Exit 2 = block (stderr shown to the model).
+# to protected/secret paths, and bash-level WRITES to protected OR secret paths
+# (redirections or mutating commands whose text targets a protected pattern or a
+# secret path — secrets/, credentials/, .ssh/, .aws/, id_rsa, .env, …). Receives
+# Claude Code PreToolUse JSON on stdin. Exit 2 = block (stderr shown to the model).
 # Exit 0 = allow. Applies to every tool call, including subagents.
 #
 # `.plinth/session/` (verdict + event state) is protected BUILTIN — agents can
@@ -132,7 +133,7 @@ case "$tool" in
     # prefix group ends in whitespace), so a mid-token plus/colon — an ordinary non-destructive
     # refspec like `feature+x` or `HEAD:main` — is NOT a hit.
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
-       || printf '%s' "$cmd" | grep -Eq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
+       || printf '%s' "$cmd" | grep -Eiq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
     # Ship tripwire: block `gh pr create`/`gh pr merge` at COMMAND POSITION on `stripped`
@@ -162,6 +163,24 @@ case "$tool" in
     done <<PATTERNS
 $(each_protected)
 PATTERNS
+    # Secret-path denylist for bash-level writes: the Edit/Write branch blocks these paths,
+    # so a bash redirect / tee / touch / … targeting them must block too — else
+    # `printf X > .env`, `tee secrets/key`, `touch .ssh/id_rsa` slip past despite the docs
+    # promising secret paths are blocked at the tool level. Same 3 write-forms as above.
+    for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519'; do
+      if printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${sp}" \
+         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" \
+         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}"; then
+        block "bash write targeting a secret path (matched '${sp}'). Secret paths need explicit human action; if intended, the human runs it."
+      fi
+    done
+    # .env is secret too, but .env.example/.sample/.template are conventionally committed docs.
+    if { printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*\.env" \
+         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*\.env" \
+         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*\.env"; } \
+       && ! printf '%s' "$cmd" | grep -Eq '\.env[^;|& ]*\.(example|sample|template)([[:space:]]|$)'; then
+      block "bash write targeting .env (secret). If it is .env.example/.sample/.template name it explicitly; otherwise the human runs it."
+    fi
     ;;
   Edit|Write|MultiEdit)
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
