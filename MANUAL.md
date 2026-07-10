@@ -10,10 +10,12 @@ be a different vendor than the driver but need not be; a best-effort cross-vendo
 opinion is the auditor, which runs when `audit_vendor` differs from `reviewer_vendor` and
 that CLI is available — if it cannot run it is recorded UNAVAILABLE (non-blocking) and the
 primary review remains the gate. Then a
-deterministic CI floor (tests + scanners) gates every merge as a required status check;
-a Codex cloud review, once connected, additionally posts adversarial findings on each PR
-(security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop, though it
-is advisory unless you make it a required gate. The name is the design:
+deterministic CI floor (tests + scanners) becomes a required status check that gates every
+merge ONCE you enable branch protection (a one-time operator step after the first PR —
+`plinth init` only reports branch-protection state, it cannot set it; until then CI is
+advisory). A Codex cloud review, once connected, additionally posts adversarial findings on
+each PR (security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop,
+though it is advisory unless you make it a required gate. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -40,10 +42,12 @@ Everything between is the model's call.
 - `plinth init ~/Dev/<repo>`    — scaffold a project (templates once + shared pinned),
   git-init if needed, offer GitHub repo creation, probe branch protection
 - `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth,
-  backfill per-project files new to this version (never touches yours, with ONE
-  managed exception: it appends any missing Plinth-managed security patterns to
-  `.plinth/protected-paths`, since those must propagate — your own added lines
-  are left intact), re-run the GitHub preflight; review the diff, then commit
+  backfill per-project files new to this version (never touches yours, with TWO
+  managed exceptions: it appends any missing Plinth-managed security patterns to
+  `.plinth/protected-paths`, since those must propagate — your own added lines are
+  left intact; and it migrates a legacy root `NEEDS-HUMAN.md` into `.plinth/` so the
+  dashboard finds it, warning instead of clobbering if both exist), re-run the GitHub
+  preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
