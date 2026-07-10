@@ -6,9 +6,10 @@ vendor — see the driver contract below), and an INDEPENDENT adversarial review
 fresh session that did not write the code — scrutinizes it (the `reviewer_vendor`:
 codex/GPT by default, or claude/grok; risk-tiered — inert docs are approved by the
 deterministic floor, code and high-consequence changes get the model). The reviewer MAY
-be a different vendor than the driver but need not be; the guaranteed cross-vendor second
-opinion is the auditor, which runs when `audit_vendor` differs from `reviewer_vendor`.
-Then a
+be a different vendor than the driver but need not be; a best-effort cross-vendor second
+opinion is the auditor, which runs when `audit_vendor` differs from `reviewer_vendor` and
+that CLI is available — if it cannot run it is recorded UNAVAILABLE (non-blocking) and the
+primary review remains the gate. Then a
 deterministic CI floor (tests + scanners) gates every merge as a required status check;
 a Codex cloud review, once connected, additionally posts adversarial findings on each PR
 (security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop, though it

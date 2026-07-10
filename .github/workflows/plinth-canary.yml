@@ -688,6 +688,14 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
+          # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
+          # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
+          # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.
+          IB="$(mktemp -d)"; ( cd "$IB" && git init -qb main . >/dev/null && mkdir -p .plinth \
+            && printf '(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n' > .plinth/protected-paths \
+            && "$GITHUB_WORKSPACE/bin/plinth" init "$IB" >/dev/null 2>&1 )
+          grep -qF '(^|/)CLAUDE\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill CLAUDE.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
+          grep -qF '(^|/)\.plinth/reviewer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill reviewer.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
           
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
           # The retired pre-v4.4 templates/CLAUDE.md VERBATIM (shallow CI checkouts cannot
@@ -932,6 +940,12 @@ jobs:
           [ "$(gcmd 'echo "gh pr create" | bash')" = 0 ] || { echo "::error::deny-ship: pipe-to-shell should be out-of-scope, not blocked"; exit 1; }
           printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4" > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 0 ] || { echo "::error::deny-ship: gh pr create blocked despite APPROVED@HEAD"; exit 1; }
+          # Re-STALE the verdict (wrong sha) so the ship-command tests further below (quoted-token
+          # `gh "pr" create`, gh-global `gh -R o/r pr create/merge`) run in a NON-approved state and
+          # block — otherwise the APPROVED@HEAD written just above would let them through (they are
+          # verdict-gated ship commands, unlike the verdict-agnostic destructive-command tests).
+          printf '{"verdict":"APPROVED","sha":"0000000000000000000000000000000000000000"}' > "$GV"
+          [ "$(gcmd 'gh pr create --fill')" = 2 ] || { echo "::error::deny-ship: stale-sha verdict did not re-block gh pr create"; exit 1; }
           
           # ── v4.4.0: destructive-command guard catches PREFIXED forms (round-5/6) ──
           [ "$(gcmd 'sudo rm -rf /tmp/x')" = 2 ] || { echo "::error::guard: sudo rm -rf not blocked"; exit 1; }
@@ -1127,10 +1141,17 @@ jobs:
           printf '%s' "$awgrok" | grep -qF "'audit_vendor = codex'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = codex'"; exit 1; }
           printf '%s' "$awgrok" | grep -qE 'audit_vendor = codex[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = codex (...'"; exit 1; } || true
           printf '%s' "$awgrok" | grep -qE "'audit_vendor = grok'" && { echo "::error::grok-primary audit warning suggested grok (== reviewer_vendor)"; exit 1; } || true
+          # ACCURACY (round-44): unset audit_vendor DEFAULTS to codex in review.sh, so for a grok/claude
+          # primary the codex audit ALREADY runs — the warning must NOT falsely claim "no second opinion".
+          printf '%s' "$awgrok" | grep -qi 'already runs with codex' || { echo "::error::grok-primary audit warning does not state the codex default already runs"; exit 1; }
+          printf '%s' "$awgrok" | grep -qi 'no cross-vendor second opinion' && { echo "::error::grok-primary audit warning FALSELY claims no cross-vendor second opinion (codex default runs)"; exit 1; } || true
           CW="$(mktemp -d)"; ( cd "$CW" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CW" >/dev/null 2>&1 )
           grep -v '^audit_vendor' "$CW/.plinth/config" > "$CW/.plinth/config.tmp" && mv "$CW/.plinth/config.tmp" "$CW/.plinth/config"
           printf 'reviewer_vendor = codex\n' >> "$CW/.plinth/config"
-          "$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1 | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
+          awcodex="$("$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1)"
+          printf '%s' "$awcodex" | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
+          # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
+          printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
           
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
