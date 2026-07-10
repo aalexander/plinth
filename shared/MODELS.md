@@ -94,8 +94,9 @@ only (API + Codex), gated by a June 2 executive order requiring federal
 benchmarking; general availability expected mid-July at earliest. When it reaches
 ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
-security-briefed because it reads AGENTS.md; no separate "Codex Security"
-product exists or is assumed.
+security-briefed because AGENTS.md (the driver shell it auto-loads) directs any
+reviewer to read the reviewer contract `.plinth/reviewer.md`; no separate "Codex
+Security" product exists or is assumed.
 Reviewer-swap checklist: review.sh's resume-skip threshold now scales per
 `reviewer_vendor` (~65% of that vendor's context window) automatically;
 PLINTH_RESUME_MAX (env) still overrides. Staying well under the window matters

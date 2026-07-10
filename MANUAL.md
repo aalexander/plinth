@@ -211,8 +211,9 @@ Two operator chores the rules generate:
    Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not run
    them** (those CLIs do not read `.claude/`), so it gets no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
-   is told to follow and by the SERVER-SIDE gate (review + CI + branch protection).
-   Wiring these into codex's own hook system is future work.
+   is told to follow (trusted to run the review loop) and, server-side, by the required
+   CI status checks that branch protection enforces (the cloud review is an advisory
+   backstop). Wiring the hooks into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
    **You:** watch Pane B, not the scrollback. The evidence line shows the last

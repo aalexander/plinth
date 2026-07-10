@@ -37,8 +37,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # driver and its Claude subagents ONLY. Codex and grok do not read `.claude/` (codex has
 # its own hook system, which Plinth does not wire; grok has no PreToolUse mechanism at
 # all), so neither this hook NOR the `.claude/` Stop review-gate fires for a non-Claude
-# driver — for them the ship gate is purely SERVER-SIDE (branch protection + required CI
-# + the cloud review). For a Claude driver this hook complements the Stop review-gate by
+# driver — for them the ship gate is purely SERVER-SIDE: branch protection's required CI
+# status checks (the cloud review posts findings as a backstop but is not a required merge
+# gate by default), plus the trusted driver running the loop. For a Claude driver this hook
+# complements the Stop review-gate by
 # refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
 # the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
 # own hook system (so a codex driver gets it too) is deferred future work.
