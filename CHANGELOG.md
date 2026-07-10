@@ -119,6 +119,12 @@
   reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
   auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
   tool level; a human's project commit editing it is reviewed as normal code.
+- **Reviewer sees the COMPLETE tooling-commit list for the tamper policy:** the prompt's
+  commit list was `head -50` of ALL commits, so on a large range an older tooling-touching
+  commit could be truncated away even though the tamper policy judges commits by label. It
+  now shows the COMPLETE list of commits touching version-pinned tooling (path-filtered by a
+  new `HARNESS_PATHS` shared with the tamper arithmetic, so the display and the deterministic
+  check use the exact same path set) — no cap.
 - **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
   prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
   mid-token at the 120/160-char cap, leaving a fragment too short for the redaction

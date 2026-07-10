@@ -696,7 +696,7 @@ jobs:
             && "$GITHUB_WORKSPACE/bin/plinth" init "$IB" >/dev/null 2>&1 )
           grep -qF '(^|/)CLAUDE\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill CLAUDE.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
           grep -qF '(^|/)\.plinth/reviewer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill reviewer.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
-          
+
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
           # The retired pre-v4.4 templates/CLAUDE.md VERBATIM (shallow CI checkouts cannot
           # `git show` old commits). Must stay byte-identical to the reference embedded in
@@ -704,12 +704,12 @@ jobs:
           OLDT="$(mktemp -d)/old-claude.md"
           cat > "$OLDT" <<'OLDSTOCKFIX'
           # CLAUDE.md
-          
+
           You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —
           read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.
-          
+
           @.plinth/plinth-rules.md
-          
+
           ## Precedence — these rules override defaults
           Where this file or the plinth rules conflict with harness defaults, output
           styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
@@ -722,7 +722,7 @@ jobs:
             preference, always.
           - If a personal or global instruction conflicts with the plinth rules, follow
             the plinth rules and SAY you did; never silently blend the two.
-          
+
           ## Project-specific notes
           <!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
                stack quirks. Shared Plinth rules import above; this section is yours and is
@@ -747,7 +747,7 @@ jobs:
           perl -0777 -pe 's/(## Project-specific notes)/- CUSTOM RULE: always run make lint.\n\n$1/' "$OLDT" > "$MA/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MA" >/dev/null 2>&1
           grep -qF "make lint" "$MA/CLAUDE.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (treated as stock)"; exit 1; }
-          
+
           # ── v4.4.0: protected-paths backfill not suppressed by COMMENT lines ────
           CP="$(mktemp -d)"; ( cd "$CP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CP" >/dev/null 2>&1 )
           printf '# note: CLAUDE\\.md$ and \\.plinth/reviewer\\.md$ are pinned in v4.4\n(^|/)\\.plinth/session/\n' > "$CP/.plinth/protected-paths"
@@ -759,14 +759,14 @@ jobs:
           printf '(^|/)old-CLAUDE\\.md$\n(^|/)\\.plinth/session/\n' > "$CS/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$CS" >/dev/null 2>&1
           grep -qxF '(^|/)CLAUDE\.md$' "$CS/.plinth/protected-paths" || { echo "::error::non-covering old-CLAUDE pattern suppressed the real CLAUDE.md backfill"; exit 1; }
-          
+
           # ── v4.4.0: pulse.sh scrubs credentials BEFORE truncation ───────────────
           PU="$(mktemp -d)"; PPAD="$(printf 'a%.0s' $(seq 1 115))"
           printf '{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"%s"}' "${PPAD}sk-AAAABBBBCCCCDDDD1111" \
             | CLAUDE_PROJECT_DIR="$PU" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/pulse.sh"
           grep -q 'sk-' "$PU/.plinth/session/events.jsonl" && { echo "::error::pulse: credential fragment survived the truncation cap (scrub ran after cut)"; exit 1; } || true
           grep -q '•••' "$PU/.plinth/session/events.jsonl" || { echo "::error::pulse: secret not redacted at all"; exit 1; }
-          
+
           # ── v4.4.0: review.sh INLINES the reviewer contract from the RATIFIED BASE (+ fallbacks) ──
           RB4="$(mktemp -d)"; CAP4="$RB4/argv"; PR4="$RB4/prompt"
           cat > "$RB4/codex" <<CX4
@@ -847,7 +847,7 @@ jobs:
           [ "$fcrc" = 2 ] || { echo "::error::fail-closed: driver-shell base + missing reviewer.md did not exit 2 (got $fcrc)"; exit 1; }
           printf '%s' "$fcout" | grep -q "corruption/tampering" || { echo "::error::fail-closed: missing corruption message"; exit 1; }
           [ -s "$PR4" ] && { echo "::error::fail-closed: a reviewer prompt was built despite the missing ratified contract"; exit 1; } || true
-          
+
           # ── v4.4.0: grok reviewer + auditor isolated via --rules (round-8) ───────
           # grok auto-loads CLAUDE.md/AGENTS.md with no doc-suppression flag; a preserved legacy
           # CLAUDE.md (upgraded project) lacks the shell's role-scope line, so review.sh must
@@ -875,7 +875,7 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
             PATH="$RB4:$GB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q -- '--rules' "$GCAP4" || { echo "::error::grok AUDITOR not invoked with --rules role-scoping isolation"; exit 1; }
-          
+
           # ── v4.4.0: claude reviewer isolated via --safe-mode (round-35) ───────────
           # claude auto-loads the repo's CLAUDE.md (a PR-modifiable input that could inject reviewer
           # instructions); --safe-mode disables that while keeping OAuth. Capture argv and assert the
@@ -897,7 +897,7 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
             PATH="$CB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q -- '--safe-mode' "$CCAP4" || { echo "::error::claude reviewer not invoked with --safe-mode isolation"; exit 1; }
-          
+
           # ── v4.4.0: protected-paths edits are PROJECT scope, not auto-tamper ─────
           # (round-4: the reviewer contract excludes protected-paths from pinned tooling; a
           # human's project commit editing it must be reviewed as normal code, not auto-blocked.)
@@ -910,7 +910,7 @@ jobs:
             rc=0; PATH="$RB4:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             v="$(jq -r .verdict .plinth/session/review/feat/verdict.json 2>/dev/null)"
             { [ "$rc" = 0 ] && [ "$v" = APPROVED ]; } || { echo "::error::a project commit editing .plinth/protected-paths (non-plinth subject) was auto-labeled tampering (verdict=$v exit=$rc, want APPROVED/0)"; exit 1; } )
-          
+
           # ── v4.4.0: guard.sh deny-ship TRIPWIRE — guard LOGIC test (Claude-style PreToolUse JSON) ──
           # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
           # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
@@ -946,7 +946,7 @@ jobs:
           # verdict-gated ship commands, unlike the verdict-agnostic destructive-command tests).
           printf '{"verdict":"APPROVED","sha":"0000000000000000000000000000000000000000"}' > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 2 ] || { echo "::error::deny-ship: stale-sha verdict did not re-block gh pr create"; exit 1; }
-          
+
           # ── v4.4.0: destructive-command guard catches PREFIXED forms (round-5/6) ──
           [ "$(gcmd 'sudo rm -rf /tmp/x')" = 2 ] || { echo "::error::guard: sudo rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'command rm -rf x')" = 2 ] || { echo "::error::guard: command rm -rf not blocked"; exit 1; }
@@ -1044,7 +1044,7 @@ jobs:
           rm -f "$DE/docs/NEEDS-HUMAN.md"; printf -- '- [ ] x\n' > "$DE/docs/foo NEEDS-HUMAN.md"
           o3="$( cd "$DE" && PATH="$RB4:$PATH" ./.plinth/review.sh main 2>&1 )" || true
           printf '%s' "$o3" | grep -q "working tree is dirty" || { echo "::error::dirty-exemption: 'docs/foo NEEDS-HUMAN.md' (space in filename) wrongly exempt"; exit 1; }
-          
+
           # ── v4.4.0: plinth advise — ALL vendors dispatch + model flag + escalation ────
           AB="$(mktemp -d)"; ACAP="$AB/cap"
           for v in claude codex grok agy; do
@@ -1078,7 +1078,7 @@ jobs:
           AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
-          
+
           # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy (round-24) ──
           audit_iso() {  # <primary_reviewer_vendor> <audit_vendor>
             local rv="$1" av="$2" B cap D; B="$(mktemp -d)"; cap="$B/leak"
@@ -1133,7 +1133,7 @@ jobs:
           audit_iso codex grok
           audit_iso grok  codex
           audit_iso codex agy
-          
+
           # ── v4.4.0: CI floor verifies the v4.4 contract files (round-23) ────────
           FLOOR="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
           grep -qE 'check +shared/reviewer\.md +\.plinth/reviewer\.md' "$FLOOR" || { echo "::error::floor does not verify .plinth/reviewer.md"; exit 1; }
@@ -1143,7 +1143,7 @@ jobs:
           # and no driver-shell.md, so the floor MUST keep this check or a pre-v4.4 pin's root AGENTS.md
           # goes unverified. It skips naturally on v4.4+ pins (shared/AGENTS.md renamed to reviewer.md).
           grep -qE 'check +shared/AGENTS\.md +AGENTS\.md' "$FLOOR" || { echo "::error::floor dropped the pre-v4.4 fallback 'check shared/AGENTS.md AGENTS.md' — a pre-v4.4 pin's root AGENTS.md would be unverified"; exit 1; }
-          
+
           # ── v4.4.0: audit_vendor update warning is vendor-aware (round-19) ─────
           # The audit runs only when audit_vendor != reviewer_vendor, so the "unset" warning must
           # suggest a DIFFERENT vendor than this project's primary.
@@ -1168,7 +1168,7 @@ jobs:
           printf '%s' "$awcodex" | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
           # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
-          
+
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
           printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > "$NH/NEEDS-HUMAN.md"
