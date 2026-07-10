@@ -413,7 +413,7 @@ it has run green with a real smoke_cmd.
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a grok/gemini
+  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a codex/grok
   driver this hook does NOT fire — their merge gate is the required CI status checks that
   branch protection enforces (the cloud review posts findings but is not required by
   default). Deliberately-quoted obfuscation is out of scope (see above); the merge gate

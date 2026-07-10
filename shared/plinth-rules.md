@@ -149,9 +149,9 @@ landed until `plinth update` delivers it.
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it
 defines — autonomously — under its constraints: the eval script is immutable (a
-Claude driver's guard blocks edits to it; for every driver the review rejects an eval
-edit as tampering — so treat it as immutable regardless), the score must never
-decrease, results come only from the
+Claude driver's guard blocks edits to it; for every driver the reviewer flags an eval
+edit as metric gaming — a blocking review finding — so treat it as immutable regardless),
+the score must never decrease, results come only from the
 real runner, one improvement per commit. You may DRAFT a GOAL.md when asked; you
 may never adopt one that the human has not ratified.
 
