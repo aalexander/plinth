@@ -48,6 +48,19 @@
   review" into a deliberate act. Direct base-branch pushes are likewise branch
   protection's job. Feature-branch pushes stay allowed so the RUNTIME smoke-receipt loop
   is not deadlocked.
+- **Honest enforcement scope, everywhere.** The `.claude/` hooks (guard, Stop review-gate,
+  session-start, pulse) are Claude-Code mechanisms: they fire for a Claude driver and its
+  Claude subagents, NOT for codex/grok drivers (which do not read `.claude/`). The driver
+  rules, MANUAL, and hook comments no longer claim otherwise — each place that described a
+  hook as unconditional/vendor-universal enforcement now says so only for the Claude driver
+  and names the vendor-independent hard layer for all drivers (the driver rules they follow
+  + the SERVER-SIDE gate: branch protection + required CI + the cloud review). Porting the
+  guard/gate to codex's own hook system is called out as future work.
+- **Cloud reviewer reads its contract explicitly.** Since the reviewer contract moved to
+  `.plinth/reviewer.md` and the PR cloud review auto-loads `AGENTS.md` (now the driver
+  shell) — not `.plinth/reviewer.md` — the shell's role-scope block now INSTRUCTS any
+  reviewer that auto-loaded it to STOP and open `.plinth/reviewer.md` as its contract
+  (Verdict policy + security-review rules), rather than merely naming it.
 - **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
   non-blocking, driver-initiated consult of a model as good or BETTER than the driver
   (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`

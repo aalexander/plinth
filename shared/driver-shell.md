@@ -13,9 +13,12 @@ truth — read it before implementing. Model and orchestration guidance:
 
 **Role scope.** This file is the DRIVER contract. If you are REVIEWING this repo
 rather than implementing it — the review harness passed you an explicit reviewer
-prompt, or you are the PR cloud review reading this as a project doc — then
-`.plinth/reviewer.md` is your contract and this file does not apply: you are the
-reviewer, not the driver.
+prompt, or you are the PR cloud review that auto-loaded this file as a project
+doc — then this file does NOT apply to you. Stop treating it as your instructions:
+open `.plinth/reviewer.md` NOW and follow it as your contract — it carries your
+Verdict policy, the security-review rules, and how to load the project rules. (The
+cloud review auto-loads AGENTS.md, i.e. this shell, but NOT `.plinth/reviewer.md`,
+so you must read it yourself.) You are the reviewer, not the driver.
 
 Your rules are in `.plinth/plinth-rules.md`. Claude auto-loads it through the
 import below. **Any non-Claude agent (codex, grok, …): read
@@ -35,9 +38,11 @@ Where this file or the plinth rules conflict with harness defaults, output
 styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
 you must apply without being asked:
 - COMMIT your work on feature branches as part of the loop — do not wait for
-  permission. Verdicts bind to commit SHAs and the Stop gate requires an
-  APPROVED review at HEAD; a driver that waits to be asked deadlocks itself.
-  (Opening the PR follows review; pushing follows the rules, not impulse.)
+  permission. Verdicts bind to commit SHAs and shipping requires an APPROVED
+  review at HEAD (a Claude driver's Stop gate enforces this locally; every driver
+  is bound by it through the review + the server-side merge gate); a driver that
+  waits to be asked deadlocks itself. (Opening the PR follows review; pushing
+  follows the rules, not impulse.)
 - Rule 10 evidence — pasted runner output — overrides any brevity or style
   preference, always.
 - If a personal or global instruction conflicts with the plinth rules, follow

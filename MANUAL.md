@@ -90,10 +90,11 @@ Everything between is the model's call.
    the Plinth repo), work it into a SPEC.md. Paste that into the project,
    commit, push.
 3. Connect Codex cloud review once: chatgpt.com -> Codex (GitHub App with repo
-   access + review on PR open). It reads AGENTS.md (the driver shell), whose
-   role-scope line points any reviewer — including this cloud review — at
-   `.plinth/reviewer.md`, so it arrives security-briefed; there is no separate
-   "Codex Security" product.
+   access + review on PR open). It auto-loads AGENTS.md (the driver shell), whose
+   role-scope block tells any reviewer — including this cloud review — to STOP and
+   read `.plinth/reviewer.md` as its contract (Verdict policy + security-review
+   rules), since the cloud review does not auto-load that file itself. That is how
+   it arrives security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
    protection requiring those checks — exact steps in "Branch protection"
@@ -194,14 +195,20 @@ Two operator chores the rules generate:
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.
    - Pane A: `cd ~/Dev/<repo> && claude` — state the task in plain language.
+     (This walkthrough uses the Claude driver; a codex/grok driver runs its own
+     CLI instead — see the note after this list.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
-   *Background:* the moment the session starts, `session-start.sh` records the
-   current commit (so the review gate knows whether this session created any),
-   and `pulse.sh` begins appending one line per prompt/tool-call to
+   *Background (Claude driver):* the moment the session starts, `session-start.sh`
+   records the current commit (so the review gate knows whether this session
+   created any), and `pulse.sh` begins appending one line per prompt/tool-call to
    `.plinth/session/events.jsonl`. That file is the dashboard's feed. Every
    Bash/Edit the model attempts passes through `guard.sh` first — destructive
-   commands and protected paths are blocked at the tool level, including for
-   every subagent.
+   commands and protected paths are blocked at the tool level, including for every
+   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not run
+   them** (those CLIs do not read `.claude/`), so it gets no local guard, no
+   session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
+   is told to follow and by the SERVER-SIDE gate (review + CI + branch protection).
+   Wiring these into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
    **You:** watch Pane B, not the scrollback. The evidence line shows the last
@@ -241,9 +248,13 @@ Two operator chores the rules generate:
    large or dead — a verify round that reads prior findings plus the FULL diff
    (anchored on those findings) and does NOT bind on its own, so an approval still
    gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
-   *Background, enforcement:* if the model tries to end its turn with commits
-   but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
-   refuses and sends it back with instructions. It cannot skip the review.
+   *Background, enforcement (Claude driver):* if the model tries to end its turn
+   with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
+   gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
+   driver does not run this hook, so nothing LOCAL forces it to review — it is bound
+   by the driver rules and, at merge, by the SERVER-SIDE gate (branch protection
+   requiring the cloud review's APPROVED). Either way, an unreviewed release cannot
+   reach the base branch through a protected repo.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -394,10 +405,13 @@ it has run green with a real smoke_cmd.
   driver this hook does NOT fire — their ship gate is purely SERVER-SIDE (branch protection
   + the cloud review). Deliberately-quoted obfuscation is out of scope (see above); the
   merge gate proper is branch protection.
-- Review gate (Stop hook): a session that created commits cannot end its turn
-  until review.sh records APPROVED at HEAD. Scoped to feature branches and
-  commit-making sessions; releases loudly on review infrastructure failure or
-  after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it can't trap a session
+- Review gate (`.claude/` Stop hook, Claude driver only): a session that created
+  commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
+  feature branches and commit-making sessions; releases loudly on review
+  infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
+  can't trap a session. Codex/grok drivers do not run this hook — for them the hard
+  block against merging unreviewed work is SERVER-SIDE (branch protection + the cloud
+  review), not this local gate
   on a broken pipeline — and every release is logged as a `gate_release` event
   the dashboard shows in red.
 - Branch protection: `floor` + `checks` required to merge (requires public repo
