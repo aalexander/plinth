@@ -1269,24 +1269,30 @@ jobs:
           IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
           cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
           cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
-          # the lane names are RESERVED: a project's OWN same-named agent must make init FAIL LOUD BEFORE any
-          # write (repo untouched — no partial scaffold that freezes/misclassifies the project file), never
-          # clobbered (data loss) NOR preserved-but-frozen:
-          ILP="$(mktemp -d)"; ( cd "$ILP"; git init -qb main . >/dev/null; mkdir -p .claude/agents
-            printf 'my own agent, not a plinth lane\n' > .claude/agents/grok-implementer.md
-            r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" init "$ILP" 2>&1)" || r=$?
-            [ "$r" != 0 ] || { echo "::error::plinth init did not FAIL on a reserved-name collision (rc=$r) — clobber or half-managed state"; exit 1; }
-            grep -q 'my own agent' .claude/agents/grok-implementer.md || { echo "::error::plinth CLOBBERED a project's own .claude/agents/grok-implementer.md (data loss)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'RESERVED' || { echo "::error::collision error did not explain the reserved lane-agent name"; exit 1; }
-            # the abort must be a PREFLIGHT — nothing written, so the project file isn't frozen by a stray protected-paths:
-            [ -e .plinth/protected-paths ] && { echo "::error::collision left a PARTIAL scaffold (.plinth/protected-paths written) — freezes the project agent"; exit 1; } || true
-            [ -e .claude/settings.json ]   && { echo "::error::collision left a PARTIAL scaffold (.claude/settings.json written)"; exit 1; } || true )
-          # a NON-REGULAR node at the reserved path (directory/symlink) is also a collision — preflight must
-          # catch it (a bare `[ -f ]` would miss it) and still leave nothing written:
-          ILD="$(mktemp -d)"; ( cd "$ILD"; git init -qb main . >/dev/null; mkdir -p .claude/agents/grok-implementer.md
-            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILD" >/dev/null 2>&1 || r=$?
-            [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies the reserved lane path (rc=$r)"; exit 1; }
-            [ -e .plinth/protected-paths ] && { echo "::error::directory-collision left a partial scaffold"; exit 1; } || true )
+          # BOTH lane names are RESERVED (grok- AND codex-implementer). For each: a project file, a directory,
+          # and a MARKER-BEARING hardlink at the reserved path must make init FAIL LOUD BEFORE any write (repo
+          # untouched — no partial scaffold), never clobbered/half-managed/truncated:
+          for lane in grok-implementer codex-implementer; do
+            ILP="$(mktemp -d)"; ( cd "$ILP"; git init -qb main . >/dev/null; mkdir -p .claude/agents
+              printf 'my own agent, not a plinth lane\n' > ".claude/agents/$lane.md"
+              r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" init "$ILP" 2>&1)" || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not FAIL on a reserved-name collision at $lane (rc=$r)"; exit 1; }
+              grep -q 'my own agent' ".claude/agents/$lane.md" || { echo "::error::init CLOBBERED a project's own $lane.md (data loss)"; exit 1; }
+              printf '%s' "$out" | grep -qi 'RESERVED' || { echo "::error::$lane collision error did not say RESERVED"; exit 1; }
+              [ -e .plinth/protected-paths ] && { echo "::error::$lane collision left a PARTIAL scaffold (protected-paths)"; exit 1; } || true
+              [ -e .claude/settings.json ]   && { echo "::error::$lane collision left a PARTIAL scaffold (settings.json)"; exit 1; } || true )
+            ILD="$(mktemp -d)"; ( cd "$ILD"; git init -qb main . >/dev/null; mkdir -p ".claude/agents/$lane.md"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILD" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies reserved lane $lane (rc=$r)"; exit 1; }
+              [ -e .plinth/protected-paths ] && { echo "::error::$lane directory-collision left a partial scaffold"; exit 1; } || true )
+            # a MARKER-BEARING hardlink: passes the marker check, so ONLY the nlink>1 guard can catch it (the
+            # prior bug). External target carries the pin marker AND a sentinel; it must not be truncated:
+            ILRH="$(mktemp -d)"; ERH="$(mktemp)"; printf '<!-- Plinth implementer lane (version-pinned) -->\nEXTERNAL-LANE\n' > "$ERH"
+            ( cd "$ILRH"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln "$ERH" ".claude/agents/$lane.md"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILRH" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail on a MARKER-BEARING HARDLINK at reserved lane $lane (rc=$r)"; exit 1; } )
+            grep -q EXTERNAL-LANE "$ERH" || { echo "::error::init truncated an EXTERNAL file through a hardlinked $lane"; exit 1; }; rm -f "$ERH"
+          done
           # a SYMLINK anywhere in the Plinth-managed ancestry (.claude, .claude/agents, .plinth, .github, …) must
           # be rejected — else init writes THROUGH it, outside the workspace ([ -d ] follows symlinks). Cover an
           # intermediate (.claude), a leaf managed dir (.claude/agents), and .github/workflows:
@@ -1330,11 +1336,7 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
-          # the RESERVED lane paths get the same hardlink guard (cp_lane_agent would truncate a hardlink's inode):
-          ILRH="$(mktemp -d)"; ERH="$(mktemp)"; printf 'EXTERNAL-LANE\n' > "$ERH"; ( cd "$ILRH"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln "$ERH" .claude/agents/grok-implementer.md
-            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILRH" >/dev/null 2>&1 || r=$?
-            [ "$r" != 0 ] || { echo "::error::init did not fail when a reserved lane path is a HARDLINK to an external file (rc=$r)"; exit 1; } )
-          grep -q EXTERNAL-LANE "$ERH" || { echo "::error::init truncated an EXTERNAL file through a hardlinked reserved lane path"; exit 1; }; rm -f "$ERH"
+          # (reserved-lane hardlink is covered per-lane, with a MARKER-bearing target, in the RESERVED loop above)
           # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
           # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
           # REGULAR (narrowed) file so the active-policy validator passes — only the base-object-type check
@@ -1350,11 +1352,11 @@ jobs:
           IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             "$GITHUB_WORKSPACE/bin/plinth" init "$IU" >/dev/null 2>&1                # valid plinth project (marker lane installed)
             printf 'SENTINEL-REVIEW-SH\n' > .plinth/review.sh                       # detect if update reinstalls it
-            printf 'my own agent\n' > .claude/agents/grok-implementer.md            # drop a non-Plinth file at the reserved path
+            printf 'my own agent\n' > .claude/agents/codex-implementer.md          # drop a non-Plinth file at the reserved CODEX path
             r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IU" >/dev/null 2>&1 || r=$?
-            [ "$r" != 0 ] || { echo "::error::plinth UPDATE did not fail on a reserved-name collision (rc=$r)"; exit 1; }
+            [ "$r" != 0 ] || { echo "::error::plinth UPDATE did not fail on a reserved-name collision at codex-implementer (rc=$r)"; exit 1; }
             grep -q 'SENTINEL-REVIEW-SH' .plinth/review.sh || { echo "::error::update reinstalled review.sh BEFORE aborting on the collision — ordering bug (tooling changed pre-abort)"; exit 1; }
-            grep -q 'my own agent' .claude/agents/grok-implementer.md || { echo "::error::update clobbered the project agent"; exit 1; } )
+            grep -q 'my own agent' .claude/agents/codex-implementer.md || { echo "::error::update clobbered the project agent"; exit 1; } )
           cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
           [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
           # Protect the EXACT two Plinth-owned lane agents, NOT the whole .claude/agents/ dir (that would
