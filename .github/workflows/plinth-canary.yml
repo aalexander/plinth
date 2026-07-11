@@ -1285,6 +1285,12 @@ jobs:
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED CLI (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
+          # codex preflight: same three states — codex auth (login status) is safety-critical and must be tested too
+          r=0; PATH=/usr/bin:/bin bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING codex (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 1; exit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth; printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths
             echo a > app.py; git add -A; git commit -qm base >/dev/null
