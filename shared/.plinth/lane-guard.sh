@@ -34,7 +34,11 @@
 set -uo pipefail
 
 # ── shared: the SENSITIVE set = protected-paths patterns + a builtin secret denylist ──
-SECRET_PATS='(^|/)\.env|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'
+# Component-boundaried so we flag real secret files, not lookalikes: `.env` / `.env.local` but NOT
+# `.envrc`; `id_rsa` / `id_ed25519(.pub)` as a whole basename but NOT `id_rsa_format.md`.
+SECRET_PATS='(^|/)\.env($|\.)|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$'
+# Known-safe templates that carry no real values are NOT sensitive even though they start with `.env`:
+SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
@@ -46,6 +50,7 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
   done < <(prot_pats)
 }
 sens_match() {  # <path> -> 0 if it matches a protected OR secret pattern
+  printf '%s' "$1" | grep -Eq "$SECRET_SAFE" && return 1   # a template (.env.example, …) is not a secret
   printf '%s' "$1" | grep -Eq "$SECRET_PATS" && return 0
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
@@ -137,7 +142,11 @@ TOUCHED
       printf 'SCOPE VIOLATION — the lane touched paths it was not authorized to:\n%s' "$viol"
       exit 4
     fi
-    echo "scope ok: tracked changes + new files within the spec; no protected path; no sensitive/secret path touched (per snapshot); ignored build artifacts reported, not rejected" ;;
+    if [ -n "$snapfile" ]; then
+      echo "scope ok: tracked changes + new files within the spec; no protected path; no sensitive/secret path touched (per snapshot); ignored build artifacts reported, not rejected"
+    else
+      echo "scope ok: tracked changes + new files within the spec; no protected path. NOTE: no --snapshot given — gitignored sensitive paths (secrets, .plinth/session/) were NOT verified"
+    fi ;;
 
   *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>..."; exit 2 ;;
 esac

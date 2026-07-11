@@ -1343,10 +1343,22 @@ jobs:
             printf 'node_modules/\n.env\n.plinth/session/\n' > .gitignore
             echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
             printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
-            git add app.py mod.py .plinth/config .gitignore .plinth/protected-paths; git commit -qm base >/dev/null
+            # lookalikes that must NOT be flagged as secrets (templates/docs), vs a real key that must be:
+            printf 'K=v\n' > .env.example; printf 'K=v\n' > .envrc; mkdir -p docs
+            printf 'PRIV\n' > id_rsa; printf 'fmt\n' > docs/id_rsa_format.md
+            git add app.py mod.py .plinth/config .gitignore .plinth/protected-paths .env.example .envrc id_rsa docs/id_rsa_format.md; git commit -qm base >/dev/null
             SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
             grep -qE '  \.env$' "$SNAP" || { echo "::error::lane-guard snapshot missed a secret (.env)"; exit 1; }
+            grep -qE '  id_rsa$' "$SNAP" || { echo "::error::lane-guard snapshot missed a private key (id_rsa)"; exit 1; }
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
+            # component-boundaried: .env.example / .envrc / docs/id_rsa_format.md are lookalikes, NOT secrets:
+            grep -qE '\.env\.example$' "$SNAP" && { echo "::error::snapshot false-flagged .env.example (a template) as sensitive"; exit 1; } || true
+            grep -qE '\.envrc$'        "$SNAP" && { echo "::error::snapshot false-flagged .envrc as sensitive"; exit 1; } || true
+            grep -qE 'id_rsa_format'   "$SNAP" && { echo "::error::snapshot false-flagged docs/id_rsa_format.md (a doc) as sensitive"; exit 1; } || true
+            # and a spec-listed .env.example edit must PASS scope (it is authorized project work, not a secret write):
+            echo more >> .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py .env.example >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected an in-spec .env.example edit as if it were a secret (rc=$r)"; exit 1; }
+            git checkout -q -- .env.example
             # DELIBERATE SCOPE (bugs over adversarial intent): a clean in-spec edit plus a non-sensitive
             # gitignored artifact must PASS (rejecting legit build output breaks npm install/builds) — but the
             # ignored artifact must be REPORTED as a non-hermetic-verification note (not silently accepted).

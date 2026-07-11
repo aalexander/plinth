@@ -60,11 +60,12 @@ Everything between is the model's call.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,
   NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
-  the cross-vendor auditor. It returns a VERDICT, not a survey ("Do X, not Y, because Z"
-  + the single deciding risk), reads the code before opining, and stays terse.
-  `--impactful` (architectural / hard-to-reverse decisions) escalates to the stronger
-  model. Vendor-agnostic and cross-family (a Grok driver can consult Fable); see the
-  `advisor_*` knobs below.
+  the cross-vendor auditor. It PROMPTS the advisor with a discipline preamble — give a
+  VERDICT not a survey ("Do X, not Y, because Z" + the single deciding risk), read the
+  code before opining, stay terse — and prints what the advisor returns; the shape is
+  guidance to the model, not an enforced/validated output. `--impactful` (architectural /
+  hard-to-reverse decisions) escalates to the stronger model. Vendor-agnostic and
+  cross-family (a Grok driver can consult Fable); see the `advisor_*` knobs below.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
