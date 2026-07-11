@@ -42,6 +42,10 @@ SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
+  # A protected-paths that EXISTS but can't be read must also fail closed, not read as "no patterns":
+  if [ -e .plinth/protected-paths ] && [ ! -r .plinth/protected-paths ]; then
+    echo "lane-guard: .plinth/protected-paths exists but is not readable — refusing to run (fail closed)" >&2; exit 5
+  fi
   local pat
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
@@ -62,11 +66,12 @@ sens_match() {  # <path> -> 0 if SENSITIVE: an explicit protected-paths pattern 
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
-sens_snapshot() {  # `<sha>  <path>` for every existing sensitive file (tracked + ignored), sorted
+modeof() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }  # perm bits (macOS/Linux)
+sens_snapshot() {  # `<sha> <mode>  <path>` for every existing sensitive file (tracked + ignored), sorted
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
     [ -f "$f" ] || continue
-    if sens_match "$f"; then printf '%s  %s\n' "$(hashof "$f")" "$f"; fi
+    if sens_match "$f"; then printf '%s %s  %s\n' "$(hashof "$f")" "$(modeof "$f")" "$f"; fi
   done | sort
 }
 
@@ -122,7 +127,7 @@ CHANGED
       [ -f "$snapfile" ] || { echo "scope: --snapshot file '$snapfile' missing — refusing to accept the lane"; exit 5; }
       after="$(sens_snapshot)"; before="$(cat "$snapfile")"
       if [ "$before" != "$after" ]; then
-        touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[0-9a-f]+  //' | sort -u)"
+        touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[0-9a-f]+ +[0-9]+  //' | sort -u)"
         while IFS= read -r f; do [ -n "$f" ] && viol="${viol}  ${f} — SENSITIVE path added/changed/removed by the lane (secret or protected)
 "; done <<TOUCHED
 $touched

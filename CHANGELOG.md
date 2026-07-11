@@ -46,8 +46,19 @@
   scope` + the driver's independent re-run, not because grok is trusted. Verified end-to-end: grok
   (sandboxed) and codex each create the in-spec file, `scope` returns ok, and the independent
   verification prints the real output. The canary pins the working flags (incl. the sandbox) so a
-  regression fails CI. Separately, `lane-guard` now fails LOUD (exit 5) on a malformed
-  `.plinth/protected-paths` regex rather than letting a `grep` error silently narrow protection.
+  regression fails CI.
+- **Lane isolation from the driver contract.** A delegated CLI run from the project root auto-loads
+  `CLAUDE.md`/`AGENTS.md` — which under Plinth are the DRIVER contract — and (verified) will act as a
+  driver instead of a narrow typing lane. The codex lane now passes `-c project_doc_max_bytes=0` and
+  the grok lane a `--rules` role-scoping override (grok has no doc-suppress flag — same isolation
+  review.sh uses for grok reviewers), so the delegated CLI is governed only by the five-part spec.
+  Verified end-to-end against a driver-doc trap: the lane implements the spec and ignores the trap.
+- **lane-guard hardening.** Fails LOUD (exit 5) on a malformed OR unreadable `.plinth/protected-paths`
+  rather than letting a `grep` error read as "no patterns"; the sensitive snapshot records file MODE
+  as well as content hash, so a metadata-only change (e.g. `chmod` widening `.env`/`.ssh` perms) is
+  caught; the secret matcher is component-boundaried (`.env`/`.env.local` yes, `.envrc` no; `id_rsa`
+  basename not `id_rsa_format.md`) with a template carve-out that an explicit protected-paths entry
+  still overrides.
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

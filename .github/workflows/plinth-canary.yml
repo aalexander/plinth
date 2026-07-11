@@ -1302,11 +1302,13 @@ jobs:
           printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'permission-mode acceptEdits'        && { echo "::error::grok COMMAND uses acceptEdits — it silently drops edits in headless mode"; exit 1; } || true
           printf '%s\n' "$GCMD" | grep -q 'cap 600'                            || { echo "::error::grok COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q -- '--rules'                         || { echo "::error::grok COMMAND lacks --rules isolation — grok auto-loads CLAUDE.md/AGENTS.md (driver contract) and acts as a driver, not a lane"; exit 1; }
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
           CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
           [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'project_doc_max_bytes=0' || { echo "::error::codex COMMAND lacks -c project_doc_max_bytes=0 — codex auto-loads AGENTS.md (driver contract) instead of acting as a lane"; exit 1; }
           # the cap must hold WITHOUT coreutils — each lane must carry the perl-alarm fallback, not just an
           # optional ${T:+...} that expands to nothing on a stock macOS box (this environment):
           for A in "$GA" "$CA"; do
@@ -1389,6 +1391,12 @@ jobs:
             rm -f .env
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) DELETE (rc=$r)"; exit 1; }
             printf 'pre\n' > .env
+            # metadata-only change (chmod, no byte change) on a secret -> 4 (the snapshot records mode too, so a
+            # lane can't quietly widen .env/.ssh perms without detection):
+            SNAPM="$(mktemp)"; bash "$LG" snapshot > "$SNAPM"
+            if [ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" = 600 ]; then chmod 644 .env; else chmod 600 .env; fi
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPM" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a metadata-only (chmod) change to a secret (rc=$r)"; exit 1; }
+            chmod 644 .env
             # gitignored fake verdict under .plinth/session/ -> 4, and the violation must NAME verdict.json —
             # .plinth/session/ is gitignored at base (no confounding new untracked protected file), so the
             # ONLY thing scope can flag here is the ignored verdict.json caught by the snapshot:
@@ -1406,6 +1414,15 @@ jobs:
             printf '(^|/)\\.plinth/config$\n[unclosed(\n' > .plinth/protected-paths   # second line is an invalid ERE
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would omit protected paths)"; exit 1; }
             r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would un-protect a path)"; exit 1; } )
+          # a protected-paths that EXISTS but is UNREADABLE must fail closed (5), not read as "no patterns"
+          # (skipped as root, where mode 000 is still readable):
+          LGU="$(mktemp -d)"; ( cd "$LGU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths; git add -A; git commit -qm base >/dev/null
+            if [ "$(id -u)" != 0 ]; then
+              chmod 000 .plinth/protected-paths
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; chmod 644 .plinth/protected-paths
+              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on an UNREADABLE protected-paths (rc=$r) — read as 'no patterns'"; exit 1; }
+            fi )
           # protected-paths ALWAYS wins over the SECRET_SAFE template carve-out: a project that deliberately
           # protects .env.example must still have it flagged SENSITIVE (the carve-out only exempts from the
           # builtin secret denylist, never from an explicit protected pattern):

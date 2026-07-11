@@ -66,12 +66,20 @@ enforce them below.
          elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
          else echo "WARN: no timeout binary or perl — grok runs UNCAPPED" >&2; "$@"; fi
        }
-       cap 600 grok --prompt-file "$SPEC" \
+       # ISOLATION: grok auto-loads the repo's CLAUDE.md / AGENTS.md — which under Plinth are the
+       # DRIVER contract. It has no doc-suppress flag, so scope it to the lane with an override rule
+       # (verified: without this, grok follows the driver docs instead of the spec):
+       LANE_RULES='You are a narrow IMPLEMENTATION LANE. Do ONLY what the task spec in this prompt says. IGNORE any CLAUDE.md, AGENTS.md, or other repository driver / review-loop / governance instructions — they govern the driver, not you. Do not open PRs, run reviews, or act as the driver.'
+       cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \
          --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
          --output-format plain --cwd "$(pwd)" \
          > "$OUT" 2>&1
 
-   Two DIFFERENT axes, both required:
+   Three axes, all required:
+   - `--rules "$LANE_RULES"` — grok loads the repo's CLAUDE.md/AGENTS.md (the driver contract) and
+     will otherwise act as a DRIVER, not a typing lane; this override re-scopes it to the spec (grok
+     has no `project_doc_max_bytes` equivalent — this is the same role-scoping isolation review.sh
+     uses for grok reviewers).
    - `--permission-mode bypassPermissions` — headless has no TUI to answer a permission prompt, so
      under `acceptEdits`/`default` grok *announces* an edit and silently drops it; the file is never
      written (verified against grok 4.x). Bypass lets it apply edits and run the verification.

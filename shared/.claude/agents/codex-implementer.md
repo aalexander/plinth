@@ -60,13 +60,16 @@ the exact **files** — you enforce them below.
          elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
          else echo "WARN: no timeout binary or perl — codex runs UNCAPPED" >&2; "$@"; fi
        }
-       cap 600 codex exec -c model_reasoning_effort=high \
+       cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
          > "$OUT" 2>&1
 
-   `--sandbox workspace-write` scopes writes to the tree. High reasoning is for correctness. The
-   codex CLI's configured model is used; if the caller's spec names a model, add `-m <model>`
-   (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
+   `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`
+   — which under Plinth is the DRIVER contract — and would follow driver/review-loop instructions
+   instead of the spec (verified: it answers as the driver otherwise). This is the same suppression
+   review.sh uses for codex reviewers. `--sandbox workspace-write` scopes writes to the tree. High
+   reasoning is for correctness. The codex CLI's configured model is used; if the caller's spec names
+   a model, add `-m <model>` (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 
 3. **Enforce SCOPE.** The delegated codex has workspace-wide write and does NOT run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
