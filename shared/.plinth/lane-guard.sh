@@ -42,9 +42,14 @@ SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
-  # A protected-paths that EXISTS but can't be read must also fail closed, not read as "no patterns":
-  if [ -e .plinth/protected-paths ] && [ ! -r .plinth/protected-paths ]; then
-    echo "lane-guard: .plinth/protected-paths exists but is not readable — refusing to run (fail closed)" >&2; exit 5
+  # A protected-paths that is PRESENT but not a readable regular file (unreadable, a directory, a
+  # broken symlink, a device…) must fail closed — prot_pats' `[ -f ]` would otherwise read it as
+  # "no patterns" and silently disable all protection:
+  if [ -L .plinth/protected-paths ] && [ ! -e .plinth/protected-paths ]; then
+    echo "lane-guard: .plinth/protected-paths is a broken symlink — refusing to run (fail closed)" >&2; exit 5
+  fi
+  if [ -e .plinth/protected-paths ] && { [ ! -f .plinth/protected-paths ] || [ ! -r .plinth/protected-paths ]; }; then
+    echo "lane-guard: .plinth/protected-paths is present but not a readable regular file — refusing to run (fail closed)" >&2; exit 5
   fi
   local pat
   while IFS= read -r pat; do

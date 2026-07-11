@@ -1414,14 +1414,27 @@ jobs:
             printf '(^|/)\\.plinth/config$\n[unclosed(\n' > .plinth/protected-paths   # second line is an invalid ERE
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would omit protected paths)"; exit 1; }
             r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would un-protect a path)"; exit 1; } )
-          # a protected-paths that EXISTS but is UNREADABLE must fail closed (5), not read as "no patterns"
-          # (skipped as root, where mode 000 is still readable):
+          # a protected-paths that is PRESENT but not a readable regular file must fail closed (5) for BOTH
+          # snapshot AND scope — never read as "no patterns" (that would silently disable protection):
           LGU="$(mktemp -d)"; ( cd "$LGU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            mkdir -p .plinth; echo a > app.py; printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths; git add -A; git commit -qm base >/dev/null
+            mkdir -p .plinth; echo a > app.py; git add app.py; git commit -qm base >/dev/null
+            # a DIRECTORY where the file should be (both subcommands must refuse):
+            mkdir .plinth/protected-paths
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed when protected-paths is a DIRECTORY (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed when protected-paths is a DIRECTORY (rc=$r) — scope validator missing"; exit 1; }
+            rmdir .plinth/protected-paths
+            # a BROKEN SYMLINK:
+            ln -sf /nonexistent-plinth-xyz .plinth/protected-paths
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a BROKEN SYMLINK protected-paths (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a BROKEN SYMLINK protected-paths (rc=$r)"; exit 1; }
+            rm -f .plinth/protected-paths
+            # an UNREADABLE regular file (skipped as root, where mode 000 is still readable) — scope too:
+            printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths
             if [ "$(id -u)" != 0 ]; then
               chmod 000 .plinth/protected-paths
-              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; chmod 644 .plinth/protected-paths
-              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on an UNREADABLE protected-paths (rc=$r) — read as 'no patterns'"; exit 1; }
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { chmod 644 .plinth/protected-paths; echo "::error::snapshot did not fail closed on an UNREADABLE protected-paths (rc=$r)"; exit 1; }
+              r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; chmod 644 .plinth/protected-paths
+              [ "$r" = 5 ] || { echo "::error::scope did not fail closed on an UNREADABLE protected-paths (rc=$r)"; exit 1; }
             fi )
           # protected-paths ALWAYS wins over the SECRET_SAFE template carve-out: a project that deliberately
           # protects .env.example must still have it flagged SENSITIVE (the carve-out only exempts from the
