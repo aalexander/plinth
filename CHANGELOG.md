@@ -37,11 +37,16 @@
   CLIs through each lane's exact sequence surfaced a bug the stub-driven canary could not: under
   `--permission-mode acceptEdits` a headless grok *announces* an edit and silently drops it (no TUI
   to confirm against) — the file is never written. The grok lane now uses `--permission-mode
-  bypassPermissions --max-turns 20`, which actually applies edits and runs the verification; the
-  grant is safe because the run is boxed by `lane-guard scope` + the driver's independent re-run, not
-  because grok is trusted. Verified end-to-end: grok and codex each create the in-spec file, `scope`
-  returns ok, and the independent verification prints the real output. The canary pins the working
-  flags so a regression to the silent-drop flag fails CI.
+  bypassPermissions --sandbox workspace --max-turns 20`: bypass applies edits and runs verification
+  headlessly, and `--sandbox workspace` (grok's built-in writable profile, which FAILS CLOSED —
+  refuses to start — if it can't be applied) fences the run to the tree + blocks network so a
+  bypassed approval can't exfiltrate secrets or run side effects, matching the codex lane's
+  `--sandbox workspace-write`. The grant is safe because the run is boxed by the sandbox + `lane-guard
+  scope` + the driver's independent re-run, not because grok is trusted. Verified end-to-end: grok
+  (sandboxed) and codex each create the in-spec file, `scope` returns ok, and the independent
+  verification prints the real output. The canary pins the working flags (incl. the sandbox) so a
+  regression fails CI. Separately, `lane-guard` now fails LOUD (exit 5) on a malformed
+  `.plinth/protected-paths` regex rather than letting a `grep` error silently narrow protection.
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

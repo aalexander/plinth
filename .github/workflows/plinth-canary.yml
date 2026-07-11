@@ -1297,6 +1297,9 @@ jobs:
           grep -q 'permission-mode bypassPermissions' "$GA" || { echo "::error::grok-implementer must use --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
           grep -q 'max-turns' "$GA" || { echo "::error::grok-implementer must set --max-turns (a single turn ends before the edit lands)"; exit 1; }
           grep -q 'permission-mode acceptEdits' "$GA" && { echo "::error::grok-implementer still uses acceptEdits — that silently drops edits in headless mode"; exit 1; } || true
+          # bypassPermissions auto-approves tool calls but does NOT fence FS/network — the run must ALSO be
+          # sandboxed so a bypassed approval can't exfiltrate secrets / run side effects before scope checks:
+          grep -q 'sandbox workspace' "$GA" || { echo "::error::grok-implementer must add --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
           grep -q 'codex exec' "$CA" || { echo "::error::codex-implementer must drive 'codex exec'"; exit 1; }
           grep -q 'sandbox workspace-write' "$CA" || { echo "::error::codex-implementer must scope writes with --sandbox workspace-write"; exit 1; }
@@ -1373,6 +1376,12 @@ jobs:
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
+          # a MALFORMED protected-paths regex must fail LOUD (exit 5), never silently narrow protection:
+          LGV="$(mktemp -d)"; ( cd "$LGV"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf '(^|/)\\.plinth/config$\n[unclosed(\n' > .plinth/protected-paths   # second line is an invalid ERE
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would omit protected paths)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would un-protect a path)"; exit 1; } )
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"

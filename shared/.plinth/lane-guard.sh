@@ -36,6 +36,15 @@ set -uo pipefail
 # ── shared: the SENSITIVE set = protected-paths patterns + a builtin secret denylist ──
 SECRET_PATS='(^|/)\.env|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
+validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
+  # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
+  local pat
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    grep -E "$pat" </dev/null 2>/dev/null; [ "$?" -le 1 ] || {
+      echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
+  done < <(prot_pats)
+}
 sens_match() {  # <path> -> 0 if it matches a protected OR secret pattern
   printf '%s' "$1" | grep -Eq "$SECRET_PATS" && return 0
   local pat; while IFS= read -r pat; do
@@ -70,6 +79,7 @@ case "$sub" in
 
   snapshot)
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "snapshot: not inside a git repo" >&2; exit 5; }
+    validate_prot_pats
     sens_snapshot ;;
 
   scope)
@@ -81,6 +91,7 @@ case "$sub" in
     # empty change list that then prints "scope ok" (that would accept the lane's work unchecked).
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "scope: not inside a git repo — refusing to accept the lane"; exit 5; }
     git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1 || { echo "scope: cannot resolve baseref '${base}' — the diff is uncomputable; refusing to accept the lane"; exit 5; }
+    validate_prot_pats  # a malformed protected-paths regex must fail loud, not silently un-protect a path
     dif="$(git diff --name-only "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     unt="$(git ls-files --others --exclude-standard)" || { echo "scope: 'git ls-files' failed — refusing to accept the lane"; exit 5; }
     changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u )"
