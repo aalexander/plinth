@@ -49,13 +49,16 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
       echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
   done < <(prot_pats)
 }
-sens_match() {  # <path> -> 0 if it matches a protected OR secret pattern
-  printf '%s' "$1" | grep -Eq "$SECRET_SAFE" && return 1   # a template (.env.example, …) is not a secret
-  printf '%s' "$1" | grep -Eq "$SECRET_PATS" && return 0
+sens_match() {  # <path> -> 0 if SENSITIVE: an explicit protected-paths pattern (ALWAYS wins), OR a
+  # secret path minus known-safe templates. Order matters: a project that deliberately protects
+  # .env.example must still have it flagged; the SECRET_SAFE carve-out only exempts from the builtin
+  # secret DENYLIST, never from an explicit protected-paths entry.
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     printf '%s' "$1" | grep -Eq "$pat" && return 0
   done < <(prot_pats)
+  printf '%s' "$1" | grep -Eq "$SECRET_SAFE" && return 1   # a template (.env.example, …) is not a *secret* per se
+  printf '%s' "$1" | grep -Eq "$SECRET_PATS" && return 0
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }

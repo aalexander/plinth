@@ -56,10 +56,11 @@
   architect-delegates-to-a-cheaper-family topology); a non-Claude driver delegates via its own
   mechanism with the same spec contract + Rule-10 verification.
 - **`plinth advise` discipline.** The advisor now receives a preamble (adapted from fable-advisor)
-  so every vendor returns the same shape: a VERDICT, not a survey ("Do X, not Y, because Z" + the
-  single deciding risk); a sound plan gets one line (no manufactured objections); look before you
-  opine (read the code, don't reason from the summary); name missing information precisely; under
-  ~300 words; advise only. `--impactful` adds a hard-to-reverse-decision weighting line.
+  that STEERS every vendor toward the same shape (prompt guidance — the output is printed as-is, not
+  validated/normalized): a VERDICT, not a survey ("Do X, not Y, because Z" + the single deciding
+  risk); a sound plan gets one line (no manufactured objections); look before you opine (read the
+  code, don't reason from the summary); name missing information precisely; under ~300 words; advise
+  only. `--impactful` adds a hard-to-reverse-decision weighting line.
 - **Version-pinned like the hooks:** the lane agents and `.plinth/lane-guard.sh` are floor-checked
   against the pinned release, in `protected-paths` (Claude guard blocks driver edits) and
   `HARNESS_RE`/`HARNESS_PATHS` (review treats edits as tooling-tamper / UPSTREAM). `plinth

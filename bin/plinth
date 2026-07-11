@@ -831,7 +831,8 @@ run_advise() {
   local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
   echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
   # Advisor discipline (adapted from fable-advisor): a verdict, not a survey. Prepended to the
-  # decision so every vendor returns the same shape — the caller is another model mid-task.
+  # decision to STEER the advisor toward that shape — this is prompt guidance, not enforcement; we
+  # print whatever the vendor returns (no validation/normalization). The caller is another model mid-task.
   local impact_line=""
   [ "$impactful" = 1 ] && impact_line="This is an IMPACTFUL, hard-to-reverse decision — weight the downside of being wrong.
 "

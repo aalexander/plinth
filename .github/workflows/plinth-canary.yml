@@ -1406,6 +1406,13 @@ jobs:
             printf '(^|/)\\.plinth/config$\n[unclosed(\n' > .plinth/protected-paths   # second line is an invalid ERE
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would omit protected paths)"; exit 1; }
             r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would un-protect a path)"; exit 1; } )
+          # protected-paths ALWAYS wins over the SECRET_SAFE template carve-out: a project that deliberately
+          # protects .env.example must still have it flagged SENSITIVE (the carve-out only exempts from the
+          # builtin secret denylist, never from an explicit protected pattern):
+          LGP="$(mktemp -d)"; ( cd "$LGP"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\\.env\\.example$\n' > .plinth/protected-paths
+            printf 'v\n' > .env.example; git add -A; git commit -qm base >/dev/null
+            bash "$LG" snapshot | grep -q 'env.example' || { echo "::error::an EXPLICITLY protected .env.example was exempted by the SECRET_SAFE carve-out — protected-paths must win"; exit 1; } )
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"
