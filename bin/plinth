@@ -159,14 +159,18 @@ materialize_driver_shell() {
   fi
 }
 
-# Refresh a pinned lane agent WITHOUT clobbering a project's own same-named file. A Plinth-installed
-# lane carries the pin marker; a file lacking it is project-authored and is preserved (loud NOTE),
-# never overwritten — adoption is opt-in (rename/remove yours), not silent data loss.
+# The two lane-agent filenames are RESERVED for version-pinned Plinth tooling (protected-path +
+# HARNESS-classified by path). Refresh the pinned copy freely, but if a NON-Plinth file already
+# occupies that exact path (no pin marker = project-authored), do NOT clobber it and do NOT leave a
+# half-managed state (a preserved file would still get frozen/misclassified) — fail LOUD and abort so
+# the user resolves it. Non-destructive: their file is untouched.
 cp_lane_agent() {  # <src> <dst>
   local src="$1" dst="$2" marker='Plinth implementer lane (version-pinned)'
   if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
-    echo "NOTE: $dst already exists and is NOT a Plinth lane agent (no pin marker) — PRESERVING it; the pinned $(basename "$dst") lane was NOT installed here. Rename or remove your file to adopt the lane." >&2
-    return 0
+    echo "ERROR: $dst exists and is NOT a Plinth lane agent. That filename is RESERVED for the Plinth" >&2
+    echo "       implementer lane (version-pinned tooling). Rename or move your file, then re-run —" >&2
+    echo "       refusing to overwrite it or leave it half-managed (protected/frozen but project-owned)." >&2
+    exit 1
   fi
   cp "$src" "$dst"
 }
