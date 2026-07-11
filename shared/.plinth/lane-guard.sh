@@ -39,8 +39,10 @@ set -uo pipefail
 # files are flagged and lookalikes are not: `.env`/`.env.local` yes but NOT `.envrc`; `id_rsa` /
 # `id_rsa_backup` / `id_ed25519` yes but NOT the doc `id_rsa_format.md` (SECRET_SAFE below).
 SECRET_PATS='(^|/)\.env($|\.)|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
-# Known-safe lookalikes: env templates (no real values), and DOCS about a key file (not the key):
-SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_[a-z0-9_]+\.(md|markdown|txt|rst)$'
+# Known-safe lookalikes: env templates (no real values), and DOCS *about* a key — the key basename
+# plus a DESCRIPTIVE suffix and a doc extension (id_rsa_format.md, id_rsa_notes.txt). NOT the bare key
+# basename + extension (id_rsa.txt / id_ed25519.md), which could be a real key dumped to a doc ext:
+SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)_[a-z0-9_]+\.(md|markdown|txt|rst)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).

@@ -1287,6 +1287,13 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILD" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies the reserved lane path (rc=$r)"; exit 1; }
             [ -e .plinth/protected-paths ] && { echo "::error::directory-collision left a partial scaffold"; exit 1; } || true )
+          # .claude/agents as a SYMLINK-to-dir must be rejected — else init writes the lane agents THROUGH it,
+          # outside the workspace ([ -d ] follows symlinks, so a bare dir check misses this path-escape):
+          ILS="$(mktemp -d)"; ELS="$(mktemp -d)"; ( cd "$ILS"; git init -qb main . >/dev/null; mkdir -p .claude; ln -sf "$ELS" .claude/agents
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILS" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when .claude/agents is a SYMLINK-to-dir (path escape) (rc=$r)"; exit 1; }
+            [ -e .plinth/protected-paths ] && { echo "::error::symlink-collision left a partial scaffold"; exit 1; } || true )
+          [ -z "$(ls -A "$ELS" 2>/dev/null)" ] || { echo "::error::init wrote lane agents THROUGH the .claude/agents symlink, outside the workspace"; exit 1; }
           # UPDATE collision: a project that later drops a non-Plinth file at a reserved path must ABORT before
           # copy_shared reinstalls tooling — assert the sentinel review.sh is NOT overwritten (ordering guard):
           IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
@@ -1377,17 +1384,20 @@ jobs:
             # that MUST be (.env* / *.pem / *.key / id_rsa* / id_ed25519*):
             printf 'K=v\n' > .env.example; printf 'K=v\n' > .envrc; mkdir -p docs
             printf 'PRIV\n' > id_rsa; printf 'PRIV\n' > id_rsa_backup; printf 'PRIV\n' > id_ed25519
-            printf 'C\n' > cert.pem; printf 'K\n' > prod.key; printf 'fmt\n' > docs/id_rsa_format.md
+            printf 'PRIV\n' > id_rsa.txt; printf 'PRIV\n' > id_ed25519.md   # a key dumped to a doc EXT is still a key
+            printf 'C\n' > cert.pem; printf 'K\n' > prod.key
+            printf 'doc\n' > docs/id_rsa_format.md; printf 'doc\n' > id_rsa_notes.txt   # true docs ABOUT a key
             git add -A; git commit -qm base >/dev/null
             SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
-            for s in '  \.env$' '  id_rsa$' '  id_rsa_backup$' '  id_ed25519$' '  cert\.pem$' '  prod\.key$'; do
+            for s in '  \.env$' '  id_rsa$' '  id_rsa_backup$' '  id_ed25519$' '  id_rsa\.txt$' '  id_ed25519\.md$' '  cert\.pem$' '  prod\.key$'; do
               grep -qE "$s" "$SNAP" || { echo "::error::lane-guard snapshot missed a secret matching /$s/ (denylist narrower than templates/.gitignore)"; exit 1; }
             done
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
-            # component-boundaried: .env.example / .envrc / docs/id_rsa_format.md are lookalikes, NOT secrets:
+            # component-boundaried: templates + true key-DOCS (descriptive suffix) are lookalikes, NOT secrets:
             grep -qE '\.env\.example$' "$SNAP" && { echo "::error::snapshot false-flagged .env.example (a template) as sensitive"; exit 1; } || true
             grep -qE '\.envrc$'        "$SNAP" && { echo "::error::snapshot false-flagged .envrc as sensitive"; exit 1; } || true
-            grep -qE 'id_rsa_format'   "$SNAP" && { echo "::error::snapshot false-flagged docs/id_rsa_format.md (a doc) as sensitive"; exit 1; } || true
+            grep -qE 'id_rsa_format'   "$SNAP" && { echo "::error::snapshot false-flagged docs/id_rsa_format.md (a key DOC) as sensitive"; exit 1; } || true
+            grep -qE 'id_rsa_notes'    "$SNAP" && { echo "::error::snapshot false-flagged id_rsa_notes.txt (a key DOC) as sensitive"; exit 1; } || true
             # and a spec-listed .env.example edit must PASS scope (it is authorized project work, not a secret write):
             echo more >> .env.example
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py .env.example >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected an in-spec .env.example edit as if it were a secret (rc=$r)"; exit 1; }

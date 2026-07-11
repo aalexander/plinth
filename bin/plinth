@@ -179,8 +179,13 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
 # installed while the project's colliding agent stays behind, frozen or misclassified).
 preflight_reserved_lanes() {
   local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents"
-  # the parent must be a real directory (or absent — mkdir will create it), never a file/symlink:
-  if { [ -e "$parent" ] || [ -L "$parent" ]; } && [ ! -d "$parent" ]; then
+  # the parent must be a real directory (or absent — mkdir will create it), never a file OR a symlink
+  # (a symlink-to-dir would make init write the lane agents THROUGH it, outside the workspace):
+  if [ -L "$parent" ]; then
+    echo "ERROR: $parent is a symlink — refusing to write lane agents through it (could escape the workspace)." >&2
+    exit 1
+  fi
+  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
     echo "ERROR: $parent exists but is not a directory — refusing to touch this repo until it is resolved." >&2
     exit 1
   fi
