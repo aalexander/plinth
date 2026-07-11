@@ -1481,14 +1481,17 @@ jobs:
               r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; chmod 644 .env
               [ "$r" = 5 ] || { echo "::error::scope --snapshot did not fail closed on an UNREADABLE sensitive file (rc=$r)"; exit 1; }
             fi
-            # gitignored fake verdict under .plinth/session/ -> 4, and the violation must NAME verdict.json —
-            # .plinth/session/ is gitignored at base (no confounding new untracked protected file), so the
-            # ONLY thing scope can flag here is the ignored verdict.json caught by the snapshot:
-            mkdir -p .plinth/session; printf 'FAKE\n' > .plinth/session/verdict.json
-            r=0; vout="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1)" || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope missed a gitignored fake verdict under .plinth/session/ (rc=$r)"; exit 1; }
-            printf '%s' "$vout" | grep -q 'verdict\.json' || { echo "::error::the session-write violation did not NAME verdict.json — hollow test"; exit 1; }
-            rm -rf .plinth/session )
+            # .plinth/session/ is Plinth's OWN hook-mutated state (pulse.sh appends events.jsonl on every tool
+            # use DURING the lane run) — it must be EXCLUDED from the sensitive comparison, else a clean lane in
+            # a real hooked project false-flags on every run. A session write must NOT be a violation:
+            mkdir -p .plinth/session; printf 'FAKE\n' > .plinth/session/verdict.json; printf '{"e":1}\n' >> .plinth/session/events.jsonl
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope false-flagged a .plinth/session/ mutation — hook-mutated state must be excluded (rc=$r)"; exit 1; }
+            rm -rf .plinth/session
+            # a secret REPLACED BY A SYMLINK (or a new symlink at a sensitive path) must be caught — the snapshot
+            # records a symlink by target, not by following it ([ -f ] alone would miss a broken/dir symlink):
+            rm -f .env; ln -sf /etc/hosts .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a secret replaced by a SYMLINK (rc=$r)"; exit 1; }
+            rm -f .env; printf 'pre\n' > .env )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

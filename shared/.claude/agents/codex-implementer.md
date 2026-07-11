@@ -74,8 +74,9 @@ the exact **files** — you enforce them below.
 
 3. **Enforce SCOPE.** The delegated codex has workspace-wide write and does NOT run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
-   path — and, via the pre-run snapshot, that it did not add/change any SENSITIVE path (secrets like
-   `.env`/`secrets/`, or `.plinth/session/`), even gitignored ones:
+   path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
+   (secrets like `.env`/`secrets/`/keys), even gitignored ones. (`.plinth/session/` is excluded — it
+   is Plinth's own state, appended by hooks during the run; the driver's guard protects it anyway.)
 
        .plinth/lane-guard.sh scope "$BEFORE" --snapshot "$SNAP" <the spec's exact file paths>
 

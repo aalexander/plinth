@@ -20,7 +20,11 @@
   run the `.claude/` guard, so after the run every tracked change + new file must be a spec file
   and must not match `.plinth/protected-paths`, AND (via the snapshot) no sensitive file may have
   been added/changed/removed. That catches a whole-tree-write lane planting secrets in
-  `.env`/`secrets/` or a fake verdict under `.plinth/session/` even though those are gitignored.
+  `.env`/`secrets/`/keys (`*.pem`/`*.key`/`id_rsa*`) even though those are gitignored — including a
+  secret replaced by or repointed to a symlink (recorded by target, not followed), and failing closed
+  if a sensitive file can't be hashed/statted. (`.plinth/session/` is excluded from the comparison —
+  it is Plinth's own state, appended by hooks on every tool use during the run, so comparing it would
+  false-flag every clean lane; the PreToolUse guard protects it from the lane agent regardless.)
   The scope is deliberately drawn at ERRORS a fallible lane makes (off-spec tracked edits, protected
   tooling, secret/session writes), not an adversarial sandbox: non-sensitive gitignored artifacts
   (`node_modules/`, `dist/`, build output) are NOT rejected — they're legitimate lane output and

@@ -77,15 +77,21 @@ sens_match() {  # <path> -> 0 if SENSITIVE: an explicit protected-paths pattern 
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 modeof() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }  # perm bits (macOS/Linux)
-sens_snapshot() {  # `<sha> <mode>  <path>` for every existing sensitive file (tracked + ignored), sorted
+sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for a regular file, or
+  # `symlink <target>` for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
-    [ -f "$f" ] || continue
-    if sens_match "$f"; then
+    # `.plinth/session/` is Plinth's OWN session state — hooks (pulse.sh on every PostToolUse) append
+    # to it DURING the lane run, so comparing it before/after would false-flag every clean lane. The
+    # PreToolUse guard already blocks the lane AGENT from writing it; it is out of the snapshot's scope.
+    case "$f" in .plinth/session/*|*/.plinth/session/*) continue ;; esac
+    sens_match "$f" || continue
+    if [ -L "$f" ]; then
+      printf 'symlink %s  %s\n' "$(readlink "$f" 2>/dev/null || echo '?')" "$f"   # record a symlink by its target, do not follow
+    elif [ -f "$f" ]; then
       h="$(hashof "$f")"; m="$(modeof "$f")"
       # FAIL CLOSED if a sensitive file cannot be hashed OR statted (e.g. an unreadable mode-000 .env):
-      # an empty hash/mode would be an unforgeable-looking record a lane could chmod/modify/restore
-      # past, so the before/after diff must never silently accept it.
+      # an empty hash/mode is a forgeable-looking record a lane could chmod/modify/restore past.
       if [ -z "$h" ] || [ -z "$m" ]; then
         echo "lane-guard: cannot hash/stat sensitive file '$f' — refusing (fail closed)" >&2
         exit 5
@@ -163,7 +169,9 @@ CHANGED
       after="$(sens_snapshot)" || { echo "scope: could not re-snapshot sensitive files (a sensitive file is unhashable/unstattable) — refusing (fail closed)" >&2; exit 5; }
       before="$(cat "$snapfile")"
       if [ "$before" != "$after" ]; then
-        touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[0-9a-f]+ +[0-9]+  //' | sort -u)"
+        # strip the diff marker + the two record fields (`<sha> <mode>` or `symlink <target>`) + the
+        # two-space separator, leaving just the path:
+        touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[^ ]+ +[^ ]+  //' | sort -u)"
         while IFS= read -r f; do [ -n "$f" ] && viol="${viol}  ${f} — SENSITIVE path added/changed/removed by the lane (secret or protected)
 "; done <<TOUCHED
 $touched

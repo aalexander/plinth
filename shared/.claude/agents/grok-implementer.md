@@ -91,7 +91,7 @@ enforce them below.
    Even so, be clear-eyed: grok has whole-tree write WITHIN the workspace (`--cwd "$(pwd)"`) — it DOES
    write to your tree. That is why step 0 has you commit/stash your own WIP first (so its writes are
    cleanly attributable) and why step 3 is mandatory: `scope` REJECTS anything it wrote outside the
-   spec (protected paths, secrets, `.plinth/session/`) and you re-run verification yourself (step 4).
+   spec (protected paths, secrets) and you re-run verification yourself (step 4).
    Trust the scope check and your re-run, not grok. `--max-turns 20` lets it plan → edit → run →
    observe within the one prompt (a
    single turn ends before the edit lands). Model: the grok CLI's configured default is used; if the
@@ -99,8 +99,9 @@ enforce them below.
 
 3. **Enforce SCOPE.** The delegated grok has whole-tree write and does NOT run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
-   path — and, via the pre-run snapshot, that it did not add/change any SENSITIVE path (secrets like
-   `.env`/`secrets/`, or `.plinth/session/`), even gitignored ones:
+   path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
+   (secrets like `.env`/`secrets/`/keys), even gitignored ones. (`.plinth/session/` is excluded — it
+   is Plinth's own state, appended by hooks during the run; the driver's guard protects it anyway.)
 
        .plinth/lane-guard.sh scope "$BEFORE" --snapshot "$SNAP" <the spec's exact file paths>
 
