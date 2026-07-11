@@ -116,4 +116,6 @@ jobs:
           check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
           check shared/.claude/hooks/review-gate.sh   .claude/hooks/review-gate.sh
           check shared/.claude/hooks/pulse.sh         .claude/hooks/pulse.sh
+          check shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
+          check shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
           exit "$fail"

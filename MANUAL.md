@@ -60,9 +60,20 @@ Everything between is the model's call.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,
   NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
-  the cross-vendor auditor. `--impactful` (architectural / hard-to-reverse decisions)
-  escalates to the stronger model. Vendor-agnostic and cross-family (a Grok driver can
-  consult Fable); see the `advisor_*` knobs below.
+  the cross-vendor auditor. It returns a VERDICT, not a survey ("Do X, not Y, because Z"
+  + the single deciding risk), reads the code before opining, and stays terse.
+  `--impactful` (architectural / hard-to-reverse decisions) escalates to the stronger
+  model. Vendor-agnostic and cross-family (a Grok driver can consult Fable); see the
+  `advisor_*` knobs below.
+- **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
+  Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
+  CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
+  interfaces · constraints · verification); it drives grok/codex headlessly and re-runs the
+  verification itself before reporting (a lane's "it works" is not evidence — Rule 10). The
+  economics: spend the frontier model on judgment, the lanes on volume; both are non-Anthropic
+  families, so the diff gets genuine cross-vendor review for free. Race both on one spec for
+  high-stakes work. Needs the `grok` / `codex` CLI installed + signed in; a missing CLI reports
+  `unavailable`, never a silent Claude fallback. See `.plinth/MODELS.md`.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
   round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/
   advisor_model_max, tier2_extra — the config itself is off-limits to the driver, so

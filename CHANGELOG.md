@@ -1,5 +1,36 @@
 # Plinth changelog
 
+## v4.5.0 — implementer lanes (architect pattern) + advisor discipline — July 11, 2026
+- **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
+  version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
+  drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
+  Each takes a five-part spec (objective · files · interfaces · constraints · verification), runs
+  the external CLI headlessly from a UNIQUE `mktemp` prompt file (never inline quoting / fixed
+  paths — parallel lanes on a fixed path corrupt each other), wall-clocks it, then VERIFIES
+  independently: it re-runs the verification command itself and reads the diff — "the lane said it
+  works" is forbidden as evidence (Rule 10). Preflight with NO silent fallback: a missing/unauthed
+  CLI returns `STATUS: unavailable`, never a quiet Claude substitution that defeats the lane's cost
+  and cross-vendor profile. The economic case: implementation mechanics are most of a session's
+  tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
+  both lanes on the same spec and keep the stronger diff (a third independent perspective for one
+  extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
+- **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
+  judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
+  code block longer than an interface signature is a spec that hasn't been delegated yet; keep the
+  context lean; reason once, then hand off; fixing a lane's bug by hand is the same failure in
+  disguise (send a corrected spec back). The lanes apply when the driver is Claude/Fable (the
+  architect-delegates-to-a-cheaper-family topology); a non-Claude driver delegates via its own
+  mechanism with the same spec contract + Rule-10 verification.
+- **`plinth advise` discipline.** The advisor now receives a preamble (adapted from fable-advisor)
+  so every vendor returns the same shape: a VERDICT, not a survey ("Do X, not Y, because Z" + the
+  single deciding risk); a sound plan gets one line (no manufactured objections); look before you
+  opine (read the code, don't reason from the summary); name missing information precisely; under
+  ~300 words; advise only. `--impactful` adds a hard-to-reverse-decision weighting line.
+- **Version-pinned like the hooks:** the lane agents are floor-checked against the pinned release,
+  in `protected-paths` (Claude guard blocks driver edits) and `HARNESS_RE`/`HARNESS_PATHS` (review
+  treats edits as tooling-tamper / UPSTREAM). `plinth init`/`update` materialize them; `copy_shared`
+  gains `.claude/agents/`.
+
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
   split so any vendor auto-loads the right role. The reviewer contract moved out of root

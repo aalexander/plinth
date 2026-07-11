@@ -85,6 +85,17 @@ delegations narrow — what actually binds them is your discipline plus the requ
 status checks (branch protection); the cloud review is an advisory backstop, not the
 local hook and not a required gate.
 
+Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
+specs, verdicts), and delegate the TYPING to a cheaper cross-family lane rather than typing
+it yourself. Two shipped subagents do this — `grok-implementer` (default) and
+`codex-implementer` (cross-vendor) — each drives an external CLI from a five-part spec
+(objective · files · interfaces · constraints · verification) and VERIFIES the result
+independently (Rule 10: the lane's report is a claim; your re-run of the verification command
+is the evidence). Route well-specified volume to them; keep the frontier model for the
+judgment the spec can't capture. Details + cost discipline: `.plinth/MODELS.md`. When a
+delegated spec turns out to be architecturally wrong, that is YOUR call — do not let the lane
+guess; decide it, or consult the advisor.
+
 Before an IMPACTFUL or architectural decision — one expensive to reverse or that
 shapes the design (a schema, a public interface, a security boundary, a migration
 strategy) — consult the ADVISOR: `plinth advise --impactful "<question>"` calls a model

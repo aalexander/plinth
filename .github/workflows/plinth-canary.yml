@@ -1257,4 +1257,38 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$NH" >/dev/null 2>&1
           { [ ! -f "$NH/NEEDS-HUMAN.md" ] && [ -f "$NH/.plinth/NEEDS-HUMAN.md" ]; } || { echo "::error::update did not migrate root NEEDS-HUMAN.md into .plinth/"; exit 1; }
           grep -q ACME_TOKEN "$NH/.plinth/NEEDS-HUMAN.md" || { echo "::error::NEEDS-HUMAN migration lost content"; exit 1; }
+
+          # ── v4.5.0: implementer lanes (architect pattern) + advisor discipline ──
+          IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
+          cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
+          cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized byte-identical"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" || { echo "::error::.claude/agents/ not added to protected-paths"; exit 1; }
+          FLOOR5="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
+          grep -qE 'check +shared/\.claude/agents/grok-implementer\.md'  "$FLOOR5" || { echo "::error::floor does not verify the grok-implementer agent against the pin"; exit 1; }
+          grep -qE 'check +shared/\.claude/agents/codex-implementer\.md' "$FLOOR5" || { echo "::error::floor does not verify the codex-implementer agent"; exit 1; }
+          # Safety-critical lane invariants (the agent files carry them): no silent fallback, mktemp prompt
+          # file, Rule-10 independent verification.
+          for a in grok codex; do
+            A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            grep -q 'STATUS: unavailable' "$A" || { echo "::error::${a}-implementer lacks the no-silent-fallback 'STATUS: unavailable'"; exit 1; }
+            grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 'forbidden as evidence' rule"; exit 1; }
+            grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule (parallel-safe)"; exit 1; }
+          done
+          # plinth advise applies the verdict-not-survey discipline preamble AND carries the real question;
+          # --impactful adds the hard-to-reverse weighting.
+          ADV="$(mktemp -d)"; ADCAP="$ADV/prompt"
+          cat > "$ADV/claude" <<ADC
+          #!/usr/bin/env bash
+          for a in "\$@"; do last="\$a"; done
+          printf '%s' "\$last" > "$ADCAP"
+          echo advice
+          ADC
+          chmod +x "$ADV/claude"
+          ADR="$(mktemp -d)"; ( cd "$ADR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ADR" >/dev/null 2>&1 )
+          ( cd "$ADR" && PATH="$ADV:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "should I refactor the auth module" >/dev/null 2>&1 || true )
+          grep -q "Give a VERDICT, not a survey" "$ADCAP" || { echo "::error::plinth advise did not apply the verdict-not-survey discipline preamble"; exit 1; }
+          grep -q "should I refactor the auth module" "$ADCAP" || { echo "::error::plinth advise dropped the actual question"; exit 1; }
+          grep -qi "IMPACTFUL, hard-to-reverse" "$ADCAP" && { echo "::error::peer advise wrongly carries the impactful weighting"; exit 1; } || true
+          : > "$ADCAP"; ( cd "$ADR" && PATH="$ADV:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "migrate the DB" >/dev/null 2>&1 || true )
+          grep -qi "IMPACTFUL, hard-to-reverse" "$ADCAP" || { echo "::error::plinth advise --impactful lacks the hard-to-reverse weighting line"; exit 1; }
           echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths + v4.4.0(contract/isolation/deny-ship/advise/needs-human) OK"

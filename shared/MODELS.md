@@ -87,6 +87,46 @@ codex/grok delegate does not inherit the `.claude/` hooks — see plinth-rules.m
 the driver, model tier != review tier: the classifier routes the RESULT by risk
 regardless of which model wrote it.
 
+## Implementer lanes — the architect pattern (cost lever)
+
+Implementation mechanics — boilerplate, wiring, CRUD, mechanical edits, test bodies — are
+most of a session's tokens, and a cheaper cross-family model types them at near-parity.
+So the frontier driver should behave like an ARCHITECT: emit judgment (decomposition,
+interfaces, specs, routing, verdicts on diffs), and DELEGATE the typing to a cheaper lane.
+Two shipped subagents do exactly this — they drive an external CLI and VERIFY the result:
+
+| Lane | Producer | Agent | Route here when |
+|---|---|---|---|
+| Routine | Grok (xAI) | `grok-implementer` | The spec fully determines the outcome. **Default lane.** Needs the `grok` CLI. |
+| Cross-vendor | codex (OpenAI) | `codex-implementer` | Correctness is critical enough to want a second implementation, or grok is unavailable. Needs the `codex` CLI. |
+
+**Cost discipline (the point of the pattern).** The driver's context is re-read at driver
+prices every turn. So: emit judgment, not volume — a code block longer than an interface
+signature is a spec that hasn't been delegated yet. Keep the context lean — delegate broad
+searches/log-grepping to a cheap read-only subagent and keep only conclusions. Reason once,
+then hand off — capture the hard thinking in the spec and let the lane carry it. Fixing a
+lane's bug by hand is the same failure in disguise: send a corrected spec back.
+
+**The five-part spec** every lane receives (they share none of your context): objective ·
+files · interfaces · constraints · verification command. A spec you can't finish writing
+means the decision isn't made yet — that's architect work, not a reason to hand a cheaper
+model the ambiguity.
+
+**Verification (Rule 10).** A lane's report is a claim; the diff and your own re-run of the
+verification command are the evidence. "The lane said it works" is forbidden. A lane that
+returns `unavailable`/`timeout` gets its spec re-routed to the other lane — never a silent
+substitution.
+
+**Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver
+(and Plinth's reviewer at PR) judges an independent-vendor diff. For high-stakes work, race
+`grok-implementer` and `codex-implementer` on the SAME spec and keep the stronger diff — a
+third independent perspective for one extra lane's cost.
+
+(The lanes are Claude-Code subagents, so they apply when the DRIVER is Claude/Fable — the
+architect-delegates-to-cheaper-family topology. A non-Claude driver delegates via its own
+mechanism; the spec contract and Rule-10 verification are the same. Pattern adapted from
+DannyMac180/fable-advisor.)
+
 ## Reviewer: Codex / GPT-5.5 (unchanged)
 Set in `~/.codex/config.toml` (`model = "gpt-5.5"`, `model_reasoning_effort =
 "high"`). GPT-5.6 launched June 26 to ~20 US-government-approved organizations
