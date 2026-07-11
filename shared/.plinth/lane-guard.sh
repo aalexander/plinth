@@ -4,6 +4,14 @@
 # convention. A delegated non-Claude implementer CLI does NOT inherit the `.claude/` guard and
 # has whole-tree write, so this restores the fail-loud + scope guarantees around the delegated run.
 #
+# WHAT THIS IS, AND IS NOT — it catches ERRORS, not an adversarial sandbox. It flags a lane that
+# went off-script: edited a tracked file outside the spec, a protected/version-pinned file, or a
+# secret/sensitive path (`.env`, `secrets/`, `.plinth/session/`, …) — the mistakes a fallible
+# implementer actually makes. It DELIBERATELY does NOT reject non-sensitive gitignored artifacts
+# (node_modules/, dist/, build output): those are legitimate lane output, are not shipped
+# (gitignored), and a tampered dependency is caught by CI's fresh install — rejecting them would
+# only break normal work (npm install, builds). Bugs over adversarial intent, by design.
+#
 #   lane-guard.sh preflight <grok|codex>
 #       Binary present AND authenticated. Prints an "unavailable: <reason>" line and exits 3 if
 #       not — the lane must return STATUS: unavailable, never silently implement the task itself.

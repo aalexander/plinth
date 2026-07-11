@@ -118,8 +118,11 @@ has whole-tree write and does not run the `.claude/` guard, so each lane enforce
 guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets,
 `.plinth/session/`, protected — even gitignored) may have been added/changed by the lane (else
-SCOPE VIOLATION, not accepted; it fails loud if the diff is uncomputable). That catches a lane
-planting secrets or a fake verdict; non-sensitive artifacts like `node_modules/` don't trip it. A lane that returns `unavailable`/`timeout`
+SCOPE VIOLATION, not accepted; it fails loud if the diff is uncomputable). The scope is drawn at
+the ERRORS a fallible lane makes, not an adversarial sandbox — it catches a lane planting secrets
+or a fake verdict, but non-sensitive gitignored artifacts (`node_modules/`, `dist/`) are legitimate
+lane output and don't trip it (rejecting them would break `npm install`/builds; a tampered dep is
+caught by CI's fresh install anyway). A lane that returns `unavailable`/`timeout`
 gets its spec re-routed to the other lane — never a silent substitution.
 
 **Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver

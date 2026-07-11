@@ -1301,9 +1301,12 @@ jobs:
             SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
             grep -qE '  \.env$' "$SNAP" || { echo "::error::lane-guard snapshot missed a secret (.env)"; exit 1; }
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
-            # clean: in-spec edit + a node_modules artifact -> ok (non-sensitive ignored files do not trip it)
+            # DELIBERATE SCOPE (bugs over adversarial intent, per the lane-guard header): a clean in-spec edit
+            # plus a non-sensitive gitignored artifact (node_modules/) must PASS. Rejecting legitimate build
+            # output would break normal lane work (npm install, builds); a tampered dep is caught by CI's fresh
+            # install, not shipped. This asserts we DON'T regress into that over-strict, workflow-breaking state.
             echo b > app.py; echo y > node_modules/artifact.js
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged node_modules (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged a legit node_modules artifact (rc=$r)"; exit 1; }
             # tracked PROTECTED edit -> 4
             git checkout -q -- app.py; echo weak > .plinth/config
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a tracked PROTECTED-path edit (rc=$r)"; exit 1; }

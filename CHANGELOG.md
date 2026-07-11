@@ -19,8 +19,12 @@
   run the `.claude/` guard, so after the run every tracked change + new file must be a spec file
   and must not match `.plinth/protected-paths`, AND (via the snapshot) no sensitive file may have
   been added/changed/removed. That catches a whole-tree-write lane planting secrets in
-  `.env`/`secrets/` or a fake verdict under `.plinth/session/` even though those are gitignored —
-  while `node_modules`-style artifacts (not sensitive) don't false-positive. It fails LOUD (exit 5)
+  `.env`/`secrets/` or a fake verdict under `.plinth/session/` even though those are gitignored.
+  The scope is deliberately drawn at ERRORS a fallible lane makes (off-spec tracked edits, protected
+  tooling, secret/session writes), not an adversarial sandbox: non-sensitive gitignored artifacts
+  (`node_modules/`, `dist/`, build output) are NOT rejected — they're legitimate lane output, aren't
+  shipped, and a tampered dependency is caught by CI's fresh install, so rejecting them would only
+  break normal work (npm install, builds). It fails LOUD (exit 5)
   if the diff is uncomputable (non-repo / unresolvable base) rather than accepting on an empty
   change list. This restores the protected-path/secret guarantee across the delegation boundary,
   in-session. The economic case: implementation mechanics are most of a session's
