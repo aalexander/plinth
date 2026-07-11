@@ -1300,7 +1300,7 @@ jobs:
           done
           # a managed FILE leaf that is a NON-regular node (directory / FIFO) must also be rejected before any
           # write — not just symlinks (cp would copy INTO a dir / hang on a FIFO / leave a partial scaffold):
-          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md; do
+          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md .plinth/config .github/workflows/ci.yml; do
             ILN="$(mktemp -d)"; ( cd "$ILN"; git init -qb main . >/dev/null; mkdir -p "$(dirname "$badleaf")"; mkdir -p "$badleaf"
               r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILN" >/dev/null 2>&1 || r=$?
               [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies managed leaf $badleaf (rc=$r)"; exit 1; }
