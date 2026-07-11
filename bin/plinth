@@ -178,17 +178,20 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
 # repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
 # installed while the project's colliding agent stays behind, frozen or misclassified).
 preflight_reserved_lanes() {
-  local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents"
-  # the parent must be a real directory (or absent — mkdir will create it), never a file OR a symlink
-  # (a symlink-to-dir would make init write the lane agents THROUGH it, outside the workspace):
-  if [ -L "$parent" ]; then
-    echo "ERROR: $parent is a symlink — refusing to write lane agents through it (could escape the workspace)." >&2
-    exit 1
-  fi
-  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
-    echo "ERROR: $parent exists but is not a directory — refusing to touch this repo until it is resolved." >&2
-    exit 1
-  fi
+  local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d
+  # No Plinth-managed directory (nor an intermediate) may be a SYMLINK or a non-directory: writes
+  # would escape the workspace (through the symlink) or leave a broken partial scaffold. Check the
+  # whole managed ancestry up front, before any write — closes the symlink-escape class in one place.
+  for d in .claude .claude/agents .claude/hooks .plinth .plinth/session; do
+    if [ -L "$target/$d" ]; then
+      echo "ERROR: $target/$d is a symlink — refusing to write through it (could escape the workspace)." >&2
+      exit 1
+    fi
+    if [ -e "$target/$d" ] && [ ! -d "$target/$d" ]; then
+      echo "ERROR: $target/$d exists but is not a directory — refusing to touch this repo until it is resolved." >&2
+      exit 1
+    fi
+  done
   for a in grok-implementer codex-implementer; do
     dst="$parent/$a.md"
     # OK only if the path is ABSENT, or a regular file that is ALREADY the pinned Plinth lane (marker).

@@ -47,10 +47,11 @@ prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .p
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
   # A protected-paths that is PRESENT but not a readable regular file (unreadable, a directory, a
-  # broken symlink, a device…) must fail closed — prot_pats' `[ -f ]` would otherwise read it as
-  # "no patterns" and silently disable all protection:
-  if [ -L .plinth/protected-paths ] && [ ! -e .plinth/protected-paths ]; then
-    echo "lane-guard: .plinth/protected-paths is a broken symlink — refusing to run (fail closed)" >&2; exit 5
+  # device, or ANY symlink) must fail closed — prot_pats' `[ -f ]` follows symlinks and would read it
+  # as "no patterns"; worse, scope's `git show base:.plinth/protected-paths` returns a symlink's
+  # TARGET TEXT rather than the pointed-to policy, silently narrowing the base-union defense:
+  if [ -L .plinth/protected-paths ]; then
+    echo "lane-guard: .plinth/protected-paths is a symlink — refusing to run (fail closed; policy must be a real file)" >&2; exit 5
   fi
   if [ -e .plinth/protected-paths ] && { [ ! -f .plinth/protected-paths ] || [ ! -r .plinth/protected-paths ]; }; then
     echo "lane-guard: .plinth/protected-paths is present but not a readable regular file — refusing to run (fail closed)" >&2; exit 5
