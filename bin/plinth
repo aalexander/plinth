@@ -164,7 +164,7 @@ materialize_driver_shell() {
 # occupies that exact path (no pin marker = project-authored), do NOT clobber it and do NOT leave a
 # half-managed state (a preserved file would still get frozen/misclassified) — fail LOUD and abort so
 # the user resolves it. Non-destructive: their file is untouched.
-cp_lane_agent() {  # <src> <dst>
+cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have caught a collision first
   local src="$1" dst="$2" marker='Plinth implementer lane (version-pinned)'
   if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
     echo "ERROR: $dst exists and is NOT a Plinth lane agent. That filename is RESERVED for the Plinth" >&2
@@ -173,6 +173,21 @@ cp_lane_agent() {  # <src> <dst>
     exit 1
   fi
   cp "$src" "$dst"
+}
+# Preflight the reserved lane-agent paths BEFORE any file is written, so a collision aborts with the
+# repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
+# installed while the project's colliding agent stays behind, frozen or misclassified).
+preflight_reserved_lanes() {
+  local marker='Plinth implementer lane (version-pinned)' a dst
+  for a in grok-implementer codex-implementer; do
+    dst="$target/.claude/agents/$a.md"
+    if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
+      echo "ERROR: $dst exists and is NOT a Plinth lane agent. That filename is RESERVED for the Plinth" >&2
+      echo "       implementer lane (version-pinned tooling). Rename or move your file, then re-run —" >&2
+      echo "       refusing to touch this repo until the reserved path is free." >&2
+      exit 1
+    fi
+  done
 }
 
 # SHARED (version-pinned, overwritten on update):
@@ -188,9 +203,9 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
-  # Lane agents live in .claude/agents/ — a namespace a project may ALSO use. Refresh the pinned copy,
-  # but never CLOBBER a project's own file that merely shares the name: preserve it and warn (the pin
-  # marker distinguishes a Plinth-installed lane from project-authored content).
+  # Lane agents live in .claude/agents/ — a namespace a project may ALSO use. The two lane filenames
+  # are RESERVED: preflight_reserved_lanes() already aborted (repo untouched) if a non-Plinth file
+  # occupied either path, so here we just refresh the pinned copy (cp_lane_agent re-checks as a belt).
   cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/grok-implementer.md"  "$target/.claude/agents/grok-implementer.md"
   cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
   cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
@@ -889,6 +904,7 @@ case "$cmd" in
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   init)
+    preflight_reserved_lanes
     copy_templates_if_absent
     copy_shared
     # Backfill security patterns even on init: a re-run (or a partially-scaffolded repo)
@@ -904,6 +920,7 @@ case "$cmd" in
   update)
     [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }
     old="$(cat "$target/.plinth-version")"
+    preflight_reserved_lanes
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths

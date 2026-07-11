@@ -1269,14 +1269,18 @@ jobs:
           IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
           cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
           cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
-          # the lane names are RESERVED: a project's OWN same-named agent must make init FAIL LOUD (non-zero,
-          # untouched), never be clobbered (data loss) NOR preserved-but-frozen (protected/misclassified):
+          # the lane names are RESERVED: a project's OWN same-named agent must make init FAIL LOUD BEFORE any
+          # write (repo untouched — no partial scaffold that freezes/misclassifies the project file), never
+          # clobbered (data loss) NOR preserved-but-frozen:
           ILP="$(mktemp -d)"; ( cd "$ILP"; git init -qb main . >/dev/null; mkdir -p .claude/agents
             printf 'my own agent, not a plinth lane\n' > .claude/agents/grok-implementer.md
             r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" init "$ILP" 2>&1)" || r=$?
             [ "$r" != 0 ] || { echo "::error::plinth init did not FAIL on a reserved-name collision (rc=$r) — clobber or half-managed state"; exit 1; }
             grep -q 'my own agent' .claude/agents/grok-implementer.md || { echo "::error::plinth CLOBBERED a project's own .claude/agents/grok-implementer.md (data loss)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'RESERVED' || { echo "::error::collision error did not explain the reserved lane-agent name"; exit 1; } )
+            printf '%s' "$out" | grep -qi 'RESERVED' || { echo "::error::collision error did not explain the reserved lane-agent name"; exit 1; }
+            # the abort must be a PREFLIGHT — nothing written, so the project file isn't frozen by a stray protected-paths:
+            [ -e .plinth/protected-paths ] && { echo "::error::collision left a PARTIAL scaffold (.plinth/protected-paths written) — freezes the project agent"; exit 1; } || true
+            [ -e .claude/settings.json ]   && { echo "::error::collision left a PARTIAL scaffold (.claude/settings.json written)"; exit 1; } || true )
           cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
           [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
           # Protect the EXACT two Plinth-owned lane agents, NOT the whole .claude/agents/ dir (that would
