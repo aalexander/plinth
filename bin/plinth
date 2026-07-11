@@ -278,7 +278,8 @@ ensure_protected_paths() {
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
 (^|/)\.claude/hooks/
-(^|/)\.claude/agents/
+(^|/)\.claude/agents/grok-implementer\.md$
+(^|/)\.claude/agents/codex-implementer\.md$
 (^|/)\.claude/settings\.json$
 (^|/)\.plinth/review\.sh$
 (^|/)\.plinth/risk-classify\.sh$
@@ -329,7 +330,7 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; the driver must not edit matching paths.\n# Under a Claude driver the guard blocks such edits at the tool level. (Version-pinned Plinth\n# tooling here is also checked by the review as tampering; project-owned entries like config\n# are reviewed as normal project code.) Use (^|/)name anchoring, not ^name: agent file paths\n# are often absolute. Version-pinned tooling updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/agents/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/lane-guard\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; the driver must not edit matching paths.\n# Under a Claude driver the guard blocks such edits at the tool level. (Version-pinned Plinth\n# tooling here is also checked by the review as tampering; project-owned entries like config\n# are reviewed as normal project code.) Use (^|/)name anchoring, not ^name: agent file paths\n# are often absolute. Version-pinned tooling updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/agents/grok-implementer\\.md$\n(^|/)\\.claude/agents/codex-implementer\\.md$\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/lane-guard\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then

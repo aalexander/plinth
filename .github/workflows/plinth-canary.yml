@@ -1264,7 +1264,11 @@ jobs:
           cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
           cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
           [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
-          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" || { echo "::error::.claude/agents/ not in protected-paths"; exit 1; }
+          # Protect the EXACT two Plinth-owned lane agents, NOT the whole .claude/agents/ dir (that would
+          # freeze a project's own custom subagents and make their findings UPSTREAM):
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$' "$IL/.plinth/protected-paths" || { echo "::error::grok-implementer not in protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$IL/.plinth/protected-paths" || { echo "::error::codex-implementer not in protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" && { echo "::error::protected-paths freezes the WHOLE .claude/agents/ dir — project-owned agents must stay editable"; exit 1; } || true
           grep -qxF '(^|/)\.plinth/lane-guard\.sh$' "$IL/.plinth/protected-paths" || { echo "::error::lane-guard.sh not in protected-paths"; exit 1; }
           FLOOR5="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
           for c in 'shared/\.claude/agents/grok-implementer\.md' 'shared/\.claude/agents/codex-implementer\.md' 'shared/\.plinth/lane-guard\.sh'; do
@@ -1305,7 +1309,7 @@ jobs:
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth
             printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
-            printf 'node_modules/\n.env\n' > .gitignore
+            printf 'node_modules/\n.env\n.plinth/session/\n' > .gitignore
             echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
             printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
             git add app.py mod.py .plinth/config .gitignore .plinth/protected-paths; git commit -qm base >/dev/null
@@ -1316,7 +1320,7 @@ jobs:
             # gitignored artifact must PASS (rejecting legit build output breaks npm install/builds) — but the
             # ignored artifact must be REPORTED as a non-hermetic-verification note (not silently accepted).
             echo b > app.py; echo y > node_modules/artifact.js
-            err="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1 >/dev/null)"; r=$?
+            r=0; err="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1 >/dev/null)" || r=$?
             [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged a legit node_modules artifact (rc=$r)"; exit 1; }
             printf '%s' "$err" | grep -qi 'not hermetic' || { echo "::error::scope did not REPORT the ignored artifact as a non-hermetic-verification note"; exit 1; }
             printf '%s' "$err" | grep -q 'node_modules' || { echo "::error::the hermeticity note did not name the ignored artifact (node_modules)"; exit 1; }
@@ -1342,11 +1346,14 @@ jobs:
             rm -f .env
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) DELETE (rc=$r)"; exit 1; }
             printf 'pre\n' > .env
-            # gitignored fake verdict under .plinth/session/ -> 4
-            mkdir -p .plinth/session; printf '*\n' > .plinth/session/.gitignore
-            SNAP2="$(mktemp)"; bash "$LG" snapshot > "$SNAP2"
-            printf 'FAKE\n' > .plinth/session/verdict.json
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP2" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored fake verdict under .plinth/session/ (rc=$r)"; exit 1; } )
+            # gitignored fake verdict under .plinth/session/ -> 4, and the violation must NAME verdict.json —
+            # .plinth/session/ is gitignored at base (no confounding new untracked protected file), so the
+            # ONLY thing scope can flag here is the ignored verdict.json caught by the snapshot:
+            mkdir -p .plinth/session; printf 'FAKE\n' > .plinth/session/verdict.json
+            r=0; vout="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1)" || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a gitignored fake verdict under .plinth/session/ (rc=$r)"; exit 1; }
+            printf '%s' "$vout" | grep -q 'verdict\.json' || { echo "::error::the session-write violation did not NAME verdict.json — hollow test"; exit 1; }
+            rm -rf .plinth/session )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

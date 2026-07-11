@@ -31,8 +31,9 @@ the diff, not the driver's claim.
 - Minor findings: report them (severity "minor", status open) but they do NOT
   block. The driver must append open minors to the spec's `## Noticed` section
   before the PR; they ride to CI and the human from there.
-- Findings in version-pinned Plinth tooling (.claude/hooks/, .claude/agents/ (the
-  implementer-lane subagents), .claude/settings.json,
+- Findings in version-pinned Plinth tooling (.claude/hooks/, the two implementer-lane
+  subagents .claude/agents/grok-implementer.md and .claude/agents/codex-implementer.md
+  (NOT other, project-owned .claude/agents/*), .claude/settings.json,
   the driver shells CLAUDE.md and AGENTS.md at repo root, the reviewer contract
   .plinth/reviewer.md, and .plinth/ except AGENTS-project.md, DRIVER-project.md,
   config, protected-paths, GOAL.md, and NEEDS-HUMAN.md — that last one the driver
