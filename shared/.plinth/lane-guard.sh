@@ -79,6 +79,10 @@ hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/d
 modeof() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }  # perm bits (macOS/Linux)
 sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for a regular file, or
   # `symlink <target>` for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
+  # Enumerates git-visible paths (tracked + ignored + untracked FILES incl. secrets under a
+  # secret-named dir). BOUND: an EMPTY sensitive directory (e.g. an empty `secrets/`) is not git-
+  # enumerated and so isn't recorded — but an empty dir holds no secret, so this is vacuous; any
+  # secret FILE placed inside it IS enumerated and caught. (efficiency-over-adversarial on a trusted lane.)
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
     # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`

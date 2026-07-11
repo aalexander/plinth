@@ -1412,7 +1412,7 @@ jobs:
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth
             printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
-            printf 'node_modules/\n.env\n.plinth/session/\n' > .gitignore
+            printf 'node_modules/\n.env\n*.pem\n*.key\n.plinth/session/\n' > .gitignore
             echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
             printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
             # lookalikes that must NOT be flagged (templates/docs), vs the secret forms from templates/.gitignore
@@ -1495,9 +1495,12 @@ jobs:
             rm -f .env; printf 'pre\n' > .env
             # secrets under a secret-NAMED directory (matching .gitignore .env/*.pem/*.key dir patterns) must be
             # caught too — the denylist matches descendants, not just the exact basename:
-            rm -f .env; mkdir -p .env; printf 'K\n' > .env/token
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored secret under a secret-named dir (.env/token) (rc=$r)"; exit 1; }
-            rm -rf .env; printf 'pre\n' > .env )
+            for sd in .env cert.pem prod.key; do
+              rm -f "$sd"; mkdir -p "$sd"; printf 'K\n' > "$sd/token"
+              r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored secret under a secret-named dir ($sd/token) (rc=$r)"; exit 1; }
+              rm -rf "$sd"
+            done
+            printf 'pre\n' > .env )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
