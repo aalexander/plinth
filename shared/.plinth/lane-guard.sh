@@ -9,8 +9,10 @@
 # secret/sensitive path (`.env`, `secrets/`, `.plinth/session/`, …) — the mistakes a fallible
 # implementer actually makes. It DELIBERATELY does NOT reject non-sensitive gitignored artifacts
 # (node_modules/, dist/, build output): those are legitimate lane output, are not shipped
-# (gitignored), and a tampered dependency is caught by CI's fresh install — rejecting them would
-# only break normal work (npm install, builds). Bugs over adversarial intent, by design.
+# (gitignored), and rejecting them would only break normal work (npm install, builds). It DOES
+# report them — `scope` prints a non-blocking note that the lane's verification is not hermetic
+# (it ran against un-reviewed ignored state), so the driver's Rule-10 re-run and CI's fresh install
+# stay the authority. Bugs over adversarial intent: report, don't reject.
 #
 #   lane-guard.sh preflight <grok|codex>
 #       Binary present AND authenticated. Prints an "unavailable: <reason>" line and exits 3 if
@@ -110,11 +112,21 @@ TOUCHED
     else
       echo "scope: NOTE — no --snapshot given; gitignored sensitive paths (secrets, .plinth/session/) were not verified" >&2
     fi
+    # Non-blocking HERMETICITY note (report, don't reject). Ignored build artifacts (node_modules/,
+    # dist/, …) are legitimate lane output and are NOT rejected — but the lane's verification ran
+    # against them, so that Rule-10 evidence may not reproduce in a clean env. Surface the top-level
+    # ignored entries so the driver's independent re-run accounts for it; CI's fresh install is the
+    # authority. This closes "silently accepted" without breaking npm install / builds.
+    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | sed 's#/.*##' | sort -u | grep -v '^$' || true)"
+    if [ -n "$iga" ]; then
+      echo "scope note: verification is NOT hermetic — ignored artifacts in the tree (not in the reviewed diff): $(printf '%s' "$iga" | tr '\n' ' ')" >&2
+      echo "  -> your independent Rule-10 re-run may depend on this un-reviewed state; treat CI's fresh install as the authority." >&2
+    fi
     if [ -n "$viol" ]; then
       printf 'SCOPE VIOLATION — the lane touched paths it was not authorized to:\n%s' "$viol"
       exit 4
     fi
-    echo "scope ok: tracked changes + new files within the spec; no protected path; no sensitive/secret path touched (per snapshot)" ;;
+    echo "scope ok: tracked changes + new files within the spec; no protected path; no sensitive/secret path touched (per snapshot); ignored build artifacts reported, not rejected" ;;
 
   *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>..."; exit 2 ;;
 esac

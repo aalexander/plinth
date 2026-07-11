@@ -1279,6 +1279,16 @@ jobs:
             grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
           done
+          # The exact CLI invocation is live-verified (see round 8); assert the agents pin the flags that
+          # actually APPLY edits headlessly. grok under acceptEdits announces an edit and drops it silently —
+          # a headless run needs bypassPermissions + a turn budget. Guard against regressing to the broken flag.
+          GA="$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"
+          grep -q 'permission-mode bypassPermissions' "$GA" || { echo "::error::grok-implementer must use --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
+          grep -q 'max-turns' "$GA" || { echo "::error::grok-implementer must set --max-turns (a single turn ends before the edit lands)"; exit 1; }
+          grep -q 'permission-mode acceptEdits' "$GA" && { echo "::error::grok-implementer still uses acceptEdits — that silently drops edits in headless mode"; exit 1; } || true
+          CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
+          grep -q 'codex exec' "$CA" || { echo "::error::codex-implementer must drive 'codex exec'"; exit 1; }
+          grep -q 'sandbox workspace-write' "$CA" || { echo "::error::codex-implementer must scope writes with --sandbox workspace-write"; exit 1; }
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
@@ -1296,28 +1306,41 @@ jobs:
             mkdir -p .plinth
             printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
             printf 'node_modules/\n.env\n' > .gitignore
-            echo a > app.py; printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
-            git add app.py .gitignore .plinth/protected-paths; git commit -qm base >/dev/null
+            echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
+            printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
+            git add app.py mod.py .plinth/config .gitignore .plinth/protected-paths; git commit -qm base >/dev/null
             SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
             grep -qE '  \.env$' "$SNAP" || { echo "::error::lane-guard snapshot missed a secret (.env)"; exit 1; }
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
-            # DELIBERATE SCOPE (bugs over adversarial intent, per the lane-guard header): a clean in-spec edit
-            # plus a non-sensitive gitignored artifact (node_modules/) must PASS. Rejecting legitimate build
-            # output would break normal lane work (npm install, builds); a tampered dep is caught by CI's fresh
-            # install, not shipped. This asserts we DON'T regress into that over-strict, workflow-breaking state.
+            # DELIBERATE SCOPE (bugs over adversarial intent): a clean in-spec edit plus a non-sensitive
+            # gitignored artifact must PASS (rejecting legit build output breaks npm install/builds) — but the
+            # ignored artifact must be REPORTED as a non-hermetic-verification note (not silently accepted).
             echo b > app.py; echo y > node_modules/artifact.js
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged a legit node_modules artifact (rc=$r)"; exit 1; }
-            # tracked PROTECTED edit -> 4
-            git checkout -q -- app.py; echo weak > .plinth/config
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a tracked PROTECTED-path edit (rc=$r)"; exit 1; }
-            rm -f .plinth/config
-            # OUT-OF-SPEC tracked/new file -> 4
+            err="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1 >/dev/null)"; r=$?
+            [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged a legit node_modules artifact (rc=$r)"; exit 1; }
+            printf '%s' "$err" | grep -qi 'not hermetic' || { echo "::error::scope did not REPORT the ignored artifact as a non-hermetic-verification note"; exit 1; }
+            printf '%s' "$err" | grep -q 'node_modules' || { echo "::error::the hermeticity note did not name the ignored artifact (node_modules)"; exit 1; }
+            git checkout -q -- app.py
+            # TRACKED out-of-spec edit -> 4 (git-diff path on a committed file, not just a new untracked file)
+            echo z >> mod.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a TRACKED out-of-spec edit (rc=$r)"; exit 1; }
+            git checkout -q -- mod.py
+            # NEW untracked out-of-spec file -> 4
             echo x > other.py
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed an OUT-OF-SPEC edit (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a NEW out-of-spec file (rc=$r)"; exit 1; }
             rm -f other.py
-            # gitignored SECRET write (.env) -> 4 (the whole-tree-write hole the reviewer named)
+            # TRACKED PROTECTED edit -> 4, WITHOUT --snapshot, to prove the git-diff protected() path catches it
+            # independently (a regression that stopped diffing tracked protected files must still fail here):
+            echo weak >> .plinth/config
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a TRACKED PROTECTED edit via git diff (no --snapshot) (rc=$r)"; exit 1; }
+            git checkout -q -- .plinth/config
+            # gitignored SECRET write (.env changed) -> 4
             printf 'STOLEN=1\n' >> .env
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) write (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) CHANGE (rc=$r)"; exit 1; }
+            printf 'pre\n' > .env
+            # gitignored SECRET DELETE (.env removed) -> 4 (the contract claims added/changed/REMOVED)
+            rm -f .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) DELETE (rc=$r)"; exit 1; }
             printf 'pre\n' > .env
             # gitignored fake verdict under .plinth/session/ -> 4
             mkdir -p .plinth/session; printf '*\n' > .plinth/session/.gitignore

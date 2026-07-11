@@ -71,7 +71,10 @@ the exact **files** — you enforce them below.
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
    diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file
    exceeded its authority — that goes back to the caller (revert or re-spec), never quietly
-   accepted. Exit 5 = the diff was uncomputable; treat as a failure, not a pass.
+   accepted. Exit 5 = the diff was uncomputable; treat as a failure, not a pass. On exit 0, scope may
+   still print a non-blocking "verification is NOT hermetic" note (ignored build artifacts like
+   `node_modules/` in the tree) — capture it for the HERMETICITY line; it means your Rule-10 re-run
+   ran against un-reviewed state, so weigh CI's fresh install as the authority.
 
 4. **Verify independently.** Read the diff (`git diff` / `git status`), re-run the spec's
    verification command YOURSELF, and read codex's final message from `"$OUT"`. Codex's claim of
@@ -84,6 +87,7 @@ the exact **files** — you enforce them below.
     OBJECTIVE: [one line]
     CHANGES: [file — one-line summary, per file, from the ACTUAL diff]
     SCOPE: [ok, or the SCOPE VIOLATION lines from lane-guard]
+    HERMETICITY: [the lane-guard "not hermetic" note if any ignored artifacts were present, else "clean"]
     VERIFIED: [the verification command you re-ran — its real output]
     CODEX SAID: [one line; note any disagreement between codex's claim and the diff]
     GAPS: [spec ambiguities, unfinished items, or "none"]

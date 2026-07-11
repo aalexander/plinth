@@ -22,15 +22,26 @@
   `.env`/`secrets/` or a fake verdict under `.plinth/session/` even though those are gitignored.
   The scope is deliberately drawn at ERRORS a fallible lane makes (off-spec tracked edits, protected
   tooling, secret/session writes), not an adversarial sandbox: non-sensitive gitignored artifacts
-  (`node_modules/`, `dist/`, build output) are NOT rejected — they're legitimate lane output, aren't
-  shipped, and a tampered dependency is caught by CI's fresh install, so rejecting them would only
-  break normal work (npm install, builds). It fails LOUD (exit 5)
-  if the diff is uncomputable (non-repo / unresolvable base) rather than accepting on an empty
-  change list. This restores the protected-path/secret guarantee across the delegation boundary,
-  in-session. The economic case: implementation mechanics are most of a session's
+  (`node_modules/`, `dist/`, build output) are NOT rejected — they're legitimate lane output and
+  rejecting them would only break normal work (npm install, builds). They ARE reported: `scope`
+  prints a non-blocking note that the lane's verification is not hermetic (it ran against
+  un-reviewed ignored state), so the driver's independent Rule-10 re-run and CI's fresh install stay
+  the authority rather than the lane's in-session evidence being silently trusted. It fails LOUD
+  (exit 5) if the diff is uncomputable (non-repo / unresolvable base) rather than accepting on an
+  empty change list. This restores the protected-path/secret guarantee across the delegation
+  boundary, in-session. The economic case: implementation mechanics are most of a session's
   tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
   both lanes on the same spec and keep the stronger diff (a third independent perspective for one
   extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
+- **Live-verified the CLI invocations (not just stub-checked).** Driving the real `grok` and `codex`
+  CLIs through each lane's exact sequence surfaced a bug the stub-driven canary could not: under
+  `--permission-mode acceptEdits` a headless grok *announces* an edit and silently drops it (no TUI
+  to confirm against) — the file is never written. The grok lane now uses `--permission-mode
+  bypassPermissions --max-turns 20`, which actually applies edits and runs the verification; the
+  grant is safe because the run is boxed by `lane-guard scope` + the driver's independent re-run, not
+  because grok is trusted. Verified end-to-end: grok and codex each create the in-spec file, `scope`
+  returns ok, and the independent verification prints the real output. The canary pins the working
+  flags so a regression to the silent-drop flag fails CI.
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

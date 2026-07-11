@@ -56,17 +56,24 @@ enforce them below.
        output in your final message."]
        SPEC_EOF
 
-2. Invoke grok headlessly, scoped to the working tree, wall-clocked:
+2. Invoke grok headlessly, multi-turn, wall-clocked:
 
        T="$(command -v gtimeout || command -v timeout || true)"
        [ -z "$T" ] && echo "WARN: no timeout binary — grok runs uncapped (brew install coreutils to cap)"
        ${T:+$T 600} grok --prompt-file "$SPEC" \
-         --permission-mode acceptEdits --output-format plain --cwd "$(pwd)" \
+         --permission-mode bypassPermissions --max-turns 20 --output-format plain --cwd "$(pwd)" \
          > "$OUT" 2>&1
 
-   `--permission-mode acceptEdits`: grok edits files without prompting but does NOT get blanket
-   command approval. Never `--always-approve`. Model: the grok CLI's configured default is used;
-   if the caller's spec names a model (grok-4.5 is the current top tier), pass `-m <model>`.
+   `--permission-mode bypassPermissions` is REQUIRED for headless operation: a headless run has no
+   TUI to answer a permission prompt, so under `acceptEdits`/`default` grok *announces* an edit and
+   silently drops it — the file is never written (verified against grok 4.x). Bypass lets it both
+   edit and run the verification command. That grant is safe HERE, not because grok is trusted, but
+   because the run is boxed: the lane-guard `scope` check (step 3) rejects anything grok wrote
+   outside the spec — protected paths, secrets, `.plinth/session/` — and you re-run verification
+   yourself (step 4); grok never touches your session's tree. `--max-turns 20` lets it plan → edit →
+   run → observe within the one prompt (a single turn ends before the edit lands). Model: the grok
+   CLI's configured default is used; if the caller's spec names a model (grok-4.5 is the current top
+   tier), pass `-m <model>`.
 
 3. **Enforce SCOPE.** The delegated grok has whole-tree write and does NOT run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
@@ -78,12 +85,14 @@ enforce them below.
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
    diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file
    exceeded its authority — that goes back to the caller (revert or re-spec), never quietly
-   accepted. Exit 5 = the diff was uncomputable; treat as a failure, not a pass.
+   accepted. Exit 5 = the diff was uncomputable; treat as a failure, not a pass. On exit 0, scope may
+   still print a non-blocking "verification is NOT hermetic" note (ignored build artifacts like
+   `node_modules/` in the tree) — capture it and put it on the HERMETICITY line; it means your
+   Rule-10 re-run is running against un-reviewed state, so weigh CI's fresh install as the authority.
 
 4. **Verify independently.** Read the diff (`git diff` / `git status`), re-run the spec's
    verification command YOURSELF, and read grok's final message from `"$OUT"`. Grok's claim of
-   success is not evidence; your re-run is. (`acceptEdits` may have blocked grok from running the
-   verify command — your re-run covers that by design.)
+   success is not evidence; your re-run is.
 
 ## What you return
 
@@ -92,6 +101,7 @@ enforce them below.
     OBJECTIVE: [one line]
     CHANGES: [file — one-line summary, per file, from the ACTUAL diff]
     SCOPE: [ok, or the SCOPE VIOLATION lines from lane-guard]
+    HERMETICITY: [the lane-guard "not hermetic" note if any ignored artifacts were present, else "clean"]
     VERIFIED: [the verification command you re-ran — its real output]
     GROK SAID: [one line; note any disagreement between grok's claim and the diff]
     GAPS: [spec ambiguities, unfinished items, or "none"]

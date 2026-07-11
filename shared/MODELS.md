@@ -121,8 +121,11 @@ new file must be a spec file and must not touch a protected path, AND no sensiti
 SCOPE VIOLATION, not accepted; it fails loud if the diff is uncomputable). The scope is drawn at
 the ERRORS a fallible lane makes, not an adversarial sandbox — it catches a lane planting secrets
 or a fake verdict, but non-sensitive gitignored artifacts (`node_modules/`, `dist/`) are legitimate
-lane output and don't trip it (rejecting them would break `npm install`/builds; a tampered dep is
-caught by CI's fresh install anyway). A lane that returns `unavailable`/`timeout`
+lane output and don't trip it (rejecting them would break `npm install`/builds). Those it REPORTS,
+not rejects: `scope` prints a non-blocking note that the lane's verification is not hermetic (it ran
+against un-reviewed ignored state) — so you re-run verification yourself and treat CI's fresh install
+as the authority, rather than trusting the lane's in-session evidence blindly. A lane that returns
+`unavailable`/`timeout`
 gets its spec re-routed to the other lane — never a silent substitution.
 
 **Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver
