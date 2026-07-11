@@ -186,7 +186,9 @@ reject_nonregular_file() {  # <path>
   # A HARDLINK (nlink > 1) shares its inode with a file elsewhere; cp/redirection would truncate that
   # shared inode and clobber the external target. Refuse rather than write through it.
   if [ -f "$1" ]; then
-    local n; n="$(stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1" 2>/dev/null || echo 1)"
+    # GNU (-c) first; BSD stat rejects -c and falls through to -f. Reverse order is WRONG: GNU
+    # `stat -f '%l'` succeeds with filesystem status (not nlink), so the `||` never falls through.
+    local n; n="$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null || echo 1)"
     if [ "${n:-1}" -gt 1 ] 2>/dev/null; then echo "ERROR: $1 is a hardlink (nlink=$n) — refusing to overwrite a shared inode (would clobber the other link)." >&2; exit 1; fi
   fi
 }

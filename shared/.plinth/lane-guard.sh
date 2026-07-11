@@ -81,7 +81,9 @@ sens_match() {  # <path> -> 0 if SENSITIVE. ORDER matters: an explicit protected
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
-modeof() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }  # perm bits (macOS/Linux)
+modeof() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }  # perm bits — GNU (-c) first;
+  # BSD stat rejects -c and falls through to -f. The reverse order is WRONG: GNU `stat -f` SUCCEEDS
+  # (filesystem status, not the file's mode) so the `||` would never fall through on Linux.
 sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for a regular file, or
   # `symlink <target>` for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
   # Enumerates git-visible paths (tracked + ignored + untracked FILES incl. secrets under a
