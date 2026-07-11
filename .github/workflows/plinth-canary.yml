@@ -1536,6 +1536,13 @@ jobs:
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
+          # an UNWRITABLE temp dir must fail CLOSED — else the here-doc/here-string violation loops fail silently
+          # and scope prints "scope ok" for an out-of-spec diff (verified fail-open before this guard):
+          LGT="$(mktemp -d)"; RO="$(mktemp -d)"; chmod 555 "$RO"; ( cd "$LGT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; echo b > other.py; git add app.py; git commit -qm base >/dev/null; echo x >> app.py; echo y > other.py
+            r=0; TMPDIR="$RO" bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed with an UNWRITABLE TMPDIR (rc=$r) — here-doc fail-open would accept an out-of-spec diff"; exit 1; }
+            r=0; TMPDIR="$RO" bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed with an UNWRITABLE TMPDIR (rc=$r)"; exit 1; } )
+          chmod 755 "$RO"; rmdir "$RO" 2>/dev/null || true
           # a MALFORMED protected-paths regex must fail LOUD (exit 5), never silently narrow protection:
           LGV="$(mktemp -d)"; ( cd "$LGV"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth; echo a > app.py; git add -A; git commit -qm base >/dev/null

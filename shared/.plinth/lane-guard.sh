@@ -50,6 +50,12 @@ SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_(rsa|
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
+  # FIRST require a writable temp dir: scope/validate use here-docs/here-strings/process-substitution
+  # which create a temp file under ${TMPDIR:-/tmp}; if it is unwritable those redirections fail
+  # SILENTLY and the violation loops get skipped, so scope would print "scope ok" for an out-of-spec
+  # diff. Fail closed before any such construct runs. (Bash uses this same dir for here-doc temps.)
+  local __td="${TMPDIR:-/tmp}"
+  { [ -d "$__td" ] && [ -w "$__td" ]; } || { echo "lane-guard: temp dir '$__td' is not writable — refusing to run (fail closed)" >&2; exit 5; }
   # A protected-paths that is PRESENT but not a readable regular file (unreadable, a directory, a
   # device, or ANY symlink) must fail closed — prot_pats' `[ -f ]` follows symlinks and would read it
   # as "no patterns"; worse, scope's `git show base:.plinth/protected-paths` returns a symlink's
