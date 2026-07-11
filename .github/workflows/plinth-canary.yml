@@ -1287,10 +1287,10 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILD" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies the reserved lane path (rc=$r)"; exit 1; }
             [ -e .plinth/protected-paths ] && { echo "::error::directory-collision left a partial scaffold"; exit 1; } || true )
-          # a SYMLINK anywhere in the Plinth-managed dir ancestry (.claude, .claude/agents, .plinth, …) must be
-          # rejected — else init writes THROUGH it, outside the workspace ([ -d ] follows symlinks). Cover both
-          # an intermediate (.claude) and a leaf (.claude/agents):
-          for lnk in .claude .claude/agents; do
+          # a SYMLINK anywhere in the Plinth-managed ancestry (.claude, .claude/agents, .plinth, .github, …) must
+          # be rejected — else init writes THROUGH it, outside the workspace ([ -d ] follows symlinks). Cover an
+          # intermediate (.claude), a leaf managed dir (.claude/agents), and .github/workflows:
+          for lnk in .claude .claude/agents .github; do
             ILS="$(mktemp -d)"; ELS="$(mktemp -d)"; ( cd "$ILS"; git init -qb main . >/dev/null
               mkdir -p "$(dirname "$lnk")"; ln -sf "$ELS" "$lnk"
               r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILS" >/dev/null 2>&1 || r=$?
@@ -1298,6 +1298,24 @@ jobs:
               [ -e .plinth/protected-paths ] && { echo "::error::$lnk symlink-collision left a partial scaffold"; exit 1; } || true )
             [ -z "$(ls -A "$ELS" 2>/dev/null)" ] || { echo "::error::init wrote THROUGH the $lnk symlink, outside the workspace"; exit 1; }
           done
+          # a root-level managed FILE (AGENTS.md) as a symlink must be rejected (cp would overwrite its target):
+          ILR="$(mktemp -d)"; ERF="$(mktemp)"; printf 'EXTERNAL\n' > "$ERF"; ( cd "$ILR"; git init -qb main . >/dev/null; ln -sf "$ERF" AGENTS.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILR" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when root AGENTS.md is a symlink (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL "$ERF" || { echo "::error::init overwrote an EXTERNAL file through a root AGENTS.md symlink"; exit 1; }; rm -f "$ERF"
+          # UPDATE: a managed FILE LEAF (.plinth/review.sh) later replaced by an external symlink must abort
+          # before copy_shared follows it and clobbers the external target:
+          IUL="$(mktemp -d)"; EUL="$(mktemp)"; printf 'EXTERNAL-REVIEW\n' > "$EUL"; ( cd "$IUL"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$IUL" >/dev/null 2>&1
+            rm -f .plinth/review.sh; ln -sf "$EUL" .plinth/review.sh
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IUL" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/review.sh is an external symlink (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-REVIEW "$EUL" || { echo "::error::update overwrote an EXTERNAL file through a .plinth/review.sh symlink leaf"; exit 1; }; rm -f "$EUL"
+          # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
+          # `git show base:` returns the link target text, not the policy — scope must fail closed (5):
+          LGBM="$(mktemp -d)"; ( cd "$LGBM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; ln -sf /some/other/policy .plinth/protected-paths; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed when the BASE policy object is a symlink (rc=$r)"; exit 1; } )
           # UPDATE collision: a project that later drops a non-Plinth file at a reserved path must ABORT before
           # copy_shared reinstalls tooling — assert the sentinel review.sh is NOT overwritten (ordering guard):
           IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

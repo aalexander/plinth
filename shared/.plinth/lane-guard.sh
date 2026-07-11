@@ -122,6 +122,14 @@ case "$sub" in
     # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
     # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy
     # from the base ref. Validate the union too: an invalid base regex must fail loud, not un-protect.
+    # The BASE policy object must be a regular file blob. If base has .plinth/protected-paths as a
+    # SYMLINK (mode 120000) or a TREE (040000), `git show base:` returns the link's target text or
+    # nothing — silently narrowing the base-union defense. Fail closed on any non-regular base object.
+    bmode="$(git ls-tree "$base" -- .plinth/protected-paths 2>/dev/null | awk '{print $1}')"
+    case "$bmode" in
+      ''|100644|100755) : ;;  # absent (nothing to narrow) or a regular blob — OK
+      *) echo "scope: base .plinth/protected-paths is not a regular file (git mode $bmode) — refusing to run (fail closed)" >&2; exit 5 ;;
+    esac
     base_prot="$(git show "${base}:.plinth/protected-paths" 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' || true)"
     all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u)"
     while IFS= read -r p; do [ -n "$p" ] || continue; grep -E "$p" </dev/null 2>/dev/null; [ "$?" -le 1 ] || { echo "scope: .plinth/protected-paths (base or tree) has an INVALID regex ($p) — refusing to run (fail closed)" >&2; exit 5; }; done <<< "$all_prot"

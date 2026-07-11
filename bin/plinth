@@ -178,11 +178,13 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
 # repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
 # installed while the project's colliding agent stays behind, frozen or misclassified).
 preflight_reserved_lanes() {
-  local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d
-  # No Plinth-managed directory (nor an intermediate) may be a SYMLINK or a non-directory: writes
-  # would escape the workspace (through the symlink) or leave a broken partial scaffold. Check the
-  # whole managed ancestry up front, before any write — closes the symlink-escape class in one place.
-  for d in .claude .claude/agents .claude/hooks .plinth .plinth/session; do
+  local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d f mansym
+  # SYMLINK-ESCAPE CLASS — closed once, up front, before ANY write: init/update write many files and
+  # dirs under the managed trees, and a symlink anywhere in that ancestry (a managed dir, an
+  # intermediate, or a file leaf) would let a write follow it and clobber a target OUTSIDE the
+  # workspace, or make a policy read return the wrong bytes. Refuse rather than write through any.
+  # (1) managed DIRECTORIES + intermediates: never a symlink, never a non-directory.
+  for d in .claude .claude/agents .claude/hooks .plinth .plinth/session .github .github/workflows; do
     if [ -L "$target/$d" ]; then
       echo "ERROR: $target/$d is a symlink — refusing to write through it (could escape the workspace)." >&2
       exit 1
@@ -192,6 +194,22 @@ preflight_reserved_lanes() {
       exit 1
     fi
   done
+  # (2) any SYMLINK LEAF already inside the managed trees (an overwritten file like .plinth/review.sh,
+  #     a hook, .claude/settings.json): cp would follow it and overwrite its external target.
+  mansym="$(find "$target/.claude" "$target/.plinth" "$target/.github" -type l 2>/dev/null | head -1 || true)"
+  if [ -n "$mansym" ]; then
+    echo "ERROR: $mansym is a symlink inside a Plinth-managed tree — refusing (a copy would overwrite its" >&2
+    echo "       external target). Resolve it, then re-run." >&2
+    exit 1
+  fi
+  # (3) root-level managed FILES that are unconditionally rewritten: never a symlink.
+  for f in AGENTS.md CLAUDE.md .plinth-version; do
+    if [ -L "$target/$f" ]; then
+      echo "ERROR: $target/$f is a symlink — refusing to overwrite through it." >&2
+      exit 1
+    fi
+  done
+  # (4) the two RESERVED lane-agent names.
   for a in grok-implementer codex-implementer; do
     dst="$parent/$a.md"
     # OK only if the path is ABSENT, or a regular file that is ALREADY the pinned Plinth lane (marker).
@@ -301,7 +319,12 @@ github_preflight() {
 # their own. Append any missing plinth-managed patterns (idempotent); user-added
 # lines are left untouched.
 ensure_protected_paths() {
-  local f="$target/.plinth/protected-paths"; [ -f "$f" ] || return 0
+  local f="$target/.plinth/protected-paths"
+  # A symlinked (or otherwise non-regular) policy file must NOT be appended THROUGH — that would
+  # rewrite an external target and, read back via `git show base:`, silently narrow protection.
+  # Belt: preflight_reserved_lanes already refuses a symlink under .plinth, but ensure runs standalone.
+  if [ -L "$f" ]; then echo "ERROR: $f is a symlink — refusing to append Plinth protected paths through it." >&2; exit 1; fi
+  [ -f "$f" ] || return 0
   local added=0 line
   # If the file doesn't end in a newline, appending would concatenate the first
   # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
