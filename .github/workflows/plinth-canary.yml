@@ -1330,6 +1330,11 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
+          # the RESERVED lane paths get the same hardlink guard (cp_lane_agent would truncate a hardlink's inode):
+          ILRH="$(mktemp -d)"; ERH="$(mktemp)"; printf 'EXTERNAL-LANE\n' > "$ERH"; ( cd "$ILRH"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln "$ERH" .claude/agents/grok-implementer.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILRH" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when a reserved lane path is a HARDLINK to an external file (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-LANE "$ERH" || { echo "::error::init truncated an EXTERNAL file through a hardlinked reserved lane path"; exit 1; }; rm -f "$ERH"
           # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
           # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
           # REGULAR (narrowed) file so the active-policy validator passes — only the base-object-type check

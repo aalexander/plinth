@@ -223,13 +223,16 @@ preflight_reserved_lanes() {
   # (4) the two RESERVED lane-agent names.
   for a in grok-implementer codex-implementer; do
     dst="$parent/$a.md"
-    # OK only if the path is ABSENT, or a regular file that is ALREADY the pinned Plinth lane (marker).
-    # Anything else — a symlink, a directory, any other non-regular node, or a project-authored file —
-    # is a reserved-name collision; abort BEFORE any write so the repo is left untouched.
-    if [ -L "$dst" ] || { [ -e "$dst" ] && [ ! -f "$dst" ]; } || { [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; }; then
-      echo "ERROR: $dst is present but is not the Plinth lane agent (a symlink, a directory, or a" >&2
-      echo "       project-authored file). That path is RESERVED for the version-pinned Plinth" >&2
-      echo "       implementer lane. Remove or rename it, then re-run — refusing to touch this repo." >&2
+    # First reject any symlink / directory / FIFO / device / HARDLINK at the reserved path — same
+    # write-through/escape guard as every other managed leaf (cp_lane_agent would otherwise clobber a
+    # hardlink's external inode).
+    reject_nonregular_file "$dst"
+    # Now dst is ABSENT or a true regular file. A regular file WITHOUT the pin marker is project-
+    # authored content occupying the RESERVED lane name — a collision; abort before any write.
+    if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
+      echo "ERROR: $dst is present but is not the Plinth lane agent (project-authored content). That" >&2
+      echo "       path is RESERVED for the version-pinned Plinth implementer lane. Remove or rename" >&2
+      echo "       it, then re-run — refusing to touch this repo." >&2
       exit 1
     fi
   done
