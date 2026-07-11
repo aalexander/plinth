@@ -688,6 +688,10 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
+          # the UPDATE backfill must add the EXACT two lane agents, never the broad dir (bin/plinth:281):
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$'  "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing grok-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing codex-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$C4/.plinth/protected-paths" && { echo "::error::update backfill added the BROAD .claude/agents/ pattern — it would freeze a project's own agents"; exit 1; } || true
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.
@@ -696,6 +700,9 @@ jobs:
             && "$GITHUB_WORKSPACE/bin/plinth" init "$IB" >/dev/null 2>&1 )
           grep -qF '(^|/)CLAUDE\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill CLAUDE.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
           grep -qF '(^|/)\.plinth/reviewer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill reviewer.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$'  "$IB/.plinth/protected-paths" || { echo "::error::init backfill missing grok-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init backfill missing codex-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IB/.plinth/protected-paths" && { echo "::error::init backfill added the BROAD .claude/agents/ pattern — freezes a project's own agents"; exit 1; } || true
 
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
           # The retired pre-v4.4 templates/CLAUDE.md VERBATIM (shallow CI checkouts cannot
@@ -1293,6 +1300,15 @@ jobs:
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
           grep -q 'codex exec' "$CA" || { echo "::error::codex-implementer must drive 'codex exec'"; exit 1; }
           grep -q 'sandbox workspace-write' "$CA" || { echo "::error::codex-implementer must scope writes with --sandbox workspace-write"; exit 1; }
+          # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
+          # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
+          # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:
+          RV="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+          HRE="$(grep -m1 '^HARNESS_RE=' "$RV" | sed "s/^HARNESS_RE='//; s/'\$//")"
+          printf '%s\n' '.claude/agents/grok-implementer.md'  | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies grok-implementer.md as tooling"; exit 1; }
+          printf '%s\n' '.claude/agents/codex-implementer.md' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies codex-implementer.md as tooling"; exit 1; }
+          printf '%s\n' '.claude/agents/custom.md'            | grep -Eq "$HRE" && { echo "::error::HARNESS_RE wrongly classifies a PROJECT-owned custom agent as tooling/UPSTREAM"; exit 1; } || true
+          grep -m1 '^HARNESS_PATHS=' "$RV" | grep -qE "\.claude/agents([[:space:]']|\$)" && { echo "::error::HARNESS_PATHS still uses a BROAD .claude/agents pathspec (would sweep project agents into tamper arithmetic)"; exit 1; } || true
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
