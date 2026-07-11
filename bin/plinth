@@ -159,6 +159,18 @@ materialize_driver_shell() {
   fi
 }
 
+# Refresh a pinned lane agent WITHOUT clobbering a project's own same-named file. A Plinth-installed
+# lane carries the pin marker; a file lacking it is project-authored and is preserved (loud NOTE),
+# never overwritten — adoption is opt-in (rename/remove yours), not silent data loss.
+cp_lane_agent() {  # <src> <dst>
+  local src="$1" dst="$2" marker='Plinth implementer lane (version-pinned)'
+  if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
+    echo "NOTE: $dst already exists and is NOT a Plinth lane agent (no pin marker) — PRESERVING it; the pinned $(basename "$dst") lane was NOT installed here. Rename or remove your file to adopt the lane." >&2
+    return 0
+  fi
+  cp "$src" "$dst"
+}
+
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
   mkdir -p "$target/.plinth" "$target/.claude/hooks" "$target/.claude/agents"
@@ -172,8 +184,11 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
-  cp "$PLINTH_ROOT/shared/.claude/agents/grok-implementer.md"  "$target/.claude/agents/grok-implementer.md"
-  cp "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
+  # Lane agents live in .claude/agents/ — a namespace a project may ALSO use. Refresh the pinned copy,
+  # but never CLOBBER a project's own file that merely shares the name: preserve it and warn (the pin
+  # marker distinguishes a Plinth-installed lane from project-authored content).
+  cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/grok-implementer.md"  "$target/.claude/agents/grok-implementer.md"
+  cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
   cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
   materialize_driver_shell
   chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" "$target/.plinth/lane-guard.sh" \

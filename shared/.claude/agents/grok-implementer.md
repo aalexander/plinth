@@ -4,6 +4,7 @@ description: Implementation lane that delegates the TYPING to Grok (xAI) via the
 model: sonnet
 tools: Bash, Read, Grep, Glob
 ---
+<!-- Plinth implementer lane (version-pinned) — refreshed by `plinth update`; do not edit in-project. -->
 
 # Grok implementer lane
 

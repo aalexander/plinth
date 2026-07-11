@@ -4,6 +4,7 @@ description: Cross-vendor implementation lane that delegates the TYPING to codex
 model: sonnet
 tools: Bash, Read, Grep, Glob
 ---
+<!-- Plinth implementer lane (version-pinned) — refreshed by `plinth update`; do not edit in-project. -->
 
 # Codex implementer lane
 

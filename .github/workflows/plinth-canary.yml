@@ -1269,6 +1269,12 @@ jobs:
           IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
           cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
           cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
+          # a project's OWN same-named agent must be PRESERVED, not clobbered (data-loss upgrade path):
+          ILP="$(mktemp -d)"; ( cd "$ILP"; git init -qb main . >/dev/null; mkdir -p .claude/agents
+            printf 'my own agent, not a plinth lane\n' > .claude/agents/grok-implementer.md
+            out="$("$GITHUB_WORKSPACE/bin/plinth" init "$ILP" 2>&1)"
+            grep -q 'my own agent' .claude/agents/grok-implementer.md || { echo "::error::plinth CLOBBERED a project's own .claude/agents/grok-implementer.md (data loss)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'PRESERVING' || { echo "::error::plinth silently skipped a colliding project agent without warning"; exit 1; } )
           cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
           [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
           # Protect the EXACT two Plinth-owned lane agents, NOT the whole .claude/agents/ dir (that would
@@ -1446,6 +1452,14 @@ jobs:
             mkdir -p .plinth; printf '(^|/)\\.env\\.example$\n' > .plinth/protected-paths
             printf 'v\n' > .env.example; git add -A; git commit -qm base >/dev/null
             bash "$LG" snapshot | grep -q 'env.example' || { echo "::error::an EXPLICITLY protected .env.example was exempted by the SECRET_SAFE carve-out — protected-paths must win"; exit 1; } )
+          # SELF-REFERENTIAL NARROWING: a lane cannot edit .plinth/protected-paths to un-protect a path and then
+          # slip that path through (even in no-snapshot mode) — scope reads the POLICY from the ratified base:
+          LGN="$(mktemp -d)"; ( cd "$LGN"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\\.plinth/protected-paths$\n(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
+            r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"

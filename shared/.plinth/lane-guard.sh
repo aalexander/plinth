@@ -115,7 +115,14 @@ case "$sub" in
     dif="$(git diff --name-only "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     unt="$(git ls-files --others --exclude-standard)" || { echo "scope: 'git ls-files' failed — refusing to accept the lane"; exit 5; }
     changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u )"
-    protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; printf '%s' "$1" | grep -Eq "$p" && return 0; done < <(prot_pats); return 1; }
+    # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a
+    # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
+    # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy
+    # from the base ref. Validate the union too: an invalid base regex must fail loud, not un-protect.
+    base_prot="$(git show "${base}:.plinth/protected-paths" 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' || true)"
+    all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u)"
+    while IFS= read -r p; do [ -n "$p" ] || continue; grep -E "$p" </dev/null 2>/dev/null; [ "$?" -le 1 ] || { echo "scope: .plinth/protected-paths (base or tree) has an INVALID regex ($p) — refusing to run (fail closed)" >&2; exit 5; }; done <<< "$all_prot"
+    protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; printf '%s' "$1" | grep -Eq "$p" && return 0; done <<< "$all_prot"; return 1; }
     in_spec() { local f="$1" a; shift; for a in "$@"; do [ "$f" = "$a" ] && return 0; done; return 1; }
     viol=""
     while IFS= read -r f; do
