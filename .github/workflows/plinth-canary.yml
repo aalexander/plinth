@@ -1430,7 +1430,7 @@ jobs:
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth
             printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
-            printf 'node_modules/\n.env\n*.pem\n*.key\n.plinth/session/\n' > .gitignore
+            printf 'node_modules/\n.env\n*.pem\n*.key\nsecrets/\ncredentials/\n.ssh/\n.aws/\n.plinth/session/\n' > .gitignore
             echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
             printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
             # lookalikes that must NOT be flagged (templates/docs), vs the secret forms from templates/.gitignore
@@ -1518,7 +1518,16 @@ jobs:
               r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored secret under a secret-named dir ($sd/token) (rc=$r)"; exit 1; }
               rm -rf "$sd"
             done
-            printf 'pre\n' > .env )
+            # SECRET_SAFE must NOT rescue a safe-LOOKING basename that lives INSIDE a secret directory — a file
+            # in secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/ is a secret regardless of its name:
+            mkdir -p secrets credentials .ssh .aws .env cert.pem prod.key
+            printf 'x\n' > secrets/.env.example; printf 'x\n' > credentials/id_rsa_notes.txt; printf 'x\n' > .ssh/id_rsa_format.md
+            printf 'x\n' > .aws/.env.sample; printf 'x\n' > .env/id_rsa_notes.txt; printf 'x\n' > cert.pem/.env.example; printf 'x\n' > prod.key/id_rsa_notes.txt
+            out="$(bash "$LG" snapshot)"
+            for f in secrets/.env.example credentials/id_rsa_notes.txt .ssh/id_rsa_format.md .aws/.env.sample .env/id_rsa_notes.txt cert.pem/.env.example prod.key/id_rsa_notes.txt; do
+              printf '%s' "$out" | grep -qF "  $f" || { echo "::error::SECRET_SAFE wrongly exempted a lookalike inside a secret dir: $f"; exit 1; }
+            done
+            rm -rf secrets credentials .ssh .aws .env cert.pem prod.key; printf 'pre\n' > .env )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

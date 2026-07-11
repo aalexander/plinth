@@ -38,7 +38,11 @@ set -uo pipefail
 # *.key / id_rsa* / id_ed25519* / secrets/ / credentials/), but component-boundaried so real secret
 # files are flagged and lookalikes are not: `.env`/`.env.local` yes but NOT `.envrc`; `id_rsa` /
 # `id_rsa_backup` / `id_ed25519` yes but NOT the doc `id_rsa_format.md` (SECRET_SAFE below).
-SECRET_PATS='(^|/)\.env($|[./])|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)($|/)'
+# A file INSIDE an inherently-sensitive DIRECTORY is ALWAYS a secret regardless of its basename — no
+# template/doc carve-out applies (secrets/.env.example / .ssh/id_rsa_format.md are still secrets):
+SECRET_DIRS='(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)\.env/|\.(pem|key)/'
+# Secret FILES themselves; the SECRET_SAFE carve-out applies ONLY to these (a lookalike not in a dir):
+SECRET_FILES='(^|/)\.env($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
 # Known-safe lookalikes: env templates (no real values), and DOCS *about* a key — the key basename
 # plus a DESCRIPTIVE suffix and a doc extension (id_rsa_format.md, id_rsa_notes.txt). NOT the bare key
 # basename + extension (id_rsa.txt / id_ed25519.md), which could be a real key dumped to a doc ext:
@@ -63,16 +67,17 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
       echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
   done < <(prot_pats)
 }
-sens_match() {  # <path> -> 0 if SENSITIVE: an explicit protected-paths pattern (ALWAYS wins), OR a
-  # secret path minus known-safe templates. Order matters: a project that deliberately protects
-  # .env.example must still have it flagged; the SECRET_SAFE carve-out only exempts from the builtin
-  # secret DENYLIST, never from an explicit protected-paths entry.
+sens_match() {  # <path> -> 0 if SENSITIVE. ORDER matters: an explicit protected-paths pattern ALWAYS
+  # wins; then anything inside a secret DIRECTORY is sensitive regardless of basename (the SECRET_SAFE
+  # carve-out must NOT rescue secrets/.env.example); only THEN does SECRET_SAFE exempt a lookalike
+  # template/doc FILE; finally the secret-FILE patterns.
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     printf '%s' "$1" | grep -Eq "$pat" && return 0
   done < <(prot_pats)
-  printf '%s' "$1" | grep -Eq "$SECRET_SAFE" && return 1   # a template (.env.example, …) is not a *secret* per se
-  printf '%s' "$1" | grep -Eq "$SECRET_PATS" && return 0
+  printf '%s' "$1" | grep -Eq "$SECRET_DIRS"  && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
+  printf '%s' "$1" | grep -Eq "$SECRET_SAFE"  && return 1   # a lookalike template/doc FILE (.env.example, id_rsa_notes.txt)
+  printf '%s' "$1" | grep -Eq "$SECRET_FILES" && return 0   # the secret file itself (.env, id_rsa, *.pem, *.key)
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
