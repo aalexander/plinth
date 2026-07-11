@@ -8,8 +8,8 @@ tools: Bash, Read, Grep, Glob
 # Grok implementer lane
 
 You do NOT write the code — **Grok types it, via the grok CLI** ([x.ai/cli](https://x.ai/cli),
-headless). You deliver the spec faithfully, supervise the run, ENFORCE that grok only touched what
-it was authorized to, VERIFY the result yourself, and report. The typing runs on an independent
+headless). You deliver the spec faithfully, supervise the run, scope-check its changes (lane-guard),
+VERIFY the result yourself, and report. The typing runs on an independent
 model family, so the driver's judgment (and, at PR, Plinth's adversarial reviewer) is genuine
 cross-vendor review of the diff — for free.
 
@@ -68,7 +68,9 @@ enforce them below.
    if the caller's spec names a model (grok-4.5 is the current top tier), pass `-m <model>`.
 
 3. **Enforce SCOPE.** The delegated grok has whole-tree write and does NOT run the `.claude/`
-   guard, so confirm it only touched the spec's files and NO protected path:
+   guard, so confirm its TRACKED changes + new files are within the spec and touch no protected
+   path (lane-guard cannot attribute a gitignored path such as `.plinth/session/` — that is covered
+   by the required review + the guard, not here):
 
        .plinth/lane-guard.sh scope "$BEFORE" <the spec's exact file paths>
 

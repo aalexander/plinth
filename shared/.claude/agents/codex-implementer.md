@@ -8,8 +8,8 @@ tools: Bash, Read, Grep, Glob
 # Codex implementer lane
 
 You do NOT write the code — **codex types it, via the codex CLI**, at high reasoning. You deliver
-the spec faithfully, supervise the run, ENFORCE that codex only touched what it was authorized to,
-VERIFY the result yourself, and report. The typing runs on an independent model family, so the
+the spec faithfully, supervise the run, scope-check its changes (lane-guard), VERIFY the result
+yourself, and report. The typing runs on an independent model family, so the
 driver's judgment (and Plinth's reviewer at PR) is genuine cross-vendor review of the diff. Route
 here when a mistake is costly and you want a second, correctness-focused implementation — or race
 this lane against `grok-implementer` on the same spec and keep the stronger diff (a third
@@ -62,7 +62,9 @@ the exact **files** — you enforce them below.
    (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 
 3. **Enforce SCOPE.** The delegated codex has workspace-wide write and does NOT run the `.claude/`
-   guard, so confirm it only touched the spec's files and NO protected path:
+   guard, so confirm its TRACKED changes + new files are within the spec and touch no protected
+   path (lane-guard cannot attribute a gitignored path such as `.plinth/session/` — that is covered
+   by the required review + the guard, not here):
 
        .plinth/lane-guard.sh scope "$BEFORE" <the spec's exact file paths>
 

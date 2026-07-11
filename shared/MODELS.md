@@ -115,9 +115,10 @@ model the ambiguity.
 **Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
 the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
 has whole-tree write and does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
-guard.sh scope` after the run — every tracked change + new file must be a spec file and must not
-touch a protected path (else SCOPE VIOLATION, not accepted; it fails loud if the diff is
-uncomputable). A lane that returns `unavailable`/`timeout`
+guard.sh scope` after the run — every tracked change + new (non-ignored) file must be a spec file
+and must not touch a protected path (else SCOPE VIOLATION, not accepted; it fails loud if the diff
+is uncomputable). Gitignored review-state (`.plinth/session/`) is not attributable there — a fake
+verdict planted by a lane is overwritten by the required review and blocked by the guard. A lane that returns `unavailable`/`timeout`
 gets its spec re-routed to the other lane — never a silent substitution.
 
 **Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver

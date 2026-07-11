@@ -72,6 +72,6 @@ CHANGED
       printf 'SCOPE VIOLATION — the lane edited paths it was not authorized to:\n%s' "$viol"
       exit 4
     fi
-    echo "scope ok: all changes are spec files; no protected path touched" ;;
+    echo "scope ok: tracked changes + new (non-ignored) files are within the spec and touch no protected path (gitignored paths are not attributable here — see the header)" ;;
   *) echo "usage: lane-guard.sh preflight <grok|codex> | scope <baseref> <spec-file>..."; exit 2 ;;
 esac
