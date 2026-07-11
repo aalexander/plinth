@@ -38,7 +38,7 @@ set -uo pipefail
 # *.key / id_rsa* / id_ed25519* / secrets/ / credentials/), but component-boundaried so real secret
 # files are flagged and lookalikes are not: `.env`/`.env.local` yes but NOT `.envrc`; `id_rsa` /
 # `id_rsa_backup` / `id_ed25519` yes but NOT the doc `id_rsa_format.md` (SECRET_SAFE below).
-SECRET_PATS='(^|/)\.env($|\.)|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
+SECRET_PATS='(^|/)\.env($|[./])|(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)($|/)'
 # Known-safe lookalikes: env templates (no real values), and DOCS *about* a key — the key basename
 # plus a DESCRIPTIVE suffix and a doc extension (id_rsa_format.md, id_rsa_notes.txt). NOT the bare key
 # basename + extension (id_rsa.txt / id_ed25519.md), which could be a real key dumped to a doc ext:
@@ -81,10 +81,11 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # `symlink <target>` for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
-    # `.plinth/session/` is Plinth's OWN session state — hooks (pulse.sh on every PostToolUse) append
-    # to it DURING the lane run, so comparing it before/after would false-flag every clean lane. The
-    # PreToolUse guard already blocks the lane AGENT from writing it; it is out of the snapshot's scope.
-    case "$f" in .plinth/session/*|*/.plinth/session/*) continue ;; esac
+    # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
+    # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
+    # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
+    # bypasses the Claude guard and could otherwise forge local gate/dashboard state.
+    case "$f" in .plinth/session/events.jsonl|*/.plinth/session/events.jsonl) continue ;; esac
     sens_match "$f" || continue
     if [ -L "$f" ]; then
       printf 'symlink %s  %s\n' "$(readlink "$f" 2>/dev/null || echo '?')" "$f"   # record a symlink by its target, do not follow
@@ -97,6 +98,8 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
         exit 5
       fi
       printf '%s %s  %s\n' "$h" "$m" "$f"
+    else
+      printf 'special present  %s\n' "$f"   # a dir/FIFO/socket/device at a sensitive path — record its presence
     fi
   done | sort
 }
