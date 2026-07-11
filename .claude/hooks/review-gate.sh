@@ -32,7 +32,7 @@ log_release() {
       >> "$SDIR/events.jsonl"; } 2>/dev/null || true
 }
 
-branch=$(git -C "$proj" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
 case "$branch" in
   main|master|HEAD)  # base branch / detached: not this gate's job — but say so
     log_release "commits landed directly on '$branch' — base branch is never gated"

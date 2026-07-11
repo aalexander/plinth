@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.2.1 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.4.0 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -10,9 +10,11 @@
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
 #                                 (created only if absent). Your per-project files are
-#                                 not rewritten, with ONE managed exception:
+#                                 not rewritten, with TWO managed exceptions:
 #                                 .plinth/protected-paths gets new plinth-managed
-#                                 security patterns appended (your lines preserved).
+#                                 security patterns appended (your lines preserved), and
+#                                 a legacy root NEEDS-HUMAN.md is migrated into .plinth/
+#                                 (warns instead of clobbering if both exist).
 #                                 Reports the version transition. Refuses to run on a
 #                                 directory that isn't already a Plinth project.
 #   plinth goal   <project-path>  Drop a GOAL.md draft (auto-research mode) if absent.
@@ -35,11 +37,13 @@ PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
 usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project-path> [--once]
        plinth smoke <project-path> -- <command...>   (run + write execution receipt)
-       plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)"; exit 1; }
+       plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
+       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ]; then
-  :  # project path optional — falls back to the statusLine JSON on stdin
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ]; then
+  :  # statusline: project path optional (falls back to statusLine JSON on stdin).
+     # advise: operates on the CWD; its args are the question, not a project path.
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -51,6 +55,26 @@ edit_file() {  # edit_file <file> <sed-expr>...
   local f="$1"; shift
   local tmp="${f}.plinth-tmp"
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# NEEDS-HUMAN queue path — canonical is .plinth/NEEDS-HUMAN.md; tolerate a legacy
+# root copy (some projects kept it there) so the queue and dashboard still find it.
+# `plinth update` migrates a root copy into .plinth/ (see migrate_needs_human).
+needs_human_file() {  # <dir> -> active NEEDS-HUMAN.md path (canonical preferred)
+  if [ -f "$1/.plinth/NEEDS-HUMAN.md" ]; then echo "$1/.plinth/NEEDS-HUMAN.md"
+  elif [ -f "$1/NEEDS-HUMAN.md" ]; then echo "$1/NEEDS-HUMAN.md"
+  else echo "$1/.plinth/NEEDS-HUMAN.md"; fi
+}
+migrate_needs_human() {  # move a legacy root NEEDS-HUMAN.md into .plinth/ (canonical)
+  local root="$target/NEEDS-HUMAN.md" canon="$target/.plinth/NEEDS-HUMAN.md"
+  [ -f "$root" ] || return 0
+  if [ -f "$canon" ]; then
+    echo "  NOTE: NEEDS-HUMAN.md exists at BOTH repo root and .plinth/ — canonical is"
+    echo "        .plinth/; merge the root copy in by hand and delete it."
+  else
+    mkdir -p "$target/.plinth"; mv "$root" "$canon"
+    echo "  migrated: NEEDS-HUMAN.md -> .plinth/NEEDS-HUMAN.md (canonical location)"
+  fi
 }
 
 # Detect the GitHub owner for ci.yml injection. Chain: target repo's origin ->
@@ -70,6 +94,71 @@ detect_owner() {
   printf ''
 }
 
+# Materialize the DRIVER contract shell into BOTH CLAUDE.md and AGENTS.md
+# (byte-identical). Whichever a vendor auto-loads delivers the driver role:
+# Claude reads CLAUDE.md (and expands the @import); codex reads AGENTS.md; grok
+# reads both. AGENTS.md was ALWAYS a pinned copy (reviewer contract pre-v4.4.0,
+# driver shell now) — safe to (re)generate unconditionally. CLAUDE.md was
+# historically per-project (held user "Project-specific notes"), so only
+# (re)generate it when absent or already a stock shell; otherwise PRESERVE it and
+# tell the human to move notes into .plinth/DRIVER-project.md (no auto-extraction —
+# marker-parsing a user-edited file is a known bug class).
+DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
+# True if $1 is the pre-v4.4 STOCK driver CLAUDE.md: the WHOLE file equals the retired
+# templates/CLAUDE.md verbatim (whitespace-normalized: per-line trim, blank lines
+# dropped). Whole-file — not marker/section — comparison, because custom content can
+# live ANYWHERE (a rule added above the notes heading, notes inside the placeholder
+# comment); only a byte-honest match proves there is nothing to lose, so `update` may
+# regenerate it as the new shell (the migration the CHANGELOG promises). ANY deviation
+# — including an older template revision we do not recognize — is treated as custom and
+# preserved with the migration NOTE: a false "custom" costs a 30-second manual step, a
+# false "stock" destroys user content.
+is_stock_old_claude() {
+  local f="$1" norm ref
+  norm="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" 2>/dev/null | grep -v '^$' || true)"
+  ref="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<'OLDSTOCK' | grep -v '^$'
+# CLAUDE.md
+
+You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —
+read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.
+
+@.plinth/plinth-rules.md
+
+## Precedence — these rules override defaults
+Where this file or the plinth rules conflict with harness defaults, output
+styles, or personal/global preferences, PLINTH RULES WIN. Standing exceptions
+you must apply without being asked:
+- COMMIT your work on feature branches as part of the loop — do not wait for
+  permission. Verdicts bind to commit SHAs and the Stop gate requires an
+  APPROVED review at HEAD; a driver that waits to be asked deadlocks itself.
+  (Opening the PR follows review; pushing follows the rules, not impulse.)
+- Rule 10 evidence — pasted runner output — overrides any brevity or style
+  preference, always.
+- If a personal or global instruction conflicts with the plinth rules, follow
+  the plinth rules and SAY you did; never silently blend the two.
+
+## Project-specific notes
+<!-- Anything unique to THIS project: domain constraints, hard "never do" rules,
+     stack quirks. Shared Plinth rules import above; this section is yours and is
+     never overwritten by `plinth update`. -->
+OLDSTOCK
+)"
+  [ -n "$norm" ] && [ "$norm" = "$ref" ]
+}
+materialize_driver_shell() {
+  cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
+  local c="$target/CLAUDE.md"
+  if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null || is_stock_old_claude "$c"; then
+    cp "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
+  else
+    echo "  NOTE: $c has CUSTOM content — NOT overwritten. The v4.4.0 driver contract"
+    echo "        is a pinned shell (CLAUDE.md + AGENTS.md, regenerated) plus"
+    echo "        .plinth/DRIVER-project.md for your notes. Move your"
+    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
+    echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+  fi
+}
+
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
   mkdir -p "$target/.plinth" "$target/.claude/hooks"
@@ -82,7 +171,8 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
-  cp "$PLINTH_ROOT/shared/AGENTS.md"              "$target/AGENTS.md"
+  cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
+  materialize_driver_shell
   chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
            "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
@@ -163,9 +253,24 @@ ensure_protected_paths() {
   # If the file doesn't end in a newline, appending would concatenate the first
   # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
   [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
+  local sfx
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    grep -qxF "$line" "$f" 2>/dev/null || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
+    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
+    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
+    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
+    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
+    # wrongly freezing the PRODUCT. "Covered" therefore means: some ACTIVE
+    # (non-comment, non-blank) line, after stripping its leading anchor — a
+    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
+    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
+    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
+    # not suppress backfilling the real protection. Comments are excluded too.
+    sfx="${line#'(^|/)'}"
+    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
+      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
+      | grep -qxF -- "$sfx" \
+      || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
   done <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
@@ -176,7 +281,9 @@ ensure_protected_paths() {
 (^|/)\.plinth/review-schema\.json$
 (^|/)\.plinth/plinth-rules\.md$
 (^|/)\.plinth/MODELS\.md$
+(^|/)\.plinth/reviewer\.md$
 (^|/)\.plinth/protected-paths$
+(^|/)CLAUDE\.md$
 (^|/)AGENTS\.md$
 PATTERNS
   [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
@@ -206,21 +313,24 @@ copy_templates_if_absent() {
     fi
   }
   mkdir -p "$target/.claude" "$target/.github/workflows" "$target/.plinth"
-  place CLAUDE.md CLAUDE.md
+  # CLAUDE.md is no longer a per-project template — it is a pinned driver shell
+  # materialized by copy_shared (materialize_driver_shell). Project-specific driver
+  # notes live in .plinth/DRIVER-project.md instead.
   place SPEC.md SPEC.md
   place .gitignore .gitignore
   place .claude/settings.json .claude/settings.json
   place AGENTS-project.md .plinth/AGENTS-project.md
+  place DRIVER-project.md .plinth/DRIVER-project.md
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; matching paths are agent-immutable.\n# Use (^|/)name anchoring, not ^name: agent file paths are often absolute.\n# Version-pinned Plinth tooling is immutable in-session; updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; the driver must not edit matching paths.\n# Under a Claude driver the guard blocks such edits at the tool level. (Version-pinned Plinth\n# tooling here is also checked by the review as tampering; project-owned entries like config\n# are reviewed as normal project code.) Use (^|/)name anchoring, not ^name: agent file paths\n# are often absolute. Version-pinned tooling updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# Agent-immutable (protected-paths). Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary), so it stays off\n#   by default; init scaffolds audit_vendor = grok (below) to enable it against the\n#   default codex primary. Use a DIFFERENT vendor than reviewer_vendor. All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# The driver must not edit this (it is in protected-paths): under a Claude driver the guard\n# blocks edits at the tool level; a change is otherwise reviewed as normal project code.\n# Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary). The scaffold sets\n#   audit_vendor = grok (below) with the default reviewer_vendor = codex, so in a fresh\n#   project the cross-vendor audit IS ON (every Tier 2 approval, every 5th else). An unset\n#   audit_vendor DEFAULTS to codex, so it runs unless reviewer_vendor is also codex; to turn\n#   it off, set audit_vendor equal to reviewer_vendor. Use a DIFFERENT vendor to keep it on.\n#   All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
@@ -286,12 +396,15 @@ sort_blocking_first() {
   non="$(printf '%s\n' "$all" | grep -v '^\[BLOCKING\]' || true)"
   [ -n "$blk" ] && printf '%s\n' "$blk"
   [ -n "$non" ] && printf '%s\n' "$non"
+  return 0   # never fail the caller's `x="$(... | sort_blocking_first)"` under set -e:
+             # an all-BLOCKING (or all-non-blocking) queue leaves the final test false,
+             # which would otherwise abort `plinth queue`/`watch` mid-render.
 }
 
 # Full queue, every item, folded to terminal width — the readable, scrollable
 # home for long queues (the watch banner caps to what fits the screen).
 run_queue() {
-  local f="$target/.plinth/NEEDS-HUMAN.md"
+  local f; f="$(needs_human_file "$target")"
   [ -s "$f" ] || { echo "plinth queue: nothing pending in $f"; exit 0; }
   local cols wrapw items
   cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
@@ -337,15 +450,15 @@ render_frame() {
   rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
-  local nh="" nhn=0 nhb=0
-  if [ -s "$target/.plinth/NEEDS-HUMAN.md" ]; then
+  local nh="" nhn=0 nhb=0 nhf; nhf="$(needs_human_file "$target")"
+  if [ -s "$nhf" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
     # Full text, every item, SOFTWARE-WRAPPED to the terminal width with a
     # hanging indent: the in-place repaint assumes one logical line per
     # physical row, so we must never rely on the terminal to wrap.
     local raw cols wrapw item rows budget used=0 shown=0 folded flines
-    raw="$(open_items "$target/.plinth/NEEDS-HUMAN.md")"
-    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$target/.plinth/NEEDS-HUMAN.md")"
+    raw="$(open_items "$nhf")"
+    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
     nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
     raw="$(printf '%s\n' "$raw" | sort_blocking_first)"   # blocking to the top
@@ -592,10 +705,10 @@ statusline_render() {
   local sslug nh=""
   sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
   vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
-  local nhblk=""
-  if [ -s "$dir/.plinth/NEEDS-HUMAN.md" ]; then
-    nh="$(grep -cE '^- \[ \]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || echo 1)"
-    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$dir/.plinth/NEEDS-HUMAN.md" 2>/dev/null || true)"
+  local nhblk="" nhf; nhf="$(needs_human_file "$dir")"
+  if [ -s "$nhf" ]; then
+    nh="$(grep -cE '^- \[ \]' "$nhf" 2>/dev/null || echo 1)"
+    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$nhf" 2>/dev/null || true)"
     [ "$nhblk" != "0" ] && [ -n "$nhblk" ] && nh="${nh}⛔${nhblk}"
   fi
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
@@ -688,14 +801,61 @@ watch_project() {
   done
 }
 
+# plinth advise [--impactful] "<question>" — consult a model as good or BETTER than
+# the driver, READ-ONLY, and print its guidance. COLLABORATIVE + non-blocking +
+# driver-initiated (distinct from the adversarial reviewer and the auditor). Works
+# for ANY driver and cross-family: a grok driver with advisor_vendor=claude consults
+# Fable. --impactful (architectural / high-consequence / irreversible-shape decisions,
+# NOT merely "hard") escalates to advisor_model_max. A router could later replace this
+# dispatch without changing the surface (advisor_vendor/advisor_model/_max). If the
+# advisor CLI is missing or unauthed, say so and let the driver proceed — never a hard
+# dependency.
+run_advise() {
+  shift  # drop 'advise'
+  local impactful=0
+  if [ "${1:-}" = "--impactful" ]; then impactful=1; shift; fi
+  local question="${1:-}"
+  [ -n "$question" ] || { echo "usage: plinth advise [--impactful] \"<question>\"" >&2; exit 1; }
+  aval() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" ".plinth/config" 2>/dev/null | head -1; }
+  local vendor model model_max use
+  vendor="$(aval advisor_vendor)"; [ -n "$vendor" ] || vendor="claude"
+  model="$(aval advisor_model)"; model_max="$(aval advisor_model_max)"
+  if [ "$impactful" = 1 ]; then use="${model_max:-$model}"; else use="$model"; fi
+  local tier="peer"; [ "$impactful" = 1 ] && tier="IMPACTFUL"
+  local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
+  echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
+  local margs=()
+  case "$vendor" in
+    claude) [ -n "$use" ] && margs=(--model "$use")
+      claude -p ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" "$question" 2>/dev/null || { echo "$unavail"; return 0; } ;;
+    codex)  [ -n "$use" ] && margs=(-m "$use")
+      printf '%s' "$question" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    grok)   [ -n "$use" ] && margs=(-m "$use")
+      grok -p "$question" --sandbox read-only ${margs[@]+"${margs[@]}"} 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    agy|gemini) [ -n "$use" ] && margs=(--model "$use")
+      agy -p "$question" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
+        || { echo "$unavail"; return 0; } ;;
+    *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
+  esac
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
+  advise) run_advise "$@" ;;
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   init)
     copy_templates_if_absent
     copy_shared
+    # Backfill security patterns even on init: a re-run (or a partially-scaffolded repo)
+    # may already have a pre-v4.4 .plinth/protected-paths that copy_templates_if_absent
+    # keeps as-is, so the new contract-file patterns (reviewer.md, CLAUDE.md, AGENTS.md)
+    # would otherwise be missing. Idempotent — a fresh template already has them.
+    ensure_protected_paths
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth $PLINTH_VERSION initialized in $target"
@@ -707,10 +867,25 @@ case "$cmd" in
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths
+    migrate_needs_human
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
     # configs are preserved, so remind upgraded projects (MANUAL.md points here).
-    grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null \
-      || echo "  note: audit_vendor unset — Tier 2 approvals get no cross-vendor second opinion. Add 'audit_vendor = grok' (or agy) to .plinth/config."
+    # The audit only runs when audit_vendor DIFFERS from the primary reviewer_vendor,
+    # so suggest a different one than whatever this project's primary is.
+    if ! grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null; then
+      rv="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$target/.plinth/config" 2>/dev/null | head -1)"
+      [ -n "$rv" ] || rv=codex
+      case "$rv" in grok) sug=codex ;; *) sug=grok ;; esac
+      # The suggested value is a SINGLE valid vendor (copy-pastable); agy is offered in
+      # prose OUTSIDE the config line so it is never pasted as part of the value.
+      # An unset audit_vendor DEFAULTS to codex in review.sh, so the audit is OFF only when
+      # the primary is also codex; for a claude/grok primary the codex default already runs.
+      if [ "$rv" = codex ]; then
+        echo "  note: audit_vendor unset — it defaults to codex == reviewer_vendor (codex), so Tier 2 approvals get NO cross-vendor second opinion. Add 'audit_vendor = $sug' (or 'agy') to .plinth/config."
+      else
+        echo "  note: audit_vendor unset — it defaults to codex, which differs from reviewer_vendor ($rv), so the cross-vendor audit already runs with codex. Add 'audit_vendor = $sug' (or 'agy') to pin the auditor explicitly."
+      fi
+    fi
     github_preflight
     warn_missing_gate_wiring
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"

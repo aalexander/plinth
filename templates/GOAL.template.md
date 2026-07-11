@@ -10,8 +10,10 @@ Command that produces the score (the ONLY source of truth — never narrate a sc
     <e.g. ./anvil score --json | jq .tokens_per_sec>
 
 ## Immutable
-The eval/scoring path(s) below are agent-immutable. They MUST also be added to
-`.plinth/protected-paths` (the guard enforces it):
+The eval/scoring path(s) below must NOT be edited by the driver. Add them to
+`.plinth/protected-paths`: under a Claude driver the guard then blocks edits at the
+tool level, and for EVERY driver the reviewer checks GOAL runs for metric-gaming —
+an eval-script change to inflate the score is caught there.
 - <e.g. (^|/)bench/score\.sh$>   <!-- use (^|/) not ^: agent paths are often absolute -->
 
 ## Constraints

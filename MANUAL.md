@@ -1,11 +1,21 @@
 # Plinth — User Manual (v3)
 
 ## What Plinth is
-A subscription-funded, multi-model dev environment: a frontier Claude model drives,
-Codex/GPT-5.5 adversarially reviews (risk-tiered — inert docs are approved by the
-deterministic floor, code and high-consequence changes get the model), and a
-deterministic CI floor (tests + scanners, plus Codex cloud review once connected —
-security-briefed via AGENTS.md) gates every merge. The name is the design:
+A subscription-funded, multi-model dev environment: a frontier model drives (any
+vendor — see the driver contract below), and an INDEPENDENT adversarial reviewer — a
+fresh session that did not write the code — scrutinizes it (the `reviewer_vendor`:
+codex/GPT by default, or claude/grok; risk-tiered — inert docs are approved by the
+deterministic floor, code and high-consequence changes get the model). The reviewer MAY
+be a different vendor than the driver but need not be; a best-effort cross-vendor second
+opinion is the auditor, which runs when `audit_vendor` differs from `reviewer_vendor` and
+that CLI is available — if it cannot run it is recorded UNAVAILABLE (non-blocking) and the
+primary review remains the gate. Then a
+deterministic CI floor (tests + scanners) becomes a required status check that gates every
+merge ONCE you enable branch protection (a one-time operator step after the first PR —
+`plinth init` only reports branch-protection state, it cannot set it; until then CI is
+advisory). A Codex cloud review, once connected, additionally posts adversarial findings on
+each PR (security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop,
+though it is advisory unless you make it a required gate. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -32,10 +42,12 @@ Everything between is the model's call.
 - `plinth init ~/Dev/<repo>`    — scaffold a project (templates once + shared pinned),
   git-init if needed, offer GitHub repo creation, probe branch protection
 - `plinth update ~/Dev/<repo>`  — pull new shared files after updating Plinth,
-  backfill per-project files new to this version (never touches yours, with ONE
-  managed exception: it appends any missing Plinth-managed security patterns to
-  `.plinth/protected-paths`, since those must propagate — your own added lines
-  are left intact), re-run the GitHub preflight; review the diff, then commit
+  backfill per-project files new to this version (never touches yours, with TWO
+  managed exceptions: it appends any missing Plinth-managed security patterns to
+  `.plinth/protected-paths`, since those must propagate — your own added lines are
+  left intact; and it migrates a legacy root `NEEDS-HUMAN.md` into `.plinth/` so the
+  dashboard finds it, warning instead of clobbering if both exist), re-run the GitHub
+  preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
@@ -45,11 +57,32 @@ Everything between is the model's call.
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
+- `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
+  consults a model as good or BETTER than itself, read-only, for a collaborative,
+  NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
+  the cross-vendor auditor. `--impactful` (architectural / hard-to-reverse decisions)
+  escalates to the stronger model. Vendor-agnostic and cross-family (a Grok driver can
+  consult Fable); see the `advisor_*` knobs below.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
-  round_budget, audit_vendor/audit_model, tier2_extra — the config itself is
-  agent-immutable, so these are yours alone), `protected-paths` (agent-immutable files),
-  `AGENTS-project.md` (project-specific reviewer rules). None is ever
-  overwritten by `plinth update`.
+  round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/
+  advisor_model_max, tier2_extra — the config itself is off-limits to the driver, so
+  these are yours alone), `protected-paths` (paths the driver must not edit —
+  tool-blocked under a Claude driver; project-owned entries reviewed as normal project
+  code), `AGENTS-project.md`
+  (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
+  None is ever overwritten by `plinth update`.
+- The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`, so
+  whichever file your driver's CLI auto-loads (Claude→CLAUDE.md, codex→AGENTS.md,
+  grok→both) delivers the driver role; it imports the shared rules and your
+  `.plinth/DRIVER-project.md`. `plinth init`/`update` write both shells byte-identical —
+  UNLESS a CUSTOM `CLAUDE.md` already exists (a pre-v4.4.0 project on update, or `init`
+  into a repo that already had its own `CLAUDE.md`): the same protection preserves it with
+  a loud NOTE to move its notes into `.plinth/DRIVER-project.md` and delete it, so nothing
+  is lost. Until you complete that one-time migration the two shells are NOT byte-identical
+  and a Claude driver still auto-loads your old `CLAUDE.md`; the CI floor verifies
+  `CLAUDE.md` against the shell, so it fails until the migration is done — that failure is
+  the reminder. The REVIEWER contract lives in `.plinth/reviewer.md`, which the review
+  harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
   the dashboard shows a red banner while it's non-empty.
@@ -69,8 +102,11 @@ Everything between is the model's call.
    the Plinth repo), work it into a SPEC.md. Paste that into the project,
    commit, push.
 3. Connect Codex cloud review once: chatgpt.com -> Codex (GitHub App with repo
-   access + review on PR open). It reads AGENTS.md, so it arrives
-   security-briefed; there is no separate "Codex Security" product.
+   access + review on PR open). It auto-loads AGENTS.md (the driver shell), whose
+   role-scope block tells any reviewer — including this cloud review — to STOP and
+   read `.plinth/reviewer.md` as its contract (Verdict policy + security-review
+   rules), since the cloud review does not auto-load that file itself. That is how
+   it arrives security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
    protection requiring those checks — exact steps in "Branch protection"
@@ -78,9 +114,12 @@ Everything between is the model's call.
    treat them as absent.
 
 ## Kicking off the driver — you have SPEC.md; now what?
-Claude Code loads CLAUDE.md automatically, and CLAUDE.md pulls in the plinth
-rules and points at the spec — the driver knows the whole contract before your
-first word. Your kickoff prompt only selects the work:
+Your driver's CLI auto-loads the driver shell (Claude → CLAUDE.md and expands the
+rules import; codex → AGENTS.md; grok → both), which pulls in the plinth rules and
+your `.plinth/DRIVER-project.md` notes and points at the spec — the driver knows the
+whole contract before your first word. (Non-Claude CLIs follow the shell's explicit
+"read `.plinth/plinth-rules.md` now" line rather than a mechanical import.) Your
+kickoff prompt only selects the work:
 
 - **Scoped start (recommended):** "Implement R1–R4 from SPEC.md." Small slices
   keep review rounds cheap and PRs reviewable.
@@ -168,14 +207,21 @@ Two operator chores the rules generate:
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.
    - Pane A: `cd ~/Dev/<repo> && claude` — state the task in plain language.
+     (This walkthrough uses the Claude driver; a codex/grok driver runs its own
+     CLI instead — see the note after this list.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
-   *Background:* the moment the session starts, `session-start.sh` records the
-   current commit (so the review gate knows whether this session created any),
-   and `pulse.sh` begins appending one line per prompt/tool-call to
+   *Background (Claude driver):* the moment the session starts, `session-start.sh`
+   records the current commit (so the review gate knows whether this session
+   created any), and `pulse.sh` begins appending one line per prompt/tool-call to
    `.plinth/session/events.jsonl`. That file is the dashboard's feed. Every
    Bash/Edit the model attempts passes through `guard.sh` first — destructive
-   commands and protected paths are blocked at the tool level, including for
-   every subagent.
+   commands and protected paths are blocked at the tool level, including for every
+   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not run
+   them** (those CLIs do not read `.claude/`), so it gets no local guard, no
+   session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
+   is told to follow (trusted to run the review loop) and, server-side, by the required
+   CI status checks that branch protection enforces (the cloud review is an advisory
+   backstop). Wiring the hooks into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
    **You:** watch Pane B, not the scrollback. The evidence line shows the last
@@ -193,7 +239,7 @@ Two operator chores the rules generate:
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
      (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
-     reviewer rules in AGENTS.md. A resumed approval binds
+     reviewer rules in `.plinth/reviewer.md`. A resumed approval binds
      directly — the warm reviewer thread still holds its first-pass full read, and
      iterative convergence speed is worth more than a second full read for ordinary
      code. A fallback verify (a fresh session, used when the prior thread is too
@@ -215,9 +261,14 @@ Two operator chores the rules generate:
    large or dead — a verify round that reads prior findings plus the FULL diff
    (anchored on those findings) and does NOT bind on its own, so an approval still
    gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
-   *Background, enforcement:* if the model tries to end its turn with commits
-   but no APPROVED verdict at the current HEAD, the Stop gate (`review-gate.sh`)
-   refuses and sends it back with instructions. It cannot skip the review.
+   *Background, enforcement (Claude driver):* if the model tries to end its turn
+   with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
+   gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
+   driver does not run this hook, so nothing LOCAL forces it to review — it is bound
+   by the driver rules (trusted to run the loop) and, at merge, by the required CI
+   status checks that branch protection enforces. The Codex cloud review posts findings
+   as a backstop but is not a required gate by default, so for a non-Claude driver the
+   review discipline itself is the primary safeguard, not a server-side block.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -348,18 +399,37 @@ it has run green with a real smoke_cmd.
 ## Auto-research mode (GOAL.md) — for numeric rubrics only (e.g. Anvil scores)
 1. `plinth goal <repo>`; have the driver draft the metric, constraints, action
    catalog. 2. **You ratify** (set `STATUS: RATIFIED`) — agents never self-ratify.
-3. Add the eval-script pattern to `.plinth/protected-paths` (guard makes it
-   physically immutable). 4. Have Codex attack the rubric for gameability first.
+3. Add the eval-script pattern to `.plinth/protected-paths` (a Claude driver's
+   guard then blocks edits to it at the tool level; for every driver the reviewer
+   checks GOAL runs for metric-gaming, so an eval-script change to inflate the score
+   is caught in review). 4. Have Codex attack the rubric for gameability first.
 5. Let the driver loop. It exits into the normal review -> PR -> CI path, where the
    reviewer explicitly checks for metric gaming.
 
 ## Hard blocks (don't rely on the model behaving)
-- Guard hook: destructive commands, secret paths, and anything matching
-  `.plinth/protected-paths` are blocked at the tool level — for every subagent too.
-- Review gate (Stop hook): a session that created commits cannot end its turn
-  until review.sh records APPROVED at HEAD. Scoped to feature branches and
-  commit-making sessions; releases loudly on review infrastructure failure or
-  after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it can't trap a session
+- Guard hook: common destructive commands (an enumerative, heuristic pattern set —
+  bare and prefixed forms like `sudo rm -rf` are caught, but a command hidden inside a
+  shell wrapper's quotes such as `bash -c "..."` is NOT — deliberate obfuscation evades
+  text matching by design), secret paths, and anything matching `.plinth/protected-paths`
+  are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
+  hook, so it binds Claude drivers/subagents; codex/grok do not read it). The guard is a
+  CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
+  are the hard layers.
+- Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
+  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
+  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a codex/grok
+  driver this hook does NOT fire — their merge gate is the required CI status checks that
+  branch protection enforces (the cloud review posts findings but is not required by
+  default). Deliberately-quoted obfuscation is out of scope (see above); the merge gate
+  proper is branch protection's required status checks.
+- Review gate (`.claude/` Stop hook, Claude driver only): a session that created
+  commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
+  feature branches and commit-making sessions; releases loudly on review
+  infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
+  can't trap a session. Codex/grok drivers do not run this hook — for them there is no
+  local hard block; the server-side hard gate is branch protection's required CI status
+  checks (the cloud review is an advisory backstop), and the driver is trusted to run the
+  review loop
   on a broken pipeline — and every release is logged as a `gate_release` event
   the dashboard shows in red.
 - Branch protection: `floor` + `checks` required to merge (requires public repo
@@ -370,7 +440,10 @@ it has run green with a real smoke_cmd.
   each runs its own CLI and the resume threshold scales per vendor automatically.
   Staying on codex but changing its model? Edit `~/.codex/config.toml` instead. (env
   `PLINTH_RESUME_MAX` still overrides the threshold if you ever need to.)
-- New driver: `/model` in Claude Code.
+- New driver: launch whichever vendor CLI you want — claude, codex, or grok — in the
+  project; the byte-identical CLAUDE.md/AGENTS.md driver shell gives each the driver
+  role (see Commands). Swap the Claude MODEL with `/model`. Configure the advisor the
+  driver consults via `advisor_vendor`/`advisor_model`/`advisor_model_max`.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.
 

@@ -1,5 +1,193 @@
 # Plinth changelog
 
+## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
+- **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
+  split so any vendor auto-loads the right role. The reviewer contract moved out of root
+  `AGENTS.md` into `.plinth/reviewer.md`, whose CONTENT `review.sh` INLINES into every
+  primary-reviewer prompt (fresh/verify) and the auditor prompt (never relied on by
+  auto-load — codex runs with project docs disabled), read from the RATIFIED BASE version
+  (`git show base:…`, like spec_path/config) so a PR cannot weaken the reviewer.md /
+  AGENTS-project.md policy that judges it. Every inlined contract is prefaced by an
+  authoritative INLINE-ONLY POLICY banner forbidding any working-tree/tool read of a
+  policy/contract file (reviewer.md, AGENTS-project.md) — NOT the spec, which the primary
+  reviewer still reads for acceptance criteria — this neutralizes a first-v4.4-upgrade fallback, where the base
+  contract is the pre-v4.4 root `AGENTS.md` inlined VERBATIM and that text itself says
+  "ALSO read `.plinth/AGENTS-project.md`" (a disk read that would otherwise send the
+  reviewer back to the PR's own weakened copy). The driver contract is a thin, byte-identical shell
+  (`shared/driver-shell.md`) materialized into BOTH `CLAUDE.md` and `AGENTS.md` by
+  `plinth init/update`; project-specific driver notes move to `.plinth/DRIVER-project.md`
+  (new; twin of `AGENTS-project.md`). `templates/CLAUDE.md` retired. Probed vendor
+  auto-load — codex 0.142.5 reads AGENTS.md only; claude reads CLAUDE.md only and expands
+  `@import`; grok reads BOTH; only claude expands `@import` — so the shell carries
+  `@import` (claude) AND an explicit "read `.plinth/plinth-rules.md` NOW" imperative
+  (codex/grok), plus a role-scoping line so a grok reviewer that auto-loads the shell
+  does not mistake it for its contract.
+- **Reviewer isolation per vendor.** codex reviewer/auditor run with
+  `-c project_doc_max_bytes=0` (verified to suppress AGENTS.md auto-load on 0.142.5) so
+  the driver shell cannot leak in; claude keeps `--safe-mode` (and never reads AGENTS.md);
+  grok (which auto-loads BOTH CLAUDE.md and AGENTS.md and has no doc-suppression flag)
+  gets a role-scoping rule appended to its system prompt via `--rules` — reviewer adapter
+  AND auditor — which holds even on an upgraded project whose preserved legacy CLAUDE.md
+  predates the shell's role-scope line. `HARNESS_RE` and the tamper pathlist gain
+  `.plinth/reviewer.md` and `CLAUDE.md`.
+- **Deny-ship TRIPWIRE (Claude driver).** `guard.sh` is a `.claude/` PreToolUse hook, so it
+  fires under a Claude driver and its Claude subagents ONLY — codex/grok do not read
+  `.claude/` (codex has its own, un-wired hook system; grok has none), and neither does the
+  `.claude/` Stop review-gate fire for them. It refuses the plain `gh pr create`/`gh pr merge`
+  command unless the feature branch's verdict is APPROVED at HEAD, complementing the Stop
+  review-gate with an IMMEDIATE mid-turn block for a Claude driver. For a non-Claude driver
+  the ship gate is purely SERVER-SIDE — branch protection's required CI status checks (the
+  cloud review posts findings but is not a required gate by default), plus the trusted
+  driver running the loop; porting the guard to codex's own hook system is deferred future
+  work. Detection is on the
+  UNQUOTED command (quote and backslash characters deleted, token CONTENT kept, so the
+  shell's concatenated quoted tokens like `"gh" pr create` still match)
+  so prose mentioning the command stays inert, and unquoted prefixes (`sudo gh pr create`)
+  still match. SCOPE, stated honestly: a client-side hook is bypassable by definition, so
+  deliberate obfuscation (shell wrappers `bash -c "..."`, eval, herestrings,
+  pipe-to-shell) is OUT OF SCOPE — chasing it in a local hook is security theater. The
+  ACTUAL gate against merging unreviewed work is server-side: branch protection's required
+  CI status checks (the cloud review is an advisory backstop, not required by default);
+  this tripwire only turns a reflexive "ship without
+  review" into a deliberate act. Direct base-branch pushes are likewise branch
+  protection's job. Feature-branch pushes stay allowed so the RUNTIME smoke-receipt loop
+  is not deadlocked.
+- **Honest enforcement scope, everywhere.** The `.claude/` hooks (guard, Stop review-gate,
+  session-start, pulse) are Claude-Code mechanisms: they fire for a Claude driver and its
+  Claude subagents, NOT for codex/grok drivers (which do not read `.claude/`). The driver
+  rules, MANUAL, and hook comments no longer claim otherwise — each place that described a
+  hook as unconditional/vendor-universal enforcement now says so only for the Claude driver
+  and names the vendor-independent hard layer for all drivers (the driver rules they follow
+  + the SERVER-SIDE gate: branch protection's required CI status checks; the cloud review is
+  an advisory backstop, not a required merge gate by default). Porting the guard/gate to
+  codex's own hook system is called out as future work. This includes the
+  "immutable"/"agent-immutable" language for `.plinth/protected-paths`, `.plinth/config`, and
+  GOAL eval scripts (the generated `protected-paths`/`config` headers, the GOAL template, the
+  guard's own block messages, and MANUAL): those paths are now described as off-limits to the
+  driver — a Claude driver's guard blocks such edits at the tool level, and (being
+  project-owned) a change is otherwise reviewed as normal project code / GOAL metric-gaming,
+  NOT auto-labeled tampering — rather than as physically immutable.
+- **Cloud reviewer reads its contract explicitly.** Since the reviewer contract moved to
+  `.plinth/reviewer.md` and the PR cloud review auto-loads `AGENTS.md` (now the driver
+  shell) — not `.plinth/reviewer.md` — the shell's role-scope block now INSTRUCTS any
+  reviewer that auto-loaded it to STOP and open `.plinth/reviewer.md` as its contract
+  (Verdict policy + security-review rules), rather than merely naming it.
+- **Vendor-agnostic advisor — `plinth advise [--impactful] "<q>"`.** A collaborative,
+  non-blocking, driver-initiated consult of a model as good or BETTER than the driver
+  (`advisor_vendor` / `advisor_model` / `advisor_model_max`; default claude). `--impactful`
+  (architectural / hard-to-reverse decisions) escalates to `advisor_model_max`.
+  Cross-family: a Grok driver can consult Fable via `advisor_vendor=claude`. Read-only; a
+  missing/unauthed CLI is non-blocking. Distinct from the reviewer (gate) and the auditor
+  (a second opinion on an approval). Router seam left in the knob shape; the native Claude
+  `/advisor` is documented as an optional full-conversation enhancement for a Claude driver.
+- **Subagent + advisor guidance** (plinth-rules.md, MODELS.md): fan out independent work
+  and route each subagent to the best model for its part; consult the advisor before
+  impactful decisions.
+- **NEEDS-HUMAN location tolerance.** The queue/dashboard resolve `.plinth/NEEDS-HUMAN.md`
+  (canonical) or a legacy root copy; `plinth update` migrates a root copy into `.plinth/`
+  (warns instead of clobbering if both exist). `review.sh`'s dirty-tree exemption is
+  location-tolerant too. Fixed: an all-BLOCKING queue crashed `plinth queue`/`watch` under
+  `set -e` (`sort_blocking_first` now returns 0).
+- **ensure_protected_paths** now protects `CLAUDE.md` + `.plinth/reviewer.md` and DEDUPS
+  BY PATH SUFFIX — "covered" means an ACTIVE (non-comment) line, after stripping its
+  leading anchor (`(^|...)` group or `^`), EQUALS the suffix exactly. So a project's
+  custom `(^|plinth/)` anchoring (this repo) is not over-appended with `(^|/)` forms that
+  would freeze `shared/`, while a comment mentioning a path or a different-path pattern
+  like `(^|/)old-CLAUDE\.md$` cannot suppress a real backfill.
+- Migration: `plinth update` regenerates the `AGENTS.md` shell (safe) and the `CLAUDE.md`
+  shell only when the WHOLE file equals the retired stock template verbatim
+  (whitespace-normalized) — custom content anywhere (above the notes heading, inside the
+  placeholder comment) makes it custom. Anything else — including older template
+  revisions — is PRESERVED with a loud NOTE to move notes into
+  `.plinth/DRIVER-project.md`: a false "custom" costs a 30-second manual step, a false
+  "stock" would destroy user content. A preserved custom `CLAUDE.md` is NOT the end
+  state — v4.4 requires `CLAUDE.md` to be the driver shell, and the CI floor verifies it
+  unconditionally, so the migration must be completed (move notes to
+  `.plinth/DRIVER-project.md`, delete `CLAUDE.md`, re-run `plinth update`); update
+  preserves notes so nothing is lost, the floor failure is the pressure to finish. This
+  repo's OWN contract migration is sequenced AFTER release (the pinned instrument must
+  reach v4.4.0 first).
+- **Floor back-compat for pre-v4.4 pins.** The floor verifies root `AGENTS.md` against BOTH
+  `shared/AGENTS.md` (pre-v4.4 source, where the reviewer contract lived at root) and
+  `shared/driver-shell.md` (v4.4+ source) — `check()` skips whichever the pinned release
+  lacks, so exactly one fires. Dropping the `shared/AGENTS.md` fallback (as the first cut
+  did) would leave a pre-v4.4-pinned project's root `AGENTS.md` UNVERIFIED against its
+  pinned release; the canary now requires the fallback rather than forbidding it.
+- **Tamper pathlist aligned with the reviewer contract:** `.plinth/protected-paths` is no
+  longer in review.sh's tooling-tamper pathlist — it is project-owned (like config /
+  GOAL.md); findings on it stay in blocking PROJECT scope (HARNESS_RE), so a change to it is
+  reviewed as normal project code (a bad change blocks via normal review arithmetic), NOT
+  auto-labeled tampering. A Claude driver's guard additionally blocks driver edits at the
+  tool level; a human's project commit editing it is reviewed as normal code.
+- **Self-referential Tier-0 bypass closed:** the risk classifier is version-pinned but is EXECUTED
+  from the PR working tree, and the Tier-0 gate exits APPROVED before the tooling-tamper block — so
+  a PR could rewrite `.plinth/risk-classify.sh` to emit Tier 0 and auto-approve itself, skipping both
+  the model round and the tamper check. Now, independently of the classifier, if the diff touches ANY
+  version-pinned tooling path (root-anchored HARNESS_RE) it is floored to Tier 2, so the full review +
+  tamper arithmetic always run. (This repo's own `shared/` product edits don't match the root-anchored
+  regex, so they are unaffected.)
+- **First-adoption guards key on config FILE existence, not content:** the `spec_path` / `audit_vendor`
+  first-adoption fallbacks used `[ -n "$basecfg" ]`, which treats an existing-but-EMPTY base config as
+  missing — so a PR against a project with a blank base config could add `spec_path = EVIL.md` /
+  `audit_vendor = <primary>` and repoint/suppress its own review. Now they check `git cat-file -e
+  base:.plinth/config` (file existence); an empty base config is not first adoption.
+- **spec_path can't be repointed by the PR under review (defaulted-key case):** `SPEC_PATH`'s
+  working-tree fallback is now first-adoption-only (guarded by `$basecfg`). Before, a project whose
+  base config existed but OMITTED `spec_path` (valid — it defaults to SPEC.md) could have a PR add
+  `spec_path = EVIL.md` and get itself reviewed against the PR-controlled spec. Now, if the base has
+  a config, spec_path stays base-only (defaults to SPEC.md); the working-tree value is honored ONLY
+  on true first adoption (no base config). Canary covers the existing-config/defaulted-key case.
+- **First adoption keeps its cross-vendor audit:** on the first Plinth PR the BASE branch has
+  no `.plinth/config`, so `bcfg audit_vendor` was empty and `AUDIT_VENDOR` defaulted to codex —
+  which, with the default codex primary, silently SUPPRESSED the scaffolded `audit_vendor = grok`
+  cross-vendor Tier-2 audit exactly when a new project is highest-consequence. Now `AUDIT_VENDOR`
+  falls back to the scaffolded WORKING-TREE value, but ONLY when the base has no config at all
+  (nothing to weaken) — if the base has a config, it stays base-only so a PR still cannot repoint
+  audit_vendor to the primary's own vendor to drop the check. Canary covers the first-adoption path.
+- **Reviewer sees the COMPLETE tooling-commit list for the tamper policy:** the prompt's
+  commit list was `head -50` of ALL commits, so on a large range an older tooling-touching
+  commit could be truncated away even though the tamper policy judges commits by label. It
+  now shows the COMPLETE list of commits touching version-pinned tooling (path-filtered by a
+  new `HARNESS_PATHS` shared with the tamper arithmetic, so the display and the deterministic
+  check use the exact same path set) — no cap.
+- **pulse.sh redaction hardening:** credential scrubbing now runs on the FULL
+  prompt/command string BEFORE truncation. Truncate-then-scrub could cut a credential
+  mid-token at the 120/160-char cap, leaving a fragment too short for the redaction
+  regex that then persisted to `.plinth/session/events.jsonl`.
+- **guard.sh destructive-command anchor tolerates prefixes:** `sudo` / `command` /
+  `env` / `nice` / `nohup` / `time` — including option-bearing forms (`sudo -n`,
+  `sudo -u root`, `env -i`, `command --`, `nice -n 10`, `time -p`) — and `VAR=val`
+  assignment chains before `rm -rf`, a force-push, and `git reset --hard origin` are now
+  caught (the v4.1.6 command-position anchor required the destructive word immediately at
+  a boundary, so `sudo rm -rf` slipped past). It matches the command's own GLOBAL OPTIONS
+  too, so ordinary forms are caught: `rm` with ANY recursive flag (`-rf`/`-fr`/`-Rf`/`-r
+  -f`/`--recursive`); `git` with globals before push/reset (`git -C . push --force`, `git
+  -c k=v push …`, `git --git-dir=… push …`, `git -C . reset --hard origin`); a destructive
+  remote-ref push by ANY encoding — force overwrite (`--force`, `-f`, `--force-with-lease`,
+  a `+`-prefixed ref `git push origin +main`, `--mirror`) OR remote-ref deletion/prune
+  (`--delete`, `-d`, a `:`-prefixed ref `git push origin :main`, `--prune`) — the short `-f`/`-d`
+  matched inside a bundle like rm's (`-fu` = `-f -u`), while a bundle with neither (`-u`/`-n`/`-v`)
+  is allowed; a mid-token `+`/`:` — an ordinary refspec like a `feature+x` branch or
+  `HEAD:main`/`src:dst` — is not a hit; and `gh` with globals
+  before the ship action (`gh -R owner/repo pr create`, `gh --repo … pr merge`). It also
+  UNQUOTES rather than deleting quoted spans, so a quoted command token (`"rm" -rf`, `gh
+  "pr" create`) that the shell would still run is caught. A mere MENTION mid-argument
+  stays inert (`rm report.txt`, `git commit -m push --force`, `gh -R … pr list`); the
+  global-options chain only accepts dash-led tokens, so `git commit -m push` is not a
+  `git … push`. Enumerative by design, not a shell parser — the CI floor is the hard layer.
+- **Guard closes two gaps the driver-swap dogfood surfaced:** (1) bash-level WRITES to
+  SECRET paths now block too — the Edit/Write branch already denied `secrets/`, `credentials/`,
+  `.ssh/`, `.aws/`, `id_rsa`, `.env`, but the Bash branch only checked protected-paths, so
+  `printf X > .env` / `tee secrets/key` / `touch .ssh/id_rsa` slipped past the tool-level
+  block the docs promise; the same three write-forms (redirect, mutating command, `sed -i`)
+  now apply the secret denylist, with reads (`cat secrets/key`) left alone. The Bash branch
+  fails CLOSED on the WHOLE `.env` family (no `.env.example` carve-out): in free-form command
+  text a target-vs-mention carve-out is bypassable (`printf X > .env # .env.example`), so only
+  the Edit/Write TOOL — which gets an exact path — keeps the `.env.example`/`.sample`/`.template`
+  allowance. (2) the destructive-SQL `DROP TABLE`/`DROP DATABASE`
+  tripwire is now case-INSENSITIVE, so lowercase `drop table` and mixed `Drop Database` are
+  caught (SQL keywords are case-insensitive).
+
 ## v4.3.0 — vendor-agnostic reviewer + review-loop efficiency — July 9, 2026
 - **Primary reviewer is now vendor-agnostic** (`reviewer_vendor = codex | claude |
   grok`, base config, default codex — no behavior change). A `reviewer_run`

@@ -1,5 +1,6 @@
 <!-- Plinth shared rules v2. Managed centrally; do not edit per-project.
-     Update via `plinth update`. Project-specific rules go in CLAUDE.md, not here. -->
+     Update via `plinth update`. Project-specific driver notes go in
+     .plinth/DRIVER-project.md (not here, and not in the pinned CLAUDE.md shell). -->
 # Plinth Rules
 
 These rules apply to every task unless explicitly overridden. Bias: caution over
@@ -60,8 +61,39 @@ diffs, and exit codes are. Default to surfacing uncertainty, not hiding it.
 ## Orchestration
 You decide how to orchestrate — single pass, parallel subagents, or a dynamic
 workflow (ultracode). Choose whatever fits the task. No need to get orchestration
-approved; use your judgment. Every subagent you spawn is subject to the same guard
-hooks and gates.
+approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
+`.claude/` guard hooks and gates; a cross-family codex/grok delegate does not (those
+CLIs do not read `.claude/`) — for those, the binding layer is your own discipline
+(run the review loop) plus the required CI status checks that branch protection
+enforces; the Codex cloud review posts findings as an advisory backstop, not a
+required merge gate by default.
+
+## Subagents and the advisor (speed, and a stronger opinion)
+Fan out independent work to SUBAGENTS for speed and parallelism — the moment a task
+splits into parts that do not depend on each other (survey N files, write M
+independent tests, apply one refactor across many sites), run them concurrently
+instead of in sequence. Route each subagent to the BEST model for THAT part: cheap and
+fast for mechanical or heavily-parallel fan-out, a strong model for the hard or
+high-consequence pieces. Use your harness's native model selection (Claude: the Agent
+`model` param / opusplan; other drivers: their equivalent). Prefer IN-FAMILY subagents
+for parallel fan-out; when one subtask genuinely wants another family's strength, a
+cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
+subagents inherit the `.claude/` guard
+hooks and gates automatically; a cross-family shell-out to a codex/grok delegate does NOT
+(those CLIs do not read `.claude/`), so keep any ship or destructive authority for such
+delegations narrow — what actually binds them is your discipline plus the required CI
+status checks (branch protection); the cloud review is an advisory backstop, not the
+local hook and not a required gate.
+
+Before an IMPACTFUL or architectural decision — one expensive to reverse or that
+shapes the design (a schema, a public interface, a security boundary, a migration
+strategy) — consult the ADVISOR: `plinth advise --impactful "<question>"` calls a model
+as good or better than you (config: `advisor_vendor` / `advisor_model` /
+`advisor_model_max`; cross-family is fine — a Grok driver can consult Fable). Drop
+`--impactful` for an ordinary second opinion. The advisor is COLLABORATIVE and
+NON-BLOCKING — it informs your call; it is neither the adversarial reviewer (the gate)
+nor the auditor (a second opinion on an approval). Use it on the calls that matter, not
+reflexively.
 
 ## Review before PR (required)
 Work on a feature branch — never commit directly to the base branch. The Stop
@@ -71,13 +103,18 @@ When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
 large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
-Exit 0 = APPROVED, recorded in `.plinth/session/review/verdict.json`. Exit 1 =
+Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (branch-keyed;
+`<slug>` is the branch name with `/` and spaces turned to `-`). Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
-(re-runs resume the same reviewer session when feasible; oversized or dead
-threads fall back to a fresh full review automatically). Exit 2 = the
+(re-runs resume the same reviewer thread when it fits the vendor's window; an
+oversized or dead thread instead runs a VERIFY round — a fresh session seeded with
+the prior findings plus the FULL diff — re-checking each finding and re-reviewing the
+whole diff). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
 pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
-(the guard enforces both). Verdict policy: blockers/majors in project code block;
+(under a Claude driver the guard blocks both at the tool level; for EVERY driver the
+review and CI reject such edits as tampering — so do not rely on the local hook, just
+don't do it). Verdict policy: blockers/majors in project code block;
 minor findings don't block but MUST be appended to the spec's `## Noticed` before
 the PR; findings in Plinth tooling are UPSTREAM — surface them to the human,
 never fix the instrument in-session. Then open the PR; CI and the Codex cloud review
@@ -86,11 +123,17 @@ run automatically. The PR body is the audit summary of the loop, derived from
 real check output, open minors with their `## Noticed` entries, tooling-update
 commits labeled as such, and any UPSTREAM handoffs. Keep the session quiet
 until then.
-This is enforced on feature branches: a Stop gate refuses to end the turn of a
-session that created commits until the verdict at HEAD is APPROVED. The gate has
-two pressure valves — a recent mechanical review failure, and a per-session block
-cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
-logged to the session event feed, where `plinth watch` shows it in red.
+Under a CLAUDE driver this is enforced by a `.claude/` Stop gate: it refuses to end
+the turn of a session that created commits until the verdict at HEAD is APPROVED. The
+gate has two pressure valves — a recent mechanical review failure, and a per-session
+block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
+logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
+driver does NOT run `.claude/` hooks, so this Stop gate does not fire for it — nothing
+LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
+the loop) and the required CI status checks that branch protection enforces; the Codex
+cloud review posts findings as a backstop but is not a required merge gate by default.
+Either way: run the loop to APPROVED before you open the PR — that discipline, not a
+hook, is the primary safeguard for a non-Claude driver.
 
 ## Upstream channel — two-way, with the Plinth maintainer
 Tooling findings and improvement proposals are never fixed in-project (that is
@@ -105,8 +148,10 @@ landed until `plinth update` delivers it.
 
 ## GOAL.md tasks (opt-in auto-research mode)
 If the repo contains a ratified `GOAL.md`, you may run the optimization loop it
-defines — autonomously — under its constraints: the eval script is immutable (the
-guard enforces this), the score must never decrease, results come only from the
+defines — autonomously — under its constraints: the eval script is immutable (a
+Claude driver's guard blocks edits to it; for every driver the reviewer flags an eval
+edit as metric gaming — a blocking review finding — so treat it as immutable regardless),
+the score must never decrease, results come only from the
 real runner, one improvement per commit. You may DRAFT a GOAL.md when asked; you
 may never adopt one that the human has not ratified.
 
@@ -115,8 +160,10 @@ Irreversible means: auth, crypto, secrets, database migrations, data deletion, p
 API changes, or adding a dependency. Otherwise proceed on your own judgment.
 When blocked on something only the human can supply (credentials, artifact
 hashes, hardware runs, spend approvals), add a checkbox line to
-`.plinth/NEEDS-HUMAN.md` — what, why, and the exact format needed — and keep
-working on whatever isn't blocked. Prioritize the queue by blocking impact:
+`.plinth/NEEDS-HUMAN.md` (the canonical location — always write it there; the
+dashboard and review tooling tolerate a legacy root copy but new items go in
+`.plinth/`) — what, why, and the exact format needed — and keep working on
+whatever isn't blocked. Prioritize the queue by blocking impact:
 prefix any item that stalls work RIGHT NOW with `[BLOCKING]` and keep those at
 the top; everything else (needed eventually, nice-to-have) goes below. The
 dashboard surfaces the file and the blocking count; check items off the moment

@@ -22,11 +22,15 @@ SDIR="$proj/.plinth/session"
      detail: (
        # Redact common credential shapes before anything persists to the feed
        # (manual security review: prompts/commands can carry secrets).
+       # scrub runs on the FULL string BEFORE truncation: truncating first can cut
+       # a credential mid-token, leaving a fragment too short to match the regex,
+       # and that fragment would persist. Scrub-then-truncate can only ever cut
+       # into the "•••" replacement, never into secret material.
        def scrub: gsub("(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{20,})"; "•••");
-       if .hook_event_name == "UserPromptSubmit" then ((.prompt // "") | tostring | .[0:120] | scrub)
-       elif .tool_name == "Bash" then ((.tool_input.command // "") | tostring | .[0:160] | scrub)
+       if .hook_event_name == "UserPromptSubmit" then ((.prompt // "") | tostring | scrub | .[0:120])
+       elif .tool_name == "Bash" then ((.tool_input.command // "") | tostring | scrub | .[0:160])
        elif .tool_name != null then
-         ((.tool_input.file_path // .tool_input.path // .tool_input.description // "") | tostring | .[0:160] | scrub)
+         ((.tool_input.file_path // .tool_input.path // .tool_input.description // "") | tostring | scrub | .[0:160])
        else null end),
      rc: (.tool_response.exit_code // null)}
   ' >> "$SDIR/events.jsonl"

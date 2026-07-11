@@ -91,7 +91,24 @@ jobs:
           }
           check shared/plinth-rules.md            .plinth/plinth-rules.md
           check shared/MODELS.md                  .plinth/MODELS.md
+          # v4.4 contract split: reviewer contract -> .plinth/reviewer.md; root AGENTS.md
+          # and CLAUDE.md are the byte-identical driver shell. All version-pinned and verified
+          # UNCONDITIONALLY — no marker guard (a project could delete the marker to evade). A
+          # pre-v4.4 project mid-migration with a preserved CUSTOM CLAUDE.md will fail here
+          # until it finishes migrating (move notes to .plinth/DRIVER-project.md, delete
+          # CLAUDE.md, re-run `plinth update` to regenerate the shell) — the check IS the
+          # pressure to complete it.
+          #
+          # AGENTS.md is verified against BOTH pinned sources, exactly one of which exists per
+          # pinned release (check() skips the absent one): a pre-v4.4 pin ships shared/AGENTS.md
+          # (the reviewer contract lived at root) and NO driver-shell.md, so the first line
+          # verifies it and the second skips; a v4.4+ pin ships driver-shell.md and renamed
+          # AGENTS.md -> reviewer.md, so the first skips and the second verifies. Without the
+          # shared/AGENTS.md fallback a pre-v4.4 pin's root AGENTS.md would go UNVERIFIED.
+          check shared/reviewer.md                .plinth/reviewer.md
           check shared/AGENTS.md                  AGENTS.md
+          check shared/driver-shell.md            AGENTS.md
+          check shared/driver-shell.md            CLAUDE.md
           check shared/.plinth/review.sh          .plinth/review.sh
           check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json

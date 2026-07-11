@@ -55,6 +55,38 @@ capacity allows" — check before buying credits in bulk.
 default effort for routine ones. The model chooses decomposition; the gates make
 that safe.
 
+## Advisor — consult a model as good or BETTER than the driver
+`plinth advise [--impactful] "<question>"` is a COLLABORATIVE, non-blocking,
+driver-initiated consult — distinct from the adversarial reviewer (the gate) and the
+auditor (a second opinion on an approval). Vendor-agnostic and cross-family: any driver
+can consult any advisor CLI, so a Grok driver can ask Fable.
+- `advisor_vendor` (claude|codex|grok|agy) picks the advisor CLI (default claude).
+- `advisor_model` is the PEER tier; `advisor_model_max` the ESCALATED tier. `plinth
+  advise` uses the peer model; `plinth advise --impactful` uses the max model. Both
+  should be >= the driver model.
+- Reserve `--impactful` for IMPACTFUL, ARCHITECTURAL, or hard-to-reverse decisions (a
+  schema, a public interface, a security boundary, a migration strategy) — not merely
+  "hard" problems. Recommended: peer = your driver's own frontier (e.g. Opus 4.8); max =
+  Fable 5 — its 1M-context, cross-family perspective earns the credit cost on exactly
+  these calls (see Fable-by-exception).
+- Claude driver, OPTIONAL enhancement: Claude Code's native advisor (`advisorModel:
+  fable` / `--advisor` / `/advisor`) consults a stronger model over the FULL conversation
+  and enforces advisor >= main automatically. Use it when the advisor should see the
+  whole session; `plinth advise` is the vendor-neutral floor that works for every driver.
+- Router seam: the knob shape (advisor_vendor / advisor_model / advisor_model_max) is
+  structured so an external "route to the best model for this task" service could drop in
+  later without changing the surface. Not built now — native selection suffices.
+
+## Subagent routing
+Fan out independent work to subagents for speed; route EACH to the best model for its
+part. Cheap/fast (Sonnet, or a lighter model) for mechanical or heavily-parallel fan-out
+where the diff is its own proof; a strong model (Opus at high effort, Fable by exception)
+for the hard or high-consequence pieces. Prefer in-family for parallel fan-out; a
+cross-family CLI shell-out routes a single subtask to another family's strength (such a
+codex/grok delegate does not inherit the `.claude/` hooks — see plinth-rules.md). As with
+the driver, model tier != review tier: the classifier routes the RESULT by risk
+regardless of which model wrote it.
+
 ## Reviewer: Codex / GPT-5.5 (unchanged)
 Set in `~/.codex/config.toml` (`model = "gpt-5.5"`, `model_reasoning_effort =
 "high"`). GPT-5.6 launched June 26 to ~20 US-government-approved organizations
@@ -62,8 +94,9 @@ only (API + Codex), gated by a June 2 executive order requiring federal
 benchmarking; general availability expected mid-July at earliest. When it reaches
 ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
-security-briefed because it reads AGENTS.md; no separate "Codex Security"
-product exists or is assumed.
+security-briefed because AGENTS.md (the driver shell it auto-loads) directs any
+reviewer to read the reviewer contract `.plinth/reviewer.md`; no separate "Codex
+Security" product exists or is assumed.
 Reviewer-swap checklist: review.sh's resume-skip threshold now scales per
 `reviewer_vendor` (~65% of that vendor's context window) automatically;
 PLINTH_RESUME_MAX (env) still overrides. Staying well under the window matters
@@ -92,11 +125,12 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   who runs the primary adversarial review. Default codex (no setup). claude/grok
   need only their own CLI installed + signed in; NOTHING goes in codex's config.
   review.sh sets the resume threshold per vendor automatically.
-- `audit_vendor` = grok | agy runs that vendor's OWN CLI as the cross-vendor SECOND
-  opinion (a separate binary), independent of the primary. If not installed/signed
+- `audit_vendor` = codex | grok | agy runs that vendor's OWN CLI as the cross-vendor
+  SECOND opinion (a separate binary), independent of the primary. If not installed/signed
   in, the audit is UNAVAILABLE (non-blocking) and the primary review stands —
   surface it (dashboard shows "audit unavailable"), don't read a missing audit as a
-  pass. Pick a DIFFERENT vendor than `reviewer_vendor`.
+  pass. Pick a DIFFERENT vendor than `reviewer_vendor` (the audit is suppressed when
+  they match) — e.g. a grok PRIMARY needs `audit_vendor = codex` (or agy), not grok.
 - `reviewer_model_tier1/tier2` set the per-tier MODEL the reviewer_vendor runs (its
   own model flag; codex/grok `-m`, claude `--model`). Unset = the vendor default.
   (To make a non-OpenAI model primary, just set `reviewer_vendor` — no

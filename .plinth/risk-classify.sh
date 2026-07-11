@@ -23,7 +23,7 @@ if git rev-parse --verify --quiet "origin/${base}" >/dev/null 2>&1; then baseref
 elif git rev-parse --verify --quiet "${base}" >/dev/null 2>&1; then baseref="${base}"
 else printf '{"tier":1,"reasons":["base ref not found; defaulting Tier 1"],"files":0,"base_ref":"%s"}\n' "$base"; exit 0; fi
 
-# An invalid tier2_extra regex (a typo in this driver-protected routing knob) must
+# An invalid tier2_extra regex (a typo in this agent-immutable routing knob) must
 # fail CLOSED, not silently disable the Tier-2 surface: grep exits 2 on a bad
 # pattern, which the per-file `if ... grep -Eq "$TIER2_EXTRA"` below reads as a
 # plain "no match", letting intended Tier-2 paths slip to Tier 0/1. Validate the
