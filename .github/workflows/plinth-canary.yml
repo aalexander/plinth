@@ -1319,6 +1319,17 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IUL" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/review.sh is an external symlink (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-REVIEW "$EUL" || { echo "::error::update overwrote an EXTERNAL file through a .plinth/review.sh symlink leaf"; exit 1; }; rm -f "$EUL"
+          # a PROJECT-OWNED .claude/agents/custom.md symlink must NOT block init — the symlink check is per
+          # Plinth-owned path only, not a whole-tree sweep (project agents stay usable):
+          ILC="$(mktemp -d)"; ECF="$(mktemp)"; echo x > "$ECF"; ( cd "$ILC"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln -sf "$ECF" .claude/agents/custom.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILC" >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::init WRONGLY blocked on a project-owned .claude/agents/custom.md symlink (rc=$r)"; exit 1; }
+            [ -L .claude/agents/custom.md ] || { echo "::error::init disturbed the project's own custom.md symlink"; exit 1; } ); rm -f "$ECF"
+          # a HARDLINK at a managed leaf shares an inode with an external file — cp would truncate it. Reject:
+          ILH="$(mktemp -d)"; EHF="$(mktemp)"; printf 'EXTERNAL-HL\n' > "$EHF"; ( cd "$ILH"; git init -qb main . >/dev/null; mkdir -p .plinth; ln "$EHF" .plinth/review.sh
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
           # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
           # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
           # REGULAR (narrowed) file so the active-policy validator passes — only the base-object-type check

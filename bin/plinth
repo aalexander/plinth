@@ -183,6 +183,12 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
 reject_nonregular_file() {  # <path>
   if [ -L "$1" ]; then echo "ERROR: $1 is a symlink — refusing to write through it." >&2; exit 1; fi
   if [ -e "$1" ] && [ ! -f "$1" ]; then echo "ERROR: $1 is present but not a regular file (a directory or special file) — refusing." >&2; exit 1; fi
+  # A HARDLINK (nlink > 1) shares its inode with a file elsewhere; cp/redirection would truncate that
+  # shared inode and clobber the external target. Refuse rather than write through it.
+  if [ -f "$1" ]; then
+    local n; n="$(stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1" 2>/dev/null || echo 1)"
+    if [ "${n:-1}" -gt 1 ] 2>/dev/null; then echo "ERROR: $1 is a hardlink (nlink=$n) — refusing to overwrite a shared inode (would clobber the other link)." >&2; exit 1; fi
+  fi
 }
 preflight_reserved_lanes() {
   local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d f mansym
@@ -201,17 +207,10 @@ preflight_reserved_lanes() {
       exit 1
     fi
   done
-  # (2) any SPECIAL node (symlink/FIFO/socket/device — anything neither a dir nor a regular file)
-  #     already inside the managed trees: a copy/append would follow a symlink and clobber an external
-  #     target, or hang on a FIFO/device.
-  mansym="$(find "$target/.claude" "$target/.plinth" "$target/.github" ! -type d ! -type f -print 2>/dev/null | head -1 || true)"
-  if [ -n "$mansym" ]; then
-    echo "ERROR: $mansym is a special file (symlink/FIFO/socket/device) inside a Plinth-managed tree —" >&2
-    echo "       refusing (a copy would escape the workspace or hang). Resolve it, then re-run." >&2
-    exit 1
-  fi
-  # (3) every managed FILE leaf that is unconditionally (re)written must be ABSENT or a real regular
+  # (2) every managed FILE leaf that is unconditionally (re)written must be ABSENT or a real regular
   #     file — never a symlink, directory, FIFO, or device (else cp escapes / copies into a dir / hangs).
+  #     Checked per Plinth-OWNED path only (NOT a whole-tree sweep) — a project's own .claude/agents/*
+  #     or unrelated .github/* symlink must NOT block init/update.
   for f in \
     .plinth/plinth-rules.md .plinth/MODELS.md .plinth/review.sh .plinth/risk-classify.sh \
     .plinth/lane-guard.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
