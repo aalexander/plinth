@@ -1300,6 +1300,9 @@ jobs:
             r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch a PROTECTED-path edit (rc=$r)"; exit 1; }
             rm -f .plinth/config; echo x > other.py
             r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch an OUT-OF-SPEC edit (rc=$r)"; exit 1; } )
+          # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
+          r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
+          r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"

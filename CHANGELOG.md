@@ -13,10 +13,15 @@
   <vendor>` — binary present AND authenticated (`grok models` / `codex login status`), else
   `STATUS: unavailable` with the exact reason (no silent Claude substitution that defeats the
   lane's cost + cross-vendor profile); and (b) `scope <baseref> <spec-file>...` — a delegated CLI
-  has whole-tree write and does NOT run the `.claude/` guard, so after the run every changed path
-  must be a spec file AND must not match `.plinth/protected-paths`; a lane that edited `.plinth/`,
-  a hook, an agent, config, or an out-of-spec file is a SCOPE VIOLATION and is not accepted. This
-  restores the protected-path guarantee across the delegation boundary, in-session. The economic case: implementation mechanics are most of a session's
+  has whole-tree write and does NOT run the `.claude/` guard, so after the run every TRACKED change
+  + NEW (non-ignored) file must be a spec file AND must not match `.plinth/protected-paths`; a lane
+  that edited `.plinth/`, a hook, an agent, config, or an out-of-spec file is a SCOPE VIOLATION and
+  is not accepted. It fails LOUD (exit 5) if the diff is uncomputable (non-repo / unresolvable
+  base) rather than accepting on an empty change list. Gitignored review-state (`.plinth/session/`)
+  is outside git's diff and not attributed here — a lane planting a fake verdict there is
+  authoritatively overwritten by the required `review.sh` run (and, under a Claude driver, blocked
+  by the guard's builtin `.plinth/session/` protection). This restores the protected-path guarantee
+  for tracked tooling across the delegation boundary, in-session. The economic case: implementation mechanics are most of a session's
   tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
   both lanes on the same spec and keep the stronger diff (a third independent perspective for one
   extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
