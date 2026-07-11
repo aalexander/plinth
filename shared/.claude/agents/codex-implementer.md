@@ -50,10 +50,17 @@ the exact **files** — you enforce them below.
        include its ACTUAL output in your final message."]
        SPEC_EOF
 
-2. Invoke codex headlessly, high reasoning, workspace-scoped write, wall-clocked:
+2. Invoke codex headlessly, high reasoning, workspace-scoped write, wall-clocked. The cap must hold
+   even without coreutils — `timeout`/`gtimeout` if present, else perl's `alarm` (portable, on macOS
+   + most Linux); uncapped only if NEITHER exists, with a loud warning:
 
-       T="$(command -v gtimeout || command -v timeout || true)"
-       ${T:+$T 600} codex exec -c model_reasoning_effort=high \
+       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils
+         local n="$1"; shift
+         if T="$(command -v gtimeout || command -v timeout)"; then "$T" "$n" "$@"
+         elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
+         else echo "WARN: no timeout binary or perl — codex runs UNCAPPED" >&2; "$@"; fi
+       }
+       cap 600 codex exec -c model_reasoning_effort=high \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
          > "$OUT" 2>&1
 

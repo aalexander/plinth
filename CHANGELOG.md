@@ -6,7 +6,8 @@
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
   Each takes a five-part spec (objective · files · interfaces · constraints · verification), runs
   the external CLI headlessly from a UNIQUE `mktemp` prompt file (never inline quoting / fixed
-  paths — parallel lanes on a fixed path corrupt each other), wall-clocks it, then VERIFIES
+  paths — parallel lanes on a fixed path corrupt each other), wall-clocks it with a cap that holds
+  even without coreutils (`timeout`/`gtimeout`, else perl's `alarm`), then VERIFIES
   independently: it re-runs the verification command itself and reads the diff — "the lane said it
   works" is forbidden as evidence (Rule 10). The safety-critical parts are a real, testable script,
   not prompt convention: a new version-pinned `.plinth/lane-guard.sh` gives the lane (a) `preflight

@@ -1301,10 +1301,20 @@ jobs:
           printf '%s\n' "$GCMD" | grep -q 'max-turns'                          || { echo "::error::grok COMMAND lacks --max-turns (a single turn ends before the edit lands)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'permission-mode acceptEdits'        && { echo "::error::grok COMMAND uses acceptEdits — it silently drops edits in headless mode"; exit 1; } || true
+          printf '%s\n' "$GCMD" | grep -q 'cap 600'                            || { echo "::error::grok COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
           CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
           [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
+          # the cap must hold WITHOUT coreutils — each lane must carry the perl-alarm fallback, not just an
+          # optional ${T:+...} that expands to nothing on a stock macOS box (this environment):
+          for A in "$GA" "$CA"; do
+            grep -qF "perl -e 'alarm shift; exec @ARGV'" "$A" || { echo "::error::$(basename "$A") lacks the portable perl-alarm timeout fallback — cap is unenforced without coreutils"; exit 1; }
+          done
+          # and behaviorally confirm that portable fallback actually caps a runaway (no coreutils needed):
+          cs="$(date +%s)"; r=0; PATH=/usr/bin:/bin perl -e 'alarm shift; exec @ARGV' 1 sleep 20 >/dev/null 2>&1 || r=$?; ce="$(date +%s)"
+          { [ "$r" != 0 ] && [ "$(( ce - cs ))" -lt 10 ]; } || { echo "::error::perl-alarm fallback did not cap a runaway (exit=$r elapsed=$(( ce - cs ))s)"; exit 1; }
           # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
           # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
           # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:

@@ -56,11 +56,17 @@ enforce them below.
        output in your final message."]
        SPEC_EOF
 
-2. Invoke grok headlessly, multi-turn, wall-clocked:
+2. Invoke grok headlessly, multi-turn, wall-clocked. The cap must hold even without coreutils —
+   `timeout`/`gtimeout` if present, else perl's `alarm` (portable, on macOS + most Linux); it only
+   runs uncapped, with a loud warning, if NEITHER exists:
 
-       T="$(command -v gtimeout || command -v timeout || true)"
-       [ -z "$T" ] && echo "WARN: no timeout binary — grok runs uncapped (brew install coreutils to cap)"
-       ${T:+$T 600} grok --prompt-file "$SPEC" \
+       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils
+         local n="$1"; shift
+         if T="$(command -v gtimeout || command -v timeout)"; then "$T" "$n" "$@"
+         elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
+         else echo "WARN: no timeout binary or perl — grok runs UNCAPPED" >&2; "$@"; fi
+       }
+       cap 600 grok --prompt-file "$SPEC" \
          --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
          --output-format plain --cwd "$(pwd)" \
          > "$OUT" 2>&1
