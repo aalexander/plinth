@@ -112,10 +112,12 @@ files · interfaces · constraints · verification command. A spec you can't fin
 means the decision isn't made yet — that's architect work, not a reason to hand a cheaper
 model the ambiguity.
 
-**Verification (Rule 10).** A lane's report is a claim; the diff and your own re-run of the
-verification command are the evidence. "The lane said it works" is forbidden. A lane that
-returns `unavailable`/`timeout` gets its spec re-routed to the other lane — never a silent
-substitution.
+**Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
+the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
+has whole-tree write and does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
+guard.sh scope` after the run — every changed path must be a spec file and must not touch a
+protected path (else SCOPE VIOLATION, not accepted). A lane that returns `unavailable`/`timeout`
+gets its spec re-routed to the other lane — never a silent substitution.
 
 **Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver
 (and Plinth's reviewer at PR) judges an independent-vendor diff. For high-stakes work, race

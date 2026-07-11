@@ -8,9 +8,15 @@
   the external CLI headlessly from a UNIQUE `mktemp` prompt file (never inline quoting / fixed
   paths — parallel lanes on a fixed path corrupt each other), wall-clocks it, then VERIFIES
   independently: it re-runs the verification command itself and reads the diff — "the lane said it
-  works" is forbidden as evidence (Rule 10). Preflight with NO silent fallback: a missing/unauthed
-  CLI returns `STATUS: unavailable`, never a quiet Claude substitution that defeats the lane's cost
-  and cross-vendor profile. The economic case: implementation mechanics are most of a session's
+  works" is forbidden as evidence (Rule 10). The safety-critical parts are a real, testable script,
+  not prompt convention: a new version-pinned `.plinth/lane-guard.sh` gives the lane (a) `preflight
+  <vendor>` — binary present AND authenticated (`grok models` / `codex login status`), else
+  `STATUS: unavailable` with the exact reason (no silent Claude substitution that defeats the
+  lane's cost + cross-vendor profile); and (b) `scope <baseref> <spec-file>...` — a delegated CLI
+  has whole-tree write and does NOT run the `.claude/` guard, so after the run every changed path
+  must be a spec file AND must not match `.plinth/protected-paths`; a lane that edited `.plinth/`,
+  a hook, an agent, config, or an out-of-spec file is a SCOPE VIOLATION and is not accepted. This
+  restores the protected-path guarantee across the delegation boundary, in-session. The economic case: implementation mechanics are most of a session's
   tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
   both lanes on the same spec and keep the stronger diff (a third independent perspective for one
   extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
@@ -26,10 +32,10 @@
   single deciding risk); a sound plan gets one line (no manufactured objections); look before you
   opine (read the code, don't reason from the summary); name missing information precisely; under
   ~300 words; advise only. `--impactful` adds a hard-to-reverse-decision weighting line.
-- **Version-pinned like the hooks:** the lane agents are floor-checked against the pinned release,
-  in `protected-paths` (Claude guard blocks driver edits) and `HARNESS_RE`/`HARNESS_PATHS` (review
-  treats edits as tooling-tamper / UPSTREAM). `plinth init`/`update` materialize them; `copy_shared`
-  gains `.claude/agents/`.
+- **Version-pinned like the hooks:** the lane agents and `.plinth/lane-guard.sh` are floor-checked
+  against the pinned release, in `protected-paths` (Claude guard blocks driver edits) and
+  `HARNESS_RE`/`HARNESS_PATHS` (review treats edits as tooling-tamper / UPSTREAM). `plinth
+  init`/`update` materialize them; `copy_shared` gains `.claude/agents/` + `lane-guard.sh`.
 
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are

@@ -1258,37 +1258,68 @@ jobs:
           { [ ! -f "$NH/NEEDS-HUMAN.md" ] && [ -f "$NH/.plinth/NEEDS-HUMAN.md" ]; } || { echo "::error::update did not migrate root NEEDS-HUMAN.md into .plinth/"; exit 1; }
           grep -q ACME_TOKEN "$NH/.plinth/NEEDS-HUMAN.md" || { echo "::error::NEEDS-HUMAN migration lost content"; exit 1; }
 
-          # ── v4.5.0: implementer lanes (architect pattern) + advisor discipline ──
+          # ── v4.5.0: implementer lanes (architect pattern) + lane-guard + advisor discipline ──
           IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
           cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
-          cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized byte-identical"; exit 1; }
-          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" || { echo "::error::.claude/agents/ not added to protected-paths"; exit 1; }
+          cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
+          cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
+          [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" || { echo "::error::.claude/agents/ not in protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.plinth/lane-guard\.sh$' "$IL/.plinth/protected-paths" || { echo "::error::lane-guard.sh not in protected-paths"; exit 1; }
           FLOOR5="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
-          grep -qE 'check +shared/\.claude/agents/grok-implementer\.md'  "$FLOOR5" || { echo "::error::floor does not verify the grok-implementer agent against the pin"; exit 1; }
-          grep -qE 'check +shared/\.claude/agents/codex-implementer\.md' "$FLOOR5" || { echo "::error::floor does not verify the codex-implementer agent"; exit 1; }
-          # Safety-critical lane invariants (the agent files carry them): no silent fallback, mktemp prompt
-          # file, Rule-10 independent verification.
+          for c in 'shared/\.claude/agents/grok-implementer\.md' 'shared/\.claude/agents/codex-implementer\.md' 'shared/\.plinth/lane-guard\.sh'; do
+            grep -qE "check +$c" "$FLOOR5" || { echo "::error::floor does not verify $c against the pin"; exit 1; }
+          done
+          # The agents WIRE the enforced lane-guard (preflight + scope), not just prose:
           for a in grok codex; do
             A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
-            grep -q 'STATUS: unavailable' "$A" || { echo "::error::${a}-implementer lacks the no-silent-fallback 'STATUS: unavailable'"; exit 1; }
-            grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 'forbidden as evidence' rule"; exit 1; }
-            grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule (parallel-safe)"; exit 1; }
+            grep -q "lane-guard.sh preflight $a" "$A" || { echo "::error::${a}-implementer does not call lane-guard preflight"; exit 1; }
+            grep -q 'lane-guard.sh scope' "$A" || { echo "::error::${a}-implementer does not call lane-guard scope"; exit 1; }
+            grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
+            grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
           done
-          # plinth advise applies the verdict-not-survey discipline preamble AND carries the real question;
-          # --impactful adds the hard-to-reverse weighting.
-          ADV="$(mktemp -d)"; ADCAP="$ADV/prompt"
-          cat > "$ADV/claude" <<ADC
-          #!/usr/bin/env bash
-          for a in "\$@"; do last="\$a"; done
-          printf '%s' "\$last" > "$ADCAP"
-          echo advice
-          ADC
-          chmod +x "$ADV/claude"
-          ADR="$(mktemp -d)"; ( cd "$ADR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ADR" >/dev/null 2>&1 )
-          ( cd "$ADR" && PATH="$ADV:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "should I refactor the auth module" >/dev/null 2>&1 || true )
-          grep -q "Give a VERDICT, not a survey" "$ADCAP" || { echo "::error::plinth advise did not apply the verdict-not-survey discipline preamble"; exit 1; }
-          grep -q "should I refactor the auth module" "$ADCAP" || { echo "::error::plinth advise dropped the actual question"; exit 1; }
-          grep -qi "IMPACTFUL, hard-to-reverse" "$ADCAP" && { echo "::error::peer advise wrongly carries the impactful weighting"; exit 1; } || true
-          : > "$ADCAP"; ( cd "$ADR" && PATH="$ADV:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "migrate the DB" >/dev/null 2>&1 || true )
-          grep -qi "IMPACTFUL, hard-to-reverse" "$ADCAP" || { echo "::error::plinth advise --impactful lacks the hard-to-reverse weighting line"; exit 1; }
+          # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
+          LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
+          r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1; exit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED CLI (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
+          LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            echo b > app.py
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard scope rejected an in-spec edit (rc=$r)"; exit 1; }
+            echo weak > .plinth/config
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch a PROTECTED-path edit (rc=$r)"; exit 1; }
+            rm -f .plinth/config; echo x > other.py
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch an OUT-OF-SPEC edit (rc=$r)"; exit 1; } )
+          # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
+          adv_cap() {  # <vendor> <how: last|afterp|stdin>
+            local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"
+            case "$how" in
+              stdin)  printf '#!/usr/bin/env bash\ncat > "%s"\necho advice\n' "$cap" > "$B/$v" ;;
+              afterp) printf '#!/usr/bin/env bash\nprev=""; for a in "$@"; do [ "$prev" = -p ] && printf "%%s" "$a" > "%s"; prev="$a"; done\necho advice\n' "$cap" > "$B/$v" ;;
+              last)   printf '#!/usr/bin/env bash\nfor a in "$@"; do last="$a"; done; printf "%%s" "$last" > "%s"\necho advice\n' "$cap" > "$B/$v" ;;
+            esac
+            chmod +x "$B/$v"
+            R="$(mktemp -d)"; ( cd "$R"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$R" >/dev/null 2>&1
+              grep -v '^advisor_vendor' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+              printf 'advisor_vendor = %s\n' "$v" >> .plinth/config
+              PATH="$B:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "route the auth module" >/dev/null 2>&1 || true )
+            grep -q "Give a VERDICT, not a survey" "$cap" || { echo "::error::advise: $v did not receive the verdict-not-survey discipline"; exit 1; }
+            grep -q "route the auth module" "$cap" || { echo "::error::advise: $v dropped the question"; exit 1; }
+          }
+          adv_cap claude last
+          adv_cap codex stdin
+          adv_cap grok afterp
+          adv_cap agy afterp
+          # --impactful adds the weighting line, on a NON-claude vendor (grok, arg-passed):
+          GIB="$(mktemp -d)"; gcap="$GIB/p"
+          printf '#!/usr/bin/env bash\nprev=""; for a in "$@"; do [ "$prev" = -p ] && printf "%%s" "$a" > "%s"; prev="$a"; done\necho advice\n' "$gcap" > "$GIB/grok"; chmod +x "$GIB/grok"
+          GIR="$(mktemp -d)"; ( cd "$GIR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GIR" >/dev/null 2>&1
+            grep -v '^advisor_vendor' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'advisor_vendor = grok\n' >> .plinth/config
+            PATH="$GIB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "migrate the DB" >/dev/null 2>&1 || true )
+          grep -qi "IMPACTFUL, hard-to-reverse" "$gcap" || { echo "::error::advise --impactful (non-claude vendor) lacks the hard-to-reverse weighting"; exit 1; }
           echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths + v4.4.0(contract/isolation/deny-ship/advise/needs-human) OK"
