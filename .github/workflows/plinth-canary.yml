@@ -1274,7 +1274,8 @@ jobs:
           for a in grok codex; do
             A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
             grep -q "lane-guard.sh preflight $a" "$A" || { echo "::error::${a}-implementer does not call lane-guard preflight"; exit 1; }
-            grep -q 'lane-guard.sh scope' "$A" || { echo "::error::${a}-implementer does not call lane-guard scope"; exit 1; }
+            grep -q 'lane-guard.sh snapshot' "$A" || { echo "::error::${a}-implementer does not snapshot sensitive paths before the run"; exit 1; }
+            grep -q 'lane-guard.sh scope .* --snapshot' "$A" || { echo "::error::${a}-implementer does not pass --snapshot to lane-guard scope"; exit 1; }
             grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
           done
@@ -1292,14 +1293,34 @@ jobs:
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            mkdir -p .plinth; printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths
-            echo a > app.py; git add -A; git commit -qm base >/dev/null
-            echo b > app.py
-            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard scope rejected an in-spec edit (rc=$r)"; exit 1; }
-            echo weak > .plinth/config
-            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch a PROTECTED-path edit (rc=$r)"; exit 1; }
-            rm -f .plinth/config; echo x > other.py
-            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::lane-guard scope did not catch an OUT-OF-SPEC edit (rc=$r)"; exit 1; } )
+            mkdir -p .plinth
+            printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
+            printf 'node_modules/\n.env\n' > .gitignore
+            echo a > app.py; printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
+            git add app.py .gitignore .plinth/protected-paths; git commit -qm base >/dev/null
+            SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
+            grep -qE '  \.env$' "$SNAP" || { echo "::error::lane-guard snapshot missed a secret (.env)"; exit 1; }
+            grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
+            # clean: in-spec edit + a node_modules artifact -> ok (non-sensitive ignored files do not trip it)
+            echo b > app.py; echo y > node_modules/artifact.js
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged node_modules (rc=$r)"; exit 1; }
+            # tracked PROTECTED edit -> 4
+            git checkout -q -- app.py; echo weak > .plinth/config
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a tracked PROTECTED-path edit (rc=$r)"; exit 1; }
+            rm -f .plinth/config
+            # OUT-OF-SPEC tracked/new file -> 4
+            echo x > other.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed an OUT-OF-SPEC edit (rc=$r)"; exit 1; }
+            rm -f other.py
+            # gitignored SECRET write (.env) -> 4 (the whole-tree-write hole the reviewer named)
+            printf 'STOLEN=1\n' >> .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) write (rc=$r)"; exit 1; }
+            printf 'pre\n' > .env
+            # gitignored fake verdict under .plinth/session/ -> 4
+            mkdir -p .plinth/session; printf '*\n' > .plinth/session/.gitignore
+            SNAP2="$(mktemp)"; bash "$LG" snapshot > "$SNAP2"
+            printf 'FAKE\n' > .plinth/session/verdict.json
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP2" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored fake verdict under .plinth/session/ (rc=$r)"; exit 1; } )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

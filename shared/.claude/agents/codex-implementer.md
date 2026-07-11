@@ -36,10 +36,10 @@ the exact **files** — you enforce them below.
 
 ## How you run codex
 
-0. Record the pre-run commit so the scope check can isolate the lane's edits (commit or stash your
-   own WIP first):
+0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
+   lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first:
 
-       BEFORE="$(git rev-parse HEAD)"
+       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"; .plinth/lane-guard.sh snapshot > "$SNAP"
 
 1. Spec to a UNIQUE prompt file (never inline quoting, never a fixed path — parallel lanes on a
    fixed path corrupt each other):
@@ -62,15 +62,16 @@ the exact **files** — you enforce them below.
    (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 
 3. **Enforce SCOPE.** The delegated codex has workspace-wide write and does NOT run the `.claude/`
-   guard, so confirm its TRACKED changes + new files are within the spec and touch no protected
-   path (lane-guard cannot attribute a gitignored path such as `.plinth/session/` — that is covered
-   by the required review + the guard, not here):
+   guard, so confirm its tracked changes + new files are within the spec and touch no protected
+   path — and, via the pre-run snapshot, that it did not add/change any SENSITIVE path (secrets like
+   `.env`/`secrets/`, or `.plinth/session/`), even gitignored ones:
 
-       .plinth/lane-guard.sh scope "$BEFORE" <the spec's exact file paths>
+       .plinth/lane-guard.sh scope "$BEFORE" --snapshot "$SNAP" <the spec's exact file paths>
 
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
-   diff. A lane that edited `.plinth/`, a hook, an agent, config, or an out-of-spec file exceeded
-   its authority — that goes back to the caller (revert or re-spec), never quietly accepted.
+   diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file
+   exceeded its authority — that goes back to the caller (revert or re-spec), never quietly
+   accepted. Exit 5 = the diff was uncomputable; treat as a failure, not a pass.
 
 4. **Verify independently.** Read the diff (`git diff` / `git status`), re-run the spec's
    verification command YOURSELF, and read codex's final message from `"$OUT"`. Codex's claim of

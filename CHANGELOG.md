@@ -12,16 +12,18 @@
   not prompt convention: a new version-pinned `.plinth/lane-guard.sh` gives the lane (a) `preflight
   <vendor>` — binary present AND authenticated (`grok models` / `codex login status`), else
   `STATUS: unavailable` with the exact reason (no silent Claude substitution that defeats the
-  lane's cost + cross-vendor profile); and (b) `scope <baseref> <spec-file>...` — a delegated CLI
-  has whole-tree write and does NOT run the `.claude/` guard, so after the run every TRACKED change
-  + NEW (non-ignored) file must be a spec file AND must not match `.plinth/protected-paths`; a lane
-  that edited `.plinth/`, a hook, an agent, config, or an out-of-spec file is a SCOPE VIOLATION and
-  is not accepted. It fails LOUD (exit 5) if the diff is uncomputable (non-repo / unresolvable
-  base) rather than accepting on an empty change list. Gitignored review-state (`.plinth/session/`)
-  is outside git's diff and not attributed here — a lane planting a fake verdict there is
-  authoritatively overwritten by the required `review.sh` run (and, under a Claude driver, blocked
-  by the guard's builtin `.plinth/session/` protection). This restores the protected-path guarantee
-  for tracked tooling across the delegation boundary, in-session. The economic case: implementation mechanics are most of a session's
+  lane's cost + cross-vendor profile); (b) `snapshot` — records `<sha> <path>` for every SENSITIVE
+  file (protected-paths patterns OR secrets: `.env`, `secrets/`, `credentials/`, `.ssh/`, `.aws/`,
+  `id_rsa`, …), INCLUDING gitignored ones; the lane captures this before the run; and (c) `scope
+  <baseref> --snapshot <file> <spec-file>...` — a delegated CLI has whole-tree write and does NOT
+  run the `.claude/` guard, so after the run every tracked change + new file must be a spec file
+  and must not match `.plinth/protected-paths`, AND (via the snapshot) no sensitive file may have
+  been added/changed/removed. That catches a whole-tree-write lane planting secrets in
+  `.env`/`secrets/` or a fake verdict under `.plinth/session/` even though those are gitignored —
+  while `node_modules`-style artifacts (not sensitive) don't false-positive. It fails LOUD (exit 5)
+  if the diff is uncomputable (non-repo / unresolvable base) rather than accepting on an empty
+  change list. This restores the protected-path/secret guarantee across the delegation boundary,
+  in-session. The economic case: implementation mechanics are most of a session's
   tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
   both lanes on the same spec and keep the stronger diff (a third independent perspective for one
   extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
