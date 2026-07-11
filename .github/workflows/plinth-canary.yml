@@ -1298,6 +1298,14 @@ jobs:
               [ -e .plinth/protected-paths ] && { echo "::error::$lnk symlink-collision left a partial scaffold"; exit 1; } || true )
             [ -z "$(ls -A "$ELS" 2>/dev/null)" ] || { echo "::error::init wrote THROUGH the $lnk symlink, outside the workspace"; exit 1; }
           done
+          # a managed FILE leaf that is a NON-regular node (directory / FIFO) must also be rejected before any
+          # write — not just symlinks (cp would copy INTO a dir / hang on a FIFO / leave a partial scaffold):
+          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md; do
+            ILN="$(mktemp -d)"; ( cd "$ILN"; git init -qb main . >/dev/null; mkdir -p "$(dirname "$badleaf")"; mkdir -p "$badleaf"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILN" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies managed leaf $badleaf (rc=$r)"; exit 1; }
+              [ -e .claude/settings.json ] && { echo "::error::$badleaf non-regular-collision left a partial scaffold"; exit 1; } || true )
+          done
           # a root-level managed FILE (AGENTS.md) as a symlink must be rejected (cp would overwrite its target):
           ILR="$(mktemp -d)"; ERF="$(mktemp)"; printf 'EXTERNAL\n' > "$ERF"; ( cd "$ILR"; git init -qb main . >/dev/null; ln -sf "$ERF" AGENTS.md
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILR" >/dev/null 2>&1 || r=$?
@@ -1312,10 +1320,15 @@ jobs:
             [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/review.sh is an external symlink (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-REVIEW "$EUL" || { echo "::error::update overwrote an EXTERNAL file through a .plinth/review.sh symlink leaf"; exit 1; }; rm -f "$EUL"
           # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
-          # `git show base:` returns the link target text, not the policy — scope must fail closed (5):
+          # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
+          # REGULAR (narrowed) file so the active-policy validator passes — only the base-object-type check
+          # (git ls-tree) can catch it; scope must fail closed (5). (Not hollow: the working tree is a real file.)
           LGBM="$(mktemp -d)"; ( cd "$LGBM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            mkdir -p .plinth; ln -sf /some/other/policy .plinth/protected-paths; echo a > app.py; git add -A; git commit -qm base >/dev/null
-            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed when the BASE policy object is a symlink (rc=$r)"; exit 1; } )
+            mkdir -p .plinth; ln -sf /elsewhere/policy .plinth/protected-paths; echo a > app.py; echo s > secret.txt
+            git add -A; git commit -qm base >/dev/null
+            rm -f .plinth/protected-paths; printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a BASE symlink policy object replaced by a regular file (rc=$r) — base-object check missing/hollow"; exit 1; } )
           # UPDATE collision: a project that later drops a non-Plinth file at a reserved path must ABORT before
           # copy_shared reinstalls tooling — assert the sentinel review.sh is NOT overwritten (ordering guard):
           IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

@@ -177,6 +177,13 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
 # Preflight the reserved lane-agent paths BEFORE any file is written, so a collision aborts with the
 # repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
 # installed while the project's colliding agent stays behind, frozen or misclassified).
+# A managed FILE target must be ABSENT or a true regular file — reject a symlink (would clobber its
+# external target), a directory (cp would copy INTO it, partial scaffold), or a FIFO/socket/device
+# (cp would hang/misbehave). Used before any managed-file write.
+reject_nonregular_file() {  # <path>
+  if [ -L "$1" ]; then echo "ERROR: $1 is a symlink — refusing to write through it." >&2; exit 1; fi
+  if [ -e "$1" ] && [ ! -f "$1" ]; then echo "ERROR: $1 is present but not a regular file (a directory or special file) — refusing." >&2; exit 1; fi
+}
 preflight_reserved_lanes() {
   local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d f mansym
   # SYMLINK-ESCAPE CLASS — closed once, up front, before ANY write: init/update write many files and
@@ -194,20 +201,23 @@ preflight_reserved_lanes() {
       exit 1
     fi
   done
-  # (2) any SYMLINK LEAF already inside the managed trees (an overwritten file like .plinth/review.sh,
-  #     a hook, .claude/settings.json): cp would follow it and overwrite its external target.
-  mansym="$(find "$target/.claude" "$target/.plinth" "$target/.github" -type l 2>/dev/null | head -1 || true)"
+  # (2) any SPECIAL node (symlink/FIFO/socket/device — anything neither a dir nor a regular file)
+  #     already inside the managed trees: a copy/append would follow a symlink and clobber an external
+  #     target, or hang on a FIFO/device.
+  mansym="$(find "$target/.claude" "$target/.plinth" "$target/.github" ! -type d ! -type f -print 2>/dev/null | head -1 || true)"
   if [ -n "$mansym" ]; then
-    echo "ERROR: $mansym is a symlink inside a Plinth-managed tree — refusing (a copy would overwrite its" >&2
-    echo "       external target). Resolve it, then re-run." >&2
+    echo "ERROR: $mansym is a special file (symlink/FIFO/socket/device) inside a Plinth-managed tree —" >&2
+    echo "       refusing (a copy would escape the workspace or hang). Resolve it, then re-run." >&2
     exit 1
   fi
-  # (3) root-level managed FILES that are unconditionally rewritten: never a symlink.
-  for f in AGENTS.md CLAUDE.md .plinth-version; do
-    if [ -L "$target/$f" ]; then
-      echo "ERROR: $target/$f is a symlink — refusing to overwrite through it." >&2
-      exit 1
-    fi
+  # (3) every managed FILE leaf that is unconditionally (re)written must be ABSENT or a real regular
+  #     file — never a symlink, directory, FIFO, or device (else cp escapes / copies into a dir / hangs).
+  for f in \
+    .plinth/plinth-rules.md .plinth/MODELS.md .plinth/review.sh .plinth/risk-classify.sh \
+    .plinth/lane-guard.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
+    .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
+    .claude/hooks/pulse.sh .claude/settings.json AGENTS.md CLAUDE.md .plinth-version; do
+    reject_nonregular_file "$target/$f"
   done
   # (4) the two RESERVED lane-agent names.
   for a in grok-implementer codex-implementer; do
@@ -320,10 +330,10 @@ github_preflight() {
 # lines are left untouched.
 ensure_protected_paths() {
   local f="$target/.plinth/protected-paths"
-  # A symlinked (or otherwise non-regular) policy file must NOT be appended THROUGH — that would
-  # rewrite an external target and, read back via `git show base:`, silently narrow protection.
-  # Belt: preflight_reserved_lanes already refuses a symlink under .plinth, but ensure runs standalone.
-  if [ -L "$f" ]; then echo "ERROR: $f is a symlink — refusing to append Plinth protected paths through it." >&2; exit 1; fi
+  # A symlinked/non-regular policy file must NOT be appended THROUGH — that would rewrite an external
+  # target and, read back via `git show base:`, silently narrow protection. Belt:
+  # preflight_reserved_lanes already refuses it, but ensure runs standalone (init/update both call it).
+  reject_nonregular_file "$f"
   [ -f "$f" ] || return 0
   local added=0 line
   # If the file doesn't end in a newline, appending would concatenate the first
@@ -384,6 +394,9 @@ warn_missing_gate_wiring() {
 # PER-PROJECT (templates, copied once, never overwritten):
 copy_templates_if_absent() {
   place() {  # place <template-rel-path> <dest-rel-path>
+    # only-if-absent, but the "absent" test must fail loud on a non-regular/symlinked dest (a symlink
+    # or dir/FIFO at SPEC.md/.gitignore/… would let cp escape, copy into a dir, or hang):
+    reject_nonregular_file "$target/$2"
     if [ -f "$target/$2" ]; then
       echo "  kept (yours):  $2"
     else
