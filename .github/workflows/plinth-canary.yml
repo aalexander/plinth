@@ -1290,19 +1290,21 @@ jobs:
             grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
           done
-          # The exact CLI invocation is live-verified (see round 8); assert the agents pin the flags that
-          # actually APPLY edits headlessly. grok under acceptEdits announces an edit and drops it silently —
-          # a headless run needs bypassPermissions + a turn budget. Guard against regressing to the broken flag.
+          # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
+          # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
+          # and drops it silently; bypassPermissions needs a turn budget AND a sandbox. Extract the real command
+          # block (the flag words also appear in the surrounding explanation, so a whole-file grep is hollow):
           GA="$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"
-          grep -q 'permission-mode bypassPermissions' "$GA" || { echo "::error::grok-implementer must use --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
-          grep -q 'max-turns' "$GA" || { echo "::error::grok-implementer must set --max-turns (a single turn ends before the edit lands)"; exit 1; }
-          grep -q 'permission-mode acceptEdits' "$GA" && { echo "::error::grok-implementer still uses acceptEdits — that silently drops edits in headless mode"; exit 1; } || true
-          # bypassPermissions auto-approves tool calls but does NOT fence FS/network — the run must ALSO be
-          # sandboxed so a bypassed approval can't exfiltrate secrets / run side effects before scope checks:
-          grep -q 'sandbox workspace' "$GA" || { echo "::error::grok-implementer must add --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
+          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block in the agent"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'permission-mode bypassPermissions' || { echo "::error::grok COMMAND lacks --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'max-turns'                          || { echo "::error::grok COMMAND lacks --max-turns (a single turn ends before the edit lands)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'permission-mode acceptEdits'        && { echo "::error::grok COMMAND uses acceptEdits — it silently drops edits in headless mode"; exit 1; } || true
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
-          grep -q 'codex exec' "$CA" || { echo "::error::codex-implementer must drive 'codex exec'"; exit 1; }
-          grep -q 'sandbox workspace-write' "$CA" || { echo "::error::codex-implementer must scope writes with --sandbox workspace-write"; exit 1; }
+          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
           # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
           # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
           # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:
