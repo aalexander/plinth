@@ -215,9 +215,10 @@ preflight_reserved_lanes() {
   for f in \
     .plinth/plinth-rules.md .plinth/MODELS.md .plinth/review.sh .plinth/risk-classify.sh \
     .plinth/lane-guard.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
-    .plinth/config .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
+    .plinth/config .plinth/AGENTS-project.md .plinth/DRIVER-project.md \
+    .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
     .claude/hooks/pulse.sh .claude/settings.json .github/workflows/ci.yml .github/workflows/smoke.yml \
-    AGENTS.md CLAUDE.md .plinth-version; do
+    SPEC.md .gitignore AGENTS.md CLAUDE.md .plinth-version; do
     reject_nonregular_file "$target/$f"
   done
   # (4) the two RESERVED lane-agent names.

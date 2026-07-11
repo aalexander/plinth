@@ -81,7 +81,17 @@ sens_snapshot() {  # `<sha> <mode>  <path>` for every existing sensitive file (t
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
     [ -f "$f" ] || continue
-    if sens_match "$f"; then printf '%s %s  %s\n' "$(hashof "$f")" "$(modeof "$f")" "$f"; fi
+    if sens_match "$f"; then
+      h="$(hashof "$f")"; m="$(modeof "$f")"
+      # FAIL CLOSED if a sensitive file cannot be hashed OR statted (e.g. an unreadable mode-000 .env):
+      # an empty hash/mode would be an unforgeable-looking record a lane could chmod/modify/restore
+      # past, so the before/after diff must never silently accept it.
+      if [ -z "$h" ] || [ -z "$m" ]; then
+        echo "lane-guard: cannot hash/stat sensitive file '$f' — refusing (fail closed)" >&2
+        exit 5
+      fi
+      printf '%s %s  %s\n' "$h" "$m" "$f"
+    fi
   done | sort
 }
 
@@ -150,7 +160,8 @@ CHANGED
     # cannot attribute. Requires the pre-run snapshot; without it, those paths are NOT verified.
     if [ -n "$snapfile" ]; then
       [ -f "$snapfile" ] || { echo "scope: --snapshot file '$snapfile' missing — refusing to accept the lane"; exit 5; }
-      after="$(sens_snapshot)"; before="$(cat "$snapfile")"
+      after="$(sens_snapshot)" || { echo "scope: could not re-snapshot sensitive files (a sensitive file is unhashable/unstattable) — refusing (fail closed)" >&2; exit 5; }
+      before="$(cat "$snapfile")"
       if [ "$before" != "$after" ]; then
         touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[0-9a-f]+ +[0-9]+  //' | sort -u)"
         while IFS= read -r f; do [ -n "$f" ] && viol="${viol}  ${f} — SENSITIVE path added/changed/removed by the lane (secret or protected)

@@ -1300,7 +1300,7 @@ jobs:
           done
           # a managed FILE leaf that is a NON-regular node (directory / FIFO) must also be rejected before any
           # write — not just symlinks (cp would copy INTO a dir / hang on a FIFO / leave a partial scaffold):
-          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md .plinth/config .github/workflows/ci.yml; do
+          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md .plinth/config .github/workflows/ci.yml .gitignore .plinth/DRIVER-project.md; do
             ILN="$(mktemp -d)"; ( cd "$ILN"; git init -qb main . >/dev/null; mkdir -p "$(dirname "$badleaf")"; mkdir -p "$badleaf"
               r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILN" >/dev/null 2>&1 || r=$?
               [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies managed leaf $badleaf (rc=$r)"; exit 1; }
@@ -1473,6 +1473,14 @@ jobs:
             if [ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" = 600 ]; then chmod 644 .env; else chmod 600 .env; fi
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPM" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a metadata-only (chmod) change to a secret (rc=$r)"; exit 1; }
             chmod 644 .env
+            # an UNREADABLE sensitive file (mode 000) must FAIL CLOSED, not record an empty forgeable hash/mode
+            # (skipped as root, where 000 is still readable):
+            if [ "$(id -u)" != 0 ]; then
+              chmod 000 .env
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { chmod 644 .env; echo "::error::snapshot did not fail closed on an UNREADABLE sensitive file (rc=$r) — empty hash is forgeable"; exit 1; }
+              r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; chmod 644 .env
+              [ "$r" = 5 ] || { echo "::error::scope --snapshot did not fail closed on an UNREADABLE sensitive file (rc=$r)"; exit 1; }
+            fi
             # gitignored fake verdict under .plinth/session/ -> 4, and the violation must NAME verdict.json —
             # .plinth/session/ is gitignored at base (no confounding new untracked protected file), so the
             # ONLY thing scope can flag here is the ignored verdict.json caught by the snapshot:
