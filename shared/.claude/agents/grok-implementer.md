@@ -67,13 +67,15 @@ enforce them below.
    `--permission-mode bypassPermissions` is REQUIRED for headless operation: a headless run has no
    TUI to answer a permission prompt, so under `acceptEdits`/`default` grok *announces* an edit and
    silently drops it — the file is never written (verified against grok 4.x). Bypass lets it both
-   edit and run the verification command. That grant is safe HERE, not because grok is trusted, but
-   because the run is boxed: the lane-guard `scope` check (step 3) rejects anything grok wrote
-   outside the spec — protected paths, secrets, `.plinth/session/` — and you re-run verification
-   yourself (step 4); grok never touches your session's tree. `--max-turns 20` lets it plan → edit →
-   run → observe within the one prompt (a single turn ends before the edit lands). Model: the grok
-   CLI's configured default is used; if the caller's spec names a model (grok-4.5 is the current top
-   tier), pass `-m <model>`.
+   edit and run the verification command. Be clear-eyed about what this grants: grok has whole-tree
+   write in your working directory (`--cwd "$(pwd)"`) — it DOES write to your tree, and can run
+   commands. That is why step 0 has you commit/stash your own WIP first (so its writes are cleanly
+   attributable) and why step 3 is mandatory: the safety is not that grok is fenced from the tree,
+   it is that `scope` REJECTS anything it wrote outside the spec (protected paths, secrets,
+   `.plinth/session/`) and you re-run verification yourself (step 4). Trust the scope check and your
+   re-run, not grok. `--max-turns 20` lets it plan → edit → run → observe within the one prompt (a
+   single turn ends before the edit lands). Model: the grok CLI's configured default is used; if the
+   caller's spec names a model (grok-4.5 is the current top tier), pass `-m <model>`.
 
 3. **Enforce SCOPE.** The delegated grok has whole-tree write and does NOT run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
