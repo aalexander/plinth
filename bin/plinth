@@ -50,11 +50,14 @@ elif [ ! -d "$target" ]; then
   echo "No such directory: $target"; exit 1
 fi
 
-# Portable in-place edit (macOS + Linux): sed to temp file, then move.
+# Portable in-place edit (macOS + Linux): sed to a temp file in the SAME dir (so mv is atomic), then
+# move. The temp path is created UNPREDICTABLY via mktemp (O_EXCL) — never a predictable sibling like
+# `${f}.plinth-tmp` a repo could precreate as a symlink/hardlink to an external target and be written
+# through before the mv (path-escape / clobber).
 edit_file() {  # edit_file <file> <sed-expr>...
   local f="$1"; shift
-  local tmp="${f}.plinth-tmp"
-  sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
+  local tmp; tmp="$(mktemp "$(dirname "$f")/.plinth-tmp.XXXXXX")" || { echo "edit_file: mktemp failed for $f" >&2; exit 1; }
+  sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
 # NEEDS-HUMAN queue path — canonical is .plinth/NEEDS-HUMAN.md; tolerate a legacy

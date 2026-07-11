@@ -1336,6 +1336,11 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
+          # edit_file must use an UNPREDICTABLE mktemp temp — a precreated ci.yml.plinth-tmp symlink to an
+          # external file must NOT be written through (the old predictable sibling temp was a path-escape):
+          IET="$(mktemp -d)"; EET="$(mktemp)"; printf 'EXTERNAL-TMP\n' > "$EET"; ( cd "$IET"; git init -qb main . >/dev/null; mkdir -p .github/workflows; ln -sf "$EET" .github/workflows/ci.yml.plinth-tmp
+            "$GITHUB_WORKSPACE/bin/plinth" init "$IET" >/dev/null 2>&1 || true )
+          grep -q EXTERNAL-TMP "$EET" || { echo "::error::edit_file wrote through a predictable ci.yml.plinth-tmp symlink to an external file"; exit 1; }; rm -f "$EET"
           # (reserved-lane hardlink is covered per-lane, with a MARKER-bearing target, in the RESERVED loop above)
           # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
           # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
