@@ -112,9 +112,10 @@ Everything between is the model's call.
   the dashboard shows a red banner while it's non-empty.
 
 ## Quick start (first time on a project — follow exactly)
-0. Once per machine (SETUP.md has details): install Claude Code, Codex CLI
-   (`npm i -g @openai/codex`, sign in with ChatGPT), `brew install jq gh`,
-   `gh auth login`.
+0. Once per machine (SETUP.md has details): install the grok CLI
+   ([x.ai/cli](https://x.ai/cli), sign in — the v4 DRIVER seat), Claude Code
+   (the advisor + audit seats), Codex CLI (`npm i -g @openai/codex`, sign in
+   with ChatGPT — the reviewer seat), `brew install jq gh`, `gh auth login`.
 1. `plinth init ~/Dev/<repo>`. It scaffolds the project and runs a GitHub
    preflight: creates the git repo if missing, offers to create the GitHub
    remote (answer y; pick **public** unless the account has GitHub Pro —
@@ -230,9 +231,10 @@ Two operator chores the rules generate:
 ## Daily loop — what you do, and what happens underneath
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.
-   - Pane A: `cd ~/Dev/<repo> && claude` — state the task in plain language.
-     (This walkthrough uses the Claude driver; a codex/grok driver runs its own
-     CLI instead — see the note after this list.)
+   - Pane A: `cd ~/Dev/<repo> && grok` — state the task in plain language.
+     (grok is the v4 default driver and auto-loads both contract files; a
+     claude/codex driver runs its own CLI instead — the *Background* notes
+     below describe the extra hook machinery a Claude driver gets.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session

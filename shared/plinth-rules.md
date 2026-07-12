@@ -86,13 +86,18 @@ status checks (branch protection); the cloud review is an advisory backstop, not
 local hook and not a required gate.
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
-specs, verdicts), and delegate the TYPING to a cheaper cross-family lane rather than typing
-it yourself. Two shipped subagents do this — `grok-implementer` (default) and
-`codex-implementer` (cross-vendor) — each drives an external CLI from a five-part spec
-(objective · files · interfaces · constraints · verification) and VERIFIES the result
+specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
+CLAUDE driver, delegate the TYPING to a cheaper cross-family lane rather than typing it
+yourself — two shipped Claude-Code subagents do this, `grok-implementer` (default) and
+`codex-implementer` (cross-vendor), each driving an external CLI from a five-part spec
+(objective · files · interfaces · constraints · verification) and VERIFYING the result
 independently (Rule 10: the lane's report is a claim; your re-run of the verification command
-is the evidence). Route well-specified volume to them; keep the frontier model for the
-judgment the spec can't capture. Details + cost discipline: `.plinth/MODELS.md`. When a
+is the evidence). A NON-Claude driver cannot run those subagents — and doesn't need them when
+it IS the cheap fast model (the v4 grok driver): type your own volume, consult judgment UP
+via `plinth advise` (`--impactful` for architectural calls), and for a second implementation
+shell out to the other family's CLI with the same five-part spec plus
+`.plinth/lane-guard.sh` (preflight / snapshot / scope — vendor-neutral shell).
+Details + cost discipline: `.plinth/MODELS.md`. When a
 delegated spec turns out to be architecturally wrong, that is YOUR call — do not let the lane
 guess; decide it, or consult the advisor.
 

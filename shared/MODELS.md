@@ -236,8 +236,11 @@ because a near-full thread silently auto-compacts away the original diff context
 ## Reviewer assignment across vendors (all subscription-authenticated, no per-use cost)
 Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 (default codex); assign by their observed strengths:
-- **codex / GPT-5.5** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
-  binding clean-slate confirmation. Slower.
+- **codex** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
+  binding clean-slate confirmation. Slower. Runs GPT-5.5 (the vendor default)
+  until your account has GPT-5.6, then uncomment the scaffolded
+  `reviewer_model_tier1/tier2` knobs to seat the v4 reviewer (Reviewer section
+  above).
 - **claude / Anthropic** — native, ~1M window, resumes warm threads. A capable
   primary; runs with `--safe-mode` — isolates it from the repo's CLAUDE.md (and other
   project customizations) while keeping OAuth auth (unlike `--bare`, which needs an
