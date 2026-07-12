@@ -1,13 +1,74 @@
 <!-- Plinth shared model guidance. Version-pinned; propagates via `plinth update`.
      This is the file that changes when the model landscape changes. -->
-# Plinth — Model Assignments (v3, July 7 2026)
+# Plinth — Model Assignments (v4, July 12 2026)
 
-## Context: what happened in June
+## Context
 Fable 5 launched June 9, was suspended June 12 by US export controls (Amazon
 jailbreak report), and relaunched globally July 1 with a retrained safety
-classifier. The June 22 plan-inclusion date in v2 is void; the new terms are below.
+classifier. The June 22 plan-inclusion date in v2 is void.
 
-## Driver — route your model to the work (speed & efficiency)
+July 12: the frontier is multi-vendor. GPT-5.6 Sol out-reasons Opus 4.8, Grok 4.5
+delivers near-parity coding at a fraction of the wall-clock, and Fable 5's
+availability is export-control-volatile (suspended once already; may lapse again).
+v4 therefore stops assuming an Anthropic driver: seats are assigned per model,
+judgment is imported per-decision, and every seat has a named fallback.
+
+## Seat assignment (v4) — one seat per model, judgment imported per-decision
+
+| Seat | Model | Wiring |
+|------|-------|--------|
+| **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell |
+| **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude`, `advisor_model = opus`, `advisor_model_max = fable` |
+| **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` |
+| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude` — a different FAMILY than both driver and reviewer |
+
+Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
+the speed of the codex lane on well-specified work — and wall-clock is the
+priority — so the seat that types the most goes to the fastest near-parity model.
+Judgment doesn't need to be resident to be present: the driver consults UP
+per-decision (`plinth advise` → Opus 4.8; `--impactful` → Fable 5) instead of the
+v3 shape where the frontier model drove and delegated typing DOWN to lanes. Same
+architect pattern, inverted; the deepest models sit at the gates, where depth
+binds.
+
+Honest scope of the evidence: the calibration measured the LANE seat
+(well-specified typing). Grok in the DRIVER seat — decomposition, routing, loop
+discipline — is exactly what v4 is testing. The tell that judgment needs to move
+back toward the driver (consult more, or restore a Claude driver): rising review
+round counts, or reviewer findings clustering on design errors rather than
+typing errors.
+
+Under a grok driver the implementer lanes are dormant (they are Claude-Code
+subagents) — and mostly moot, since the driver already is the cheap fast typist.
+They reactivate unchanged whenever a Claude driver runs a session. A grok driver
+that wants a second implementation shells out to `codex` directly with the same
+five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope are
+vendor-neutral shell).
+
+What a non-Claude driver does and doesn't get: grok reads the driver contract
+(both contract files) but does NOT run `.claude/` — no in-session guard hooks, no
+Stop gate. The binding layer is unchanged and vendor-neutral: `review.sh` /
+`risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
+protection's required checks gate every merge regardless of driver. (If
+in-session interception ever proves necessary, the designated fix is one CI-side
+protected-paths tamper check — vendor-neutral, covers every driver — not
+per-vendor hook ports.)
+
+### Contingency — Fable access lapses (live risk)
+Fable has been suspended once already and runs credits-only with no metered
+fallback; treat its availability as day-to-day. If it lapses, move the advisor
+seat to GPT-5.6 — `advisor_vendor = codex`, `advisor_model = gpt-5.6`,
+`advisor_model_max = gpt-5.6` — and change nothing else. Advisor and reviewer
+sharing a family is acceptable (the advisor is collaborative and non-blocking,
+not a gate), but keep `audit_vendor = claude`: Opus 4.8 is unaffected by Fable's
+status and keeps a third family on every Tier-2 approval. If you weigh family
+diversity over raw capability for the advisor, Opus 4.8 remains a capable peer
+pick; the assignment above follows capability (5.6 Sol > Opus 4.8) and the
+advisor ≥ driver rule.
+
+## Claude driver — route your model to the work (speed & efficiency)
+This section applies when an Anthropic model holds the driver seat (a Claude Code
+session) — see Seat assignment above for the v4 default.
 Default driver: **Opus 4.8** — pure subscription, no metering. From there, route
 DOWN for cheap work and UP only when the task earns it. The reviewer is already
 routed by a deterministic risk tier (`risk-classify.sh`, which you cannot edit or
@@ -142,12 +203,15 @@ architect-delegates-to-cheaper-family topology. A non-Claude driver delegates vi
 mechanism; the spec contract and Rule-10 verification are the same. Pattern adapted from
 DannyMac180/fable-advisor.)
 
-## Reviewer: Codex / GPT-5.5 (unchanged)
-Set in `~/.codex/config.toml` (`model = "gpt-5.5"`, `model_reasoning_effort =
-"high"`). GPT-5.6 launched June 26 to ~20 US-government-approved organizations
-only (API + Codex), gated by a June 2 executive order requiring federal
-benchmarking; general availability expected mid-July at earliest. When it reaches
-ChatGPT Pro/Codex GA: evaluate as reviewer, then change the one line. The Codex
+## Reviewer: Codex / GPT-5.6 (v4)
+The v4 primary reviewer model is GPT-5.6: set `reviewer_model_tier1/tier2 =
+gpt-5.6` in `.plinth/config` (passed as the codex `-m` flag per tier), or move
+the vendor default with `model = "gpt-5.6"` in `~/.codex/config.toml`
+(`model_reasoning_effort = "high"`). GPT-5.6 launched June 26 to
+~20 US-government-approved organizations only (API + Codex), gated by a June 2
+executive order requiring federal benchmarking; general availability expected
+mid-July at earliest — an account without access stays on the GPT-5.5 vendor
+default (leave the knobs unset) and flips them at GA. The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
 security-briefed because AGENTS.md (the driver shell it auto-loads) directs any
 reviewer to read the reviewer contract `.plinth/reviewer.md`; no separate "Codex
@@ -191,8 +255,11 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   (To make a non-OpenAI model primary, just set `reviewer_vendor` — no
   `~/.codex/config.toml` model_provider needed anymore.)
 
-Default config (templates/.plinth/config): `audit_vendor = grok` — the separate
-`grok` CLI (needs it signed in; a non-fatal UNAVAILABLE if not). Revisit on any
+Default scaffold (`plinth init` writes `.plinth/config`): `audit_vendor = grok` —
+the separate `grok` CLI (needs it signed in; a non-fatal UNAVAILABLE if not).
+That default fits a Claude driver + codex reviewer; under the v4 grok driver set
+`audit_vendor = claude` instead (see Seat assignment) so the second opinion is a
+different family than BOTH driver and reviewer. Revisit on any
 model/subscription change.
 
 ## Trust note (from the Fable 5 system card)

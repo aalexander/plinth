@@ -20,19 +20,26 @@ models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
 
-## Current models (July 2026 — see .plinth/MODELS.md, updated via `plinth update`)
-- **Driver: Opus 4.8** default, routed to the work for speed and efficiency —
-  **Sonnet 5** for mechanical/doc changes (they land Tier 0–1), Opus at high effort
-  for high-consequence work (Tier 2), **Fable 5 by exception** on usage credits for
-  the heaviest long-context tasks (no automatic fallback — enable credits with a
-  monthly cap first). This is the driver's own speed/cost call: GUIDANCE, not a gate.
-- **Reviewer: `reviewer_vendor`** — codex / GPT-5.5 by default (one line in
-  `~/.codex/config.toml`), or `claude` / `grok`, each its own CLI (no codex config
-  needed). Risk-tiered, with a Tier-2 cross-vendor second opinion (`audit_vendor`,
-  default grok). Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a
-  match disables the cross-vendor audit (review.sh notes it on Tier 2), so if you
-  make grok the primary, switch `audit_vendor` to codex or agy. The resume threshold
-  scales per vendor automatically. GPT-5.6 is gov-only for now; evaluate at Codex GA.
+## Current models (July 12 2026 — see .plinth/MODELS.md, updated via `plinth update`)
+- **Seats are assigned per model, across vendors (v4)**: **Grok 4.5** drives (the
+  grok CLI is the harness — it auto-loads the driver shell), **Fable 5** advises
+  (`plinth advise`; peer tier Opus 4.8, `--impactful` → Fable), **GPT-5.6** reviews
+  (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`; an account
+  without 5.6 access stays on the GPT-5.5 vendor default until GA), and **Claude
+  (Opus 4.8)** audits (`audit_vendor = claude` — a different family than both
+  driver and reviewer). Contingency: if Fable's availability lapses
+  (export-control risk — it was suspended once already), the advisor seat moves to
+  GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
+- **Under a Claude driver** the in-family routing still applies — Sonnet 5 for
+  mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by exception on usage
+  credits — and the implementer lanes delegate the typing to grok/codex. Under the
+  grok driver the lanes are dormant (they are Claude-Code subagents) and mostly
+  moot: the driver is already the cheap fast typist and consults judgment UP via
+  `plinth advise` instead. Either way the driver's model is its own speed/cost
+  call: GUIDANCE, not a gate.
+- Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a match disables
+  the cross-vendor audit (review.sh notes it on Tier 2). The resume threshold
+  scales per reviewer vendor automatically.
 - The reviewer's risk tier is the immutable adversarial gate; the driver's model is
   not. The driver's only lever over review cost is tier hygiene — keep low-risk work
   in its own change so it takes the cheap path, don't bundle it into a Tier-2 diff.

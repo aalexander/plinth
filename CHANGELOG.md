@@ -82,6 +82,17 @@
   against the pinned release, in `protected-paths` (Claude guard blocks driver edits) and
   `HARNESS_RE`/`HARNESS_PATHS` (review treats edits as tooling-tamper / UPSTREAM). `plinth
   init`/`update` materialize them; `copy_shared` gains `.claude/agents/` + `lane-guard.sh`.
+- **Model assignments v4 (MODELS.md + MANUAL.md).** Seats assigned per model across vendors:
+  Grok 4.5 takes the DRIVER seat (the grok CLI is the harness; the lanes go dormant — the
+  driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
+  Fable 5 advises (`advisor_model_max = fable`, peer Opus 4.8), GPT-5.6 reviews
+  (`reviewer_model_tier1/tier2 = gpt-5.6`; pre-GA accounts stay on the GPT-5.5 vendor
+  default), Claude audits (`audit_vendor = claude` — a third family, distinct from both
+  driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
+  seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
+  non-Claude driver (no `.claude/` hooks or Stop gate in-session; the vendor-neutral
+  binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
+  is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
 
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
