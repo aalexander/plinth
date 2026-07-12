@@ -93,6 +93,17 @@
   non-Claude driver (no `.claude/` hooks or Stop gate in-session; the vendor-neutral
   binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
   is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
+  IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude
+  adapter (empty-cwd isolation + `--safe-mode` + hard `--json-schema` + read tools
+  disallowed, mirroring the claude primary adapter) so `audit_vendor = claude` actually
+  runs; the scaffold now writes `audit_vendor = claude` and the `plinth update` unset-
+  audit reminder suggests a v4-consistent vendor (claude, or grok for a claude primary);
+  and `plinth advise` is ISOLATED from the auto-loaded DRIVER contract per vendor —
+  claude `--safe-mode`, codex `-c project_doc_max_bytes=0`, grok `--rules` role-scope
+  (agy has neither flag: prompt role-scope line only) — while keeping the repo readable,
+  since the advisor (unlike the auditor) must read code. Canary: scaffold-default assert,
+  claude-audit end-to-end + `--safe-mode` argv assert, claude added to the audit-isolation
+  matrix and first-adoption probe, and advise isolation flags asserted on the COMMAND block.
 
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are

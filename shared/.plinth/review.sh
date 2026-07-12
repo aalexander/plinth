@@ -249,12 +249,13 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
   # holding NONE of the repo's files. Everything it needs is inlined in the prompt; with
   # no repo files in its cwd and no absolute repo paths given, it CANNOT read a same-PR-
   # weakened working-tree policy/spec/diff even where a vendor leaves read tools enabled
-  # (codex/agy have no tool-disable flag; grok additionally gets read tools disallowed).
+  # (codex/agy have no tool-disable flag; grok and claude additionally get read tools
+  # disallowed, and claude runs --safe-mode so no project doc auto-loads either).
   local ad; ad="$(mktemp -d)"
   # Model flag as a proper 2-element array — an unquoted ${VAR:+-m "$VAR"} would
   # collapse to a SINGLE argv token "-m model" and the override would be ignored.
   local mflag margs=()
-  case "$AUDIT_VENDOR" in agy|gemini) mflag="--model" ;; *) mflag="-m" ;; esac
+  case "$AUDIT_VENDOR" in agy|gemini|claude) mflag="--model" ;; *) mflag="-m" ;; esac
   [ -n "$AUDIT_MODEL" ] && margs=("$mflag" "$AUDIT_MODEL")
   case "$AUDIT_VENDOR" in
     grok)
@@ -269,6 +270,15 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
       ( cd "$ad" && printf '%s' "$prompt" | codex exec --skip-git-repo-check -c project_doc_max_bytes=0 \
           ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
           --output-schema "$schema_abs" -o "${out}.j" - ) > /dev/null 2>&1 || return 1 ;;
+    claude)
+      # Same shape as the claude PRIMARY adapter (hard --json-schema -> .structured_output),
+      # plus the audit isolation: empty cwd, --safe-mode (no project-doc auto-load, OAuth
+      # kept), and read tools disallowed like the grok auditor.
+      ( cd "$ad" && printf '%s' "$prompt" | claude -p --safe-mode --output-format json \
+          --json-schema "$(cat "$schema_abs")" --permission-mode dontAsk \
+          --disallowed-tools 'Bash,Edit,Write,Read,Grep,Glob' \
+          ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null || return 1
+      jq -e '.structured_output | objects' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     *)
       # Unknown vendor (a config typo like audit_vendor=gork). Do NOT fall
       # through to codex: that would silently run the SAME vendor as the primary
@@ -868,14 +878,14 @@ $(git diff "${baseref}...HEAD")"
       # no-bottleneck axiom forbids. The primary review remains the gate.
       jq --arg vn "$AUDIT_VENDOR" '. + {audit: {vendor: $vn, verdict: "UNAVAILABLE", blocking: 0}}' \
         "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
-      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' a supported vendor (codex|grok|agy) and signed in? see $SDIR/*.raw"
+      echo "Plinth review: cross-vendor audit UNAVAILABLE (recorded; primary review stands) — is '${AUDIT_VENDOR}' a supported vendor (codex|claude|grok|agy) and signed in? see $SDIR/*.raw"
     fi
   fi
 elif [ "$RISK" = "2" ]; then
   # Same-vendor audit is not cross-vendor, so it is suppressed — surface it so a Tier-2
-  # change doesn't silently lose the promised independent second opinion (e.g. grok
-  # primary + the default audit_vendor=grok).
-  echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|grok|agy) for an independent second opinion."
+  # change doesn't silently lose the promised independent second opinion (e.g. claude
+  # primary + the default audit_vendor=claude).
+  echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
 fi
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0

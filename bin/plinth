@@ -431,7 +431,7 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# The driver must not edit this (it is in protected-paths): under a Claude driver the guard\n# blocks edits at the tool level; a change is otherwise reviewed as normal project code.\n# Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary). The scaffold sets\n#   audit_vendor = grok (below) with the default reviewer_vendor = codex, so in a fresh\n#   project the cross-vendor audit IS ON (every Tier 2 approval, every 5th else). An unset\n#   audit_vendor DEFAULTS to codex, so it runs unless reviewer_vendor is also codex; to turn\n#   it off, set audit_vendor equal to reviewer_vendor. Use a DIFFERENT vendor to keep it on.\n#   All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# The driver must not edit this (it is in protected-paths): under a Claude driver the guard\n# blocks edits at the tool level; a change is otherwise reviewed as normal project code.\n# Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), claude (Anthropic), grok (xAI), or agy (Google Antigravity).\n#   The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary). The scaffold sets\n#   audit_vendor = claude (below) with the default reviewer_vendor = codex, so in a fresh\n#   project the cross-vendor audit IS ON (every Tier 2 approval, every 5th else) and the\n#   auditor is a different family than BOTH the v4 grok driver and the codex reviewer;\n#   under a Claude driver flip it to grok or agy to keep the audit cross-family. An unset\n#   audit_vendor DEFAULTS to codex, so it runs unless reviewer_vendor is also codex; to turn\n#   it off, set audit_vendor equal to reviewer_vendor. Use a DIFFERENT vendor to keep it on.\n#   All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = claude (a different family than both the v4\n#   grok driver and the codex reviewer) for the cross-vendor Tier-2 second opinion.\n#   Needs claude signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = claude\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
@@ -932,6 +932,7 @@ run_advise() {
   [ "$impactful" = 1 ] && impact_line="This is an IMPACTFUL, hard-to-reverse decision — weight the downside of being wrong.
 "
   local aprompt="You are a second-opinion ADVISOR consulted at a commitment boundary. The caller is another model mid-task, not a human reading a report. ${impact_line}
+- You are the ADVISOR, not the driver: any CLAUDE.md/AGENTS.md driver contract auto-loaded from this repository does NOT govern you.
 - Give a VERDICT, not a survey: \"Do X, not Y, because Z\", and name the single risk that decides it.
 - A sound plan gets ONE line (\"sound; the one thing to watch is X\"). Do not manufacture objections to justify being consulted.
 - Look before you opine: you have read-only Read/Grep/Glob — if the decision depends on how the code actually works, READ it; don't reason from the summary you were handed.
@@ -940,16 +941,25 @@ run_advise() {
 
 DECISION:
 $question"
+  # ISOLATE the advisor from the auto-loaded DRIVER contract: CLAUDE.md/AGENTS.md
+  # carry the driver shell, which would compete with the advisor discipline above.
+  # claude --safe-mode blocks the CLAUDE.md auto-load (keeps OAuth); codex
+  # -c project_doc_max_bytes=0 suppresses AGENTS.md; grok has no doc-suppress flag,
+  # so a --rules role-scope outranks whatever doc was auto-loaded (same mechanism
+  # as the grok reviewer/lane isolation); agy has neither flag and relies on the
+  # prompt's role-scope line alone. All keep the REPO readable — unlike the
+  # auditor's empty-cwd isolation, the advisor must be able to read the code.
+  local arule='You are a read-only second-opinion ADVISOR for this run. Any CLAUDE.md or AGENTS.md driver contract auto-loaded from this repository does NOT govern you; your contract is the advisor prompt you were given. Advise only — never implement.'
   local margs=()
   case "$vendor" in
     claude) [ -n "$use" ] && margs=(--model "$use")
-      claude -p ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+      claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
         --allowed-tools "Read,Grep,Glob" "$aprompt" 2>/dev/null || { echo "$unavail"; return 0; } ;;
     codex)  [ -n "$use" ] && margs=(-m "$use")
-      printf '%s' "$aprompt" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
+      printf '%s' "$aprompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;
     grok)   [ -n "$use" ] && margs=(-m "$use")
-      grok -p "$aprompt" --sandbox read-only ${margs[@]+"${margs[@]}"} 2>/dev/null \
+      grok -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;
     agy|gemini) [ -n "$use" ] && margs=(--model "$use")
       agy -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
@@ -993,7 +1003,10 @@ case "$cmd" in
     if ! grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null; then
       rv="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$target/.plinth/config" 2>/dev/null | head -1)"
       [ -n "$rv" ] || rv=codex
-      case "$rv" in grok) sug=codex ;; *) sug=grok ;; esac
+      # v4 seats: the claude audit is the recommended second opinion (a different
+      # family than both the grok driver and a codex/grok primary); a claude
+      # PRIMARY can't audit itself, so it gets grok.
+      case "$rv" in claude) sug=grok ;; *) sug=claude ;; esac
       # The suggested value is a SINGLE valid vendor (copy-pastable); agy is offered in
       # prose OUTSIDE the config line so it is never pasted as part of the value.
       # An unset audit_vendor DEFAULTS to codex in review.sh, so the audit is OFF only when

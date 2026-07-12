@@ -269,8 +269,8 @@ Two operator chores the rules generate:
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
      checklist). When a cross-vendor auditor is configured (`audit_vendor` — new
-     projects default to `grok`; on an upgraded project you add the line yourself,
-     and `plinth update` reminds you if it is unset), every Tier-2 approval also
+     projects default to `claude`, the v4 audit seat; on an upgraded project you add
+     the line yourself, and `plinth update` reminds you if it is unset), every Tier-2 approval also
      gets a best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`

@@ -51,6 +51,9 @@ jobs:
           grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
           grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
+          # v4 model wiring: the scaffold's audit seat is claude — a different family than
+          # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
+          grep -q '^audit_vendor = claude$' .plinth/config || { echo "::error::scaffold did not set audit_vendor = claude (v4 default)"; exit 1; }
           # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
           # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
           # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.
@@ -268,8 +271,10 @@ jobs:
             rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = "2" ] || { echo "::error::Tier-1 without codex did not fail loud at the deferred check (exit $rc)"; exit 1; }
           fi
-          # Cross-vendor audit path: stub the primary reviewer (codex) and a grok
-          # auditor, run a Tier-2 review, verify the audit verdict is recorded;
+          # Cross-vendor audit path: stub the primary reviewer (codex) and a claude
+          # auditor (the scaffolded v4 default — this also exercises the claude audit
+          # adapter end-to-end), run a Tier-2 review, verify the audit verdict is
+          # recorded AND the claude auditor is ISOLATED (--safe-mode on the argv);
           # then a FAILING auditor is recorded UNAVAILABLE (non-blocking).
           mkdir -p /tmp/asb
           cat > /tmp/asb/codex <<'CX'
@@ -281,27 +286,31 @@ jobs:
           echo '{"type":"thread.started","thread_id":"stub"}'
           echo '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
           CX
-          cat > /tmp/asb/grok <<'GK'
+          cat > /tmp/asb/claude <<'CLA'
           #!/usr/bin/env bash
-          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
-          GK
-          chmod +x /tmp/asb/codex /tmp/asb/grok
+          printf '%s\n' "$@" > /tmp/asb/claude-args
+          cat >/dev/null
+          printf '%s' '{"session_id":"ca","structured_output":{"verdict":"APPROVED","summary":"ok","findings":[]}}'
+          CLA
+          chmod +x /tmp/asb/codex /tmp/asb/claude
           git checkout -q main; git checkout -qB aud main >/dev/null 2>&1; echo "new req" >> SPEC.md; git add -A; git commit -qm aud >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           v="$(jq -r '.audit.vendor // "none"' .plinth/session/review/aud/verdict.json 2>/dev/null)"
-          [ "$v" = "grok" ] || { echo "::error::cross-vendor audit not recorded (vendor=$v)"; exit 1; }
-          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/grok; chmod +x /tmp/asb/grok
+          [ "$v" = "claude" ] || { echo "::error::cross-vendor audit (scaffold default claude) not recorded (vendor=$v)"; exit 1; }
+          grep -qx -- '--safe-mode' /tmp/asb/claude-args || { echo "::error::claude auditor not isolated (--safe-mode missing from argv)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/claude; chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           av="$(jq -r '.audit.verdict // "none"' .plinth/session/review/aud2/verdict.json 2>/dev/null)"
           [ "$av" = "UNAVAILABLE" ] || { echo "::error::failing auditor not recorded UNAVAILABLE (verdict=$av)"; exit 1; }
           # Blocking-disagreement path: auditor returns a real blocker in project
           # code — the blocking count must be >= 1 (guards the jq arithmetic).
-          cat > /tmp/asb/grok <<'GK'
+          cat > /tmp/asb/claude <<'CLA'
           #!/usr/bin/env bash
-          echo '{"text":"{\"verdict\":\"CHANGES_NEEDED\",\"summary\":\"blk\",\"findings\":[{\"file\":\"src/app.py\",\"line\":1,\"severity\":\"blocker\",\"description\":\"real issue\",\"status\":\"open\"}]}"}'
-          GK
-          chmod +x /tmp/asb/grok
+          cat >/dev/null
+          printf '%s' '{"session_id":"ca","structured_output":{"verdict":"CHANGES_NEEDED","summary":"blk","findings":[{"file":"src/app.py","line":1,"severity":"blocker","description":"real issue","status":"open"}]}}'
+          CLA
+          chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud3 main >/dev/null 2>&1; echo "yet more req" >> SPEC.md; git add -A; git commit -qm aud3 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           ab="$(jq -r '.audit.blocking // 0' .plinth/session/review/aud3/verdict.json 2>/dev/null)"
@@ -1095,13 +1104,22 @@ jobs:
           # claude peer tier + --impactful model flags (round-1 coverage retained)
           adv claude fable "q";                grep -q -- '--model peermodel' "$ACAP" || { echo "::error::advise: claude peer tier did not pass --model advisor_model"; exit 1; }
           adv claude fable --impactful "q";    grep -q -- '--model fable' "$ACAP" || { echo "::error::advise: claude --impactful did not escalate to advisor_model_max"; exit 1; }
+          # v4: the advisor is ISOLATED from the auto-loaded DRIVER contract — flag assertions
+          # on the COMMAND block (claude --safe-mode; codex doc-suppress; grok --rules role-scope
+          # carrying the does-NOT-govern override; agy has no flag: prompt-rule only).
+          adv claude maxmodel "q";  grep -q '^claude .*--safe-mode' "$ACAP" || { echo "::error::advise: claude advisor not isolated (--safe-mode missing)"; exit 1; }
+          adv codex  maxmodel "q";  grep -q '^codex .*project_doc_max_bytes=0' "$ACAP" || { echo "::error::advise: codex advisor did not suppress project-doc auto-load"; exit 1; }
+          # (grok's prompt argv is multi-line, so match the flag anywhere and the rule by its
+          # distinctive sentence — 'does NOT govern you' also appears in the shared preamble.)
+          adv grok   maxmodel "q";  grep -q -- '--rules' "$ACAP" || { echo "::error::advise: grok advisor missing --rules role-scope"; exit 1; }
+          grep -q 'your contract is the advisor prompt' "$ACAP" || { echo "::error::advise: grok role-scope rule lost the driver-contract override"; exit 1; }
           # Non-blocking when the advisor CLI fails (exit 0, informative).
           FB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 1\n' > "$FB/claude"; chmod +x "$FB/claude"
           AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
 
-          # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy (round-24) ──
+          # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy/claude (round-24) ──
           audit_iso() {  # <primary_reviewer_vendor> <audit_vendor>
             local rv="$1" av="$2" B cap D; B="$(mktemp -d)"; cap="$B/leak"
             case "$rv" in
@@ -1138,6 +1156,13 @@ jobs:
           printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}'
           AAG
               ;;
+              claude) cat > "$B/claude" <<ACL
+          #!/usr/bin/env bash
+          { echo "AUDIT_CWD=\$(pwd)"; echo "AUDIT_READ=\$(cat .plinth/AGENTS-project.md 2>/dev/null)"; } >> "$cap"
+          cat >/dev/null
+          printf '%s' '{"session_id":"c","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          ACL
+              ;;
             esac
             chmod +x "$B"/* 2>/dev/null || true
             D="$(mktemp -d)"; ( cd "$D"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$D" >/dev/null 2>&1
@@ -1155,11 +1180,12 @@ jobs:
           audit_iso codex grok
           audit_iso grok  codex
           audit_iso codex agy
+          audit_iso codex claude
 
           # ── v4.4.0: first-adoption reads the scaffolded audit_vendor (round-55) ──
           # When the BASE has NO .plinth/config, audit_vendor must fall back to the SCAFFOLDED working-tree
-          # value (grok) so a fresh project still gets its cross-vendor Tier-2 audit — not silently default
-          # to codex == the default codex primary and suppress the audit.
+          # value (claude, the v4 default) so a fresh project still gets its cross-vendor Tier-2 audit —
+          # not silently default to codex == the default codex primary and suppress the audit.
           FAB="$(mktemp -d)"; facap="$FAB/audit"
           cat > "$FAB/codex" <<'FRC'
           #!/usr/bin/env bash
@@ -1167,18 +1193,19 @@ jobs:
           [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}' > "$out"
           echo '{"type":"thread.started","thread_id":"c"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
           FRC
-          cat > "$FAB/grok" <<FAG
+          cat > "$FAB/claude" <<FAC
           #!/usr/bin/env bash
           echo AUDIT_RAN >> "$facap"
-          printf '%s' '{"text":"{\\"verdict\\":\\"APPROVED\\",\\"summary\\":\\"s\\",\\"findings\\":[]}"}'
-          FAG
+          cat >/dev/null
+          printf '%s' '{"session_id":"c","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          FAC
           chmod +x "$FAB"/*
           FAD="$(mktemp -d)"; ( cd "$FAD"; git init -qb main . >/dev/null
             echo REQ > SPEC.md; echo "y=1" > app.py; git add -A; git commit -qm 'base: pre-plinth (no .plinth/config)' >/dev/null
             git checkout -qb feat >/dev/null 2>&1
             "$GITHUB_WORKSPACE/bin/plinth" init "$FAD" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
-            # scaffold already sets audit_vendor = grok; reviewer_vendor unset -> defaults to codex; force Tier 2 on app.py
+            # scaffold already sets audit_vendor = claude; reviewer_vendor unset -> defaults to codex; force Tier 2 on app.py
             printf 'tier2_extra = (^|/)app\\.py$\n' >> .plinth/config
             # 'plinth' in the subject so the init commit adding tooling is a legit update, not tampering
             echo "x=2" > app.py; git add -A; git commit -qm 'plinth: adopt Plinth + tweak app' >/dev/null
@@ -1241,9 +1268,10 @@ jobs:
           awgrok="$("$GITHUB_WORKSPACE/bin/plinth" update "$AW" 2>&1)"
           printf '%s' "$awgrok" | grep -q "audit_vendor unset" || { echo "::error::audit_vendor warning missing after removing it"; exit 1; }
           # The suggested config line must be a VALID single vendor (copy-pastable), not
-          # "audit_vendor = codex (or agy)" which review.sh would read as an unknown vendor (round-27).
-          printf '%s' "$awgrok" | grep -qF "'audit_vendor = codex'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = codex'"; exit 1; }
-          printf '%s' "$awgrok" | grep -qE 'audit_vendor = codex[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = codex (...'"; exit 1; } || true
+          # "audit_vendor = claude (or agy)" which review.sh would read as an unknown vendor (round-27).
+          # v4 seats: a grok primary gets the claude audit suggestion (different family than both).
+          printf '%s' "$awgrok" | grep -qF "'audit_vendor = claude'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = claude'"; exit 1; }
+          printf '%s' "$awgrok" | grep -qE 'audit_vendor = claude[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = claude (...'"; exit 1; } || true
           printf '%s' "$awgrok" | grep -qE "'audit_vendor = grok'" && { echo "::error::grok-primary audit warning suggested grok (== reviewer_vendor)"; exit 1; } || true
           # ACCURACY (round-44): unset audit_vendor DEFAULTS to codex in review.sh, so for a grok/claude
           # primary the codex audit ALREADY runs — the warning must NOT falsely claim "no second opinion".
@@ -1253,7 +1281,7 @@ jobs:
           grep -v '^audit_vendor' "$CW/.plinth/config" > "$CW/.plinth/config.tmp" && mv "$CW/.plinth/config.tmp" "$CW/.plinth/config"
           printf 'reviewer_vendor = codex\n' >> "$CW/.plinth/config"
           awcodex="$("$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1)"
-          printf '%s' "$awcodex" | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
+          printf '%s' "$awcodex" | grep -qF "'audit_vendor = claude'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = claude'"; exit 1; }
           # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 

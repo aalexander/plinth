@@ -122,6 +122,9 @@ driver-initiated consult — distinct from the adversarial reviewer (the gate) a
 auditor (a second opinion on an approval). Vendor-agnostic and cross-family: any driver
 can consult any advisor CLI, so a Grok driver can ask Fable.
 - `advisor_vendor` (claude|codex|grok|agy) picks the advisor CLI (default claude).
+  Every advisor runs role-isolated from the repo's auto-loaded DRIVER contract
+  (claude `--safe-mode`; codex doc-suppression; grok `--rules`; agy relies on the
+  prompt's role-scope line) while keeping the repo readable.
 - `advisor_model` is the PEER tier; `advisor_model_max` the ESCALATED tier. `plinth
   advise` uses the peer model; `plinth advise --impactful` uses the max model. Both
   should be >= the driver model.
@@ -244,23 +247,22 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   who runs the primary adversarial review. Default codex (no setup). claude/grok
   need only their own CLI installed + signed in; NOTHING goes in codex's config.
   review.sh sets the resume threshold per vendor automatically.
-- `audit_vendor` = codex | grok | agy runs that vendor's OWN CLI as the cross-vendor
+- `audit_vendor` = codex | claude | grok | agy runs that vendor's OWN CLI as the cross-vendor
   SECOND opinion (a separate binary), independent of the primary. If not installed/signed
   in, the audit is UNAVAILABLE (non-blocking) and the primary review stands —
   surface it (dashboard shows "audit unavailable"), don't read a missing audit as a
   pass. Pick a DIFFERENT vendor than `reviewer_vendor` (the audit is suppressed when
-  they match) — e.g. a grok PRIMARY needs `audit_vendor = codex` (or agy), not grok.
+  they match) — e.g. a grok PRIMARY needs `audit_vendor = codex` (or claude/agy), not grok.
 - `reviewer_model_tier1/tier2` set the per-tier MODEL the reviewer_vendor runs (its
   own model flag; codex/grok `-m`, claude `--model`). Unset = the vendor default.
   (To make a non-OpenAI model primary, just set `reviewer_vendor` — no
   `~/.codex/config.toml` model_provider needed anymore.)
 
-Default scaffold (`plinth init` writes `.plinth/config`): `audit_vendor = grok` —
-the separate `grok` CLI (needs it signed in; a non-fatal UNAVAILABLE if not).
-That default fits a Claude driver + codex reviewer; under the v4 grok driver set
-`audit_vendor = claude` instead (see Seat assignment) so the second opinion is a
-different family than BOTH driver and reviewer. Revisit on any
-model/subscription change.
+Default scaffold (`plinth init` writes `.plinth/config`): `audit_vendor = claude` —
+the v4 audit seat, a different family than both the grok driver and the codex
+reviewer (needs the `claude` CLI signed in; a non-fatal UNAVAILABLE if not).
+Under a Claude driver flip it to grok or agy to keep the audit cross-family.
+Revisit on any model/subscription change.
 
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —
