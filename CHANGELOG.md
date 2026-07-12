@@ -64,7 +64,10 @@
   as well as content hash, so a metadata-only change (e.g. `chmod` widening `.env`/`.ssh` perms) is
   caught; the secret matcher is component-boundaried (`.env`/`.env.local` yes, `.envrc` no; `id_rsa`
   basename not `id_rsa_format.md`) with a template carve-out that an explicit protected-paths entry
-  still overrides.
+  still overrides. `scope --snapshot` FAILS CLOSED on a missing/empty value (exit 2 — the old parse
+  silently dropped to no-snapshot mode, leaving gitignored sensitive paths unverified) and on an
+  unreadable snapshot file (exit 5 — a failed read must not become an empty baseline); the happy
+  path is canary-pinned so the fail-closed change can't break normal lane use.
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

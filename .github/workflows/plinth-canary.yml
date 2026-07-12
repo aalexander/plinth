@@ -59,7 +59,7 @@ jobs:
           # and an ACTIVE line would make a pre-GA reviewer FAIL LOUD, not fall back.
           grep -q '^advisor_model = opus$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor peer model (advisor_model = opus)"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
-          grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost the commented v4 reviewer tier lines"; exit 1; }
+          grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (a pre-GA account would fail loud)"; exit 1; } || true
           # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
           # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
@@ -1387,6 +1387,25 @@ jobs:
             rm -f .plinth/protected-paths; printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt
             r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a BASE symlink policy object replaced by a regular file (rc=$r) — base-object check missing/hollow"; exit 1; } )
+          # lane-guard scope --snapshot FAILS CLOSED on a missing/empty VALUE (must exit 2 — the old
+          # parse silently dropped to no-snapshot mode, leaving sensitive paths unverified) and on an
+          # UNREADABLE snapshot file (must exit 5 — a failed read must not become an empty baseline):
+          LGS="$(mktemp -d)"; ( cd "$LGS"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 2 ] || { echo "::error::scope --snapshot with NO value exited $r (want 2) — fell open to no-snapshot mode"; exit 1; }
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 2 ] || { echo "::error::scope --snapshot with an EMPTY value exited $r (want 2) — fell open to no-snapshot mode"; exit 1; }
+            SNP="$(mktemp)"; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" snapshot > "$SNP"
+            chmod 000 "$SNP"
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "$SNP" app.py >/dev/null 2>&1 || r=$?
+            chmod 644 "$SNP"
+            [ "$r" = 5 ] || { echo "::error::scope with an UNREADABLE --snapshot file exited $r (want 5) — failed read became an empty baseline"; exit 1; }
+            # happy path unchanged: a fresh snapshot + in-spec change still passes
+            SNP2="$(mktemp)"; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" snapshot > "$SNP2"
+            echo b >> app.py
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "$SNP2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::scope happy path with a valid snapshot exited $r (want 0) — fail-closed change broke normal use"; exit 1; } )
           # UPDATE collision: a project that later drops a non-Plinth file at a reserved path must ABORT before
           # copy_shared reinstalls tooling — assert the sentinel review.sh is NOT overwritten (ordering guard):
           IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

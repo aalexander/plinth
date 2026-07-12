@@ -130,12 +130,12 @@ EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
 AUDIT_MODEL="$(bcfg audit_model)"
 # Cross-vendor auditor: which subscription-authenticated CLI runs the Tier-2
-# second opinion. codex (OpenAI), grok (xAI), agy (Google Antigravity). Default
-# codex. Using a DIFFERENT vendor here is what makes the second opinion a real
-# cross-vendor check rather than same-vendor-different-model.
+# second opinion. codex (OpenAI), claude (Anthropic), grok (xAI), agy (Google
+# Antigravity). Default codex. Using a DIFFERENT vendor here is what makes the
+# second opinion a real cross-vendor check rather than same-vendor-different-model.
 AUDIT_VENDOR="$(bcfg audit_vendor)"
 # First ADOPTION only (base config FILE absent): honor the scaffolded working-tree audit_vendor
-# (grok) so a fresh project still gets its cross-vendor Tier-2 audit instead of silently
+# (claude) so a fresh project still gets its cross-vendor Tier-2 audit instead of silently
 # defaulting to codex == the default codex primary. There is no ratified prior config to weaken.
 # If the base config FILE exists (even empty), stay base-only — a PR must not repoint audit_vendor
 # to the primary's own vendor to drop the cross-vendor check.

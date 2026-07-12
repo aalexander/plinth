@@ -146,7 +146,14 @@ case "$sub" in
   scope)
     base="${1:-}"; shift 2>/dev/null || true
     snapfile=""
-    if [ "${1:-}" = "--snapshot" ]; then snapfile="${2:-}"; shift 2 2>/dev/null || true; fi
+    # --snapshot given with an empty/missing value must FAIL, not silently drop to
+    # no-snapshot mode — the caller asked for the sensitive baseline; a typo that
+    # skips it would fail open. (With a non-empty value, `shift 2` is safe.)
+    if [ "${1:-}" = "--snapshot" ]; then
+      snapfile="${2:-}"
+      [ -n "$snapfile" ] || { echo "scope: --snapshot requires a file argument — refusing to run without the sensitive baseline (fail closed)" >&2; exit 2; }
+      shift 2
+    fi
     [ -n "$base" ] && [ "$#" -gt 0 ] || { echo "usage: lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>..."; exit 2; }
     # Fail LOUD if the diff cannot be computed — an unresolvable base / non-repo must NOT yield an
     # empty change list that then prints "scope ok" (that would accept the lane's work unchecked).
@@ -187,9 +194,11 @@ CHANGED
     # Sensitive-path guard: catches gitignored writes (secrets, .plinth/session/, …) that git diff
     # cannot attribute. Requires the pre-run snapshot; without it, those paths are NOT verified.
     if [ -n "$snapfile" ]; then
-      [ -f "$snapfile" ] || { echo "scope: --snapshot file '$snapfile' missing — refusing to accept the lane"; exit 5; }
+      [ -f "$snapfile" ] && [ -r "$snapfile" ] || { echo "scope: --snapshot file '$snapfile' missing or unreadable — refusing to accept the lane"; exit 5; }
       after="$(sens_snapshot)" || { echo "scope: could not re-snapshot sensitive files (a sensitive file is unhashable/unstattable) — refusing (fail closed)" >&2; exit 5; }
-      before="$(cat "$snapfile")"
+      # A failed read must not become an empty baseline (it would mis-attribute or, with no
+      # sensitive files present, silently verify nothing) — fail closed instead.
+      before="$(cat "$snapfile")" || { echo "scope: cannot read --snapshot file '$snapfile' — refusing (fail closed)" >&2; exit 5; }
       if [ "$before" != "$after" ]; then
         # strip the diff marker + the two record fields (`<sha> <mode>` or `symlink <target>`) + the
         # two-space separator, leaving just the path:
