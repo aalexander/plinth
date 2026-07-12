@@ -67,7 +67,13 @@
   still overrides. `scope --snapshot` FAILS CLOSED on a missing/empty value (exit 2 — the old parse
   silently dropped to no-snapshot mode, leaving gitignored sensitive paths unverified) and on an
   unreadable snapshot file (exit 5 — a failed read must not become an empty baseline); the happy
-  path is canary-pinned so the fail-closed change can't break normal lane use.
+  path is canary-pinned so the fail-closed change can't break normal lane use. Template/doc
+  LOOKALIKES (`.env.example`, `id_rsa_notes.txt`) are no longer blind-exempt from the sensitive
+  set: those names are gitignored by the starter policy, so the snapshot is the only check that
+  can see a lane writing real secrets into them — they are now RECORDED in the snapshot and
+  SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
+  name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
+  accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

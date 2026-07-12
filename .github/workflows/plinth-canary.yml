@@ -1489,7 +1489,9 @@ jobs:
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth
             printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
-            printf 'node_modules/\n.env\n*.pem\n*.key\nsecrets/\ncredentials/\n.ssh/\n.aws/\n.plinth/session/\n' > .gitignore
+            # the STARTER ignore policy (templates/.gitignore) — incl. .env.* and id_rsa*, so the
+            # template lookalikes below are GITIGNORED exactly as in a real project:
+            printf 'node_modules/\n.env\n.env.*\n*.pem\n*.key\nid_rsa*\nid_ed25519*\nsecrets/\ncredentials/\n.ssh/\n.aws/\n.plinth/session/\n' > .gitignore
             echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
             printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
             # lookalikes that must NOT be flagged (templates/docs), vs the secret forms from templates/.gitignore
@@ -1505,15 +1507,24 @@ jobs:
               grep -qE "$s" "$SNAP" || { echo "::error::lane-guard snapshot missed a secret matching /$s/ (denylist narrower than templates/.gitignore)"; exit 1; }
             done
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
-            # component-boundaried: templates + true key-DOCS (descriptive suffix) are lookalikes, NOT secrets:
-            grep -qE '\.env\.example$' "$SNAP" && { echo "::error::snapshot false-flagged .env.example (a template) as sensitive"; exit 1; } || true
+            # Template lookalikes are RECORDED in the snapshot (they are gitignored — the snapshot is
+            # the ONLY check that sees a lane writing real secrets into them) and SPEC-GATED at scope
+            # time. .envrc is a different NAME entirely and stays out:
+            grep -qE '\.env\.example$' "$SNAP" || { echo "::error::snapshot did not record gitignored .env.example — a lane could hide real secrets in it unseen"; exit 1; }
+            grep -qE 'id_rsa_format'   "$SNAP" || { echo "::error::snapshot did not record docs/id_rsa_format.md (key-doc lookalike)"; exit 1; }
+            grep -qE 'id_rsa_notes'    "$SNAP" || { echo "::error::snapshot did not record id_rsa_notes.txt (key-doc lookalike)"; exit 1; }
             grep -qE '\.envrc$'        "$SNAP" && { echo "::error::snapshot false-flagged .envrc as sensitive"; exit 1; } || true
-            grep -qE 'id_rsa_format'   "$SNAP" && { echo "::error::snapshot false-flagged docs/id_rsa_format.md (a key DOC) as sensitive"; exit 1; } || true
-            grep -qE 'id_rsa_notes'    "$SNAP" && { echo "::error::snapshot false-flagged id_rsa_notes.txt (a key DOC) as sensitive"; exit 1; } || true
-            # and a spec-listed .env.example edit must PASS scope (it is authorized project work, not a secret write):
+            # a SPEC-LISTED .env.example edit must PASS scope (authorized project work)…
             echo more >> .env.example
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py .env.example >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected an in-spec .env.example edit as if it were a secret (rc=$r)"; exit 1; }
-            git checkout -q -- .env.example
+            # …but the SAME edit WITHOUT a spec listing must FAIL (exit 4) — the carve-out is
+            # spec-gated, not a blind exemption (the gitignored-template bypass):
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope accepted an OUT-OF-SPEC gitignored .env.example write (rc=$r) — template bypass"; exit 1; }
+            printf 'K=v\n' > .env.example   # restore snapshot content (gitignored — checkout can't)
+            # and a spec listing can NOT rescue a template name inside a secret DIRECTORY:
+            mkdir -p secrets; printf 'K=v2\n' > secrets/.env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py secrets/.env.example >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope let a spec listing rescue secrets/.env.example (rc=$r)"; exit 1; }
+            rm -f secrets/.env.example
             # DELIBERATE SCOPE (bugs over adversarial intent): a clean in-spec edit plus a non-sensitive
             # gitignored artifact must PASS (rejecting legit build output breaks npm install/builds) — but the
             # ignored artifact must be REPORTED as a non-hermetic-verification note (not silently accepted).

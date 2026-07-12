@@ -35,17 +35,21 @@ set -uo pipefail
 
 # ── shared: the SENSITIVE set = protected-paths patterns + a builtin secret denylist ──
 # Aligned with Plinth's own starter secret policy (templates/.gitignore: .env / .env.* / *.pem /
-# *.key / id_rsa* / id_ed25519* / secrets/ / credentials/), but component-boundaried so real secret
-# files are flagged and lookalikes are not: `.env`/`.env.local` yes but NOT `.envrc`; `id_rsa` /
-# `id_rsa_backup` / `id_ed25519` yes but NOT the doc `id_rsa_format.md` (SECRET_SAFE below).
+# *.key / id_rsa* / id_ed25519* / secrets/ / credentials/), component-boundaried at the NAME level
+# (`.env`/`.env.local` yes but NOT `.envrc` — a different name entirely). Template/doc lookalikes
+# (`.env.example`, `id_rsa_format.md`) are RECORDED like secrets and SPEC-GATED at scope time
+# (SECRET_SAFE below) — not blind-exempt: those names are usually gitignored, so the snapshot is
+# the only check that can see a lane writing real secrets into them.
 # A file INSIDE an inherently-sensitive DIRECTORY is ALWAYS a secret regardless of its basename — no
 # template/doc carve-out applies (secrets/.env.example / .ssh/id_rsa_format.md are still secrets):
 SECRET_DIRS='(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)\.env/|\.(pem|key)/'
 # Secret FILES themselves; the SECRET_SAFE carve-out applies ONLY to these (a lookalike not in a dir):
 SECRET_FILES='(^|/)\.env($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
-# Known-safe lookalikes: env templates (no real values), and DOCS *about* a key — the key basename
-# plus a DESCRIPTIVE suffix and a doc extension (id_rsa_format.md, id_rsa_notes.txt). NOT the bare key
-# basename + extension (id_rsa.txt / id_ed25519.md), which could be a real key dumped to a doc ext:
+# Template/doc LOOKALIKES: env templates, and DOCS *about* a key — the key basename plus a
+# DESCRIPTIVE suffix and a doc extension (id_rsa_format.md, id_rsa_notes.txt). NOT the bare key
+# basename + extension (id_rsa.txt / id_ed25519.md), which could be a real key dumped to a doc ext.
+# These are a SUBSET of SECRET_FILES (recorded in the snapshot like any secret name); at scope
+# time a snapshot-diff on one is AUTHORIZED only when the spec explicitly lists it:
 SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)_[a-z0-9_]+\.(md|markdown|txt|rst)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
@@ -75,17 +79,16 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
       echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
   done < <(prot_pats)
 }
-sens_match() {  # <path> -> 0 if SENSITIVE. ORDER matters: an explicit protected-paths pattern ALWAYS
-  # wins; then anything inside a secret DIRECTORY is sensitive regardless of basename (the SECRET_SAFE
-  # carve-out must NOT rescue secrets/.env.example); only THEN does SECRET_SAFE exempt a lookalike
-  # template/doc FILE; finally the secret-FILE patterns.
+sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER matters: an explicit
+  # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
+  # regardless of basename; then the secret-FILE names — which INCLUDE the SECRET_SAFE lookalikes
+  # (they are recorded here, and spec-gated at scope time, never blind-exempt).
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     printf '%s' "$1" | grep -Eq "$pat" && return 0
   done < <(prot_pats)
   printf '%s' "$1" | grep -Eq "$SECRET_DIRS"  && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
-  printf '%s' "$1" | grep -Eq "$SECRET_SAFE"  && return 1   # a lookalike template/doc FILE (.env.example, id_rsa_notes.txt)
-  printf '%s' "$1" | grep -Eq "$SECRET_FILES" && return 0   # the secret file itself (.env, id_rsa, *.pem, *.key)
+  printf '%s' "$1" | grep -Eq "$SECRET_FILES" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
@@ -203,8 +206,20 @@ CHANGED
         # strip the diff marker + the two record fields (`<sha> <mode>` or `symlink <target>`) + the
         # two-space separator, leaving just the path:
         touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[^ ]+ +[^ ]+  //' | sort -u)"
-        while IFS= read -r f; do [ -n "$f" ] && viol="${viol}  ${f} — SENSITIVE path added/changed/removed by the lane (secret or protected)
-"; done <<TOUCHED
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          # SPEC-GATED template lookalikes: a SECRET_SAFE name (.env.example, id_rsa_notes.txt)
+          # explicitly listed in the spec is legitimate project work — authorize exactly that.
+          # Never authorizable: a real secret name, anything inside a secret DIRECTORY, or a
+          # protected path (same precedence as sens_match).
+          if printf '%s' "$f" | grep -Eq "$SECRET_SAFE" \
+             && ! printf '%s' "$f" | grep -Eq "$SECRET_DIRS" \
+             && ! protected "$f" && in_spec "$f" "$@"; then
+            continue
+          fi
+          viol="${viol}  ${f} — SENSITIVE path added/changed/removed by the lane (secret or protected)
+"
+        done <<TOUCHED
 $touched
 TOUCHED
       fi

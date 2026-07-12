@@ -250,9 +250,14 @@ Two operator chores the rules generate:
    backstop). Wiring the hooks into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
-   **You:** watch Pane B, not the scrollback. The evidence line shows the last
-   real test run and its exit code; the model line shows who is actually
-   answering; red guard-blocks mean the base deflected something.
+   **You:** watch Pane B, not the scrollback. Under a CLAUDE driver the live feed
+   is full: the evidence line shows the last real test run and its exit code, the
+   model line shows who is actually answering, and red guard-blocks mean the base
+   deflected something. Under the default grok driver the hook-fed lines are
+   SILENT (no `.claude/` hooks) — Pane B still tracks what no driver can fake:
+   review rounds and verdicts (written by `review.sh`), the NEEDS-HUMAN queue,
+   and branch state. For Rule-10 evidence under grok, read the session scrollback
+   and the review verdicts instead of the evidence line.
 4. **The model:** commits, then runs `./.plinth/review.sh`.
    *Background:* the script refuses to run on uncommitted work (verdicts bind
    to a commit SHA), diffs the branch against main, and classifies the diff into
