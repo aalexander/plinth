@@ -196,10 +196,14 @@ as the authority, rather than trusting the lane's in-session evidence blindly. A
 `unavailable`/`timeout`
 gets its spec re-routed to the other lane — never a silent substitution.
 
-**Cross-vendor for free.** Both lanes are non-Anthropic families, so a Claude/Fable driver
-(and Plinth's reviewer at PR) judges an independent-vendor diff. For high-stakes work, race
-`grok-implementer` and `codex-implementer` on the SAME spec and keep the stronger diff — a
-third independent perspective for one extra lane's cost.
+**Cross-vendor, mostly free.** Both lanes are non-Anthropic families, so a Claude/Fable
+driver judges an independent-vendor diff unconditionally. Plinth's PR reviewer is a second
+independent family only when `reviewer_vendor` differs from the lane's producer — it is NOT
+for a codex lane under the DEFAULT codex primary, nor a grok lane under a grok primary; in
+those pairings the independent checks are the driver plus the Tier-2 claude audit (Tier-1
+lane work gets no audit — route to the OTHER lane if reviewer independence matters there).
+For high-stakes work, race `grok-implementer` and `codex-implementer` on the SAME spec and
+keep the stronger diff — a third independent perspective for one extra lane's cost.
 
 (The lanes are Claude-Code subagents, so they apply when the DRIVER is Claude/Fable — the
 architect-delegates-to-cheaper-family topology. A non-Claude driver delegates via its own

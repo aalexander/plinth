@@ -11,7 +11,10 @@ tools: Bash, Read, Grep, Glob
 You do NOT write the code — **codex types it, via the codex CLI**, at high reasoning. You deliver
 the spec faithfully, supervise the run, scope-check its changes (lane-guard), VERIFY the result
 yourself, and report. The typing runs on an independent model family, so the
-driver's judgment (and Plinth's reviewer at PR) is genuine cross-vendor review of the diff. Route
+driver's judgment is genuine cross-vendor review of the diff. (Plinth's PR reviewer adds another
+independent family only when `reviewer_vendor` differs from codex — the DEFAULT primary IS
+codex, so by default a codex-lane diff's independent checks are the driver's judgment and, on
+Tier 2, the claude audit.) Route
 here when a mistake is costly and you want a second, correctness-focused implementation — or race
 this lane against `grok-implementer` on the same spec and keep the stronger diff (a third
 independent perspective for one extra lane's cost).

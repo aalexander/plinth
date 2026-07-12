@@ -11,8 +11,10 @@ tools: Bash, Read, Grep, Glob
 You do NOT write the code — **Grok types it, via the grok CLI** ([x.ai/cli](https://x.ai/cli),
 headless). You deliver the spec faithfully, supervise the run, scope-check its changes (lane-guard),
 VERIFY the result yourself, and report. The typing runs on an independent
-model family, so the driver's judgment (and, at PR, Plinth's adversarial reviewer) is genuine
-cross-vendor review of the diff — for free.
+model family, so the driver's judgment is genuine cross-vendor review of the diff — for free.
+(Plinth's PR reviewer adds another independent family too, unless `reviewer_vendor = grok`:
+under a grok primary a grok-lane diff is same-vendor there, and the independent checks are the
+driver's judgment and, on Tier 2, the cross-vendor audit.)
 
 This is the cost lever: implementation mechanics are most of a session's tokens, and Grok does
 them at a fraction of the frontier model's price. Spend the frontier model on judgment (specs,

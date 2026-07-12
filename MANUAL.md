@@ -1,4 +1,4 @@
-# Plinth — User Manual (v3)
+# Plinth — User Manual (v4)
 
 ## What Plinth is
 A subscription-funded, multi-model dev environment: a frontier model drives (any
@@ -82,7 +82,9 @@ Everything between is the model's call.
   interfaces · constraints · verification); it drives grok/codex headlessly and re-runs the
   verification itself before reporting (a lane's "it works" is not evidence — Rule 10). The
   economics: spend the frontier model on judgment, the lanes on volume; both are non-Anthropic
-  families, so the diff gets genuine cross-vendor review for free. Race both on one spec for
+  families, so the DRIVER's judgment of the diff is cross-vendor for free (the PR reviewer adds
+  another family only when `reviewer_vendor` differs from the lane's producer — see
+  `.plinth/MODELS.md`). Race both on one spec for
   high-stakes work. Needs the `grok` / `codex` CLI installed + signed in; a missing CLI reports
   `unavailable`, never a silent Claude fallback. See `.plinth/MODELS.md`.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
@@ -473,8 +475,9 @@ it has run green with a real smoke_cmd.
 - **First PR per repo**: confirm the Codex review actually posts (connection
   is per-repo, SETUP step 4) and enable branch protection once the check names
   are visible.
-- **July 7**: last day Fable 5 is plan-included. Decide: Opus 4.8 default (free) vs
-  capped credits for Fable on hard tasks. No automatic fallback exists.
+- **Fable 5 availability** (standing; export-control volatility, credits-only, no
+  automatic fallback): if access lapses, move the advisor seat to GPT-5.6 per the
+  v4 contingency in `.plinth/MODELS.md`.
 - **GPT-5.6 GA** (mid-July earliest): evaluate as reviewer; one-line swap.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
