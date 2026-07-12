@@ -101,9 +101,15 @@
   and `plinth advise` is ISOLATED from the auto-loaded DRIVER contract per vendor —
   claude `--safe-mode`, codex `-c project_doc_max_bytes=0`, grok `--rules` role-scope
   (agy has neither flag: prompt role-scope line only) — while keeping the repo readable,
-  since the advisor (unlike the auditor) must read code. Canary: scaffold-default assert,
-  claude-audit end-to-end + `--safe-mode` argv assert, claude added to the audit-isolation
-  matrix and first-adoption probe, and advise isolation flags asserted on the COMMAND block.
+  since the advisor (unlike the auditor) must read code. The scaffold also materializes the
+  v4 advisor seat LIVE (`advisor_model = opus`, `advisor_model_max = fable` — advise is
+  non-blocking, so a missing Fable reports unavailable) and ships the reviewer tier knobs
+  COMMENTED (`# reviewer_model_tier1/tier2 = gpt-5.6`): GPT-5.6 is GA-gated and an active
+  line on a pre-GA account would make the reviewer fail loud rather than fall back —
+  uncomment at GA. Canary: scaffold-default asserts (audit vendor, live advisor knobs,
+  commented-not-active reviewer tiers), claude-audit end-to-end + `--safe-mode` argv assert,
+  claude added to the audit-isolation matrix and first-adoption probe, and advise isolation
+  flags asserted on the COMMAND block.
 
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are

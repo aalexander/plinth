@@ -23,9 +23,12 @@ Everything between is the model's call.
 ## Current models (July 12 2026 — see .plinth/MODELS.md, updated via `plinth update`)
 - **Seats are assigned per model, across vendors (v4)**: **Grok 4.5** drives (the
   grok CLI is the harness — it auto-loads the driver shell), **Fable 5** advises
-  (`plinth advise`; peer tier Opus 4.8, `--impactful` → Fable), **GPT-5.6** reviews
-  (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`; an account
-  without 5.6 access stays on the GPT-5.5 vendor default until GA), and **Claude
+  (`plinth advise`; peer tier Opus 4.8, `--impactful` → Fable — scaffolded live,
+  since advise is non-blocking), **GPT-5.6** reviews
+  (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`, shipped
+  COMMENTED in fresh scaffolds — uncomment at GA; an account without 5.6 access
+  stays on the GPT-5.5 vendor default, and an active 5.6 knob there would fail
+  loud, not fall back), and **Claude
   (Opus 4.8)** audits (`audit_vendor = claude` — a different family than both
   driver and reviewer). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to

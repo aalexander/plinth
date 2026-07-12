@@ -54,6 +54,13 @@ jobs:
           # v4 model wiring: the scaffold's audit seat is claude — a different family than
           # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
           grep -q '^audit_vendor = claude$' .plinth/config || { echo "::error::scaffold did not set audit_vendor = claude (v4 default)"; exit 1; }
+          # v4 advisor seat is scaffolded LIVE (advise is non-blocking; a missing model just
+          # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 is GA-gated
+          # and an ACTIVE line would make a pre-GA reviewer FAIL LOUD, not fall back.
+          grep -q '^advisor_model = opus$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor peer model (advisor_model = opus)"; exit 1; }
+          grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
+          grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost the commented v4 reviewer tier lines"; exit 1; }
+          grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (a pre-GA account would fail loud)"; exit 1; } || true
           # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
           # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
           # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.

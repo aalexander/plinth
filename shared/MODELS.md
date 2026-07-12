@@ -18,9 +18,9 @@ judgment is imported per-decision, and every seat has a named fallback.
 | Seat | Model | Wiring |
 |------|-------|--------|
 | **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell |
-| **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude`, `advisor_model = opus`, `advisor_model_max = fable` |
-| **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` |
-| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude` — a different FAMILY than both driver and reviewer |
+| **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
+| **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment at GA |
+| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude` (the scaffold default) — a different FAMILY than both driver and reviewer |
 
 Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
 the speed of the codex lane on well-specified work — and wall-clock is the
@@ -214,7 +214,12 @@ the vendor default with `model = "gpt-5.6"` in `~/.codex/config.toml`
 ~20 US-government-approved organizations only (API + Codex), gated by a June 2
 executive order requiring federal benchmarking; general availability expected
 mid-July at earliest — an account without access stays on the GPT-5.5 vendor
-default (leave the knobs unset) and flips them at GA. The Codex
+default (leave the knobs unset) and flips them at GA. Fresh scaffolds ship the
+two tier lines COMMENTED for exactly this reason — an active gpt-5.6 knob on a
+pre-GA account makes the reviewer fail loud rather than fall back; uncomment
+them at GA. (The advisor knobs ARE scaffolded live: `plinth advise` is
+non-blocking by design, so a missing Fable reports unavailable instead of
+breaking anything.) The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
 security-briefed because AGENTS.md (the driver shell it auto-loads) directs any
 reviewer to read the reviewer contract `.plinth/reviewer.md`; no separate "Codex
