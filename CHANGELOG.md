@@ -74,6 +74,13 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a grok/codex
+  driver runs no `.claude/` hooks; or pulse.sh unwired) the dashboard no longer bails — it
+  renders a reduced frame from the non-hook inputs: branch @ head, the review verdict
+  (vendor-neutral `review.sh` state, incl. round and tier), and the full NEEDS-HUMAN queue,
+  under a dim banner naming why the hook-fed lines are blank. The same reduced frame now also
+  covers a wired session that has not pulsed yet (previously a bail message). Canary-probed:
+  feedless `--once` exits 0, renders verdict + queue, old bail gone.
 - **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
   judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
   code block longer than an interface signature is a spec that hasn't been delegated yet; keep the

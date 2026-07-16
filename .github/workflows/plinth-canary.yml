@@ -1292,6 +1292,20 @@ jobs:
           # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 
+          # ── v4.5: plinth watch renders FEEDLESS (grok/codex driver: no .claude hooks -> no events.jsonl) ──
+          FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1
+            git add -A; git commit -qm base >/dev/null; git checkout -qb feat >/dev/null 2>&1
+            mkdir -p .plinth/session/review/feat
+            printf '{"verdict":"APPROVED","sha":"abc1234deadbeef","round":3,"risk":{"tier":1}}\n' > .plinth/session/review/feat/verdict.json
+            printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > .plinth/NEEDS-HUMAN.md )
+          fwrc=0; fwout="$(PLINTH_WATCH_ROWS=40 PLINTH_WATCH_COLS=100 "$GITHUB_WORKSPACE/bin/plinth" watch "$FWD" --once 2>&1)" || fwrc=$?
+          [ "$fwrc" = 0 ] || { echo "::error::feedless watch --once exited $fwrc"; exit 1; }
+          printf '%s' "$fwout" | grep -qi 'no event feed' || { echo "::error::feedless watch missing its banner"; exit 1; }
+          printf '%s' "$fwout" | grep -qi 'pulse.sh wired' && { echo "::error::feedless watch still bails with the old no-feed error"; exit 1; } || true
+          printf '%s' "$fwout" | grep -q 'APPROVED' || { echo "::error::feedless watch did not render the review verdict"; exit 1; }
+          printf '%s' "$fwout" | grep -q 'ACME_TOKEN' || { echo "::error::feedless watch did not render the NEEDS-HUMAN queue"; exit 1; }
+
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
           printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > "$NH/NEEDS-HUMAN.md"

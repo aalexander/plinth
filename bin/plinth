@@ -532,11 +532,15 @@ run_queue() {
 # verdict, and renders task / stage pipeline / tokens / burn / gates every 2s.
 # All interpretation lives here in one jq program — events stay raw facts.
 render_frame() {
-  local EV="$target/.plinth/session/events.jsonl"
+  local EV="$target/.plinth/session/events.jsonl" feedless=0
   if [ ! -f "$EV" ]; then
-    echo "plinth watch: no event feed at $EV"
-    echo "Is pulse.sh wired in .claude/settings.json? (see CHANGELOG v3.8)"
-    return 0
+    # FEEDLESS mode — a codex/grok driver runs no .claude/ hooks, so pulse.sh never
+    # creates the feed (same if the hooks are unwired). Do NOT bail: everything that
+    # does not come from hooks still renders — review rounds + verdicts (review.sh
+    # writes them for EVERY driver), the NEEDS-HUMAN queue, and branch state. The
+    # hook-fed lines (task/stage/tokens/model/evidence) stay at their empty defaults.
+    feedless=1; EV=/dev/null
+    printf '\033[2m  no event feed (non-Claude driver, or pulse.sh unwired — CHANGELOG v3.8): hook-fed lines blank; review/queue/branch state live\033[0m\n'
   fi
   local transcript head branch slug
   transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' "$EV" 2>/dev/null)"
@@ -630,7 +634,24 @@ render_frame() {
     # sessions that predate their own wiring have no start event (certeus bug)
     | (([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
     | ($all | map(select(.sid == $sid))) as $sev
-    | if ($sev | length) == 0 then "plinth watch: event feed has no session events yet." else
+    | if ($sev | length) == 0 then
+        # REDUCED frame — no session events (feedless: a codex/grok driver runs no
+        # .claude/ hooks; or a wired session that has not pulsed yet). Render what
+        # does NOT come from hooks: identity, review state (review.sh writes it for
+        # every driver), and the NEEDS-HUMAN queue.
+        ([ (B + "  " + $branch + " @ " + $head + R + "  " + D + "(no session events)" + R),
+           (($vd[0] // null) as $v |
+             if $v == null then (D + "  review: none yet on this branch" + R)
+             else ("  review: " +
+               (if ($v.verdict // "") == "APPROVED" then GR else RD end) + ($v.verdict // "?") + R +
+               D + " @ " + (($v.sha // "")[0:7]) + " round " + (($v.round // "?") | tostring) +
+               " tier " + (($v.risk.tier // "?") | tostring) + R)
+             end),
+           (if $nhn > 0
+            then (RD + "  NEEDS-HUMAN: " + ($nhn | tostring) + " open (" + ($nhb | tostring) + " blocking)" + R + "\n" + $nh)
+            else empty end)
+         ] | join("\n"))
+      else
 
     ($sev[0].epoch) as $t0
     # ---------- stage classification (facts -> stages, renderer-side only) ----------
