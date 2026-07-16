@@ -1204,6 +1204,7 @@ jobs:
           cat > "$FAB/claude" <<FAC
           #!/usr/bin/env bash
           echo AUDIT_RAN >> "$facap"
+          printf '%s\n' "\$@" > "$FAB/claude-args"
           cat >/dev/null
           printf '%s' '{"session_id":"c","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]}}'
           FAC
@@ -1219,6 +1220,9 @@ jobs:
             echo "x=2" > app.py; git add -A; git commit -qm 'plinth: adopt Plinth + tweak app' >/dev/null
             PATH="$FAB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q AUDIT_RAN "$facap" 2>/dev/null || { echo "::error::first-adoption: cross-vendor audit did NOT run (audit_vendor lost to codex default when base has no .plinth/config)"; exit 1; }
+          # …and the scaffolded audit MODEL pin must survive first adoption too (round-15):
+          grep -qx -- '--model' "$FAB/claude-args" 2>/dev/null && grep -qx 'opus' "$FAB/claude-args" 2>/dev/null \
+            || { echo "::error::first-adoption audit dropped the scaffolded audit_model = opus (args: $(tr '\n' ' ' < "$FAB/claude-args" 2>/dev/null))"; exit 1; }
 
           # ── v4.4.0: an EXISTING-config project defaulting spec_path can't be repointed by the PR (round-56) ──
           # The working-tree fallback is first-adoption-ONLY: if the base config exists but OMITS spec_path

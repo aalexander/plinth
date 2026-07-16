@@ -141,6 +141,10 @@ AUDIT_VENDOR="$(bcfg audit_vendor)"
 # to the primary's own vendor to drop the cross-vendor check.
 [ -n "$AUDIT_VENDOR" ] || [ "$base_has_config" = 1 ] || AUDIT_VENDOR="$(cfg audit_vendor || true)"
 [ -n "$AUDIT_VENDOR" ] || AUDIT_VENDOR="codex"
+# Same first-adoption fallback for the audit MODEL: the scaffold pins the v4 audit seat
+# (audit_model = opus), and dropping it here would run the fresh project's first audit on
+# whatever the operator's CLI default is — a different model than the seat promises.
+[ -n "$AUDIT_MODEL" ] || [ "$base_has_config" = 1 ] || AUDIT_MODEL="$(cfg audit_model || true)"
 # Primary reviewer VENDOR — codex | claude | grok. DISTINCT from audit_vendor (the
 # cross-vendor second opinion): this is who runs the PRIMARY adversarial review.
 # Default codex (no behavior change). RV_WARM_RESUME=1 means the vendor reports
