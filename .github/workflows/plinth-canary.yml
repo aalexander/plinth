@@ -1342,10 +1342,10 @@ jobs:
               [ "$r" != 0 ] || { echo "::error::init did not fail on a MARKER-BEARING HARDLINK at reserved lane $lane (rc=$r)"; exit 1; } )
             grep -q EXTERNAL-LANE "$ERH" || { echo "::error::init truncated an EXTERNAL file through a hardlinked $lane"; exit 1; }; rm -f "$ERH"
           done
-          # a SYMLINK anywhere in the Plinth-managed ancestry (.claude, .claude/agents, .plinth, .github, …) must
-          # be rejected — else init writes THROUGH it, outside the workspace ([ -d ] follows symlinks). Cover an
-          # intermediate (.claude), a leaf managed dir (.claude/agents), and .github/workflows:
-          for lnk in .claude .claude/agents .github; do
+          # a SYMLINK anywhere in the Plinth-managed ancestry must be rejected — else init writes THROUGH it,
+          # outside the workspace ([ -d ] follows symlinks). Cover EVERY guarded managed dir + intermediate —
+          # the SAME set preflight_reserved_lanes checks (a sibling added there must be added here):
+          for lnk in .claude .claude/agents .claude/hooks .plinth .plinth/session .github .github/workflows; do
             ILS="$(mktemp -d)"; ELS="$(mktemp -d)"; ( cd "$ILS"; git init -qb main . >/dev/null
               mkdir -p "$(dirname "$lnk")"; ln -sf "$ELS" "$lnk"
               r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILS" >/dev/null 2>&1 || r=$?

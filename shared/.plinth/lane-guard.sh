@@ -231,7 +231,10 @@ TOUCHED
     # against them, so that Rule-10 evidence may not reproduce in a clean env. Surface the top-level
     # ignored entries so the driver's independent re-run accounts for it; CI's fresh install is the
     # authority. This closes "silently accepted" without breaking npm install / builds.
-    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | sed 's#/.*##' | sort -u | grep -v '^$' || true)"
+    # Exclude Plinth's own session state from the note: it is not un-reviewed build input
+    # (verdicts/receipts are sensitive-COMPARED above; the event feed is hook-appended), and
+    # naming `.plinth` here would false-fire the warning on every hooked Claude lane run.
+    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$' || true)"
     if [ -n "$iga" ]; then
       echo "scope note: verification is NOT hermetic — ignored artifacts in the tree (not in the reviewed diff): $(printf '%s' "$iga" | tr '\n' ' ')" >&2
       echo "  -> your independent Rule-10 re-run may depend on this un-reviewed state; treat CI's fresh install as the authority." >&2

@@ -77,7 +77,8 @@
 - **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a grok/codex
   driver runs no `.claude/` hooks; or pulse.sh unwired) the dashboard no longer bails — it
   renders a reduced frame from the non-hook inputs: branch @ head, the review verdict
-  (vendor-neutral `review.sh` state, incl. round and tier), and the full NEEDS-HUMAN queue,
+  (vendor-neutral `review.sh` state, incl. round and tier), and the NEEDS-HUMAN queue
+  (viewport-budgeted like the live frame — `plinth queue` prints every item),
   under a dim banner naming why the hook-fed lines are blank. The same reduced frame now also
   covers a wired session that has not pulsed yet (previously a bail message). Canary-probed:
   feedless `--once` exits 0, renders verdict + queue, old bail gone.
