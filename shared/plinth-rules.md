@@ -64,9 +64,9 @@ workflow (ultracode). Choose whatever fits the task. No need to get orchestratio
 approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 `.claude/` guard hooks and gates; a cross-family codex/grok delegate does not (those
 CLIs do not read `.claude/`) — for those, the binding layer is your own discipline
-(run the review loop) plus the required CI status checks that branch protection
-enforces; the Codex cloud review posts findings as an advisory backstop, not a
-required merge gate by default.
+(run the review loop) plus branch protection's required checks, which under the v4
+non-Claude default include the REQUIRED Codex cloud review (the server-side
+adversarial gate; the CI floor verifies tooling and tests, not review).
 
 ## Subagents and the advisor (speed, and a stronger opinion)
 Fan out independent work to SUBAGENTS for speed and parallelism — the moment a task
@@ -81,9 +81,9 @@ cross-family CLI shell-out is fine — with the enforcement caveat that follows.
 subagents inherit the `.claude/` guard
 hooks and gates automatically; a cross-family shell-out to a codex/grok delegate does NOT
 (those CLIs do not read `.claude/`), so keep any ship or destructive authority for such
-delegations narrow — what actually binds them is your discipline plus the required CI
-status checks (branch protection); the cloud review is an advisory backstop, not the
-local hook and not a required gate.
+delegations narrow — what actually binds them is your discipline plus branch
+protection's required checks (under the v4 non-Claude default those include the
+REQUIRED Codex cloud review — the adversarial gate; it is not a local hook).
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
 specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
@@ -146,10 +146,11 @@ block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without app
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
 driver does NOT run `.claude/` hooks, so this Stop gate does not fire for it — nothing
 LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
-the loop) and the required CI status checks that branch protection enforces; the Codex
-cloud review posts findings as a backstop but is not a required merge gate by default.
-Either way: run the loop to APPROVED before you open the PR — that discipline, not a
-hook, is the primary safeguard for a non-Claude driver.
+the loop) and branch protection's required checks — under the v4 non-Claude default
+those include the REQUIRED Codex cloud review, the server-side adversarial gate (your
+risk-tiered review.sh verdict has no server-side verifier yet; that check is the
+designated next step). Either way: run the loop to APPROVED before you open the PR —
+the required cloud review gates the merge, but the review loop is the contract.
 
 ## Upstream channel — two-way, with the Plinth maintainer
 Tooling findings and improvement proposals are never fixed in-project (that is

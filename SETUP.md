@@ -19,7 +19,9 @@
    no separate "Codex Security" product is assumed to exist.
 5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
    zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
-   requiring the `floor` and `checks` status checks.
+   requiring the `floor` and `checks` status checks AND the Codex cloud review
+   check — under the v4 grok driver (no local Stop gate) that required review is
+   the server-side adversarial merge gate.
 6. Daily driving happens in the grok CLI (the v4 driver). When you drive with
    Claude Code instead: `/model` -> Opus 4.8 (Fable 5 by exception, credits);
    `/effort` -> ultracode for big tasks.
