@@ -420,12 +420,18 @@ UI route, once the first PR shows its checks:
    the server-side adversarial gate for a driver with no local Stop gate.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing; paste the names the PR showed):
+CLI route (same timing; paste the names the PR showed — under the v4 non-Claude
+default driver the contexts array MUST also include the Codex cloud review
+check's name, exactly as it appeared on the PR):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {"required_status_checks":{"strict":false,"contexts":["CHECK NAME 1","CHECK NAME 2"]},
+    {"required_status_checks":{"strict":false,
+      "contexts":["FLOOR CHECK NAME","CHECKS CHECK NAME","CODEX CLOUD REVIEW CHECK NAME"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
+
+(Drop the third context only if you drive with Claude — there the local Stop
+gate already enforces the review loop.)
 
 Verify either route the same way: open a trivial PR and confirm the merge
 button is disabled until everything is green.
