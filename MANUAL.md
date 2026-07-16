@@ -26,9 +26,10 @@ Everything between is the model's call.
   (`plinth advise`; peer tier Opus 4.8, `--impactful` → Fable — scaffolded live,
   since advise is non-blocking), **GPT-5.6** reviews
   (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`, shipped
-  COMMENTED in fresh scaffolds — uncomment at GA; an account without 5.6 access
-  stays on the GPT-5.5 vendor default, and an active 5.6 knob there would fail
-  loud, not fall back), and **Claude
+  COMMENTED in fresh scaffolds — GPT-5.6 GA'd July 9 2026 but access is
+  per-account and needs Codex CLI >= 0.144.0: uncomment once `codex -m gpt-5.6`
+  works for you; an ineligible account stays on the GPT-5.5 vendor default, and
+  an active 5.6 knob there would fail loud, not fall back), and **Claude
   (Opus 4.8)** audits (`audit_vendor = claude` — a different family than both
   driver and reviewer). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
@@ -492,7 +493,9 @@ it has run green with a real smoke_cmd.
 - **Fable 5 availability** (standing; export-control volatility, credits-only, no
   automatic fallback): if access lapses, move the advisor seat to GPT-5.6 per the
   v4 contingency in `.plinth/MODELS.md`.
-- **GPT-5.6 GA** (mid-July earliest): evaluate as reviewer; one-line swap.
+- **GPT-5.6 eligibility**: GA landed July 9, 2026 (per-account; Codex CLI >=
+  0.144.0). When `codex -m gpt-5.6` works on your account, uncomment the two
+  scaffolded reviewer tier lines — the seat activates with that one edit.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.

@@ -74,6 +74,14 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **Floor checks executable MODE, not just bytes.** The pinned executables are executed
+  directly (`./.plinth/review.sh`, the lanes' `.plinth/lane-guard.sh` calls, the `.claude`
+  hooks); `cmp` alone would pass pinned bytes committed at 0644 while every exec fails.
+  `plinth-floor.yml` now fails on a non-executable pinned script (whole set, not just the
+  new lane-guard). GPT-5.6 rollout facts refreshed across MODELS/MANUAL/SETUP/scaffold:
+  GA July 9 2026, per-account eligibility, Codex CLI >= 0.144.0 — the reviewer tier knobs
+  still ship commented (an active knob on an ineligible account fails loud), with the
+  activation probe (`codex -m gpt-5.6`) documented.
 - **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a grok/codex
   driver runs no `.claude/` hooks; or pulse.sh unwired) the dashboard no longer bails — it
   renders a reduced frame from the non-hook inputs: branch @ head, the review verdict

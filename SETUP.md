@@ -10,7 +10,7 @@
    (native installer; sign in with Max — the advisor + audit seats), Codex CLI
    (`npm i -g @openai/codex`; sign in with ChatGPT — the reviewer seat),
    `brew install jq`, and `~/.codex/config.toml`:
-       model = "gpt-5.5"        # vendor default; move to "gpt-5.6" at GA
+       model = "gpt-5.5"        # move to "gpt-5.6" once eligible (GA July 9 2026; CLI >= 0.144.0)
        model_reasoning_effort = "high"
 4. Connect Codex cloud code review once (chatgpt.com -> Codex): install the
    GitHub App with repo access and enable review-on-PR-open. Note: this is the

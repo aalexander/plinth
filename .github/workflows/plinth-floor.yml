@@ -119,4 +119,22 @@ jobs:
           check shared/.claude/hooks/pulse.sh         .claude/hooks/pulse.sh
           check shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
           check shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
+          # Pinned EXECUTABLES are executed directly (./.plinth/review.sh, the lane agents'
+          # .plinth/lane-guard.sh calls, the .claude hooks). cmp verifies bytes but not MODE:
+          # committing the pinned bytes at 0644 would pass the byte check while every exec
+          # fails. Absence is already caught by check() above, so only mode is tested here.
+          checkx() {  # checkx <project-path>
+            [ -f "$1" ] || return 0
+            if [ ! -x "$1" ]; then
+              echo "::error file=$1::version-pinned executable is not executable (mode) — direct exec (lanes/review/hooks) would fail"
+              fail=1
+            fi
+          }
+          checkx .plinth/review.sh
+          checkx .plinth/risk-classify.sh
+          checkx .plinth/lane-guard.sh
+          checkx .claude/hooks/guard.sh
+          checkx .claude/hooks/session-start.sh
+          checkx .claude/hooks/review-gate.sh
+          checkx .claude/hooks/pulse.sh
           exit "$fail"

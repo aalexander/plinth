@@ -19,7 +19,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 |------|-------|--------|
 | **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
-| **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment at GA |
+| **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
 | **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both driver and reviewer, pinned so a Sonnet/Fable CLI default can't drift the seat |
 
 Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
@@ -214,14 +214,15 @@ DannyMac180/fable-advisor.)
 The v4 primary reviewer model is GPT-5.6: set `reviewer_model_tier1/tier2 =
 gpt-5.6` in `.plinth/config` (passed as the codex `-m` flag per tier), or move
 the vendor default with `model = "gpt-5.6"` in `~/.codex/config.toml`
-(`model_reasoning_effort = "high"`). GPT-5.6 launched June 26 to
-~20 US-government-approved organizations only (API + Codex), gated by a June 2
-executive order requiring federal benchmarking; general availability expected
-mid-July at earliest — an account without access stays on the GPT-5.5 vendor
-default (leave the knobs unset) and flips them at GA. Fresh scaffolds ship the
-two tier lines COMMENTED for exactly this reason — an active gpt-5.6 knob on a
-pre-GA account makes the reviewer fail loud rather than fall back; uncomment
-them at GA. (The advisor knobs ARE scaffolded live: `plinth advise` is
+(`model_reasoning_effort = "high"`). Rollout: June 26 to ~20
+US-government-approved organizations; GA July 9, 2026 across ChatGPT/Codex —
+but access is still PER-ACCOUNT (eligibility) and needs Codex CLI >= 0.144.0.
+Activate the seat once `codex -m gpt-5.6` works on your account: uncomment the
+two scaffolded tier lines. They ship COMMENTED because an active gpt-5.6 knob
+on an ineligible account (or an older CLI) makes the reviewer fail loud rather
+than fall back — one probe command, then one uncomment. An ineligible account
+stays on the GPT-5.5 vendor default meanwhile. (The advisor knobs ARE
+scaffolded live: `plinth advise` is
 non-blocking by design, so a missing Fable reports unavailable instead of
 breaking anything.) The Codex
 cloud review (GitHub App) posts on every PR — a generalist review that arrives
@@ -238,9 +239,9 @@ Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 (default codex); assign by their observed strengths:
 - **codex** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
   binding clean-slate confirmation. Slower. Runs GPT-5.5 (the vendor default)
-  until your account has GPT-5.6, then uncomment the scaffolded
-  `reviewer_model_tier1/tier2` knobs to seat the v4 reviewer (Reviewer section
-  above).
+  until your account is GPT-5.6-eligible (GA July 9 2026; Codex CLI >= 0.144.0),
+  then uncomment the scaffolded `reviewer_model_tier1/tier2` knobs to seat the
+  v4 reviewer (Reviewer section above).
 - **claude / Anthropic** — native, ~1M window, resumes warm threads. A capable
   primary; runs with `--safe-mode` — isolates it from the repo's CLAUDE.md (and other
   project customizations) while keeping OAuth auth (unlike `--bare`, which needs an
