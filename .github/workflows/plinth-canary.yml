@@ -55,13 +55,14 @@ jobs:
           # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
           grep -q '^audit_vendor = claude$' .plinth/config || { echo "::error::scaffold did not set audit_vendor = claude (v4 default)"; exit 1; }
           # v4 advisor seat is scaffolded LIVE (advise is non-blocking; a missing model just
-          # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 is GA-gated
-          # and an ACTIVE line would make a pre-GA reviewer FAIL LOUD, not fall back.
+          # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 access is
+          # PER-ACCOUNT (GA July 9 2026; Codex CLI >= 0.144.0) and an ACTIVE line on an
+          # ineligible account would make the reviewer FAIL LOUD, not fall back.
           grep -q '^advisor_model = opus$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor peer model (advisor_model = opus)"; exit 1; }
           grep -q '^audit_model = opus$' .plinth/config || { echo "::error::scaffold did not pin the v4 audit seat model (audit_model = opus) — the CLI default could audit with a different model"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
-          grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (a pre-GA account would fail loud)"; exit 1; } || true
+          grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
           # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
           # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
           # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.

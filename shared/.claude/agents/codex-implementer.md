@@ -17,7 +17,11 @@ codex, so by default a codex-lane diff's independent checks are the driver's jud
 Tier 2, the claude audit.) Route
 here when a mistake is costly and you want a second, correctness-focused implementation — or race
 this lane against `grok-implementer` on the same spec and keep the stronger diff (a third
-independent perspective for one extra lane's cost).
+independent perspective for one extra lane's cost). RACE WITH ISOLATION, never two lanes
+concurrently in one checkout: both lanes write the shared working tree and `lane-guard scope`
+authorizes by PATH, not producer, so parallel same-checkout runs interleave into one mixed diff.
+Run them sequentially (run, capture the diff, reset clean, run the other) or give each lane its
+own git worktree (the driver's subagent worktree isolation).
 
 ## Preflight — no silent fallback (enforced)
 

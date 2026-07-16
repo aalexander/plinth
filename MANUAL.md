@@ -86,7 +86,9 @@ Everything between is the model's call.
   families, so the DRIVER's judgment of the diff is cross-vendor for free (the PR reviewer adds
   another family only when `reviewer_vendor` differs from the lane's producer — see
   `.plinth/MODELS.md`). Race both on one spec for
-  high-stakes work. Needs the `grok` / `codex` CLI installed + signed in; a missing CLI reports
+  high-stakes work — sequentially, or one worktree per lane; never two lanes
+  concurrently in one checkout (they share the working tree, and scope
+  authorizes by path, not producer). Needs the `grok` / `codex` CLI installed + signed in; a missing CLI reports
   `unavailable`, never a silent Claude fallback. See `.plinth/MODELS.md`.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
   round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/

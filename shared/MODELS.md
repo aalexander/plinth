@@ -203,7 +203,12 @@ for a codex lane under the DEFAULT codex primary, nor a grok lane under a grok p
 those pairings the independent checks are the driver plus the Tier-2 claude audit (Tier-1
 lane work gets no audit — route to the OTHER lane if reviewer independence matters there).
 For high-stakes work, race `grok-implementer` and `codex-implementer` on the SAME spec and
-keep the stronger diff — a third independent perspective for one extra lane's cost.
+keep the stronger diff — a third independent perspective for one extra lane's cost. Race
+with ISOLATION, never concurrently in one checkout: both lanes write the shared working
+tree and `scope` authorizes by PATH, not producer, so parallel same-checkout runs
+interleave into one mixed diff neither lane produced. Run them SEQUENTIALLY (run one,
+capture its diff, reset clean, run the other) or spawn each lane subagent in its own git
+worktree (the driver's subagent worktree isolation).
 
 (The lanes are Claude-Code subagents, so they apply when the DRIVER is Claude/Fable — the
 architect-delegates-to-cheaper-family topology. A non-Claude driver delegates via its own

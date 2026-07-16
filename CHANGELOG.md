@@ -39,7 +39,9 @@
   boundary, in-session. The economic case: implementation mechanics are most of a session's
   tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
   both lanes on the same spec and keep the stronger diff (a third independent perspective for one
-  extra lane's cost). Pattern adapted, with thanks, from DannyMac180/fable-advisor.
+  extra lane's cost) — sequentially or one worktree per lane, never two lanes concurrently in one
+  checkout: they share the working tree and scope authorizes by path, not producer. Pattern
+  adapted, with thanks, from DannyMac180/fable-advisor.
 - **Live-verified the CLI invocations (not just stub-checked).** Driving the real `grok` and `codex`
   CLIs through each lane's exact sequence surfaced a bug the stub-driven canary could not: under
   `--permission-mode acceptEdits` a headless grok *announces* an edit and silently drops it (no TUI
@@ -111,7 +113,7 @@
   Grok 4.5 takes the DRIVER seat (the grok CLI is the harness; the lanes go dormant — the
   driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
   Fable 5 advises (`advisor_model_max = fable`, peer Opus 4.8), GPT-5.6 reviews
-  (`reviewer_model_tier1/tier2 = gpt-5.6`; pre-GA accounts stay on the GPT-5.5 vendor
+  (`reviewer_model_tier1/tier2 = gpt-5.6`; ineligible accounts stay on the GPT-5.5 vendor
   default), Claude audits (`audit_vendor = claude` — a third family, distinct from both
   driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
@@ -129,9 +131,10 @@
   since the advisor (unlike the auditor) must read code. The scaffold also materializes the
   v4 advisor seat LIVE (`advisor_model = opus`, `advisor_model_max = fable` — advise is
   non-blocking, so a missing Fable reports unavailable) and ships the reviewer tier knobs
-  COMMENTED (`# reviewer_model_tier1/tier2 = gpt-5.6`): GPT-5.6 is GA-gated and an active
-  line on a pre-GA account would make the reviewer fail loud rather than fall back —
-  uncomment at GA. Canary: scaffold-default asserts (audit vendor, live advisor knobs,
+  COMMENTED (`# reviewer_model_tier1/tier2 = gpt-5.6`): GPT-5.6 access is per-account
+  (GA July 9 2026; Codex CLI >= 0.144.0) and an active line on an ineligible account
+  would make the reviewer fail loud rather than fall back — uncomment once
+  `codex -m gpt-5.6` works. Canary: scaffold-default asserts (audit vendor, live advisor knobs,
   commented-not-active reviewer tiers), claude-audit end-to-end + `--safe-mode` argv assert,
   claude added to the audit-isolation matrix and first-adoption probe, and advise isolation
   flags asserted on the COMMAND block.
