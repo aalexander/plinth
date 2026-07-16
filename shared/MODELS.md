@@ -49,10 +49,13 @@ What a non-Claude driver does and doesn't get: grok reads the driver contract
 (both contract files) but does NOT run `.claude/` — no in-session guard hooks, no
 Stop gate. The binding layer is unchanged and vendor-neutral: `review.sh` /
 `risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
-protection's required checks gate every merge regardless of driver. (If
-in-session interception ever proves necessary, the designated fix is one CI-side
-protected-paths tamper check — vendor-neutral, covers every driver — not
-per-vendor hook ports.)
+protection's required checks gate every merge regardless of driver — but those
+required checks verify the CI floor and tooling integrity, not the review
+verdict, so under a non-Claude driver ALSO mark the Codex cloud review check
+REQUIRED (one branch-protection toggle): that is the enforced server-side
+adversarial gate for the default path. (If in-session interception ever proves
+necessary, the designated fix is one CI-side protected-paths tamper check —
+vendor-neutral, covers every driver — not per-vendor hook ports.)
 
 ### Contingency — Fable access lapses (live risk)
 Fable has been suspended once already and runs credits-only with no metered

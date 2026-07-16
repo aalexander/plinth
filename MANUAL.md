@@ -137,7 +137,10 @@ Everything between is the model's call.
    it arrives security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
-   protection requiring those checks — exact steps in "Branch protection"
+   protection requiring those checks — AND, under the v4 default (a non-Claude
+   driver with no local Stop gate), mark the Codex cloud review check REQUIRED
+   too: that makes an independent adversarial review a server-side merge gate
+   for every driver, not driver discipline. Exact steps in "Branch protection"
    below. From then on the merge gate is real. Until you've SEEN both fire,
    treat them as absent.
 
@@ -303,9 +306,13 @@ Two operator chores the rules generate:
    gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
    driver does not run this hook, so nothing LOCAL forces it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
-   status checks that branch protection enforces. The Codex cloud review posts findings
-   as a backstop but is not a required gate by default, so for a non-Claude driver the
-   review discipline itself is the primary safeguard, not a server-side block.
+   status checks that branch protection enforces. Those required checks verify the
+   floor and tooling integrity, NOT the review verdict — so under the v4 grok
+   default, make the Codex cloud review a REQUIRED check too (quick start step 4):
+   that is the enforced server-side adversarial gate for a non-Claude driver.
+   Without it, the review loop is voluntary driver discipline for the default
+   path. (A server-side check of `review.sh`'s own APPROVED-at-HEAD verdict is
+   the designated next step — the verdict is local session state today.)
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is

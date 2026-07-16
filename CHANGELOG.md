@@ -76,6 +76,17 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **lane-guard: snapshot diff failure is fail-closed; empty policy set is explicit.** The
+  sensitive-snapshot comparison now gates on diff's OWN exit code — rc=1 (differ) proceeds
+  to the violation report, rc>1 (diff trouble) exits 5 instead of yielding an empty change
+  list that silently passed a lane touching sensitive paths. (The script runs pipefail
+  WITHOUT -e, so the prior code never aborted on rc=1 — the real hole was rc>1 reading as
+  "no changes".) An empty protected-paths pattern set is now an explicit `|| true`, not an
+  ignored pipefail. Under the v4 non-Claude default driver, docs now instruct marking the
+  Codex cloud review a REQUIRED branch-protection check — the enforced server-side
+  adversarial gate for a driver with no local Stop gate (the required floor/checks verify
+  tooling integrity, not the review verdict; a server-side APPROVED-at-HEAD check remains
+  the designated next step).
 - **Floor checks executable MODE, not just bytes.** The pinned executables are executed
   directly (`./.plinth/review.sh`, the lanes' `.plinth/lane-guard.sh` calls, the `.claude`
   hooks); `cmp` alone would pass pinned bytes committed at 0644 while every exec fails.

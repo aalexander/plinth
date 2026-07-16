@@ -179,7 +179,9 @@ case "$sub" in
       *) echo "scope: base .plinth/protected-paths is not a regular file (git mode $bmode) — refusing to run (fail closed)" >&2; exit 5 ;;
     esac
     base_prot="$(git show "${base}:.plinth/protected-paths" 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' || true)"
-    all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u)"
+    # `|| true`: an EMPTY pattern set (no protected-paths anywhere) is legitimate — grep -v
+    # then exits 1 under pipefail, which must read as "no patterns", not as a failure.
+    all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u || true)"
     while IFS= read -r p; do [ -n "$p" ] || continue; grep -E "$p" </dev/null 2>/dev/null; [ "$?" -le 1 ] || { echo "scope: .plinth/protected-paths (base or tree) has an INVALID regex ($p) — refusing to run (fail closed)" >&2; exit 5; }; done <<< "$all_prot"
     protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; printf '%s' "$1" | grep -Eq "$p" && return 0; done <<< "$all_prot"; return 1; }
     in_spec() { local f="$1" a; shift; for a in "$@"; do [ "$f" = "$a" ] && return 0; done; return 1; }
@@ -205,7 +207,13 @@ CHANGED
       if [ "$before" != "$after" ]; then
         # strip the diff marker + the two record fields (`<sha> <mode>` or `symlink <target>`) + the
         # two-space separator, leaving just the path:
-        touched="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null | grep -E '^[<>]' | sed -E 's/^[<>] +[^ ]+ +[^ ]+  //' | sort -u)"
+        # Split the diff from the extraction and gate on ITS exit code: rc=1 is the expected
+        # "files differ"; rc>1 is diff TROUBLE, and letting it yield an empty `touched` would
+        # silently pass a lane that changed sensitive paths (fail closed instead). Note the
+        # script runs pipefail WITHOUT -e, so a failing assignment never aborts by itself.
+        drc=0; dout="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null)" || drc=$?
+        [ "$drc" -le 1 ] || { echo "scope: could not diff the sensitive snapshots (diff rc=$drc) — refusing to accept the lane (fail closed)" >&2; exit 5; }
+        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] +[^ ]+ +[^ ]+  //' | sort -u || true)"
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           # SPEC-GATED template lookalikes: a SECRET_SAFE name (.env.example, id_rsa_notes.txt)
