@@ -163,7 +163,10 @@ case "$sub" in
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "scope: not inside a git repo — refusing to accept the lane"; exit 5; }
     git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1 || { echo "scope: cannot resolve baseref '${base}' — the diff is uncomputable; refusing to accept the lane"; exit 5; }
     validate_prot_pats  # a malformed protected-paths regex must fail loud, not silently un-protect a path
-    dif="$(git diff --name-only "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    # --no-renames: with diff.renames enabled, a rename from an OUT-OF-SPEC path to an
+    # in-spec name would list only the new path — the old file's deletion would escape
+    # the scope check. Force delete+add so BOTH paths are checked against the spec.
+    dif="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     unt="$(git ls-files --others --exclude-standard)" || { echo "scope: 'git ls-files' failed — refusing to accept the lane"; exit 5; }
     changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u )"
     # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a

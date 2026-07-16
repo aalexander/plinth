@@ -1562,6 +1562,14 @@ jobs:
             echo x > other.py
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a NEW out-of-spec file (rc=$r)"; exit 1; }
             rm -f other.py
+            # RENAME LAUNDERING (round-23): with rename detection enabled, `git mv out-of-spec ->
+            # in-spec-name` must still flag the OLD path's disappearance — scope forces --no-renames
+            # so the rename reads as delete+add and BOTH paths are checked against the spec:
+            git config diff.renames true
+            git mv mod.py renamed_in_spec.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py renamed_in_spec.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope authorized a RENAME from out-of-spec mod.py to an in-spec name (rc=$r) — rename laundering"; exit 1; }
+            git mv renamed_in_spec.py mod.py; git config --unset diff.renames
             # TRACKED PROTECTED edit -> 4, WITHOUT --snapshot, to prove the git-diff protected() path catches it
             # independently (a regression that stopped diffing tracked protected files must still fail here):
             echo weak >> .plinth/config

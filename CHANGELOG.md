@@ -76,6 +76,16 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **lane-guard scope forces `--no-renames`.** With `diff.renames` enabled, a `git mv` from an
+  out-of-spec path to an in-spec name listed only the NEW path — the old file's disappearance
+  escaped the spec check (rename laundering). Renames now read as delete+add so BOTH paths are
+  checked; canary + probe cover the `git config diff.renames true` case.
+- **Known issue in the PINNED v4.4.0 reviewer (fixed by this release):** v4.4.0's `review.sh`
+  builds its commit list with `git log … | head -50` under `set -o pipefail` — on a branch with
+  MORE than 50 commits, `git log` can take a racy SIGPIPE and the whole round aborts with
+  exit 141 (observed ~1/30 in isolation, reliably in-script; re-running the round can get
+  past it). v4.5.0's commit-list build is pathspec-filtered with no `head` cap, so projects
+  clear the bug by updating their pin.
 - **lane-guard: snapshot diff failure is fail-closed; empty policy set is explicit.** The
   sensitive-snapshot comparison now gates on diff's OWN exit code — rc=1 (differ) proceeds
   to the violation report, rc>1 (diff trouble) exits 5 instead of yielding an empty change
