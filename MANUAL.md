@@ -309,8 +309,11 @@ Two operator chores the rules generate:
 ## The dashboard (`plinth watch`)
 Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
-ctrl-c to quit; `--once` prints a single frame). If it says "no event feed", the pulse
-hook isn't wired — `plinth update` will say so too.
+ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
+NORMAL under the default grok driver (no `.claude/` hooks): the frame reduces to
+what no driver can fake — branch @ head, review verdict, NEEDS-HUMAN queue. If
+you are driving with CLAUDE and still see that banner, the pulse hook isn't
+wired — `plinth update` will say so too.
 
 ```
  ◤ PLINTH WATCH fix auth token refresh on 401          <- the task (latest human prompt)
