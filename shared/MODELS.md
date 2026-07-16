@@ -20,7 +20,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 | **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment at GA |
-| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude` (the scaffold default) — a different FAMILY than both driver and reviewer |
+| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both driver and reviewer, pinned so a Sonnet/Fable CLI default can't drift the seat |
 
 Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
 the speed of the codex lane on well-specified work — and wall-clock is the
