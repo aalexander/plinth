@@ -1014,36 +1014,61 @@ $question"
   esac
 }
 
-# plinth hookprobe <grok|codex> — does this vendor CLI EXECUTE wired .claude/ PreToolUse
-# hooks? The answer decides real enforcement semantics (guard/pulse/Stop gate active or
-# not) and it is VERSION/ENVIRONMENT-dependent — vendor docs and prose claims both go
-# stale, so this shipped probe is the source of truth: it wires a marker hook in a
-# SCRATCH repo, drives the CLI through one trivial command (one small model call), and
-# reports what actually happened. Exit 0 = hook executed; 1 = did not; 3 = CLI missing.
+# plinth hookprobe <grok|codex> — which wired .claude/ hook EVENTS does this vendor CLI
+# EXECUTE? Plinth's enforcement uses four (SessionStart = session-start.sh, PreToolUse =
+# guard.sh, PostToolUse = pulse.sh, Stop = review-gate.sh); the probe wires a marker for
+# EACH in a SCRATCH repo, drives the CLI through one trivial command (one small model
+# call, wall-clock capped), and reports each event separately — a driver could execute
+# some events and not others, and only the executed ones are enforced. The answer is
+# VERSION/ENVIRONMENT-dependent; vendor docs and prose claims both go stale — this probe
+# is the source of truth. Exit 0 = ALL FOUR executed; 1 = none or some (each named);
+# 2 = usage; 3 = CLI missing; 4 = timed out (PLINTH_HOOKPROBE_TIMEOUT, default 120s).
 run_hookprobe() {
   shift  # drop 'hookprobe'
-  local vendor="${1:-grok}" d marker ver
+  local vendor="${1:-grok}" d marker ver p ev report="" allfired=1 fired vrc=0
+  local evs="SessionStart PreToolUse PostToolUse Stop"
   case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
   command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
   d="$(mktemp -d)"; marker="$d/hookmark"
   ( cd "$d" && git init -qb main . >/dev/null 2>&1
     mkdir -p .claude/hooks
-    printf '#!/usr/bin/env bash\necho HOOK_FIRED >> "%s"\nexit 0\n' "$marker" > .claude/hooks/probe.sh
-    chmod +x .claude/hooks/probe.sh
-    printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s"}]}]}}\n' \
-      "$d/.claude/hooks/probe.sh" > .claude/settings.json )
+    printf '#!/usr/bin/env bash\necho "$1" >> "%s"\nexit 0\n' "$marker" > .claude/hooks/probe.sh
+    chmod +x .claude/hooks/probe.sh )
+  p="$d/.claude/hooks/probe.sh"
+  printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
+    "$p" "$p" "$p" "$p" > "$d/.claude/settings.json"
   ver="$("$vendor" --version 2>/dev/null | head -1 || echo unknown)"
+  # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else perl alarm) — a CLI
+  # hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
+  local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
+  command -v timeout >/dev/null 2>&1 && tmo="timeout"
+  [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
+  capped() { if [ -n "$tmo" ]; then "$tmo" "$cap" "$@"; else perl -e 'alarm shift; exec @ARGV' "$cap" "$@"; fi; }
+  # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
+  # statement would abort the probe before the timeout/none branches can report.
   case "$vendor" in
-    grok)  ( cd "$d" && grok -p "Run this exact shell command and show its output: echo hookprobe" \
-               --permission-mode bypassPermissions --sandbox workspace --max-turns 3 ) >/dev/null 2>&1 || true ;;
+    grok)  ( cd "$d" && capped grok -p "Run this exact shell command and show its output: echo hookprobe" \
+               --permission-mode bypassPermissions --sandbox workspace --max-turns 3 ) >/dev/null 2>&1 || vrc=$? ;;
     codex) ( cd "$d" && printf 'Run this exact shell command and show its output: echo hookprobe' \
-               | codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || true ;;
+               | capped codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || vrc=$? ;;
   esac
-  if [ -f "$marker" ]; then
-    echo "hookprobe: $vendor ($ver) EXECUTED the wired .claude/ PreToolUse hook — local guard/pulse/Stop-gate semantics APPLY to this driver; a missing pulse feed under it means BROKEN WIRING, not a feedless driver."
+  if [ "$vrc" = 124 ] || [ "$vrc" = 142 ]; then
+    echo "hookprobe: $vendor ($ver) TIMED OUT after ${cap}s — probe INCONCLUSIVE (auth/network/sandbox hang?). Nothing verified."
+    exit 4
+  fi
+  fired="$(sort -u "$marker" 2>/dev/null || true)"
+  for ev in $evs; do
+    if printf '%s\n' "$fired" | grep -qx "$ev"; then report="${report}${ev}: EXECUTED; "
+    else report="${report}${ev}: no; "; allfired=0; fi
+  done
+  if [ "$allfired" = 1 ]; then
+    echo "hookprobe: $vendor ($ver) executed ALL FOUR wired .claude/ hook events (${report% }) — guard, pulse, session-start AND Stop-gate semantics apply to this driver; a missing pulse feed under it means BROKEN WIRING."
     exit 0
+  elif [ -z "$fired" ]; then
+    echo "hookprobe: $vendor ($ver) executed NONE of the wired .claude/ hook events (${report% }) — expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
+    exit 1
   else
-    echo "hookprobe: $vendor ($ver) did NOT execute the wired .claude/ PreToolUse hook — expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
+    echo "hookprobe: $vendor ($ver) executed SOME hook events only (${report% }) — PARTIAL Claude-compat: ONLY the events marked EXECUTED are enforced for this driver; do not assume the rest."
     exit 1
   fi
 }

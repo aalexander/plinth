@@ -108,15 +108,19 @@
   GA July 9 2026, per-account eligibility, Codex CLI >= 0.144.0 — the reviewer tier knobs
   still ship commented (an active knob on an ineligible account fails loud), with the
   activation probe (`codex -m gpt-5.6`) documented.
-- **`plinth hookprobe <grok|codex>` — vendor hook-execution is PROBED, never asserted.** Whether
-  a non-Claude CLI executes wired `.claude/` PreToolUse hooks decides the real enforcement
-  semantics (guard/pulse/Stop gate active or not) and is version/environment-dependent; vendor
-  docs and prose claims both go stale. The shipped probe wires a marker hook in a scratch repo,
-  drives the CLI through one trivial command (one small model call), and reports EXECUTED
-  (exit 0) or not (exit 1; 3 = CLI missing). At release time `grok 0.2.93` reported: did NOT
-  execute. Every doc claim about non-Claude hook behavior now cites the probe; the canary
-  verifies the probe's detection both ways with stub drivers (the vendor behavior itself is
-  only testable against the real CLI, locally).
+- **`plinth hookprobe <grok|codex>` — vendor hook-execution is PROBED per EVENT, never
+  asserted.** Which wired `.claude/` hook events a non-Claude CLI executes decides the real
+  enforcement semantics, PER EVENT (SessionStart = session-start.sh, PreToolUse = guard.sh,
+  PostToolUse = pulse.sh, Stop = review-gate.sh) — and it is version/environment-dependent;
+  vendor docs and prose claims both go stale. The shipped probe wires a marker for each of
+  the four in a scratch repo, drives the CLI through one trivial command (one small model
+  call, wall-clock capped via PLINTH_HOOKPROBE_TIMEOUT, default 120s — a hung CLI exits 4,
+  bounded, instead of hanging the operator), and reports each event separately: exit 0 =
+  all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing.
+  At release time `grok 0.2.93` reported: NONE executed. Every doc claim about non-Claude
+  hook behavior now cites the probe; the canary verifies the probe's detection five ways
+  with stub drivers — all-four, partial (per-event report), none, missing CLI, hang→timeout
+  (the vendor behavior itself is only testable against the real CLI, locally).
 - **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a driver whose
   CLI does not execute `.claude/` hooks — probe with `plinth hookprobe`; grok 0.2.93 reported
   no execution — or pulse.sh unwired) the dashboard no longer bails — it

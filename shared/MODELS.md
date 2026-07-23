@@ -47,10 +47,11 @@ vendor-neutral shell).
 
 What a non-Claude driver does and doesn't get: grok reads the driver contract
 (both contract files); whether it EXECUTES `.claude/` hooks is probeable, not
-assumed — run `plinth hookprobe grok` (shipped; one small model call). At release
-time grok 0.2.93 reported no execution: no in-session guard hooks, no Stop gate.
-Re-run the probe after CLI upgrades; a probe reporting EXECUTED is a strict
-enforcement upgrade and this section becomes the floor. The binding layer is unchanged and vendor-neutral: `review.sh` /
+assumed — run `plinth hookprobe grok` (shipped; one small capped model call that
+reports EACH of the four enforcement hook events separately). At release time
+grok 0.2.93 reported NONE executed: no in-session guard hooks, no Stop gate.
+Re-run after CLI upgrades; only events the probe marks EXECUTED are enforced —
+an all-four result is a strict upgrade and this section becomes the floor. The binding layer is unchanged and vendor-neutral: `review.sh` /
 `risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review

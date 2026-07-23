@@ -72,12 +72,15 @@ Everything between is the model's call.
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
-- `plinth hookprobe <grok|codex>` — does this vendor CLI EXECUTE wired `.claude/`
-  PreToolUse hooks? One small model call in a scratch repo: wires a marker hook,
-  drives the CLI once, reports EXECUTED (exit 0) or not (exit 1). The answer
-  decides real enforcement semantics (guard/pulse/Stop gate active or not) and is
-  version/environment-dependent — trust the probe over vendor docs and over this
-  manual. Re-run after CLI upgrades.
+- `plinth hookprobe <grok|codex>` — which wired `.claude/` hook EVENTS does this
+  vendor CLI execute? Wires a marker for EACH of the four events Plinth
+  enforcement uses (SessionStart = session-start, PreToolUse = guard,
+  PostToolUse = pulse, Stop = review gate), drives the CLI once (one small model
+  call, wall-clock capped: PLINTH_HOOKPROBE_TIMEOUT, default 120s), and reports
+  each event separately. Exit 0 = ALL FOUR executed; 1 = none or some — only the
+  events marked EXECUTED are enforced for that driver; 3 = CLI missing; 4 =
+  timed out (inconclusive). Version/environment-dependent — trust the probe over
+  vendor docs and over this manual. Re-run after CLI upgrades.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,
   NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
@@ -260,14 +263,18 @@ Two operator chores the rules generate:
    commands and protected paths are blocked at the tool level, including for every
    Claude subagent. These are `.claude/` hooks — and whether a NON-Claude driver
    executes them is PROBEABLE, not assumed: run `plinth hookprobe <grok|codex>`
-   (shipped tooling; one small model call). It wires a marker PreToolUse hook in
-   a scratch repo, drives the CLI once, and reports whether the hook EXECUTED.
-   At release time grok 0.2.93 reported: did NOT execute (its Claude-compat is
-   instruction/flag-level — CLAUDE.md auto-load, `--allowedTools` naming). Vendor
-   compat moves — re-run the probe after CLI upgrades; trust the probe, not
-   vendor docs or this sentence. A probe reporting EXECUTED is a strict upgrade
-   (guard/pulse/Stop gate light up); everything below stays the enforcement
-   FLOOR. Under a non-executing driver you get no local guard, no
+   (shipped tooling; one small capped model call). It wires a marker for EACH of
+   the four hook events Plinth enforcement uses (SessionStart, PreToolUse =
+   guard, PostToolUse = pulse, Stop = review gate), drives the CLI once, and
+   reports each event separately — ONLY the events reported EXECUTED are
+   enforced for that driver. At release time grok 0.2.93 reported: NONE executed
+   (its Claude-compat is instruction/flag-level — CLAUDE.md auto-load,
+   `--allowedTools` naming). Vendor compat moves — re-run the probe after CLI
+   upgrades; trust the probe, not vendor docs or this sentence. An all-four
+   result is a strict upgrade (guard, pulse, session-start and Stop gate all
+   active); a PARTIAL result enforces only what it names; everything below is
+   the FLOOR for a none-or-partial driver. Under a non-executing driver you get
+   no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
    is told to follow (trusted to run the review loop) and, server-side, by branch
    protection's required checks (floor + checks — CI and tooling integrity; they do
