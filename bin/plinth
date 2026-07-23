@@ -1046,14 +1046,24 @@ run_hookprobe() {
   capped() { if [ -n "$tmo" ]; then "$tmo" "$cap" "$@"; else perl -e 'alarm shift; exec @ARGV' "$cap" "$@"; fi; }
   # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
   # statement would abort the probe before the timeout/none branches can report.
+  # The probe command leaves a SENTINEL (cli-ran.txt): hooks only had a chance to fire
+  # if the CLI actually executed a tool command. Without the sentinel the result is
+  # INCONCLUSIVE (unauthenticated CLI, sandbox refusal, model failure, …), never
+  # "executed NONE" — an empty marker from a broken run is not evidence of anything.
+  # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
+  # statement would abort the probe before the timeout/inconclusive branches report.
   case "$vendor" in
-    grok)  ( cd "$d" && capped grok -p "Run this exact shell command and show its output: echo hookprobe" \
+    grok)  ( cd "$d" && capped grok -p "Run this exact shell command: touch cli-ran.txt" \
                --permission-mode bypassPermissions --sandbox workspace --max-turns 3 ) >/dev/null 2>&1 || vrc=$? ;;
-    codex) ( cd "$d" && printf 'Run this exact shell command and show its output: echo hookprobe' \
+    codex) ( cd "$d" && printf 'Run this exact shell command: touch cli-ran.txt' \
                | capped codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || vrc=$? ;;
   esac
   if [ "$vrc" = 124 ] || [ "$vrc" = 142 ]; then
     echo "hookprobe: $vendor ($ver) TIMED OUT after ${cap}s — probe INCONCLUSIVE (auth/network/sandbox hang?). Nothing verified."
+    exit 4
+  fi
+  if [ ! -f "$d/cli-ran.txt" ]; then
+    echo "hookprobe: $vendor ($ver) FAILED to execute the probe command (CLI exit $vrc — unauthenticated? sandbox refused? model error?) — INCONCLUSIVE: this is NOT evidence about hook execution. Fix the CLI and re-run."
     exit 4
   fi
   fired="$(sort -u "$marker" 2>/dev/null || true)"

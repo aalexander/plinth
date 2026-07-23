@@ -116,8 +116,12 @@
   the four in a scratch repo, drives the CLI through one trivial command (one small model
   call, wall-clock capped via PLINTH_HOOKPROBE_TIMEOUT, default 120s — a hung CLI exits 4,
   bounded, instead of hanging the operator), and reports each event separately: exit 0 =
-  all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing.
-  At release time `grok 0.2.93` reported: NONE executed. Every doc claim about non-Claude
+  all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing;
+  4 = INCONCLUSIVE (timeout, or the CLI never executed the probe's sentinel command — an
+  unauthenticated/broken CLI is NOT evidence of hook non-execution and never reads as NONE).
+  A release-time local run against `grok 0.2.93` reported NONE executed — reproduce with
+  `plinth hookprobe grok`; the probe, not this sentence, is the source of truth. Every doc
+  claim about non-Claude
   hook behavior now cites the probe; the canary verifies the probe's detection five ways
   with stub drivers — all-four, partial (per-event report), none, missing CLI, hang→timeout
   (the vendor behavior itself is only testable against the real CLI, locally).

@@ -1355,15 +1355,29 @@ jobs:
           cat > "$HPB/grok" <<'HPX'
           #!/usr/bin/env bash
           [ "${1:-}" = --version ] && { echo stub-hookful; exit 0; }
+          touch cli-ran.txt
           jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c"; done
           echo done
           HPX
           chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe missed an all-events driver (rc=$rc): $out"; exit 1; }
+          # codex invocation path (stdin form) — same all-events stub shape:
+          cat > "$HPB/codex" <<'HPC'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo stub-codex; exit 0; }
+          cat >/dev/null
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c"; done
+          echo done
+          HPC
+          chmod +x "$HPB/codex"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe codex 2>&1)" || rc=$?
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe codex path broken (rc=$rc): $out"; exit 1; }
           cat > "$HPB/grok" <<'HPP'
           #!/usr/bin/env bash
           [ "${1:-}" = --version ] && { echo stub-partial; exit 0; }
+          touch cli-ran.txt
           c="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' .claude/settings.json 2>/dev/null)"
           [ -n "$c" ] && [ "$c" != null ] && sh -c "$c"
           echo done
@@ -1372,9 +1386,14 @@ jobs:
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SOME hook events only" && printf '%s' "$out" | grep -q "PreToolUse: EXECUTED" && printf '%s' "$out" | grep -q "Stop: no"; } \
             || { echo "::error::hookprobe mis-reported a PARTIAL-compat driver (rc=$rc): $out"; exit 1; }
-          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hookless; exit 0; }\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hookless; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "executed NONE"; } || { echo "::error::hookprobe missed a hook-IGNORING driver (rc=$rc): $out"; exit 1; }
+          # installed-but-BROKEN CLI (unauth/sandbox/model failure — exits without running the
+          # command): must be INCONCLUSIVE (4), never "executed NONE" (the fail-open):
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-broken; exit 0; }\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "INCONCLUSIVE"; } || { echo "::error::hookprobe read a BROKEN CLI as evidence (rc=$rc, want 4/INCONCLUSIVE): $out"; exit 1; }
           rc=0; PATH="/usr/bin:/bin" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok >/dev/null 2>&1 || rc=$?
           [ "$rc" = 3 ] || { echo "::error::hookprobe missing-CLI exit $rc (want 3)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"

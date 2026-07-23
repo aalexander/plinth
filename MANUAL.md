@@ -331,8 +331,9 @@ Two operator chores the rules generate:
    gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
-   gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
-   driver does not run this hook, so nothing LOCAL forces it to review — it is bound
+   gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
+   whose CLI does not execute the Stop hook (per-CLI — `plinth hookprobe`; grok
+   0.2.93 reported no execution) has nothing LOCAL forcing it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
    status checks that branch protection enforces. Those required checks verify the
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
@@ -501,7 +502,8 @@ it has run green with a real smoke_cmd.
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver (codex/grok do not execute `.claude/` hooks — verified at grok 0.2.93; re-verify on upgrades), so for a codex/grok
+  fires only under a Claude driver or a probe-verified hook-executing CLI (per-CLI —
+  `plinth hookprobe`; grok 0.2.93 reported no execution). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
   server-side verifier until the receipt check ships, and the cloud review is
@@ -511,7 +513,8 @@ it has run green with a real smoke_cmd.
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
-  can't trap a session. Codex/grok drivers do not run this hook — for them there is no
+  can't trap a session. A driver whose CLI does not execute the Stop hook (per-CLI —
+  `plinth hookprobe`; grok 0.2.93: no execution) has no
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
   APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
