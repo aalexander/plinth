@@ -1850,6 +1850,13 @@ jobs:
           ( cd "$WTL" && echo c >> app.py && git status >/dev/null 2>&1 )
           r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW2" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 0 ] || { echo "::error::clean worktree lane run false-flagged (rc=$r)"; exit 1; }
+          # per-worktree config (extensions.worktreeConfig): git config --worktree writes
+          # $GIT_DIR/config.worktree, not the common config — must still be caught (round-60):
+          ( cd "$WTL" && git config extensions.worktreeConfig true )
+          SNAPW3="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW3" )
+          ( cd "$WTL" && echo d >> app.py && git config --worktree core.hooksPath /tmp/evil )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW3" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a config.worktree hooksPath mutation (rc=$r)"; exit 1; }
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

@@ -89,7 +89,7 @@ sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER mat
   # Match by COMPONENT so a resolved gitdir path (worktree: .git/worktrees/<n>/HEAD, or an
   # absolute common-dir) is covered, not just a literal top-level .git/:
   case "/$1" in \
-    */config|*/info/exclude|*/HEAD|*/packed-refs) \
+    */config|*/config.worktree|*/info/exclude|*/HEAD|*/packed-refs) \
       case "/$1" in */.git/*|*/.git) return 0 ;; esac ;; esac
   case "/$1" in */hooks/*|*/refs/*) case "/$1" in */.git/*) return 0 ;; esac ;; esac
   # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
@@ -131,7 +131,7 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   GITDIR="$(git rev-parse --git-dir 2>/dev/null)"; GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; \
-    for cp in "$GITCOMMON/config" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
+    for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
       [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
     find "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sort -u | while IFS= read -r f; do
     # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
