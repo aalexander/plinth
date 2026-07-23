@@ -1726,7 +1726,19 @@ jobs:
             for f in secrets/.env.example credentials/id_rsa_notes.txt .ssh/id_rsa_format.md .aws/.env.sample .env/id_rsa_notes.txt cert.pem/.env.example prod.key/id_rsa_notes.txt; do
               printf '%s' "$out" | grep -qF "  $f" || { echo "::error::SECRET_SAFE wrongly exempted a lookalike inside a secret dir: $f"; exit 1; }
             done
-            rm -rf secrets credentials .ssh .aws .env cert.pem prod.key; printf 'pre\n' > .env )
+            rm -rf secrets credentials .ssh .aws .env cert.pem prod.key; printf 'pre\n' > .env
+            # BASE-UNION snapshot (round-41): a lane that NARROWS the working protected-paths must
+            # not hide a base-pattern-matching GITIGNORED addition from the post-run snapshot.
+            # (protected-paths itself is deliberately unprotected in this fixture, so the tracked
+            # check passes the in-spec policy edit — the catch must come from the snapshot union.)
+            printf '(^|/)vaultsec/\n' >> .plinth/protected-paths; printf 'vaultsec/\n' >> .gitignore
+            git add -A; git commit -qm "base gains vaultsec protection" >/dev/null
+            SNAPU="$(mktemp)"; bash "$LG" snapshot > "$SNAPU"
+            grep -v 'vaultsec' .plinth/protected-paths > .plinth/pp.t && mv .plinth/pp.t .plinth/protected-paths
+            mkdir -p vaultsec; printf 'LEAK\n' > vaultsec/leak
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPU" app.py .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a gitignored addition under a BASE-only protected pattern after the lane narrowed the working policy (rc=$r) — snapshot must use the base union"; exit 1; }
+            rm -rf vaultsec; git checkout -q -- .plinth/protected-paths )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

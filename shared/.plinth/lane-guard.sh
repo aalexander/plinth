@@ -52,6 +52,11 @@ SECRET_FILES='(^|/)\.env($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
 # time a snapshot-diff on one is AUTHORIZED only when the spec explicitly lists it:
 SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)_[a-z0-9_]+\.(md|markdown|txt|rst)$'
 prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
+# The ACTIVE pattern set for sensitivity checks. scope sets LG_PROT_UNION to the
+# BASE-unioned policy before re-snapshotting, so a lane that NARROWS the working-tree
+# .plinth/protected-paths cannot hide a base-pattern-matching gitignored addition from
+# the post-run snapshot (the tracked-path check already uses the same union).
+active_pats() { if [ -n "${LG_PROT_UNION:-}" ]; then printf '%s\n' "$LG_PROT_UNION"; else prot_pats; fi; }
 validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-paths regex — a malformed
   # pattern must never silently narrow protection (grep exit 2 would otherwise fall through as no-match).
   # FIRST prove we can actually CREATE a temp file in the dir bash uses for here-doc/here-string temps
@@ -86,7 +91,7 @@ sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER mat
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     printf '%s' "$1" | grep -Eq "$pat" && return 0
-  done < <(prot_pats)
+  done < <(active_pats)
   printf '%s' "$1" | grep -Eq "$SECRET_DIRS"  && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
   printf '%s' "$1" | grep -Eq "$SECRET_FILES" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
@@ -203,7 +208,11 @@ CHANGED
     # cannot attribute. Requires the pre-run snapshot; without it, those paths are NOT verified.
     if [ -n "$snapfile" ]; then
       [ -f "$snapfile" ] && [ -r "$snapfile" ] || { echo "scope: --snapshot file '$snapfile' missing or unreadable — refusing to accept the lane"; exit 5; }
+      # Re-snapshot against the BASE-unioned policy (all_prot), not the working tree's —
+      # a lane-narrowed .plinth/protected-paths must not shrink the sensitive set here:
+      LG_PROT_UNION="$all_prot"
       after="$(sens_snapshot)" || { echo "scope: could not re-snapshot sensitive files (a sensitive file is unhashable/unstattable) — refusing (fail closed)" >&2; exit 5; }
+      LG_PROT_UNION=""
       # A failed read must not become an empty baseline (it would mis-attribute or, with no
       # sensitive files present, silently verify nothing) — fail closed instead.
       before="$(cat "$snapfile")" || { echo "scope: cannot read --snapshot file '$snapfile' — refusing (fail closed)" >&2; exit 5; }
