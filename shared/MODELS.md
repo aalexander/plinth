@@ -190,8 +190,8 @@ model the ambiguity.
 **Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
 the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
 has whole-tree write and (per the hookprobe result for its CLI — grok 0.2.93: no
-hook execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) typically does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
-guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
+hook execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) typically does not run the `.claude/` guard, so each lane enforces
+`.plinth/lane-guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets/keys,
 protected — even gitignored) may have been added/changed/repointed by the lane (else SCOPE VIOLATION,
 not accepted; it fails loud if the diff is uncomputable or a sensitive file is unhashable).

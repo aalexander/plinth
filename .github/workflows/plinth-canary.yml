@@ -1857,6 +1857,22 @@ jobs:
           ( cd "$WTL" && echo d >> app.py && git config --worktree core.hooksPath /tmp/evil )
           r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW3" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 4 ] || { echo "::error::scope missed a config.worktree hooksPath mutation (rc=$r)"; exit 1; }
+          # CLASS CLOSURE: a SEPARATE-GIT-DIR repo has an arbitrarily-named gitdir (no `.git`
+          # component); control-plane is recorded by resolved path, no name heuristic (round-61):
+          SGW="$(mktemp -d)"; SGC="$(mktemp -d)/control"
+          ( cd "$SGW"; git init -qb main --separate-git-dir "$SGC" . >/dev/null 2>&1; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          [ -f "$SGW/.git" ] || { echo "::error::separate-git-dir .git is not a file — setup wrong"; exit 1; }
+          SNAPS="$(mktemp)"; ( cd "$SGW" && bash "$LG" snapshot > "$SNAPS" )
+          printf '#!/bin/sh\necho pwned\n' > "$SGC/hooks/pre-commit"; chmod +x "$SGC/hooks/pre-commit"
+          ( cd "$SGW" && echo b >> app.py )
+          r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a hook in a SEPARATE-GIT-DIR (rc=$r) — name-heuristic regressed"; exit 1; }
+          rm -f "$SGC/hooks/pre-commit"
+          SNAPS2="$(mktemp)"; ( cd "$SGW" && bash "$LG" snapshot > "$SNAPS2" )
+          ( cd "$SGW" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::separate-git-dir clean run false-flagged (rc=$r)"; exit 1; }
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

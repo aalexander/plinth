@@ -84,14 +84,10 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
       echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
   done < <(prot_pats)
 }
-sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER matters: an explicit
-  # Git control-plane surfaces are ALWAYS sensitive (see sens_snapshot's enumeration note).
-  # Match by COMPONENT so a resolved gitdir path (worktree: .git/worktrees/<n>/HEAD, or an
-  # absolute common-dir) is covered, not just a literal top-level .git/:
-  case "/$1" in \
-    */config|*/config.worktree|*/info/exclude|*/HEAD|*/packed-refs) \
-      case "/$1" in */.git/*|*/.git) return 0 ;; esac ;; esac
-  case "/$1" in */hooks/*|*/refs/*) case "/$1" in */.git/*) return 0 ;; esac ;; esac
+sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path). Git control-plane
+  # files are NOT classified here — sens_snapshot records them DIRECTLY (it resolves the real
+  # gitdir and knows they are control-plane), so no path-name heuristic can miss an unusual
+  # gitdir layout (separate-git-dir, linked worktree). ORDER: an explicit
   # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
   # regardless of basename; then the secret-FILE names — which INCLUDE the SECRET_SAFE lookalikes
   # (they are recorded here, and spec-gated at scope time, never blind-exempt).
@@ -129,20 +125,27 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # GIT_COMMON = shared (config, hooks, packed-refs, info/exclude). Both may equal `.git`.
   local GITDIR GITCOMMON
   GITDIR="$(git rev-parse --git-dir 2>/dev/null)"; GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
-  { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
-    git ls-files -o --exclude-standard 2>/dev/null; \
-    for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
-      [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
-    find "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sort -u | while IFS= read -r f; do
-    # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
-    # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
-    # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
-    # bypasses the Claude guard and could otherwise forge local gate/dashboard state.
-    # ROOT feed only: the pulse hook appends $CLAUDE_PROJECT_DIR/.plinth/session/events.jsonl —
-    # a SUBDIR copy (subdir/.plinth/session/events.jsonl) matches the protected policy and
-    # stays fully enforced (an overbroad glob here was a carve-out escape).
-    case "$f" in .plinth/session/events.jsonl) continue ;; esac
-    sens_match "$f" || continue
+  # TWO tagged sources into one record loop (tab-separated tag<TAB>path):
+  #   G = git-visible file — GATE through sens_match (secret/protected classification)
+  #   C = control-plane file — the enumeration ALREADY knows it is control-plane (it resolved
+  #       the real gitdir), so record it UNCONDITIONALLY; no path-name heuristic to miss an
+  #       unusual gitdir layout (separate-git-dir, linked worktree, arbitrarily-named gitdir).
+  { { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
+      git ls-files -o --exclude-standard 2>/dev/null; } | sed 's/^/G\t/'; \
+    { for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
+        [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
+      find "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sed 's/^/C\t/'; } \
+    | sort -u | while IFS="$(printf '\t')" read -r tag f; do
+    if [ "$tag" = G ]; then
+      # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
+      # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
+      # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
+      # bypasses the Claude guard and could otherwise forge local gate/dashboard state.
+      # ROOT feed only: a SUBDIR copy (subdir/.plinth/session/events.jsonl) matches the protected
+      # policy and stays fully enforced (an overbroad glob here was a carve-out escape).
+      case "$f" in .plinth/session/events.jsonl) continue ;; esac
+      sens_match "$f" || continue
+    fi
     if [ -L "$f" ]; then
       printf 'symlink %s  %s\n' "$(readlink "$f" 2>/dev/null || echo '?')" "$f"   # record a symlink by its target, do not follow
     elif [ -f "$f" ]; then
