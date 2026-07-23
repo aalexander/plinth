@@ -14,6 +14,17 @@
 # (it ran against un-reviewed ignored state), so the driver's Rule-10 re-run and CI's fresh install
 # stay the authority. Bugs over adversarial intent: report, don't reject.
 #
+# EXPLICITLY OUT OF SCOPE (the lane runs a TRUSTED-but-fallible model, not an adversary — the
+# security boundary is the vendor sandbox + human review, not this script). scope does NOT try
+# to defeat a MALICIOUS lane's deliberate evasion: secret exfiltration through the CLI's
+# web-search/fetch (web search is left ON — the worker needs it), a `chmod` on the far side of a
+# pre-existing sensitive symlink, or a decoy status-check reference crafted to fool an advisory
+# warning. Those are red-team hypotheticals against a trusted party; chasing them would trade the
+# worker's real capability for hypothetical coverage. What scope DOES guarantee is that a fallible
+# lane's ERRORS — off-spec tracked/staged edits (incl. rename/skip-worktree), protected-path or
+# secret/session writes (incl. gitignored, content-through-a-file-symlink, git control-plane), and
+# forged verdicts — are caught, or it fails closed.
+#
 #   lane-guard.sh preflight <grok|codex>
 #       Binary present AND authenticated. Prints an "unavailable: <reason>" line and exits 3 if
 #       not — the lane must return STATUS: unavailable, never silently implement the task itself.
