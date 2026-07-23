@@ -1411,6 +1411,11 @@ jobs:
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CODEX as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
           rc=0; PATH="/usr/bin:/bin" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok >/dev/null 2>&1 || rc=$?
           [ "$rc" = 3 ] || { echo "::error::hookprobe missing-CLI exit $rc (want 3)"; exit 1; }
+          # arg surface: no vendor / surplus args must be usage (2), never a silent default probe:
+          rc=0; "$GITHUB_WORKSPACE/bin/plinth" hookprobe >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 2 ] || { echo "::error::hookprobe with NO vendor exited $rc (want 2 — a bare invocation must not start a real probe)"; exit 1; }
+          rc=0; "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok extra >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 2 ] || { echo "::error::hookprobe with surplus args exited $rc (want 2)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT"; } || { echo "::error::hookprobe hang not bounded (rc=$rc): $out"; exit 1; }

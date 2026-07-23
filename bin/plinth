@@ -1039,7 +1039,10 @@ $question"
 # late hook events such as Stop) — an inconclusive run is never hook evidence.
 run_hookprobe() {
   shift  # drop 'hookprobe'
-  local vendor="${1:-grok}" d marker ver p ev report="" allfired=1 fired vrc=0
+  # EXACTLY one vendor argument — no silent default (a bare `plinth hookprobe` must not
+  # start a real model call), no ignored surplus args.
+  [ "$#" = 1 ] || { echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2; }
+  local vendor="$1" d marker ver p ev report="" allfired=1 fired vrc=0
   local evs="SessionStart PreToolUse PostToolUse Stop"
   case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
   command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
