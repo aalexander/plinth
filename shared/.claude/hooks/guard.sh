@@ -35,10 +35,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 }
 
 # Deny-ship TRIPWIRE. This is a CLAUDE `.claude/` PreToolUse hook: it fires for a Claude
-# driver and its Claude subagents ONLY. Codex and grok do not execute `.claude/` hooks
-# (codex has its own hook system, which Plinth does not wire; grok's Claude-compat is
-# instruction/flag-level, not hook execution — VERIFIED at grok 0.2.93 with a marker
-# PreToolUse probe; re-verify on CLI upgrades), so neither this hook NOR the `.claude/`
+# driver and its Claude subagents ONLY. Whether a non-Claude CLI executes these hooks
+# is PROBEABLE, not assumed — `plinth hookprobe <grok|codex>` (grok 0.2.93 reported no
+# execution; codex has its own hook system Plinth does not wire; re-run the probe on
+# CLI upgrades). Under a non-executing driver neither this hook NOR the `.claude/`
 # Stop review-gate fires for a non-Claude
 # driver — for them the ship gate is purely SERVER-SIDE: branch protection's required
 # checks (floor + checks; the cloud review is advisory comments, and the review verdict

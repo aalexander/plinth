@@ -38,12 +38,14 @@ PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project-path> [--once]
        plinth smoke <project-path> -- <command...>   (run + write execution receipt)
        plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
-       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)"; exit 1; }
+       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
+       plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ]; then
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
+     # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -417,10 +419,9 @@ warn_missing_gate_wiring() {
   if ! grep -q 'pulse.sh' "$target/.claude/settings.json" 2>/dev/null; then
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
-    echo "Expected for grok/codex drivers AS VERIFIED at grok 0.2.93 (no hook execution) —"
-    echo "re-verify after grok upgrades (MANUAL: hook probe); if hooks ARE wired and the"
-    echo "feed is still missing under a hook-running driver, the wiring is broken."
-    echo "For Claude, see CHANGELOG v3.8 to wire it."
+    echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
+    echo "(grok 0.2.93 reported no execution — feedless is expected there; a hook-EXECUTING"
+    echo "driver with no feed means broken wiring). For Claude, see CHANGELOG v3.8."
   fi
 }
 
@@ -1013,9 +1014,44 @@ $question"
   esac
 }
 
+# plinth hookprobe <grok|codex> — does this vendor CLI EXECUTE wired .claude/ PreToolUse
+# hooks? The answer decides real enforcement semantics (guard/pulse/Stop gate active or
+# not) and it is VERSION/ENVIRONMENT-dependent — vendor docs and prose claims both go
+# stale, so this shipped probe is the source of truth: it wires a marker hook in a
+# SCRATCH repo, drives the CLI through one trivial command (one small model call), and
+# reports what actually happened. Exit 0 = hook executed; 1 = did not; 3 = CLI missing.
+run_hookprobe() {
+  shift  # drop 'hookprobe'
+  local vendor="${1:-grok}" d marker ver
+  case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
+  command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
+  d="$(mktemp -d)"; marker="$d/hookmark"
+  ( cd "$d" && git init -qb main . >/dev/null 2>&1
+    mkdir -p .claude/hooks
+    printf '#!/usr/bin/env bash\necho HOOK_FIRED >> "%s"\nexit 0\n' "$marker" > .claude/hooks/probe.sh
+    chmod +x .claude/hooks/probe.sh
+    printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s"}]}]}}\n' \
+      "$d/.claude/hooks/probe.sh" > .claude/settings.json )
+  ver="$("$vendor" --version 2>/dev/null | head -1 || echo unknown)"
+  case "$vendor" in
+    grok)  ( cd "$d" && grok -p "Run this exact shell command and show its output: echo hookprobe" \
+               --permission-mode bypassPermissions --sandbox workspace --max-turns 3 ) >/dev/null 2>&1 || true ;;
+    codex) ( cd "$d" && printf 'Run this exact shell command and show its output: echo hookprobe' \
+               | codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || true ;;
+  esac
+  if [ -f "$marker" ]; then
+    echo "hookprobe: $vendor ($ver) EXECUTED the wired .claude/ PreToolUse hook — local guard/pulse/Stop-gate semantics APPLY to this driver; a missing pulse feed under it means BROKEN WIRING, not a feedless driver."
+    exit 0
+  else
+    echo "hookprobe: $vendor ($ver) did NOT execute the wired .claude/ PreToolUse hook — expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
+    exit 1
+  fi
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
+  hookprobe) run_hookprobe "$@" ;;
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;

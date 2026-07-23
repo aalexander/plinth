@@ -46,12 +46,11 @@ five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope are
 vendor-neutral shell).
 
 What a non-Claude driver does and doesn't get: grok reads the driver contract
-(both contract files) but does NOT execute `.claude/` hooks — no in-session guard
-hooks, no Stop gate. (VERIFIED at grok CLI 0.2.93: a wired PreToolUse marker hook
-does not fire under a headless run — grok's Claude-compat is instruction/flag
--level, not hook execution. Re-verify with that probe after grok upgrades; if a
-future grok runs the hooks, that is a strict enforcement upgrade and this section
-becomes the floor.) The binding layer is unchanged and vendor-neutral: `review.sh` /
+(both contract files); whether it EXECUTES `.claude/` hooks is probeable, not
+assumed — run `plinth hookprobe grok` (shipped; one small model call). At release
+time grok 0.2.93 reported no execution: no in-session guard hooks, no Stop gate.
+Re-run the probe after CLI upgrades; a probe reporting EXECUTED is a strict
+enforcement upgrade and this section becomes the floor. The binding layer is unchanged and vendor-neutral: `review.sh` /
 `risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review

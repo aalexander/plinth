@@ -72,6 +72,12 @@ Everything between is the model's call.
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
+- `plinth hookprobe <grok|codex>` — does this vendor CLI EXECUTE wired `.claude/`
+  PreToolUse hooks? One small model call in a scratch repo: wires a marker hook,
+  drives the CLI once, reports EXECUTED (exit 0) or not (exit 1). The answer
+  decides real enforcement semantics (guard/pulse/Stop gate active or not) and is
+  version/environment-dependent — trust the probe over vendor docs and over this
+  manual. Re-run after CLI upgrades.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,
   NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
@@ -252,16 +258,16 @@ Two operator chores the rules generate:
    `.plinth/session/events.jsonl`. That file is the dashboard's feed. Every
    Bash/Edit the model attempts passes through `guard.sh` first — destructive
    commands and protected paths are blocked at the tool level, including for every
-   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not
-   execute them** — VERIFIED empirically at grok 0.2.93 (a wired PreToolUse
-   marker hook does not fire under a headless grok run; grok's Claude-compat is
-   instruction/flag-level — CLAUDE.md auto-load, `--allowedTools` naming — not
-   hook execution; `grok inspect` shows what it discovered). Vendor compat
-   moves: RE-VERIFY after grok upgrades by wiring a marker hook in a scratch
-   repo, running one grok command, and checking the marker. If a future grok
-   executes `.claude/` hooks, that is a strict upgrade (guard/pulse/Stop gate
-   light up); everything below stays the enforcement FLOOR. Until then the
-   driver gets no local guard, no
+   Claude subagent. These are `.claude/` hooks — and whether a NON-Claude driver
+   executes them is PROBEABLE, not assumed: run `plinth hookprobe <grok|codex>`
+   (shipped tooling; one small model call). It wires a marker PreToolUse hook in
+   a scratch repo, drives the CLI once, and reports whether the hook EXECUTED.
+   At release time grok 0.2.93 reported: did NOT execute (its Claude-compat is
+   instruction/flag-level — CLAUDE.md auto-load, `--allowedTools` naming). Vendor
+   compat moves — re-run the probe after CLI upgrades; trust the probe, not
+   vendor docs or this sentence. A probe reporting EXECUTED is a strict upgrade
+   (guard/pulse/Stop gate light up); everything below stays the enforcement
+   FLOOR. Under a non-executing driver you get no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
    is told to follow (trusted to run the review loop) and, server-side, by branch
    protection's required checks (floor + checks — CI and tooling integrity; they do
@@ -482,7 +488,8 @@ it has run green with a real smoke_cmd.
   shell wrapper's quotes such as `bash -c "..."` is NOT — deliberate obfuscation evades
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
-  hook, so it binds Claude drivers/subagents; codex/grok do not read it). The guard is a
+  hook, so it binds Claude drivers/subagents; whether another driver executes it is
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.93 reported no execution). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
