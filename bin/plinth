@@ -460,28 +460,22 @@ warn_missing_gate_wiring() {
   fi
 }
 
-# Pin (or repin) the reusable-workflow refs in the project's ci.yml to the Plinth
-# release commit being installed. Used by BOTH init (fresh ci.yml) and update (an
-# existing project's preserved ci.yml — else an upgraded project keeps calling the
-# OLD floor and never runs new floor checks). No-op if ci.yml is absent. Immutable
-# SHA pin; fails LOUD to an unpinned sentinel if the release commit can't be resolved.
-repin_reusable_refs() {
+# ci.yml is per-project and NEVER rewritten by Plinth (the operator owns it). But its
+# reusable-workflow refs pin a Plinth release SHA, and an upgrade that bumps
+# .plinth-version WITHOUT repinning leaves the project calling the OLD floor/checks —
+# so new floor checks never run while branch protection stays green. update can't
+# silently rewrite the operator's workflow, so it WARNS loudly with the exact repin
+# command when the pinned SHA is stale (matches the branch-protection warning pattern).
+warn_stale_reusable_refs() {
   [ -f "$target/.github/workflows/ci.yml" ] || return 0
   local psha; psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
-  if [ -n "$psha" ]; then
-    edit_file "$target/.github/workflows/ci.yml" \
-      -e "s|plinth-floor\.yml@[0-9a-f]*|plinth-floor.yml@${psha}|g" \
-      -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
-      -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned from this checkout)|g"
-  else
-    edit_file "$target/.github/workflows/ci.yml" \
-      -e "s|\(plinth-floor\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
-      -e "s|\(plinth-checks\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
-      -e "s|# v4\.1\.9 (plinth init repins)|# UNPINNED — set to your Plinth release commit SHA|g"
-    echo "  ci.yml:        WARNING — could not resolve the Plinth commit SHA (PLINTH_ROOT is not a"
-    echo "                 git checkout?). Left the reusable-workflow refs UNPINNED"
-    echo "                 (PIN_TO_YOUR_PLINTH_RELEASE_COMMIT) so CI fails loudly until you set"
-    echo "                 them to this Plinth version's commit SHA — no silently-stale floor."
+  [ -n "$psha" ] || return 0
+  if ! grep -q "plinth-floor\.yml@${psha}" "$target/.github/workflows/ci.yml" 2>/dev/null; then
+    echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the reusable floor/checks"
+    echo "workflows at an OLDER Plinth commit, so the NEW floor checks (lane tooling bytes +"
+    echo "executable mode) will NOT run until you repin. Set both refs to this release:"
+    echo "  sed -i.bak -E 's#(plinth-(floor|checks)\.yml@)[^[:space:]]+#\1${psha}#g' \\"
+    echo "    "$target/.github/workflows/ci.yml" && rm -f "$target/.github/workflows/ci.yml.bak""
   fi
 }
 
@@ -531,7 +525,31 @@ copy_templates_if_absent() {
     else
       echo "  created:       .github/workflows/ci.yml — WARNING: owner undetected, edit OWNER manually"
     fi
-    repin_reusable_refs
+    # Pin the reusable-workflow refs to the SHA of the Plinth release being
+    # installed (immutable — no mutable tag to trust or suppress). If HEAD can't be
+    # resolved (non-git checkout), fail LOUD instead: the else branch rewrites the
+    # refs to an unpinned sentinel so CI errors until the operator pins them — never
+    # a silently-stale floor. BRE-portable sed (no alternation) for macOS BSD sed.
+    psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "$psha" ]; then
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|plinth-floor\.yml@[0-9a-f]*|plinth-floor.yml@${psha}|g" \
+        -e "s|plinth-checks\.yml@[0-9a-f]*|plinth-checks.yml@${psha}|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# v${PLINTH_VERSION} (pinned by plinth init from this checkout)|g"
+    else
+      # Fail LOUD, never silently-stale: if we can't resolve the release commit,
+      # replace the shipped fallback SHA with an UNPINNED sentinel so CI errors on
+      # the unresolved ref until the operator pins it — rather than quietly running
+      # a prior release's floor/checks. BRE-portable sed (backref, no alternation).
+      edit_file "$target/.github/workflows/ci.yml" \
+        -e "s|\(plinth-floor\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|\(plinth-checks\.yml@\)[0-9a-f]*|\1PIN_TO_YOUR_PLINTH_RELEASE_COMMIT|g" \
+        -e "s|# v4\.1\.9 (plinth init repins)|# UNPINNED — set to your Plinth release commit SHA|g"
+      echo "  ci.yml:        WARNING — could not resolve the Plinth commit SHA (PLINTH_ROOT is not a"
+      echo "                 git checkout?). Left the reusable-workflow refs UNPINNED"
+      echo "                 (PIN_TO_YOUR_PLINTH_RELEASE_COMMIT) so CI fails loudly until you set"
+      echo "                 them to this Plinth version's commit SHA — no silently-stale floor."
+    fi
   fi
 }
 
@@ -1165,8 +1183,6 @@ case "$cmd" in
     preflight_reserved_lanes
     copy_templates_if_absent
     copy_shared
-    repin_reusable_refs   # existing projects keep their ci.yml, so REPIN its reusable refs to
-                          # this release — else the OLD floor runs and new floor checks never fire
     ensure_protected_paths
     migrate_needs_human
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
@@ -1192,6 +1208,7 @@ case "$cmd" in
     fi
     github_preflight
     warn_missing_gate_wiring
+    warn_stale_reusable_refs
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
     echo "Review before committing: git -C \"$target\" diff"
     ;;

@@ -60,16 +60,15 @@ jobs:
           # ineligible account would make the reviewer FAIL LOUD, not fall back.
           grep -q '^advisor_model = opus$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor peer model (advisor_model = opus)"; exit 1; }
           grep -q '^audit_model = opus$' .plinth/config || { echo "::error::scaffold did not pin the v4 audit seat model (audit_model = opus) — the CLI default could audit with a different model"; exit 1; }
-          # plinth UPDATE must REPIN an existing project's reusable-workflow refs to THIS release,
-          # else an upgraded project keeps calling the OLD floor and never runs new floor checks:
+          # plinth UPDATE must WARN (loudly, with the repin command) when an existing project's
+          # reusable-workflow refs are STALE — without rewriting the operator-owned ci.yml (contract):
           RPD="$(mktemp -d)"; ( cd "$RPD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD" >/dev/null 2>&1 )
           PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
-          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef|; s|plinth-checks.yml@${PSHA}|plinth-checks.yml@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef|" "$RPD/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD/.github/workflows/ci.yml"
           ( cd "$RPD" && git add -A && git commit -qm base >/dev/null )
-          "$GITHUB_WORKSPACE/bin/plinth" update "$RPD" >/dev/null 2>&1
-          grep -q "plinth-floor.yml@${PSHA}" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update did not REPIN the reusable FLOOR ref — upgraded project runs the old floor"; exit 1; }
-          grep -q "plinth-checks.yml@${PSHA}" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update did not REPIN the reusable CHECKS ref"; exit 1; }
-          grep -q 'deadbeef' "$RPD/.github/workflows/ci.yml" && { echo "::error::plinth update left a stale reusable-workflow ref"; exit 1; } || true
+          rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
+          printf '%s' "$rpout" | grep -q "pins the reusable floor/checks" || { echo "::error::plinth update did not WARN about a stale reusable-workflow ref"; exit 1; }
+          grep -q "plinth-floor.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true

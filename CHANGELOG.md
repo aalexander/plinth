@@ -76,6 +76,14 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **lane-guard scope checks the INDEX, and `plinth update` warns on stale reusable refs.** scope
+  now unions `git diff $base` with `git diff --cached $base` — a lane that stages an
+  out-of-spec/protected change and reverts the working tree (so `git diff $base` is clean while
+  the index still holds it, and the driver's later commit would ship it) is caught. Separately,
+  `plinth update` now WARNS (loudly, with the exact repin `sed` command) when an existing
+  project's ci.yml pins the reusable floor/checks workflows at an OLDER Plinth commit — else the
+  new floor checks never run while branch protection stays green. update does NOT rewrite the
+  operator-owned ci.yml (the never-rewrites-ci.yml contract is preserved); the operator repins.
 - **lane-guard scope forces `--no-renames`.** With `diff.renames` enabled, a `git mv` from an
   out-of-spec path to an in-spec name listed only the NEW path — the old file's disappearance
   escaped the spec check (rename laundering). Renames now read as delete+add so BOTH paths are
