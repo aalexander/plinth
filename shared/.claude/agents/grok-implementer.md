@@ -111,7 +111,7 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
    caller's spec names a model (grok-4.5 is the current top tier), pass `-m <model>`.
 
 3. **Enforce SCOPE.** The delegated grok has whole-tree write and (probe-verified per CLI —
-`plinth hookprobe`; grok 0.2.93: no hook execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) does not run the `.claude/`
+`plinth hookprobe`; grok 0.2.93: no hook execution (reproduce: plinth hookprobe grok)) does not run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
    path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
    (secrets like `.env`/`secrets/`/keys, AND `.plinth/session/` verdict/receipt state — a delegated

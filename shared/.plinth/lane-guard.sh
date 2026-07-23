@@ -304,7 +304,11 @@ CHANGED
         # script runs pipefail WITHOUT -e, so a failing assignment never aborts by itself.
         drc=0; dout="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null)" || drc=$?
         [ "$drc" -le 1 ] || { echo "scope: could not diff the sensitive snapshots (diff rc=$drc) — refusing to accept the lane (fail closed)" >&2; exit 5; }
-        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] +[^ ]+ +[^ ]+  //' | sort -u || true)"
+        # Every snapshot record ends "<metadata...>  <path>" with a TWO-SPACE separator before
+        # the path — regardless of format (regular `<hash> <mode>`, symlink `symlink <t> <h> <m>`,
+        # dangling `symlink <t> - -`, or `special present`). Strip the diff marker, then everything
+        # up to and including the LAST two-space run — format-independent path extraction.
+        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] //; s/^.*  //' | sort -u || true)"
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           # SPEC-GATED template lookalikes: a SECRET_SAFE name (.env.example, id_rsa_notes.txt)

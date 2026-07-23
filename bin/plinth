@@ -348,7 +348,9 @@ github_preflight() {
     # (fixed single-space separators, exactly one trailing component) — and each shape-valid
     # required context is cross-checked against the ACTUAL check-run names on $defb. NO run
     # data is fail-CLOSED for this verification: it reports UNVERIFIED, never silent health.
-    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^$wfe / checks / [^/]+\$" || true)"
+    # Accept BOTH shapes: a reusable checks call -> "<wf> / checks / <job>"; a DIRECT checks job
+    # (template-supported: replace the reusable call with in-line steps) -> "<wf> / checks".
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^$wfe / checks( / [^/]+)?\$" || true)"
     if [ -z "$ckctx" ]; then
       miss="${miss:+$miss, }checks"
     else
@@ -453,7 +455,7 @@ warn_missing_gate_wiring() {
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
     echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
-    echo "(grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt] — feedless is"
+    echo "(grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok) — feedless is"
     echo "expected there; a driver the probe shows INVOKING PostToolUse yet feedless needs"
     echo "investigating: broken wiring, or the hook gets no usable stdin/env — see the probe"
     echo "json-stdin flag). For Claude, see CHANGELOG v3.8."
@@ -469,7 +471,15 @@ warn_missing_gate_wiring() {
 warn_stale_reusable_refs() {
   [ -f "$target/.github/workflows/ci.yml" ] || return 0
   local psha; psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
-  [ -n "$psha" ] || return 0
+  if [ -z "$psha" ]; then
+    # Non-git install (archive): we cannot resolve the release SHA to compare, but update still
+    # advanced .plinth-version and installed new tooling. Warn LOUDLY rather than silently skip —
+    # the old reusable floor/checks may still be active (mirrors the non-git INIT fail-loud path).
+    echo "NOTE: could not resolve the Plinth release commit (non-git install?), so update cannot"
+    echo "verify .github/workflows/ci.yml's reusable floor/checks refs. If they pin an older"
+    echo "release, the NEW floor checks will not run — repin both refs to this release's commit SHA."
+    return 0
+  fi
   # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.
   local ci="$target/.github/workflows/ci.yml"
   # Tie the check to the GATING jobs (`floor:` / `checks:`), not any uses: line anywhere —
@@ -478,8 +488,13 @@ warn_stale_reusable_refs() {
   local fref cref
   fref="$(awk '/^  floor:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
   cref="$(awk '/^  checks:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
-  if printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]]|\$)" \
-     && printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]]|\$)"; then return 0; fi
+  # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
+  # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
+  # actually present; a customized checks job is not "stale".
+  local fstale=0 cstale=0
+  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]]|\$)" && fstale=1
+  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]]|\$)" && cstale=1
+  [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
   if true; then
     echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the reusable floor/checks"
     echo "workflows at an OLDER Plinth commit, so the NEW floor checks (lane tooling bytes +"

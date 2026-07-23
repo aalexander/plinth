@@ -1400,6 +1400,11 @@ jobs:
           # context names are case-EXACT — a lowercased workflow prefix must read as missing:
           pf_probe '{"required_status_checks":{"contexts":["ci / floor / secrets","ci / floor / sast","ci / floor / dependencies / osv-scan","ci / floor / harness","ci / checks / build"]}}' 'MISSING: floor/secrets' wrong-case
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
+          # a DIRECT checks job (template-supported: in-line steps, context "<wf> / checks", no /<job>)
+          # must read as HEALTHY, not MISSING. Its context is cross-checked against the check-runs:
+          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks"]}}' 'required: CI / floor / secrets' direct-checks-job
+          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
           # The vendor behavior itself is only testable against the real CLI (run locally:
@@ -1821,23 +1826,31 @@ jobs:
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
             rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
-            # secrets under a secret-NAMED directory (matching .gitignore .env/*.pem/*.key dir patterns) must be
-            # caught too — the denylist matches descendants, not just the exact basename:
-            for sd in .env cert.pem prod.key; do
-              rm -f "$sd"; mkdir -p "$sd"; printf 'K\n' > "$sd/token"
-              r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored secret under a secret-named dir ($sd/token) (rc=$r)"; exit 1; }
+            # secret under a secret-NAMED directory. The dir is ABSENT at snapshot time (so no baseline
+            # node removal can independently trip exit 4), and the descendant is IN-SPEC (so the
+            # out-of-spec rule cannot be the cause) and uses a PLAIN name matching NO secret-FILE
+            # pattern — proving it is the DIRECTORY classification (SECRET_DIRS) catching it:
+            git checkout -q -- . 2>/dev/null || true; git clean -fdq -e node_modules 2>/dev/null || true
+            SNAPD="$(mktemp)"; bash "$LG" snapshot > "$SNAPD"
+            for sd in secrets .ssh vault.pem; do
+              rm -rf "$sd"; mkdir -p "$sd"; printf 'K\n' > "$sd/readme.md"
+              r=0; bash "$LG" scope HEAD --snapshot "$SNAPD" app.py "$sd/readme.md" >/dev/null 2>&1 || r=$?
+              [ "$r" = 4 ] || { echo "::error::scope missed an IN-SPEC plain descendant under a secret-named dir ($sd/readme.md) (rc=$r) — SECRET_DIRS descendant match"; exit 1; }
               rm -rf "$sd"
             done
-            # SECRET_SAFE must NOT rescue a safe-LOOKING basename that lives INSIDE a secret directory — a file
-            # in secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/ is a secret regardless of its name:
-            mkdir -p secrets credentials .ssh .aws .env cert.pem prod.key
-            printf 'x\n' > secrets/.env.example; printf 'x\n' > credentials/id_rsa_notes.txt; printf 'x\n' > .ssh/id_rsa_format.md
-            printf 'x\n' > .aws/.env.sample; printf 'x\n' > .env/id_rsa_notes.txt; printf 'x\n' > cert.pem/.env.example; printf 'x\n' > prod.key/id_rsa_notes.txt
-            out="$(bash "$LG" snapshot)"
-            for f in secrets/.env.example credentials/id_rsa_notes.txt .ssh/id_rsa_format.md .aws/.env.sample .env/id_rsa_notes.txt cert.pem/.env.example prod.key/id_rsa_notes.txt; do
-              printf '%s' "$out" | grep -qF "  $f" || { echo "::error::SECRET_SAFE wrongly exempted a lookalike inside a secret dir: $f"; exit 1; }
-            done
-            rm -rf secrets credentials .ssh .aws .env cert.pem prod.key; printf 'pre\n' > .env
+            # SECRET_SAFE (template/doc lookalike) — SPEC-GATED, and NEVER rescued inside a secret dir.
+            # A root .env.example listed IN-SPEC is authorized (exit 0); the SAME safe name IN-SPEC
+            # inside secrets/ is still a violation (SECRET_DIRS wins over the carve-out):
+            SNAPE="$(mktemp)"; bash "$LG" snapshot > "$SNAPE"
+            printf 'x\n' > .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPE" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an in-spec root .env.example (template lookalike) was rejected (rc=$r)"; exit 1; }
+            rm -f .env.example
+            SNAPE2="$(mktemp)"; bash "$LG" snapshot > "$SNAPE2"
+            mkdir -p secrets; printf 'x\n' > secrets/.env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPE2" app.py secrets/.env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::SECRET_SAFE wrongly rescued a lookalike inside secrets/ even in-spec (rc=$r)"; exit 1; }
+            rm -rf secrets; printf 'pre\n' > .env
             # BASE-UNION snapshot (round-41): a lane that NARROWS the working protected-paths must
             # not hide a base-pattern-matching GITIGNORED addition from the post-run snapshot.
             # (protected-paths itself is deliberately unprotected in this fixture, so the tracked
@@ -1875,34 +1888,38 @@ jobs:
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPG3" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope missed a SYMLINKED .git/hooks/pre-commit (rc=$r)"; exit 1; }
             rm -f .git/hooks/pre-commit /tmp/eh$$
-            # a REF REWRITE (branch moved) -> 4 (BEFORE is a sha, so content diff still anchors,
-            # but the ref-file snapshot catches the control-plane move itself):
-            echo c2 > f2; git add -A; git commit -qm second >/dev/null
-            SNAPG4="$(mktemp)"; bash "$LG" snapshot > "$SNAPG4"
-            echo cpw >> app.py; git update-ref refs/heads/main HEAD~1
-            r=0; bash "$LG" scope "$(git rev-parse HEAD)" --snapshot "$SNAPG4" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope missed a ref rewrite (rc=$r)"; exit 1; }
-            git checkout -q -- . 2>/dev/null || true
-            # HIDDEN INDEX BITS: skip-worktree/assume-unchanged make git diff SKIP a modified
-            # tracked file — scope must fail closed on the bit (round-58):
-            SNAPH="$(mktemp)"; bash "$LG" snapshot > "$SNAPH"
-            echo hb >> app.py; echo EVIL >> mod.py; git update-index --skip-worktree mod.py
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAPH" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope did not fail closed on a skip-worktree hidden-bit edit (rc=$r)"; exit 1; }
-            git update-index --no-skip-worktree mod.py; git checkout -q -- mod.py app.py
-            # the OTHER hidden bit — assume-unchanged (lowercase status letter) — must also fail closed:
-            SNAPH2="$(mktemp)"; bash "$LG" snapshot > "$SNAPH2"
-            echo hb2 >> app.py; echo EVIL2 >> mod.py; git update-index --assume-unchanged mod.py
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAPH2" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope did not fail closed on an assume-unchanged hidden-bit edit (rc=$r)"; exit 1; }
-            git update-index --no-assume-unchanged mod.py; git checkout -q -- mod.py app.py
-            # STAGED-ONLY out-of-spec change: a lane stages mod.py then reverts the worktree —
-            # git diff $base is clean, but --cached still shows it (round-63):
-            SNAPST="$(mktemp)"; bash "$LG" snapshot > "$SNAPST"
-            echo b >> app.py; printf 'EVIL\n' > mod.py; git add mod.py; git checkout-index -f -- mod.py 2>/dev/null || true; printf 'm\n' > mod.py
-            r=0; bash "$LG" scope HEAD --snapshot "$SNAPST" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope missed a STAGED-ONLY out-of-spec change (rc=$r) — index not in the checked surface"; exit 1; }
-            git reset -q; git checkout -q -- mod.py app.py )
+            )
+          # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
+          # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each
+          # asserts the SPECIFIC violation AND that a clean in-spec-only run passes (non-hollow). ──
+          mkfx_i() { local d; d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\.plinth/config$\n' > .plinth/protected-paths; printf 'node_modules/\n.env\n' > .gitignore
+            echo a > app.py; echo m > mod.py; echo cfg > .plinth/config; git add -A; git commit -qm base >/dev/null )
+            printf '%s' "$d"; }
+          # ref-file write (new ref under .git/refs) -> 4, path reported:
+          FI="$(mkfx_i)"; ( cd "$FI"; B0="$(git rev-parse HEAD)"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo cpw >> app.py; git update-ref refs/heads/decoy "$B0"
+            out="$(bash "$LG" scope "$B0" --snapshot "$SN" app.py 2>&1)"; r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'refs/heads/decoy'; } || { echo "::error::scope missed a ref-file write (rc=$r)"; exit 1; } )
+          # skip-worktree hidden bit -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo EVIL >> mod.py; git update-index --skip-worktree mod.py
+            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on a skip-worktree bit (rc=$r)"; exit 1; } )
+          # assume-unchanged hidden bit -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo EVIL2 >> mod.py; git update-index --assume-unchanged mod.py
+            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on an assume-unchanged bit (rc=$r)"; exit 1; } )
+          # staged-only out-of-spec change (index=EVIL, worktree reverted) -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            printf 'EVIL\n' > mod.py; git add mod.py; printf 'm\n' > mod.py
+            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'mod.py'; } || { echo "::error::scope missed a STAGED-ONLY out-of-spec change (rc=$r)"; exit 1; } )
+          # NON-HOLLOW guard: a clean in-spec-only change PASSES (0) in the same fixture shape:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"; echo clean >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SN" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::a clean in-spec-only change was flagged (rc=$r) — the index probes above would be hollow"; exit 1; } )
           # ── v4.5: control-plane snapshot works in a LINKED WORKTREE (.git is a FILE) ──
           WTM="$(mktemp -d)"; ( cd "$WTM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             echo a > app.py; git add -A; git commit -qm base >/dev/null )

@@ -79,6 +79,19 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **In-charter correctness + de-hollowed tests (round 70).** Real fixes the reviewer surfaced
+  once the threat model aligned: the sensitive-symlink snapshot path is extracted format-
+  independently (a 4-field symlink record no longer garbles the reported path, and a legit in-spec
+  symlinked template can be authorized); `github_preflight` accepts a DIRECT `checks` job
+  (`<wf> / checks`, template-supported) in addition to the reusable shape, cross-checked against
+  actual check runs; non-git `plinth update` now warns it cannot verify the reusable refs (was a
+  silent skip); the stale-ref warning distinguishes an intentional custom/direct checks gate from
+  a stale reusable ref; and installed docs cite `plinth hookprobe grok` (reproduce) instead of a
+  `docs/receipts/…` path never materialized downstream. Three hollow canaries were rebuilt to
+  actually exercise what they claim (Rule 7): the ref-file/hidden-bit/staged-index probes moved to
+  hermetic fresh fixtures with a non-hollow clean-run guard, and the secret-directory probes use
+  absent-at-base dirs with an in-spec plain-named descendant (proving the DIRECTORY classification
+  catches it, not a baseline removal or an independently-matching basename).
 - **Reviewer contract encodes the ratified threat model.** `.plinth/AGENTS-project.md` now states,
   for this repo's reviewer, that the implementer lanes run a TRUSTED-but-fallible worker and
   `lane-guard.sh` is an ERROR-catcher, not an adversarial sandbox: block on real error-catching
