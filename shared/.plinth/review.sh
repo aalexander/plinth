@@ -266,10 +266,14 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
       ( cd "$ad" && grok --prompt-file "$pf" --output-format json \
           --disallowed-tools 'Bash,Edit,Write,Read,Grep,Glob' --rules "$GROK_ROLE_RULE" \
           ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null || return 1
-      jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' > "${out}.j" 2>/dev/null || return 1 ;;
+      jq -r '.text // empty' "$raw" | python3 -c 'import sys,re
+m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
+sys.stdout.write(m.group(1) if m else "")' > "${out}.j" 2>/dev/null || return 1 ;;
     agy|gemini)
       ( cd "$ad" && agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null || return 1
-      perl -0777 -ne 'print $1 if /(\{.*\})/s' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
+      python3 -c 'import sys,re
+m=re.search(r"(\{.*\})", open(sys.argv[1]).read(), re.S)
+sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     codex)
       ( cd "$ad" && printf '%s' "$prompt" | codex exec --skip-git-repo-check -c project_doc_max_bytes=0 \
           ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
@@ -571,7 +575,9 @@ _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else 
     --sandbox read-only ${margs[@]+"${margs[@]}"} > "$raw" 2> "$errlog" \
     || die_infra "grok failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
   if ! jq -e '.structuredOutput | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null; then
-    jq -r '.text // empty' "$raw" | perl -0777 -ne 'print $1 if /(\{.*\})/s' | jq . > "$SDIR/findings-$r.json" 2>/dev/null \
+    jq -r '.text // empty' "$raw" | python3 -c 'import sys,re
+m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
+sys.stdout.write(m.group(1) if m else "")' | jq . > "$SDIR/findings-$r.json" 2>/dev/null \
       || die_infra "grok returned no parseable verdict JSON — see $raw"
   fi
   RSID="$(jq -r '.sessionId // empty' "$raw" 2>/dev/null)"

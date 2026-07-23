@@ -66,14 +66,23 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        SPEC_EOF
 
 2. Invoke codex headlessly, high reasoning, workspace-scoped write, wall-clocked. The cap must hold
-   even without coreutils — `timeout`/`gtimeout` if present, else perl's `alarm` (portable, on macOS
-   + most Linux); uncapped only if NEITHER exists, with a loud warning:
+   even without coreutils — `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; on macOS
+   + most Linux); uncapped only if NEITHER timeout nor python3 exists, with a loud warning:
 
-       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils
+       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
+         # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
+         # python3 fallback runs the CLI in its own process group and TERM-then-KILLs it likewise.
          local n="$1"; shift
-         if T="$(command -v gtimeout || command -v timeout)"; then "$T" "$n" "$@"
-         elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
-         else echo "WARN: no timeout binary or perl — codex runs UNCAPPED" >&2; "$@"; fi
+         if T="$(command -v gtimeout || command -v timeout)"; then "$T" -k 10 "$n" "$@"
+         elif command -v python3 >/dev/null 2>&1; then python3 -c 'import subprocess,sys,signal,os
+cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)
+try: sys.exit(p.wait(timeout=cap))
+except subprocess.TimeoutExpired:
+    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)
+    try: p.wait(timeout=10)
+    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
+    sys.exit(124)' "$n" "$@"
+         else echo "WARN: no timeout binary or python3 — codex runs UNCAPPED" >&2; "$@"; fi
        }
        RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \

@@ -67,14 +67,23 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        SPEC_EOF
 
 2. Invoke grok headlessly, multi-turn, wall-clocked. The cap must hold even without coreutils —
-   `timeout`/`gtimeout` if present, else perl's `alarm` (portable, on macOS + most Linux); it only
+   `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; it only
    runs uncapped, with a loud warning, if NEITHER exists:
 
-       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils
+       cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
+         # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
+         # python3 fallback runs the CLI in its own process group and TERM-then-KILLs it likewise.
          local n="$1"; shift
-         if T="$(command -v gtimeout || command -v timeout)"; then "$T" "$n" "$@"
-         elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
-         else echo "WARN: no timeout binary or perl — grok runs UNCAPPED" >&2; "$@"; fi
+         if T="$(command -v gtimeout || command -v timeout)"; then "$T" -k 10 "$n" "$@"
+         elif command -v python3 >/dev/null 2>&1; then python3 -c 'import subprocess,sys,signal,os
+cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)
+try: sys.exit(p.wait(timeout=cap))
+except subprocess.TimeoutExpired:
+    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)
+    try: p.wait(timeout=10)
+    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
+    sys.exit(124)' "$n" "$@"
+         else echo "WARN: no timeout binary or python3 — grok runs UNCAPPED" >&2; "$@"; fi
        }
        # ISOLATION: grok auto-loads the repo's CLAUDE.md / AGENTS.md — which under Plinth are the
        # DRIVER contract. It has no doc-suppress flag, so scope it to the lane with an override rule

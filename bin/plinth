@@ -337,32 +337,32 @@ github_preflight() {
     # contexts with the workflow name; the caller jobs are the scaffold's `floor` and `checks`.
     miss=""
     # GitHub required-check contexts are JOB names, NOT workflow-name-prefixed labels: a direct job
-    # is "<job>"; a reusable-workflow job is "<caller-job> / <reusable-job>" (nested further for a
-    # nested reusable call). The scaffold's caller jobs are `floor` and `checks`, so the floor
-    # contexts are "floor / secrets", "floor / sast", "floor / dependencies / osv-scan",
-    # "floor / harness". A "$wf / floor / ..." (workflow-prefixed) form does NOT exist and is rejected.
-    for fj in secrets sast harness; do
-      printf '%s\n' "$ctxs" | grep -qxF "floor / $fj" || miss="${miss:+$miss, }floor/$fj"
-    done
-    printf '%s\n' "$ctxs" | grep -qxF "floor / dependencies / osv-scan" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    # checks: a DIRECT job is exactly "checks"; a reusable call is "checks / <reusable-job>". Either
-    # shape is cross-checked against the ACTUAL check-run names on $defb; NO run data is fail-CLOSED.
+    # is "<job>"; a reusable-workflow job is "<caller-job> / <reusable-job>". The scaffold's caller
+    # jobs are `floor` and `checks`, so the expected contexts are "floor / secrets", "floor / sast",
+    # "floor / dependencies / osv-scan", "floor / harness", and "checks / <job>" (or "checks" direct).
+    # Fetch actual check-runs ONCE and validate EVERY configured floor+checks context against them:
+    # a context that is required but names no real job (jobs removed/renamed) is a ghost gate.
+    runs="$(gh api --paginate "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
     ckctx="$(printf '%s\n' "$ctxs" | grep -E "^checks( / [^/]+)?\$" || true)"
-    if [ -z "$ckctx" ]; then
-      miss="${miss:+$miss, }checks"
-    else
-      runs="$(gh api --paginate "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
+    # required-set membership (grep -xF) first:
+    fmiss=""
+    for want in "floor / secrets" "floor / sast" "floor / dependencies / osv-scan" "floor / harness"; do
+      printf '%s\n' "$ctxs" | grep -qxF "$want" || fmiss="${fmiss:+$fmiss }$want"
+    done
+    [ -z "$fmiss" ] || for w in $fmiss; do case "$w" in *secrets) miss="${miss:+$miss, }floor/secrets";; *sast) miss="${miss:+$miss, }floor/sast";; *harness) miss="${miss:+$miss, }floor/harness";; *osv-scan) miss="${miss:+$miss, }floor/dependencies/osv-scan";; esac; done
+    [ -n "$ckctx" ] || miss="${miss:+$miss, }checks"
+    # then cross-check EVERY present floor/checks context against actual check runs (fail closed on
+    # no data): a required context not among real check runs is a ghost gate that never reports.
+    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / [^/]+)?\$" || true)"
+    if [ -n "$present" ]; then
       if [ -z "$runs" ]; then
-        miss="${miss:+$miss, }checks (UNVERIFIED: no check-run data on $defb — cannot confirm the required context names a real job; re-run the preflight after the first PR)"
+        miss="${miss:+$miss, }UNVERIFIED: no check-run data on $defb — cannot confirm the required contexts name real jobs; re-run after the first PR"
       else
         ghost=""
-        while IFS= read -r c; do
-          [ -n "$c" ] || continue
-          printf '%s\n' "$runs" | grep -qxF "$c" || ghost="${ghost:+$ghost; }$c"
-        done <<GHOSTEOF
-$ckctx
+        while IFS= read -r c; do [ -n "$c" ] || continue; printf '%s\n' "$runs" | grep -qxF "$c" || ghost="${ghost:+$ghost; }$c"; done <<GHOSTEOF
+$present
 GHOSTEOF
-        [ -z "$ghost" ] || miss="${miss:+$miss, }checks (required context not among actual check runs: $ghost)"
+        [ -z "$ghost" ] || miss="${miss:+$miss, }required context(s) not among actual check runs: $ghost"
       fi
     fi
     if [ -z "$ctxs" ]; then
@@ -1118,7 +1118,9 @@ run_hookprobe() {
   local evs="SessionStart PreToolUse PostToolUse Stop"
   case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
   command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
-  d="$(mktemp -d)"; marker="$d/hookmark"
+  local d marker
+  d="$(mktemp -d)" || { echo "hookprobe: could not create a scratch dir — INCONCLUSIVE (setup failed)"; exit 4; }
+  marker="$d/hookmark"
   # The marker also CAPTURES stdin per event: Plinth's real hooks need Claude-shaped
   # JSON on stdin (and CLAUDE_PROJECT_DIR) to enforce anything, so invocation alone is
   # necessary but NOT sufficient — the report distinguishes the two.
@@ -1128,14 +1130,30 @@ run_hookprobe() {
     chmod +x .claude/hooks/probe.sh )
   p="$d/.claude/hooks/probe.sh"
   printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
-    "$p" "$p" "$p" "$p" > "$d/.claude/settings.json"
+    "$p" "$p" "$p" "$p" > "$d/.claude/settings.json" \
+    || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
   ver="$("$vendor" --version 2>/dev/null | head -1 || echo unknown)"
   # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else perl alarm) — a CLI
   # hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
   local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
   command -v timeout >/dev/null 2>&1 && tmo="timeout"
   [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
-  capped() { if [ -n "$tmo" ]; then "$tmo" "$cap" "$@"; else perl -e 'alarm shift; exec @ARGV' "$cap" "$@"; fi; }
+  # HARD cap: -k 10 escalates TERM->KILL after 10s so a CLI that ignores TERM cannot wait forever;
+  # the perl fallback SIGKILLs (9) its own process group rather than SIGALRM (catchable).
+  # HARD cap: timeout -k 10 escalates TERM->KILL after 10s; the python3 fallback (no coreutils)
+  # runs the CLI in its own process group and TERM-then-KILLs it, so a signal-ignoring CLI cannot
+  # wait forever. Exit 124 on timeout (mapped to INCONCLUSIVE by the caller).
+  capped() {
+    if [ -n "$tmo" ]; then "$tmo" -k 10 "$cap" "$@"
+    else python3 -c 'import subprocess,sys,signal,os
+cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)
+try: sys.exit(p.wait(timeout=cap))
+except subprocess.TimeoutExpired:
+    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)
+    try: p.wait(timeout=10)
+    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
+    sys.exit(124)' "$cap" "$@"; fi
+  }
   # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
   # statement would abort the probe before the timeout/none branches can report.
   # The probe command leaves a SENTINEL (cli-ran.txt): hooks only had a chance to fire
@@ -1150,7 +1168,7 @@ run_hookprobe() {
     codex) ( cd "$d" && printf 'Run this exact shell command: touch cli-ran.txt' \
                | capped codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || vrc=$? ;;
   esac
-  if [ "$vrc" = 124 ] || [ "$vrc" = 142 ]; then
+  if [ "$vrc" = 124 ] || [ "$vrc" = 142 ] || [ "$vrc" = 137 ]; then
     echo "hookprobe: $vendor ($ver) TIMED OUT after ${cap}s — probe INCONCLUSIVE (auth/network/sandbox hang?). Nothing verified."
     exit 4
   fi
@@ -1162,7 +1180,11 @@ run_hookprobe() {
     echo "hookprobe: $vendor ($ver) exited NONZERO ($vrc) after executing the probe command — INCONCLUSIVE: a late failure (finalization/teardown) could swallow late hook events such as Stop. Nothing verified; fix the CLI and re-run."
     exit 4
   fi
-  fired="$(sort -u "$marker" 2>/dev/null || true)"
+  # marker read/transform failure is INCONCLUSIVE, not evidence of NONE. An ABSENT marker is
+  # legitimately "no events fired" (empty); a sort ERROR on a present marker is a broken probe.
+  if [ -e "$marker" ]; then
+    fired="$(sort -u "$marker")" || { echo "hookprobe: $vendor ($ver) — could not read the marker file — INCONCLUSIVE (broken probe). Re-run."; exit 4; }
+  else fired=""; fi
   for ev in $evs; do
     if printf '%s\n' "$fired" | grep -qx "$ev"; then
       # invocation happened — did it come with parseable JSON on stdin (what the real

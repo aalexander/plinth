@@ -57,7 +57,9 @@ jobs:
           # generated ci.yml must preserve the template's mode (edit_file's mktemp is 0600) — it must
           # stay group/other-readable, not 0600:
           cim="$(stat -c '%a' .github/workflows/ci.yml 2>/dev/null || stat -f '%Lp' .github/workflows/ci.yml 2>/dev/null)"
-          case "$cim" in *600) echo "::error::generated ci.yml is mode $cim (0600) — edit_file did not preserve the source mode"; exit 1 ;; esac
+          tmpl="$GITHUB_WORKSPACE/templates/.github/workflows/ci.yml"
+          tim="$(stat -c '%a' "$tmpl" 2>/dev/null || stat -f '%Lp' "$tmpl" 2>/dev/null)"
+          [ "$cim" = "$tim" ] || { echo "::error::generated ci.yml mode ($cim) != template mode ($tim) — edit_file did not preserve the source mode"; exit 1; }
           # v4 advisor seat is scaffolded LIVE (advise is non-blocking; a missing model just
           # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 access is
           # PER-ACCOUNT (GA July 9 2026; Codex CLI >= 0.144.0) and an ACTIVE line on an
@@ -1436,19 +1438,40 @@ jobs:
           # must read HEALTHY. Its context is cross-checked against the check-runs:
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\n' > "$PFG/names"
           pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks"]}}' 'required: floor / secrets' direct-checks-job
+          # GHOST floor gate: a required floor context whose job is NOT among the actual check-runs
+          # (job removed/renamed) must read MISSING, not healthy:
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
           # WORKFLOW-PREFIXED contexts ("CI / floor / secrets") do NOT exist on GitHub — must read MISSING:
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / checks"]}}' 'MISSING: floor/secrets' workflow-prefixed-is-invalid
           # a QUOTED workflow name (name: "CI") must not break matching (contexts are job-name based,
           # so this is unaffected — but exercise the quoted path); and the checks cross-check must see
           # the checks context even when many other check-runs precede it (>30, pagination):
-          many="$(mktemp)"; { for i in $(seq 1 40); do printf 'noise-%s\n' "$i"; done; printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n'; } > "$many"
+          # PAGE-AWARE gh stub (echo lines, no embedded newlines): WITHOUT --paginate the check-runs
+          # response is 40 noise names only; the real floor/checks contexts appear only WITH
+          # --paginate. So dropping --paginate turns them into ghosts and the healthy assertion fails.
+          PGB="$(mktemp -d)"
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'case "$*" in'
+            echo '  *"/protection"*) cat "${GHP_JSON:?}" ;;'
+            echo '  *default_branch*) echo main ;;'
+            echo '  *"/check-runs"*)'
+            echo '    for i in $(seq 1 40); do echo "noise-$i"; done'
+            echo '    case "$*" in *--paginate*)'
+            echo '      echo "floor / secrets"; echo "floor / sast"; echo "floor / dependencies / osv-scan"'
+            echo '      echo "floor / harness"; echo "checks / checks" ;; esac ;;'
+            echo '  *) echo "{}" ;;'
+            echo 'esac'
+          } > "$PGB/gh"
+          chmod +x "$PGB/gh"
           dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
             sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' > "$PFG/p.json"
-          out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$many" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
-          printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' > "$pj"
+          out="$(GHP_JSON="$pj" PATH="$PGB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
+          printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy WITHOUT effective pagination (--paginate missing): $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──

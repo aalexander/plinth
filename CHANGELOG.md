@@ -7,7 +7,7 @@
   Each takes a five-part spec (objective · files · interfaces · constraints · verification), runs
   the external CLI headlessly from a UNIQUE `mktemp` prompt file (never inline quoting / fixed
   paths — parallel lanes on a fixed path corrupt each other), wall-clocks it with a cap that holds
-  even without coreutils (`timeout`/`gtimeout`, else perl's `alarm`), then VERIFIES
+  even without coreutils (`timeout`/`gtimeout` with `-k` TERM->KILL, else a python3 process-group cap), then VERIFIES
   independently: it re-runs the verification command itself and reads the diff — "the lane said it
   works" is forbidden as evidence (Rule 10). The safety-critical parts are a real, testable script,
   not prompt convention: a new version-pinned `.plinth/lane-guard.sh` gives the lane (a) `preflight
@@ -82,6 +82,20 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **Hard wall-clock caps + Python over Perl; preflight cross-checks every context; hookprobe
+  fails INCONCLUSIVE on internal errors.** The lane and hookprobe timeout caps are no longer
+  cooperative: `timeout`/`gtimeout` run with `-k 10` (TERM then KILL) and the coreutils-free
+  fallback is a **python3** process-group cap (TERM then KILL) — a signal-ignoring CLI can no
+  longer wait forever. Perl was replaced with Python throughout (both lane agents' `cap()`,
+  hookprobe, review.sh's JSON extraction, canary helpers) per project preference; the canary
+  behaviorally proves the cap kills a TERM-ignoring child. `github_preflight` now fetches
+  check-runs once and cross-checks ALL FIVE required contexts (four floor + checks) against the
+  actual runs — a required context naming a removed/renamed job (ghost gate) reads MISSING; no
+  run data is fail-closed (UNVERIFIED); `--paginate` is used so a check beyond the first 30
+  results is still seen (page-aware canary). `plinth hookprobe` internal failures (scratch-dir /
+  settings write / marker read, or a `-k` KILL exit 137) now report INCONCLUSIVE (exit 4), never
+  a false NONE/SOME. `edit_file` preserves the source file mode (canary compares generated ci.yml
+  to the template mode). The hardlink guard fails closed when stat can't yield a numeric count.
 - **Snapshot enumeration fails CLOSED; CI-breaker + overclaim fixed.** `sens_snapshot` now captures
   each `git ls-files`/`find` producer's status separately — a real git/filesystem error returns
   exit 5 (fail closed) instead of silently yielding an incomplete baseline that would read as
