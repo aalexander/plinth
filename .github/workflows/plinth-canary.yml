@@ -1357,6 +1357,17 @@ jobs:
           # SUFFIX siblings share the prefix but are different exact contexts — all five must
           # read as missing ("CI / checks / old" has valid shape but is not a real check run):
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets / old","CI / floor / sast / old","CI / floor / harness / old","CI / floor / dependencies / osv-scan / old","CI / checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks (required context not among actual check runs' suffix-siblings
+          # spacing/leaf variants are DIFFERENT exact contexts — all must read as missing
+          # ("CI/floor/secrets", odd spacing, trailing space, "osv scan" leaf):
+          pf_probe '{"required_status_checks":{"contexts":["CI/floor/secrets","CI /floor/ sast","CI / floor / harness ","CI / floor / dependencies / osv scan","CI / checks / build"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan' spacing-variants
+          # NO check-run data must be fail-CLOSED for the checks verification (UNVERIFIED),
+          # never silent health — shape-valid decoys can hide behind an empty API answer:
+          NONAMES="$PFG/nonames"; : > "$NONAMES"
+          d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          printf '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / old"]}}' > "$PFG/p.json"
+          out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$NONAMES" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
+          printf '%s' "$out" | grep -q "UNVERIFIED: no check-run data" || { echo "::error::preflight[no-run-data]: checks verification fell open without run data: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           # context names are case-EXACT — a lowercased workflow prefix must read as missing:
           pf_probe '{"required_status_checks":{"contexts":["ci / floor / secrets","ci / floor / sast","ci / floor / dependencies / osv-scan","ci / floor / harness","ci / checks / build"]}}' 'MISSING: floor/secrets' wrong-case
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty

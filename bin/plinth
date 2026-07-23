@@ -336,22 +336,26 @@ github_preflight() {
     [ -n "$wf" ] || wf="CI"
     wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
-    # Floor contexts are EXACT full names (the jobs are fixed by plinth-floor.yml) —
-    # anchored to end-of-line so "CI / floor / secrets / old" cannot satisfy them:
+    # Floor contexts are EXACT full strings (GitHub matches required contexts literally,
+    # and the jobs are fixed by plinth-floor.yml) — grep -xF, no regex, no flexible
+    # spacing: "CI/floor/secrets" or a trailing space is a DIFFERENT context and reads
+    # as missing:
     for fj in secrets sast harness; do
-      printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *$fj *\$" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s\n' "$ctxs" | grep -qxF "$wf / floor / $fj" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan *\$" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    # The checks job name varies by detected stack, so shape alone cannot reject a decoy
-    # like "CI / checks / old". Validate the shape, then cross-check each required
-    # checks-context against the ACTUAL check-run names on $defb (best-effort; skipped
-    # when the API gives no runs — e.g. before the first PR).
-    ckctx="$(printf '%s' "$ctxs" | grep -E "^$wfe */ *checks */ *[^/]+ *\$" || true)"
+    printf '%s\n' "$ctxs" | grep -qxF "$wf / floor / dependencies / osv-scan" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    # The checks job name varies by detected stack, so the shape is "<wf> / checks / <job>"
+    # (fixed single-space separators, exactly one trailing component) — and each shape-valid
+    # required context is cross-checked against the ACTUAL check-run names on $defb. NO run
+    # data is fail-CLOSED for this verification: it reports UNVERIFIED, never silent health.
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^$wfe / checks / [^/]+\$" || true)"
     if [ -z "$ckctx" ]; then
       miss="${miss:+$miss, }checks"
     else
       runs="$(gh api "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
-      if [ -n "$runs" ]; then
+      if [ -z "$runs" ]; then
+        miss="${miss:+$miss, }checks (UNVERIFIED: no check-run data on $defb — cannot confirm the required context names a real job; re-run the preflight after the first PR)"
+      else
         ghost=""
         while IFS= read -r c; do
           [ -n "$c" ] || continue
