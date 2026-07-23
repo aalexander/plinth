@@ -1399,6 +1399,10 @@ jobs:
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-latefail; exit 0; }\ntouch cli-ran.txt\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CLI as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
+          # same late-fail sibling on the SEPARATE codex stdin pipeline:
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-latefail-cx; exit 0; }\ncat >/dev/null\ntouch cli-ran.txt\nexit 1\n' > "$HPB/codex"; chmod +x "$HPB/codex"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe codex 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CODEX as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
           rc=0; PATH="/usr/bin:/bin" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok >/dev/null 2>&1 || rc=$?
           [ "$rc" = 3 ] || { echo "::error::hookprobe missing-CLI exit $rc (want 3)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"
