@@ -1033,9 +1033,12 @@ run_hookprobe() {
   case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
   command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
   d="$(mktemp -d)"; marker="$d/hookmark"
+  # The marker also CAPTURES stdin per event: Plinth's real hooks need Claude-shaped
+  # JSON on stdin (and CLAUDE_PROJECT_DIR) to enforce anything, so invocation alone is
+  # necessary but NOT sufficient — the report distinguishes the two.
   ( cd "$d" && git init -qb main . >/dev/null 2>&1
     mkdir -p .claude/hooks
-    printf '#!/usr/bin/env bash\necho "$1" >> "%s"\nexit 0\n' "$marker" > .claude/hooks/probe.sh
+    printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ -t 0 ] || head -c 4096 > "%s/payload-$1" 2>/dev/null\nexit 0\n' "$marker" "$d" > .claude/hooks/probe.sh
     chmod +x .claude/hooks/probe.sh )
   p="$d/.claude/hooks/probe.sh"
   printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
@@ -1075,17 +1078,21 @@ run_hookprobe() {
   fi
   fired="$(sort -u "$marker" 2>/dev/null || true)"
   for ev in $evs; do
-    if printf '%s\n' "$fired" | grep -qx "$ev"; then report="${report}${ev}: EXECUTED; "
+    if printf '%s\n' "$fired" | grep -qx "$ev"; then
+      # invocation happened — did it come with parseable JSON on stdin (what the real
+      # hooks need)? Reported per event; never treated as proof of enforcement.
+      if jq -e . "$d/payload-$ev" >/dev/null 2>&1; then report="${report}${ev}: INVOKED(json-stdin:yes); "
+      else report="${report}${ev}: INVOKED(json-stdin:no); "; fi
     else report="${report}${ev}: no; "; allfired=0; fi
   done
   if [ "$allfired" = 1 ]; then
-    echo "hookprobe: $vendor ($ver) executed ALL FOUR wired .claude/ hook events (${report% }) — guard, pulse, session-start AND Stop-gate semantics apply to this driver; a missing pulse feed under it means BROKEN WIRING."
+    echo "hookprobe: $vendor ($ver) invoked ALL FOUR wired .claude/ hook events (${report% }) — NECESSARY for local enforcement but NOT SUFFICIENT: Plinth's real hooks also need Claude-shaped stdin JSON and CLAUDE_PROJECT_DIR. Verify END-TO-END before relying on local gates (wire the real hooks, run one session, confirm the pulse feed appears and a guard block fires). A missing pulse feed under an all-four driver means BROKEN WIRING."
     exit 0
   elif [ -z "$fired" ]; then
-    echo "hookprobe: $vendor ($ver) executed NONE of the wired .claude/ hook events (${report% }) — expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
+    echo "hookprobe: $vendor ($ver) executed NONE of the wired .claude/ hook events (${report% }) — nothing local is enforced: expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
     exit 1
   else
-    echo "hookprobe: $vendor ($ver) executed SOME hook events only (${report% }) — PARTIAL Claude-compat: ONLY the events marked EXECUTED are enforced for this driver; do not assume the rest."
+    echo "hookprobe: $vendor ($ver) invoked SOME hook events only (${report% }) — PARTIAL Claude-compat: a NOT-invoked event is certainly unenforced; an INVOKED event still needs end-to-end verification before you rely on it."
     exit 1
   fi
 }

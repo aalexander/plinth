@@ -77,8 +77,10 @@ Everything between is the model's call.
   enforcement uses (SessionStart = session-start, PreToolUse = guard,
   PostToolUse = pulse, Stop = review gate), drives the CLI once (one small model
   call, wall-clock capped: PLINTH_HOOKPROBE_TIMEOUT, default 120s), and reports
-  each event separately. Exit 0 = ALL FOUR executed; 1 = none or some — only the
-  events marked EXECUTED are enforced for that driver; 3 = CLI missing; 4 =
+  each event separately, incl. whether JSON arrived on stdin (what the real hooks
+  need). Exit 0 = ALL FOUR invoked; 1 = none or some — a NOT-invoked event is
+  certainly unenforced, and an INVOKED event is necessary-but-not-sufficient
+  (verify end-to-end before relying on it); 3 = CLI missing; 4 =
   INCONCLUSIVE (timed out, the CLI never executed the probe's sentinel command —
   unauth/sandbox/model failure — or it exited nonzero after executing it, where a
   late failure could swallow late hook events such as Stop; an inconclusive run
@@ -269,15 +271,19 @@ Two operator chores the rules generate:
    (shipped tooling; one small capped model call). It wires a marker for EACH of
    the four hook events Plinth enforcement uses (SessionStart, PreToolUse =
    guard, PostToolUse = pulse, Stop = review gate), drives the CLI once, and
-   reports each event separately — ONLY the events reported EXECUTED are
-   enforced for that driver. At release time grok 0.2.93 reported: NONE executed
+   reports each event separately — a NOT-invoked event is certainly unenforced;
+   an INVOKED event means the CLI ran the hook command (necessary, not
+   sufficient — the real hooks also need Claude-shaped stdin JSON and
+   CLAUDE_PROJECT_DIR). At release time grok 0.2.93 reported: NONE executed
    (receipt: docs/receipts/hookprobe-grok-0.2.93.txt)
    (its Claude-compat is instruction/flag-level — CLAUDE.md auto-load,
    `--allowedTools` naming). Vendor compat moves — re-run the probe after CLI
    upgrades; trust the probe, not vendor docs or this sentence. An all-four
-   result is a strict upgrade (guard, pulse, session-start and Stop gate all
-   active); a PARTIAL result enforces only what it names; everything below is
-   the FLOOR for a none-or-partial driver. Under a non-executing driver you get
+   result makes local enforcement PLAUSIBLE — verify END-TO-END before relying
+   on it (wire the real hooks, run one session, confirm the pulse feed appears
+   and a guard block fires); a PARTIAL result leaves the missing events
+   certainly unenforced; everything below is the FLOOR unless end-to-end
+   verification passes. Under a non-executing driver you get
    no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
    is told to follow (trusted to run the review loop) and, server-side, by branch
@@ -357,8 +363,8 @@ Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
 ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
 NORMAL under a driver whose CLI does not execute `.claude/` hooks (per-CLI —
-`plinth hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; if the probe reports PostToolUse EXECUTED,
-the same banner means BROKEN wiring instead): the frame reduces to
+`plinth hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; if the probe reports PostToolUse INVOKED,
+investigate — the same banner may mean broken wiring instead): the frame reduces to
 branch @ head, review verdict, and the NEEDS-HUMAN queue (observability from
 local files — the binding gate for any driver is branch protection, not this
 dashboard). If you are driving with CLAUDE and still see that banner, the pulse

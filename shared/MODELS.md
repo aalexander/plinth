@@ -50,8 +50,9 @@ What a non-Claude driver does and doesn't get: grok reads the driver contract
 assumed — run `plinth hookprobe grok` (shipped; one small capped model call that
 reports EACH of the four enforcement hook events separately). At release time
 grok 0.2.93 reported NONE executed [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]: no in-session guard hooks, no Stop gate.
-Re-run after CLI upgrades; only events the probe marks EXECUTED are enforced —
-an all-four result is a strict upgrade and this section becomes the floor. The binding layer is unchanged and vendor-neutral: `review.sh` /
+Re-run after CLI upgrades; a NOT-invoked event is certainly unenforced, an
+INVOKED one is necessary-but-not-sufficient (verify end-to-end) — this section
+is the floor unless end-to-end verification passes. The binding layer is unchanged and vendor-neutral: `review.sh` /
 `risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review

@@ -116,7 +116,8 @@
   the four in a scratch repo, drives the CLI through one trivial command (one small model
   call, wall-clock capped via PLINTH_HOOKPROBE_TIMEOUT, default 120s — a hung CLI exits 4,
   bounded, instead of hanging the operator), and reports each event separately: exit 0 =
-  all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing;
+  all four executed; 1 = none or some (a not-invoked event is certainly unenforced; invoked = necessary,
+  not sufficient — the report also notes per-event whether JSON arrived on stdin); 3 = CLI missing;
   4 = INCONCLUSIVE — timeout, the CLI never executed the probe sentinel, OR the CLI exited
   nonzero after executing it (a late finalization/teardown failure could swallow late hook
   events such as Stop): a broken/failing CLI is NOT evidence of hook non-execution and
