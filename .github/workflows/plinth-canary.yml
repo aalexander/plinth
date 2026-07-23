@@ -497,6 +497,9 @@ jobs:
           agd="$(mktemp -d)"
           ( cd "$agd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$agd" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # STRIP the scaffolded audit seat first — config readers are first-match-wins, so an
+            # append alone would leave the scaffold's audit_vendor = claude in force (v4 scaffold):
+            grep -vE '^(reviewer_vendor|audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             printf 'reviewer_vendor = grok\naudit_vendor = grok\n' >> .plinth/config
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
@@ -910,6 +913,8 @@ jobs:
           GAU="$(mktemp -d)"; : > "$GCAP4"
           ( cd "$GAU"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GAU" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # strip the scaffolded claude audit seat first (first-match-wins; see the grok/grok probe)
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             printf 'audit_vendor = grok\ntier2_extra = (^|/)app\\.py$\n' >> .plinth/config
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
