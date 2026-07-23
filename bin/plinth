@@ -417,7 +417,10 @@ warn_missing_gate_wiring() {
   if ! grep -q 'pulse.sh' "$target/.claude/settings.json" 2>/dev/null; then
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
-    echo "Normal for a grok/codex driver; for Claude, see CHANGELOG v3.8 to wire it."
+    echo "Expected for grok/codex drivers AS VERIFIED at grok 0.2.93 (no hook execution) —"
+    echo "re-verify after grok upgrades (MANUAL: hook probe); if hooks ARE wired and the"
+    echo "feed is still missing under a hook-running driver, the wiring is broken."
+    echo "For Claude, see CHANGELOG v3.8 to wire it."
   fi
 }
 

@@ -1303,7 +1303,9 @@ jobs:
           # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 
-          # ── v4.5: plinth watch renders FEEDLESS (grok/codex driver: no .claude hooks -> no events.jsonl) ──
+          # ── v4.5: plinth watch renders FEEDLESS (a driver whose hooks are not executing — e.g. grok,
+          # VERIFIED at 0.2.93 not to execute wired .claude hooks; the vendor-behavior verification is
+          # the MANUAL's local marker-hook probe, not this canary, which has no grok CLI) ──
           FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1
             git add -A; git commit -qm base >/dev/null; git checkout -qb feat >/dev/null 2>&1

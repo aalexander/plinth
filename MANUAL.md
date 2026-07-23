@@ -252,8 +252,16 @@ Two operator chores the rules generate:
    `.plinth/session/events.jsonl`. That file is the dashboard's feed. Every
    Bash/Edit the model attempts passes through `guard.sh` first — destructive
    commands and protected paths are blocked at the tool level, including for every
-   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not run
-   them** (those CLIs do not read `.claude/`), so it gets no local guard, no
+   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not
+   execute them** — VERIFIED empirically at grok 0.2.93 (a wired PreToolUse
+   marker hook does not fire under a headless grok run; grok's Claude-compat is
+   instruction/flag-level — CLAUDE.md auto-load, `--allowedTools` naming — not
+   hook execution; `grok inspect` shows what it discovered). Vendor compat
+   moves: RE-VERIFY after grok upgrades by wiring a marker hook in a scratch
+   repo, running one grok command, and checking the marker. If a future grok
+   executes `.claude/` hooks, that is a strict upgrade (guard/pulse/Stop gate
+   light up); everything below stays the enforcement FLOOR. Until then the
+   driver gets no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
    is told to follow (trusted to run the review loop) and, server-side, by branch
    protection's required checks (floor + checks — CI and tooling integrity; they do
@@ -479,7 +487,7 @@ it has run green with a real smoke_cmd.
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a codex/grok
+  fires only under a Claude driver (codex/grok do not execute `.claude/` hooks — verified at grok 0.2.93; re-verify on upgrades), so for a codex/grok
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
   server-side verifier until the receipt check ships, and the cloud review is

@@ -108,8 +108,10 @@
   GA July 9 2026, per-account eligibility, Codex CLI >= 0.144.0 — the reviewer tier knobs
   still ship commented (an active knob on an ineligible account fails loud), with the
   activation probe (`codex -m gpt-5.6`) documented.
-- **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a grok/codex
-  driver runs no `.claude/` hooks; or pulse.sh unwired) the dashboard no longer bails — it
+- **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a driver whose
+  hooks are not executing — grok VERIFIED at CLI 0.2.93 not to execute wired `.claude/`
+  PreToolUse hooks (its Claude-compat is instruction/flag-level; re-verify with the MANUAL's
+  marker-hook probe after upgrades) — or pulse.sh unwired) the dashboard no longer bails — it
   renders a reduced frame from the non-hook inputs: branch @ head, the review verdict
   (vendor-neutral `review.sh` state, incl. round and tier), and the NEEDS-HUMAN queue
   (viewport-budgeted like the live frame — `plinth queue` prints every item),

@@ -63,7 +63,7 @@ You decide how to orchestrate — single pass, parallel subagents, or a dynamic
 workflow (ultracode). Choose whatever fits the task. No need to get orchestration
 approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 `.claude/` guard hooks and gates; a cross-family codex/grok delegate does not (those
-CLIs do not read `.claude/`) — for those, the binding layer is your own discipline
+CLIs do not execute `.claude/` hooks — verified at grok 0.2.93; re-verify on upgrades) — for those, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
 and tooling integrity; they do NOT verify the review verdict). The Codex cloud
 review is ADVISORY: it posts PR comments and exposes no status-check context that
@@ -83,7 +83,7 @@ for parallel fan-out; when one subtask genuinely wants another family's strength
 cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
 subagents inherit the `.claude/` guard
 hooks and gates automatically; a cross-family shell-out to a codex/grok delegate does NOT
-(those CLIs do not read `.claude/`), so keep any ship or destructive authority for such
+(those CLIs do not execute `.claude/` hooks — verified at grok 0.2.93), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
 protection's required checks (floor + checks; the cloud review is advisory PR
 comments, not a requirable context, and no server-side review gate exists yet).
@@ -147,7 +147,9 @@ the turn of a session that created commits until the verdict at HEAD is APPROVED
 gate has two pressure valves — a recent mechanical review failure, and a per-session
 block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
-driver does NOT run `.claude/` hooks, so this Stop gate does not fire for it — nothing
+driver does NOT execute `.claude/` hooks (verified at grok 0.2.93 — a wired
+PreToolUse marker hook does not fire; re-verify after CLI upgrades, see the
+MANUAL's hook probe), so this Stop gate does not fire for it — nothing
 LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no
