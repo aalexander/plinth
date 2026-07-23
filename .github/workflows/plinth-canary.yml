@@ -346,6 +346,11 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # the grok auditor's --prompt-file must be ABSOLUTE and readable from the ISOLATED
+          # empty cwd (run_auditor absolutizes out BEFORE pf derives from it — regression guard):
+          pfv="$(awk 'p{print;exit} $0=="--prompt-file"{p=1}' /tmp/asb/grok-args)"
+          case "$pfv" in /*) : ;; *) echo "::error::grok auditor --prompt-file is not absolute ('$pfv') — unreadable from the isolated cwd"; exit 1 ;; esac
+          [ -r "$pfv" ] || { echo "::error::grok auditor --prompt-file not readable: $pfv"; exit 1; }
           # audit_model ALONE with audit_vendor = codex (the primary reviewer's own vendor)
           # must NOT trigger a same-vendor audit falsely recorded as cross-vendor.
           set_base_audit codex some-codex-model

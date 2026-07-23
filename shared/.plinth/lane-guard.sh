@@ -173,7 +173,10 @@ case "$sub" in
     # the scope check. Force delete+add so BOTH paths are checked against the spec.
     dif="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     unt="$(git ls-files --others --exclude-standard)" || { echo "scope: 'git ls-files' failed — refusing to accept the lane"; exit 5; }
-    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u )"
+    # The hook-appended event feed is excluded here as well as in the snapshot: pulse.sh
+    # appends it on every tool use during a hooked lane run, and a project whose preserved
+    # .gitignore does not ignore it would otherwise false-flag every clean lane.
+    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '(^|/)\.plinth/session/events\.jsonl$' || true )"
     # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a
     # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
     # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy
