@@ -8,9 +8,10 @@
    (Public means projects can call plinth-floor.yml with zero access config.)
 2. Put the CLI on PATH:
        sudo ln -s "$(pwd)/bin/plinth" /usr/local/bin/plinth
-3. Per machine (one CLI per v4 seat — see `.plinth/MODELS.md`): the grok CLI
-   ([x.ai/cli](https://x.ai/cli); sign in — the DRIVER seat), Claude Code
-   (native installer; sign in with Max — the advisor + audit seats), Codex CLI
+3. Per machine (one CLI per v4 seat — see `.plinth/MODELS.md`): Claude Code
+   (native installer; sign in with Max — the resident ARCHITECT harness, and the
+   audit seat), the grok CLI ([x.ai/cli](https://x.ai/cli); sign in — the WORKER
+   seat, and the alternative resident driver), Codex CLI
    (`npm i -g @openai/codex`; sign in with ChatGPT — the reviewer seat),
    `brew install jq`, and `~/.codex/config.toml`:
        model = "gpt-5.5"        # move to "gpt-5.6" once eligible (GA July 9 2026; CLI >= 0.144.0)
@@ -27,6 +28,7 @@
    and the preflight names any missing one. (The Codex cloud review
    posts comments — advisory, not a requirable check; the receipt check shipping
    with auto mode adds the server-side review gate.)
-6. Daily driving happens in the grok CLI (the v4 driver). When you drive with
-   Claude Code instead: `/model` -> Opus 4.8 (Fable 5 by exception, credits);
-   `/effort` -> ultracode for big tasks.
+6. Daily driving happens in Claude Code (the architect-resident default):
+   `/model` -> Opus 4.8 (Fable 5 by exception, credits); `/effort` -> ultracode
+   for big tasks; the grok worker lane carries the typing. The grok CLI as the
+   RESIDENT driver is the wall-clock alternative (known limitation applies).

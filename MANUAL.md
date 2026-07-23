@@ -16,10 +16,10 @@ merge ONCE you enable branch protection (a one-time operator step after the firs
 advisory). A Codex cloud review, once connected, additionally posts adversarial findings on
 each PR (security-briefed via the reviewer contract .plinth/reviewer.md). It is ADVISORY by
 mechanism, not just by choice: it posts as PR comments and exposes no status-check context
-that branch protection could require. Under a Claude driver the local Stop gate enforces
-the review loop; under the v4 default (a non-Claude driver) the loop is contract-bound
-until the APPROVED-at-HEAD receipt check ships (auto mode — the designated server-side
-review gate). The name is the design:
+that branch protection could require. Under the architect-resident DEFAULT the local
+Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop is
+contract-bound until the APPROVED-at-HEAD receipt check ships (auto mode — the
+designated server-side review gate). The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -148,9 +148,10 @@ Everything between is the model's call.
   the dashboard shows a red banner while it's non-empty.
 
 ## Quick start (first time on a project — follow exactly)
-0. Once per machine (SETUP.md has details): install the grok CLI
-   ([x.ai/cli](https://x.ai/cli), sign in — the v4 DRIVER seat), Claude Code
-   (the advisor + audit seats), Codex CLI (`npm i -g @openai/codex`, sign in
+0. Once per machine (SETUP.md has details): install Claude Code (the resident
+   ARCHITECT harness, and the audit seat), the grok CLI
+   ([x.ai/cli](https://x.ai/cli), sign in — the WORKER seat, and the alternative
+   resident driver), Codex CLI (`npm i -g @openai/codex`, sign in
    with ChatGPT — the reviewer seat), `brew install jq gh`, `gh auth login`.
 1. `plinth init ~/Dev/<repo>`. It scaffolds the project and runs a GitHub
    preflight: creates the git repo if missing, offers to create the GitHub
@@ -366,7 +367,7 @@ Two operator chores the rules generate:
    status checks that branch protection enforces. Those required checks verify the
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
    cannot close that gap (it posts comments, not a requirable status check). Under
-   the v4 grok default the review loop is therefore contract-bound driver
+   the grok-RESIDENT alternative the review loop is therefore contract-bound driver
    discipline today; the server-side check of `review.sh`'s own APPROVED-at-HEAD
    verdict — the receipt check, shipping with auto mode — is what closes it.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor

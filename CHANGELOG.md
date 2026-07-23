@@ -163,8 +163,8 @@
   that driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
   Fable 5 advises (`advisor_model_max = fable`, peer Opus 4.8), GPT-5.6 reviews
   (`reviewer_model_tier1/tier2 = gpt-5.6`; ineligible accounts stay on the GPT-5.5 vendor
-  default), Claude audits (`audit_vendor = claude` — a third family, distinct from both
-  driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
+  default), Claude audits (`audit_vendor = claude` — a different family than both the
+  WORKER that produced the diff and the reviewer, in either topology). Documents the contingency for a Fable availability lapse (advisor
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
   non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
   reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there — an EXPLICIT,
