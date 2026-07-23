@@ -86,7 +86,7 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
 }
 sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER matters: an explicit
   # Git control-plane surfaces are ALWAYS sensitive (see sens_snapshot's enumeration note):
-  case "$1" in .git/config|.git/info/exclude|.git/hooks/*) return 0 ;; esac
+  case "$1" in .git/config|.git/info/exclude|.git/HEAD|.git/packed-refs|.git/hooks/*|.git/refs/*) return 0 ;; esac
   # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
   # regardless of basename; then the secret-FILE names — which INCLUDE the SECRET_SAFE lookalikes
   # (they are recorded here, and spec-gated at scope time, never blind-exempt).
@@ -109,16 +109,19 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # enumerated and so isn't recorded — but an empty dir holds no secret, so this is vacuous; any
   # secret FILE placed inside it IS enumerated and caught. (efficiency-over-adversarial on a trusted lane.)
   # Git CONTROL-PLANE state is never git-enumerated but is writable by a whole-tree lane,
-  # and these surfaces weaponize silently: a planted .git/hooks/* executes code on the
-  # driver's next git command, .git/config can redirect remotes/hooks-path, and
-  # .git/info/exclude can hide files from every git listing. Snapshot them explicitly.
-  # BOUND (deliberate): .git/index and refs churn under normal read-side git use
-  # (status refreshes the index) and lane content is anchored by the BEFORE-sha diff —
-  # covering them would false-flag clean runs.
+  # and these surfaces weaponize silently: a planted .git/hooks/* (regular OR SYMLINK)
+  # executes code on the driver's next git command, .git/config can redirect
+  # remotes/hooks-path, .git/info/exclude can hide files from every git listing, and a ref
+  # rewrite (.git/HEAD, .git/refs/**, .git/packed-refs) can move what the branch points at.
+  # Snapshot them all; symlinks are recorded by target (below), so a symlinked hook is caught.
+  # BOUND (deliberate): .git/index is excluded — a read-side `git status`/`git diff` refreshes
+  # its stat cache on a CLEAN run, so covering it would false-flag; and it is not a content
+  # authority anyway (the scope check diffs against the immutable BEFORE *sha*, not a ref, so
+  # neither an index-flag change nor a ref rewrite can hide a working-tree content change).
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; \
-    for cp in .git/config .git/info/exclude; do [ -f "$cp" ] && printf '%s\n' "$cp"; done; \
-    find .git/hooks -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null; :; } | sort -u | while IFS= read -r f; do
+    for cp in .git/config .git/info/exclude .git/HEAD .git/packed-refs; do [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
+    find .git/hooks .git/refs \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sort -u | while IFS= read -r f; do
     # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
     # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
     # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane

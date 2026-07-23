@@ -1812,7 +1812,20 @@ jobs:
             SNAPG2="$(mktemp)"; bash "$LG" snapshot > "$SNAPG2"
             echo cpy >> app.py; git status >/dev/null 2>&1
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPG2" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 0 ] || { echo "::error::scope false-flagged read-side git use (rc=$r) — index/refs must stay out of the snapshot"; exit 1; } )
+            [ "$r" = 0 ] || { echo "::error::scope false-flagged read-side git use (rc=$r) — the index must stay out of the snapshot"; exit 1; }
+            # a SYMLINKED hook (find -type f alone would miss it) -> 4:
+            SNAPG3="$(mktemp)"; bash "$LG" snapshot > "$SNAPG3"
+            echo cpz >> app.py; printf '#!/bin/sh\necho pwned\n' > /tmp/eh$$; chmod +x /tmp/eh$$; ln -s /tmp/eh$$ .git/hooks/pre-commit
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG3" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a SYMLINKED .git/hooks/pre-commit (rc=$r)"; exit 1; }
+            rm -f .git/hooks/pre-commit /tmp/eh$$
+            # a REF REWRITE (branch moved) -> 4 (BEFORE is a sha, so content diff still anchors,
+            # but the ref-file snapshot catches the control-plane move itself):
+            echo c2 > f2; git add -A; git commit -qm second >/dev/null
+            SNAPG4="$(mktemp)"; bash "$LG" snapshot > "$SNAPG4"
+            echo cpw >> app.py; git update-ref refs/heads/main HEAD~1
+            r=0; bash "$LG" scope "$(git rev-parse HEAD)" --snapshot "$SNAPG4" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a ref rewrite (rc=$r)"; exit 1; } )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
