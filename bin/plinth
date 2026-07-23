@@ -59,6 +59,9 @@ fi
 edit_file() {  # edit_file <file> <sed-expr>...
   local f="$1"; shift
   local tmp; tmp="$(mktemp "$(dirname "$f")/.plinth-tmp.XXXXXX")" || { echo "edit_file: mktemp failed for $f" >&2; exit 1; }
+  # mktemp creates 0600; preserve the ORIGINAL file's mode so the rewritten file stays
+  # group/other-readable (else the generated ci.yml becomes 0600 until git recreates it).
+  chmod "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null || echo 644)" "$tmp" 2>/dev/null || true
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
@@ -476,9 +479,9 @@ warn_stale_reusable_refs() {
     # advanced .plinth-version and installed new tooling. Warn LOUDLY rather than silently skip —
     # the old reusable floor/checks may still be active (mirrors the non-git INIT fail-loud path).
     echo "NOTE: could not resolve the Plinth release commit (non-git install?), so update cannot"
-    echo "verify .github/workflows/ci.yml's reusable floor/checks refs. If they pin an older"
-    echo "release, the NEW floor checks will not run — repin the reusable floor/checks ref(s) that"
-    echo "are present to this release's commit SHA."
+    echo "verify .github/workflows/ci.yml's reusable floor/checks refs. If a ref pins an older"
+    echo "release, that gate runs older Plinth tooling (and the NEW floor checks run only once the"
+    echo "FLOOR ref is current) — repin the reusable ref(s) present to this release's commit SHA."
     return 0
   fi
   # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.

@@ -69,7 +69,10 @@ jobs:
           sed -i "s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD/.github/workflows/ci.yml"
           ( cd "$RPD" && git add -A && git commit -qm base >/dev/null )
           rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
-          printf '%s' "$rpout" | grep -q "pins the reusable floor/checks" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
+          printf '%s' "$rpout" | grep -q "pins the reusable" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
+          # the warning MUST carry a usable repin command: the sed one-liner AND this release's SHA:
+          printf '%s' "$rpout" | grep -q "sed -i.bak" || { echo "::error::stale-ref warning lacks the repin sed command"; exit 1; }
+          printf '%s' "$rpout" | grep -qF "$PSHA" || { echo "::error::stale-ref warning's repin command lacks this release's SHA ($PSHA)"; exit 1; }
           grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
           # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
           RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
@@ -77,7 +80,7 @@ jobs:
           printf '          # decoy plinth-floor.yml@%s plinth-checks.yml@%s\n' "$PSHA" "$PSHA" >> "$RPD3/.github/workflows/ci.yml"
           ( cd "$RPD3" && git add -A && git commit -qm base >/dev/null )
           rp3="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD3" 2>&1)"
-          printf '%s' "$rp3" | grep -q "pins the reusable floor/checks" || { echo "::error::a decoy comment ref suppressed the stale-ref warning (grep not anchored to uses:)"; exit 1; }
+          printf '%s' "$rp3" | grep -q "pins the reusable" || { echo "::error::a decoy comment ref suppressed the stale-ref warning (grep not anchored to uses:)"; exit 1; }
           # a decoy NON-GATING job with a current uses: ref must not suppress the warning either:
           RPD4="$(mktemp -d)"; ( cd "$RPD4"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD4" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD4/.github/workflows/ci.yml"
@@ -104,7 +107,7 @@ jobs:
           # and a FULLY-current ci.yml must NOT warn:
           RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
           rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
-          printf '%s' "$rp2" | grep -q "pins the reusable floor/checks" && { echo "::error::plinth update FALSE-warned on a current ci.yml"; exit 1; } || true
+          printf '%s' "$rp2" | grep -q "pins the reusable" && { echo "::error::plinth update FALSE-warned on a current ci.yml"; exit 1; } || true
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
@@ -1997,6 +2000,13 @@ jobs:
           ( cd "$SGW" && echo c >> app.py && git status >/dev/null 2>&1 )
           r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS2" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 0 ] || { echo "::error::separate-git-dir clean run false-flagged (rc=$r)"; exit 1; }
+          # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
+          # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
+          FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf 'GARBAGE\n' > .git/index
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a corrupt index (rc=$r) — enumeration fail-open"; exit 1; } )
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }

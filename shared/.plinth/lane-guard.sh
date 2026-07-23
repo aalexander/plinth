@@ -143,12 +143,24 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   #   C = control-plane file — the enumeration ALREADY knows it is control-plane (it resolved
   #       the real gitdir), so record it UNCONDITIONALLY; no path-name heuristic to miss an
   #       unusual gitdir layout (separate-git-dir, linked worktree, arbitrarily-named gitdir).
-  { { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
-      git ls-files -o --exclude-standard 2>/dev/null; } | sed 's/^/G\t/'; \
-    { for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
-        [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
-      find "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sed 's/^/C\t/'; } \
+  # FAIL-CLOSED enumeration: capture each producer separately and check its status — a real
+  # git/find failure must NOT be conflated with a legitimately-empty result (which would yield a
+  # partial baseline that later reads as "scope ok"). ls-files exits 0 on empty, non-zero on error.
+  local _gv _cp _cpdirs="" _d
+  _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
+    || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
+  # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
+  # so a non-zero find is a REAL error (permission, etc.) -> fail closed.
+  for _d in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs"; do [ -d "$_d" ] && _cpdirs="$_cpdirs $_d"; done
+  _cp="$(for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done)"
+  if [ -n "$_cpdirs" ]; then
+    _cpf="$(find $_cpdirs \( -type f -o -type l \) 2>/dev/null)" \
+      || { echo "lane-guard: control-plane 'find' failed — refusing (fail closed)" >&2; return 5; }
+    _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -v '\.sample$' || true)"
+  fi
+  { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } \
     | sort -u | while IFS="$(printf '\t')" read -r tag f; do
+    [ -n "$f" ] || continue
     if [ "$tag" = G ]; then
       # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
       # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.

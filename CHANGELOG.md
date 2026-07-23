@@ -50,8 +50,9 @@
   headlessly, and `--sandbox workspace` (grok's built-in writable profile, which FAILS CLOSED —
   refuses to start — if it can't be applied) bounds CASUAL side effects — but be accurate: per
   xAI's profile table it permits writes to CWD, `~/.grok/`, and temp dirs and ALLOWS child-process
-  network, so it is NOT a tight repo fence and does NOT block network, matching the codex lane's
-  `--sandbox workspace-write` (same caveats). (Web search/fetch stays ON — the worker needs it to
+  network, so it is NOT a tight repo fence and does NOT block network, similar to the codex lane's
+  `--sandbox workspace-write` (which by default permits TEMP-dir writes; network is a separate
+  opt-in there and it does not grant `~/.grok` — the shared caveat is just the non-repo temp writes). (Web search/fetch stays ON — the worker needs it to
   find coding solutions; the lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an
   adversarial sandbox against a malicious one, so it does not try to close every side-effect path.
   `lane-guard scope` checks the REPO tree; writes to `~/.grok`/temp or network are outside its view.)
@@ -81,6 +82,16 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **Snapshot enumeration fails CLOSED; CI-breaker + overclaim fixed.** `sens_snapshot` now captures
+  each `git ls-files`/`find` producer's status separately — a real git/filesystem error returns
+  exit 5 (fail closed) instead of silently yielding an incomplete baseline that would read as
+  "scope ok" (a fail-open the charter says to block; failure-injection canary added). Also: the
+  round-72 warning-wording change had left the canary probes grepping the OLD phrase (a
+  deterministic CI failure) — fixed to the stable prefix, and the stale-ref warning is now asserted
+  to carry the repin `sed` command AND this release's SHA. `edit_file` preserves the source file's
+  mode (mktemp is 0600 — the generated ci.yml stays 0644). Doc-accuracy: the codex `workspace-write`
+  comparison no longer implies grok's `~/.grok`/network allowances, and the non-git stale-ref
+  warning says it cannot VERIFY the refs rather than asserting floor checks won't run.
 - **In-charter correctness + de-hollowed tests (round 70).** Real fixes the reviewer surfaced
   once the threat model aligned: the sensitive-symlink snapshot path is extracted format-
   independently (a 4-field symlink record no longer garbles the reported path, and a legit in-spec
