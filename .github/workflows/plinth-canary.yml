@@ -64,11 +64,17 @@ jobs:
           # reusable-workflow refs are STALE — without rewriting the operator-owned ci.yml (contract):
           RPD="$(mktemp -d)"; ( cd "$RPD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD" >/dev/null 2>&1 )
           PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
-          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD/.github/workflows/ci.yml"
+          # a stale CHECKS ref ALONE (floor current) must still warn — floor and checks are
+          # independent gates (round-65 sibling):
+          sed -i "s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD/.github/workflows/ci.yml"
           ( cd "$RPD" && git add -A && git commit -qm base >/dev/null )
           rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
-          printf '%s' "$rpout" | grep -q "pins the reusable floor/checks" || { echo "::error::plinth update did not WARN about a stale reusable-workflow ref"; exit 1; }
-          grep -q "plinth-floor.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          printf '%s' "$rpout" | grep -q "pins the reusable floor/checks" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
+          grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          # and a FULLY-current ci.yml must NOT warn:
+          RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
+          rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
+          printf '%s' "$rp2" | grep -q "pins the reusable floor/checks" && { echo "::error::plinth update FALSE-warned on a current ci.yml"; exit 1; } || true
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
