@@ -1317,6 +1317,30 @@ jobs:
           printf '%s' "$fwout" | grep -q 'APPROVED' || { echo "::error::feedless watch did not render the review verdict"; exit 1; }
           printf '%s' "$fwout" | grep -q 'ACME_TOKEN' || { echo "::error::feedless watch did not render the NEEDS-HUMAN queue"; exit 1; }
 
+          # ── v4.5: github_preflight VERIFIES required contexts (not just "configured") ──
+          # protection with wrong/no contexts must not read as healthy: floor/checks absent
+          # or an empty context list is called out loudly (round-26 finding).
+          PFG="$(mktemp -d)"
+          cat > "$PFG/gh" <<'GHS'
+          #!/usr/bin/env bash
+          case "$*" in
+            *"/protection"*) cat "${GHP_JSON:?}" ;;
+            *default_branch*) echo main ;;
+            *) echo '{}' ;;
+          esac
+          GHS
+          chmod +x "$PFG/gh"
+          pf_probe() {  # <protection-json> <expect-grep> <label>
+            local d j="$PFG/p.json"; d="$(mktemp -d)"; printf '%s' "$1" > "$j"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+            out="$(GHP_JSON="$j" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
+            printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          }
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / checks / build"]}}' 'required: CI / floor / secrets' full
+          pf_probe '{"required_status_checks":{"contexts":["CI / checks / build"]}}' 'missing floor' no-floor
+          pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
+
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
           printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > "$NH/NEEDS-HUMAN.md"

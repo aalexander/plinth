@@ -92,11 +92,14 @@
   list that silently passed a lane touching sensitive paths. (The script runs pipefail
   WITHOUT -e, so the prior code never aborted on rc=1 — the real hole was rc>1 reading as
   "no changes".) An empty protected-paths pattern set is now an explicit `|| true`, not an
-  ignored pipefail. Under the v4 non-Claude default driver, docs now instruct marking the
-  Codex cloud review a REQUIRED branch-protection check — the enforced server-side
-  adversarial gate for a driver with no local Stop gate (the required floor/checks verify
-  tooling integrity, not the review verdict; a server-side APPROVED-at-HEAD check remains
-  the designated next step).
+  ignored pipefail. Gate-contract TRUTH pass: the Codex cloud review posts PR COMMENTS and
+  exposes no status-check context, so it CANNOT be a required branch-protection gate
+  (verified against a live PR — zero check-runs from the app). Every doc now states the
+  real contract: floor + checks are the required contexts; the cloud review is advisory;
+  the server-verifiable APPROVED-at-HEAD receipt check (auto mode, next release) is the
+  designated adversarial gate for non-Claude drivers. `github_preflight` now VERIFIES the
+  required contexts — missing floor/checks or an empty context list is called out loudly
+  instead of reading as "configured" (canary-probed with a stubbed gh).
 - **Floor checks executable MODE, not just bytes.** The pinned executables are executed
   directly (`./.plinth/review.sh`, the lanes' `.plinth/lane-guard.sh` calls, the `.claude`
   hooks); `cmp` alone would pass pinned bytes committed at 0644 while every exec fails.

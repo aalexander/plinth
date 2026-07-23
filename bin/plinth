@@ -319,7 +319,22 @@ github_preflight() {
   slug="$(printf '%s' "$url" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')"
   defb="$(gh api "repos/$slug" -q .default_branch 2>/dev/null || echo main)"
   if out="$(gh api "repos/$slug/branches/$defb/protection" 2>&1)"; then
-    echo "  protection:    configured on $defb"
+    # "configured" alone is not the guarantee — verify the required CONTEXTS actually
+    # cover the floor and checks jobs; protection with the wrong (or no) contexts
+    # leaves merges ungated while the preflight reads as healthy.
+    ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
+    miss=""
+    printf '%s' "$ctxs" | grep -qi 'floor'  || miss="floor"
+    printf '%s' "$ctxs" | grep -qi 'checks' || miss="${miss:+$miss and }checks"
+    if [ -z "$ctxs" ]; then
+      echo "  protection:    configured on $defb — but NO required status checks are set, so"
+      echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
+    elif [ -n "$miss" ]; then
+      echo "  protection:    configured on $defb — but the required contexts are missing $miss:"
+      echo "                 $(printf '%s' "$ctxs" | tr '\n' ' '). Merges are not gated by the absent job(s)."
+    else
+      echo "  protection:    configured on $defb (required: $(printf '%s' "$ctxs" | tr '\n' ' '))"
+    fi
   elif printf '%s' "$out" | grep -q "Upgrade to GitHub Pro"; then
     echo "  protection:    IMPOSSIBLE on this plan (private repo, GitHub Free) — floor/checks are"
     echo "                 NOT required to merge. Make the repo public or upgrade to Pro."

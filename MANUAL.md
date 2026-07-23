@@ -14,10 +14,12 @@ deterministic CI floor (tests + scanners) becomes a required status check that g
 merge ONCE you enable branch protection (a one-time operator step after the first PR —
 `plinth init` only reports branch-protection state, it cannot set it; until then CI is
 advisory). A Codex cloud review, once connected, additionally posts adversarial findings on
-each PR (security-briefed via the reviewer contract .plinth/reviewer.md); under a Claude
-driver it is a backstop behind the local Stop gate, but under the v4 default (a non-Claude
-driver, which runs no local gate) you MUST mark it a required check — it is the server-side
-adversarial merge gate for that path. The name is the design:
+each PR (security-briefed via the reviewer contract .plinth/reviewer.md). It is ADVISORY by
+mechanism, not just by choice: it posts as PR comments and exposes no status-check context
+that branch protection could require. Under a Claude driver the local Stop gate enforces
+the review loop; under the v4 default (a non-Claude driver) the loop is contract-bound
+until the APPROVED-at-HEAD receipt check ships (auto mode — the designated server-side
+review gate). The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -139,10 +141,10 @@ Everything between is the model's call.
    it arrives security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
-   protection requiring those checks — AND, under the v4 default (a non-Claude
-   driver with no local Stop gate), mark the Codex cloud review check REQUIRED
-   too: that makes an independent adversarial review a server-side merge gate
-   for every driver, not driver discipline. Exact steps in "Branch protection"
+   protection requiring those checks. (The Codex cloud review posts as PR
+   COMMENTS — it exposes no status-check context, so it cannot be made a
+   required gate; treat it as an advisory second stream of findings.) Exact
+   steps in "Branch protection"
    below. From then on the merge gate is real. Until you've SEEN both fire,
    treat them as absent.
 
@@ -254,9 +256,10 @@ Two operator chores the rules generate:
    them** (those CLIs do not read `.claude/`), so it gets no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
    is told to follow (trusted to run the review loop) and, server-side, by branch
-   protection's required checks, which under the v4 default MUST include the Codex
-   cloud review (quick start step 4): the CI floor verifies tooling and tests, the
-   required cloud review is the adversarial gate. Wiring the hooks into codex's own
+   protection's required checks (floor + checks — CI and tooling integrity; they do
+   not verify the review verdict, and the cloud review is advisory comments). The
+   adversarial loop is contract-bound for a non-Claude driver until the receipt
+   check ships (auto mode). Wiring the hooks into codex's own
    hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
@@ -311,12 +314,11 @@ Two operator chores the rules generate:
    driver does not run this hook, so nothing LOCAL forces it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
    status checks that branch protection enforces. Those required checks verify the
-   floor and tooling integrity, NOT the review verdict — so under the v4 grok
-   default, make the Codex cloud review a REQUIRED check too (quick start step 4):
-   that is the enforced server-side adversarial gate for a non-Claude driver.
-   Without it, the review loop is voluntary driver discipline for the default
-   path. (A server-side check of `review.sh`'s own APPROVED-at-HEAD verdict is
-   the designated next step — the verdict is local session state today.)
+   floor and tooling integrity, NOT the review verdict — and the Codex cloud review
+   cannot close that gap (it posts comments, not a requirable status check). Under
+   the v4 grok default the review loop is therefore contract-bound driver
+   discipline today; the server-side check of `review.sh`'s own APPROVED-at-HEAD
+   verdict — the receipt check, shipping with auto mode — is what closes it.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -414,24 +416,17 @@ UI route, once the first PR shows its checks:
 3. Tick "Require status checks to pass before merging" (add "Require branches
    to be up to date" if you want rebase-before-merge discipline).
 4. In the search box, pick the floor and checks jobs EXACTLY as they appeared
-   on the PR (e.g. "CI / floor / secrets", "CI / checks / ...") — and, under the
-   v4 non-Claude default driver, ALSO pick the Codex cloud review check (its
-   name as it appeared on the PR): required, not merely present. That review is
-   the server-side adversarial gate for a driver with no local Stop gate.
+   on the PR (e.g. "CI / floor / secrets", "CI / checks / ..."). The Codex cloud
+   review will NOT appear in this list — it posts PR comments, not a status
+   check, so it cannot be required here.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing; paste the names the PR showed — under the v4 non-Claude
-default driver the contexts array MUST also include the Codex cloud review
-check's name, exactly as it appeared on the PR):
+CLI route (same timing; paste the names the PR showed):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {"required_status_checks":{"strict":false,
-      "contexts":["FLOOR CHECK NAME","CHECKS CHECK NAME","CODEX CLOUD REVIEW CHECK NAME"]},
+    {"required_status_checks":{"strict":false,"contexts":["FLOOR CHECK NAME","CHECKS CHECK NAME"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
-
-(Drop the third context only if you drive with Claude — there the local Stop
-gate already enforces the review loop.)
 
 Verify either route the same way: open a trivial PR and confirm the merge
 button is disabled until everything is green.
@@ -480,25 +475,25 @@ it has run green with a real smoke_cmd.
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
   fires only under a Claude driver (codex/grok do not read `.claude/`), so for a codex/grok
   driver this hook does NOT fire — their merge gate is branch protection's required
-  checks, which under the v4 default MUST include the Codex cloud review (the
-  adversarial gate; the CI floor alone verifies tooling and tests, not review).
-  Deliberately-quoted obfuscation is out of scope (see above); the merge gate
-  proper is branch protection's required status checks.
+  checks (floor + checks — CI and tooling integrity; the review verdict has no
+  server-side verifier until the receipt check ships, and the cloud review is
+  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
+  the merge gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
   can't trap a session. Codex/grok drivers do not run this hook — for them there is no
-  local hard block; the server-side hard gate is branch protection's required checks,
-  incl. the REQUIRED Codex cloud review under the v4 default, and the driver is trusted
-  to run the risk-tiered review loop (its APPROVED-at-HEAD verdict has no server-side
-  verifier yet — the designated next step)
+  local hard block; the server-side hard gate is branch protection's required checks
+  (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
+  APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
+  shipping with auto mode, closes this)
   on a broken pipeline — and every release is logged as a `gate_release` event
   the dashboard shows in red.
-- Branch protection: `floor` + `checks` required to merge — plus the Codex cloud
-  review check under the v4 non-Claude default driver, where it is the enforced
-  adversarial gate (requires public repo or GitHub Pro; the preflight reports
-  which state you're in).
+- Branch protection: `floor` + `checks` required to merge (requires public repo
+  or GitHub Pro; the preflight reports which state you're in AND verifies the
+  required contexts are actually present). The cloud review is advisory; the
+  receipt check (auto mode) adds the review-verdict gate.
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —

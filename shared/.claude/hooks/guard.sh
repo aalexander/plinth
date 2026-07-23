@@ -39,8 +39,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # its own hook system, which Plinth does not wire; grok has no PreToolUse mechanism at
 # all), so neither this hook NOR the `.claude/` Stop review-gate fires for a non-Claude
 # driver — for them the ship gate is purely SERVER-SIDE: branch protection's required
-# checks, which under the v4 non-Claude default MUST include the Codex cloud review (the
-# adversarial gate), plus the trusted driver running the loop. For a Claude driver this hook
+# checks (floor + checks; the cloud review is advisory comments, and the review verdict
+# gains a server verifier only with the receipt check), plus the trusted driver running
+# the loop. For a Claude driver this hook
 # complements the Stop review-gate by
 # refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
 # the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
@@ -55,8 +56,8 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    so quoted PROSE mentioning the command stays inert; a `bash -c "gh pr create"`
 #    deliberately hidden in quotes is OUT OF SCOPE.
 #  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection's
-#    required checks (incl. the REQUIRED Codex cloud review under the v4 non-Claude
-#    default — the adversarial gate). A client hook can never replace those.
+#    required checks (floor + checks today; the receipt check adds the review-verdict
+#    gate). A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate
