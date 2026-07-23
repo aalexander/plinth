@@ -472,8 +472,10 @@ warn_stale_reusable_refs() {
   [ -n "$psha" ] || return 0
   # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.
   local ci="$target/.github/workflows/ci.yml"
-  if grep -q "plinth-floor\.yml@${psha}" "$ci" 2>/dev/null \
-     && grep -q "plinth-checks\.yml@${psha}" "$ci" 2>/dev/null; then return 0; fi
+  # Anchor to the reusable `uses:` line — a decoy current ref in a comment or a non-gating
+  # duplicate line must not suppress the warning while the real job stays stale.
+  if grep -qE "^[[:space:]]*uses:.*plinth-floor\.yml@${psha}([[:space:]]|\$)" "$ci" 2>/dev/null \
+     && grep -qE "^[[:space:]]*uses:.*plinth-checks\.yml@${psha}([[:space:]]|\$)" "$ci" 2>/dev/null; then return 0; fi
   if true; then
     echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the reusable floor/checks"
     echo "workflows at an OLDER Plinth commit, so the NEW floor checks (lane tooling bytes +"

@@ -147,7 +147,18 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
       sens_match "$f" || continue
     fi
     if [ -L "$f" ]; then
-      printf 'symlink %s  %s\n' "$(readlink "$f" 2>/dev/null || echo '?')" "$f"   # record a symlink by its target, do not follow
+      # Record the link TARGET (so a repoint is caught) AND, when the target resolves to a
+      # regular file, the referent's content hash — else a WRITE-THROUGH a pre-existing
+      # sensitive symlink (target string unchanged, content changed) would compare equal.
+      # Fail closed if the target is present-but-unhashable (a forgeable empty record).
+      lt="$(readlink "$f" 2>/dev/null || echo '?')"
+      if [ -f "$f" ]; then   # -f follows the link: true iff it resolves to a regular file
+        th="$(hashof "$f")"
+        [ -n "$th" ] || { echo "lane-guard: cannot hash symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }
+        printf 'symlink %s %s  %s\n' "$lt" "$th" "$f"
+      else
+        printf 'symlink %s -  %s\n' "$lt" "$f"   # dangling / non-regular target: record target only
+      fi
     elif [ -f "$f" ]; then
       h="$(hashof "$f")"; m="$(modeof "$f")"
       # FAIL CLOSED if a sensitive file cannot be hashed OR statted (e.g. an unreadable mode-000 .env):

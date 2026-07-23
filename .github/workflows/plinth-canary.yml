@@ -71,6 +71,13 @@ jobs:
           rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
           printf '%s' "$rpout" | grep -q "pins the reusable floor/checks" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
           grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
+          RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|; s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD3/.github/workflows/ci.yml"
+          printf '          # decoy plinth-floor.yml@%s plinth-checks.yml@%s\n' "$PSHA" "$PSHA" >> "$RPD3/.github/workflows/ci.yml"
+          ( cd "$RPD3" && git add -A && git commit -qm base >/dev/null )
+          rp3="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD3" 2>&1)"
+          printf '%s' "$rp3" | grep -q "pins the reusable floor/checks" || { echo "::error::a decoy comment ref suppressed the stale-ref warning (grep not anchored to uses:)"; exit 1; }
           # and a FULLY-current ci.yml must NOT warn:
           RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
           rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
@@ -1780,6 +1787,16 @@ jobs:
             rm -f .env; ln -sf /etc/hosts .env
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a secret replaced by a SYMLINK (rc=$r)"; exit 1; }
             rm -f .env; printf 'pre\n' > .env
+            # WRITE-THROUGH a pre-existing sensitive symlink whose target is OUTSIDE any sensitive
+            # dir: target string unchanged, referent content changes — the referent hash catches it:
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; ln -s elsewhere/real.env .env
+            printf 'elsewhere/\n' >> .gitignore
+            SNAPSY="$(mktemp)"; bash "$LG" snapshot > "$SNAPSY"
+            echo b >> app.py; printf 'STOLEN=1\n' >> elsewhere/real.env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPSY" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a WRITE-THROUGH a pre-existing sensitive symlink (rc=$r)"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            git checkout -q -- .gitignore 2>/dev/null || true
             # secrets under a secret-NAMED directory (matching .gitignore .env/*.pem/*.key dir patterns) must be
             # caught too — the denylist matches descendants, not just the exact basename:
             for sd in .env cert.pem prod.key; do
