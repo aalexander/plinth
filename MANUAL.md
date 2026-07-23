@@ -550,9 +550,9 @@ it has run green with a real smoke_cmd.
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
   APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
-  shipping with auto mode, closes this)
-  on a broken pipeline — and every release is logged as a `gate_release` event
-  the dashboard shows in red.
+  shipping with auto mode, closes this). Every gate release (a Claude driver ending
+  its turn without approval, e.g. on a broken review pipeline) is logged as a
+  `gate_release` event the dashboard shows in red.
 - Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
   harness) + `checks` required to merge (requires public repo or GitHub Pro; the
   preflight reports which state you're in AND names any missing required

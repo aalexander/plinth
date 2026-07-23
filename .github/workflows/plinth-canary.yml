@@ -1833,7 +1833,13 @@ jobs:
             echo hb >> app.py; echo EVIL >> mod.py; git update-index --skip-worktree mod.py
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPH" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope did not fail closed on a skip-worktree hidden-bit edit (rc=$r)"; exit 1; }
-            git update-index --no-skip-worktree mod.py; git checkout -q -- mod.py app.py )
+            git update-index --no-skip-worktree mod.py; git checkout -q -- mod.py app.py
+            # the OTHER hidden bit — assume-unchanged (lowercase status letter) — must also fail closed:
+            SNAPH2="$(mktemp)"; bash "$LG" snapshot > "$SNAPH2"
+            echo hb2 >> app.py; echo EVIL2 >> mod.py; git update-index --assume-unchanged mod.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPH2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope did not fail closed on an assume-unchanged hidden-bit edit (rc=$r)"; exit 1; }
+            git update-index --no-assume-unchanged mod.py; git checkout -q -- mod.py app.py )
           # ── v4.5: control-plane snapshot works in a LINKED WORKTREE (.git is a FILE) ──
           WTM="$(mktemp -d)"; ( cd "$WTM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             echo a > app.py; git add -A; git commit -qm base >/dev/null )
