@@ -153,11 +153,18 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
       # Fail closed if the target is present-but-unhashable (a forgeable empty record).
       lt="$(readlink "$f" 2>/dev/null || echo '?')"
       if [ -f "$f" ]; then   # -f follows the link: true iff it resolves to a regular file
-        th="$(hashof "$f")"
-        [ -n "$th" ] || { echo "lane-guard: cannot hash symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }
-        printf 'symlink %s %s  %s\n' "$lt" "$th" "$f"
+        th="$(hashof "$f")"; tm="$(modeof "$f")"
+        { [ -n "$th" ] && [ -n "$tm" ]; } || { echo "lane-guard: cannot hash/stat symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }
+        printf 'symlink %s %s %s  %s\n' "$lt" "$th" "$tm" "$f"   # target + referent content + mode
+      elif [ -d "$f" ]; then
+        # A sensitive path that is a symlink to a DIRECTORY is the write-through vector
+        # (a lane writes `<sensitive>/x`, which lands in the external target dir, invisible
+        # to git under the sensitive name). A legitimate secret is never a dir-symlink —
+        # fail closed rather than record target-only.
+        echo "lane-guard: sensitive path '$f' is a symlink to a DIRECTORY — refusing (fail closed; a secret path must not be a dir-symlink)" >&2
+        exit 5
       else
-        printf 'symlink %s -  %s\n' "$lt" "$f"   # dangling / non-regular target: record target only
+        printf 'symlink %s - -  %s\n' "$lt" "$f"   # dangling / special target: no content to hide
       fi
     elif [ -f "$f" ]; then
       h="$(hashof "$f")"; m="$(modeof "$f")"

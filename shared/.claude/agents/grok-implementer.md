@@ -94,10 +94,13 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
    - `--permission-mode bypassPermissions` — headless has no TUI to answer a permission prompt, so
      under `acceptEdits`/`default` grok *announces* an edit and silently drops it; the file is never
      written (verified against grok 4.x). Bypass lets it apply edits and run the verification.
-   - `--sandbox workspace` — FENCES the run to the working tree and blocks network, so bypassed
-     approvals can't turn into arbitrary command side effects or secret exfiltration outside the
-     repo (grok's built-in writable profile; it FAILS CLOSED — refuses to start — if it can't be
-     applied, so this is real, not advisory). Matches the codex lane's `--sandbox workspace-write`.
+   - `--sandbox workspace` — FENCES the run to the working tree and blocks SHELL network side
+     effects (grok's built-in writable profile; FAILS CLOSED — refuses to start — if it can't be
+     applied). Web search/fetch stays ON deliberately: the worker needs it to find coding
+     solutions, and this lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an
+     adversarial sandbox against a malicious one (see the header). The trust basis is an honest
+     lane + `scope` + your independent re-run, not a locked-down network. Matches the codex lane's
+     `--sandbox workspace-write`.
    Even so, be clear-eyed: grok has whole-tree write WITHIN the workspace (`--cwd "$(pwd)"`) — it DOES
    write to your tree. That is why step 0 has you commit/stash your own WIP first (so its writes are
    cleanly attributable) and why step 3 is mandatory: `scope` REJECTS anything it wrote outside the

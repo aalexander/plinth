@@ -1797,6 +1797,12 @@ jobs:
             [ "$r" = 4 ] || { echo "::error::scope missed a WRITE-THROUGH a pre-existing sensitive symlink (rc=$r)"; exit 1; }
             rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
             git checkout -q -- .gitignore 2>/dev/null || true
+            # a sensitive path that is a symlink to a DIRECTORY (the write-through-a-dir vector)
+            # fails closed at snapshot — a secret is never a dir-symlink (round-67):
+            rm -f .env; mkdir -p extdir; ln -s extdir .env
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
+            rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
             # secrets under a secret-NAMED directory (matching .gitignore .env/*.pem/*.key dir patterns) must be
             # caught too — the denylist matches descendants, not just the exact basename:
             for sd in .env cert.pem prod.key; do
