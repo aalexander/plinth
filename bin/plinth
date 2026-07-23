@@ -327,15 +327,19 @@ github_preflight() {
     ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
     # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
     # each needs its own required context; one present floor job does not gate the others.
-    # Component-boundary matching, not loose substrings: "CI / floor / not-sast" or
-    # "prechecks" must NOT satisfy the sast/checks contexts (a misleading sibling name
-    # would read as a healthy gate while the real job is unrequired).
+    # STRUCTURAL matching, not substrings: a legit context is "<workflow> / <job> / …"
+    # where <workflow> is the project ci.yml's own name (scaffold: CI). Anchoring on that
+    # prefix rejects decoy siblings ("old / checks / build", "CI / floor / not-sast",
+    # "CI / floor / dependencies / npm-audit") that a loose grep would read as healthy.
+    wf="$(sed -n 's/^name:[[:space:]]*//p' "$target/.github/workflows/ci.yml" 2>/dev/null | head -1)"
+    [ -n "$wf" ] || wf="CI"
+    wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
     for fj in secrets sast harness; do
-      printf '%s' "$ctxs" | grep -qiE "(^|[ /])floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s' "$ctxs" | grep -qiE "^$wfe */ *floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s' "$ctxs" | grep -qiE "(^|[ /])floor */ *dependencies([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies"
-    printf '%s' "$ctxs" | grep -qiE "(^|[ /])checks([ /]|\$)" || miss="${miss:+$miss, }checks"
+    printf '%s' "$ctxs" | grep -qiE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    printf '%s' "$ctxs" | grep -qiE "^$wfe */ *checks([ /]|\$)" || miss="${miss:+$miss, }checks"
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
