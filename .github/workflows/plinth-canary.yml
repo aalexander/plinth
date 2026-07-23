@@ -71,8 +71,10 @@ jobs:
           rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
           printf '%s' "$rpout" | grep -q "pins the reusable" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
           # the warning MUST carry a usable repin command: the sed one-liner AND this release's SHA:
-          printf '%s' "$rpout" | grep -q "sed -i.bak" || { echo "::error::stale-ref warning lacks the repin sed command"; exit 1; }
-          printf '%s' "$rpout" | grep -qF "$PSHA" || { echo "::error::stale-ref warning's repin command lacks this release's SHA ($PSHA)"; exit 1; }
+          # the repin sed command AND this release's SHA must occur on the SAME line, and for a
+          # checks-ONLY stale it must target plinth-checks only (never rewrite the current floor ref):
+          printf '%s' "$rpout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-checks" || { echo "::error::stale checks-only warning lacks a repin command targeting plinth-checks with this SHA"; exit 1; }
+          printf '%s' "$rpout" | grep -q 'sed -i.bak.*plinth-(floor|checks)' && { echo "::error::checks-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
           grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
           # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
           RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
@@ -123,6 +125,8 @@ jobs:
           NGUP="$(mktemp -d)"; ( cd "$NGUP" && git init -qb main . >/dev/null 2>&1 && "$GITHUB_WORKSPACE/bin/plinth" init "$NGUP" >/dev/null 2>&1 && git add -A && git commit -qm base >/dev/null 2>&1 )
           ngu="$("$NGP/bin/plinth" update "$NGUP" 2>&1)"
           printf '%s' "$ngu" | grep -qi "could not resolve the Plinth release commit" || { echo "::error::non-git UPDATE did not warn it cannot verify the reusable refs (silent stale floor)"; exit 1; }
+          printf '%s' "$ngu" | grep -qi "runs older Plinth tooling" || { echo "::error::non-git UPDATE warning lost the accurate 'cannot verify / runs older tooling' wording"; exit 1; }
+          printf '%s' "$ngu" | grep -qi "the NEW floor checks will not run —" && { echo "::error::non-git UPDATE warning reverted to the inaccurate unconditional 'will not run' overclaim"; exit 1; } || true
           grep -Eq 'plinth-(floor|checks)\.yml@[0-9a-f]{7,}' "$NGPROJ/.github/workflows/ci.yml" && { echo "::error::non-git init left a resolved SHA despite no resolvable Plinth HEAD"; exit 1; } || true
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"

@@ -138,6 +138,7 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # GIT_COMMON = shared (config, hooks, packed-refs, info/exclude). Both may equal `.git`.
   local GITDIR GITCOMMON
   GITDIR="$(git rev-parse --git-dir 2>/dev/null)"; GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
+  { [ -n "$GITDIR" ] && [ -n "$GITCOMMON" ]; } || { echo "lane-guard: cannot resolve the git dir — refusing (fail closed)" >&2; return 5; }
   # TWO tagged sources into one record loop (tab-separated tag<TAB>path):
   #   G = git-visible file — GATE through sens_match (secret/protected classification)
   #   C = control-plane file — the enumeration ALREADY knows it is control-plane (it resolved
@@ -249,12 +250,16 @@ case "$sub" in
     # BOTH working-tree AND staged (--cached) vs base: a lane could `git add` an out-of-spec
     # change and revert the working tree, leaving `git diff $base` clean while the INDEX holds
     # the change (the driver's later `git commit` would ship it) — union catches that.
-    dif="$( { git diff --name-only --no-renames "$base"; git diff --cached --name-only --no-renames "$base"; } | sort -u )" \
-      || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    # Run each diff SEPARATELY and check its status — a group `{ a; b; }` exits with b's status,
+    # so a failed FIRST diff would be masked. Both must succeed (fail closed).
+    difw="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    difc="$(git diff --cached --name-only --no-renames "$base")" || { echo "scope: 'git diff --cached' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    dif="$(printf '%s\n%s\n' "$difw" "$difc" | sort -u)"
     # HIDDEN INDEX BITS: assume-unchanged (lowercase status letter) / skip-worktree (S) make
     # git diff/ls-files SKIP a modified tracked file — a lane could set them to sneak an
     # out-of-spec edit past the enumeration above. They are never normal lane state; fail closed.
-    hidden="$(git ls-files -v 2>/dev/null | grep -E '^([a-z]|S)' | sed 's/^..//' || true)"
+    lsv="$(git ls-files -v)" || { echo "scope: 'git ls-files -v' failed — refusing (fail closed)" >&2; exit 5; }
+    hidden="$(printf '%s\n' "$lsv" | grep -E '^([a-z]|S)' | sed 's/^..//' || true)"
     if [ -n "$hidden" ]; then
       echo "scope: tracked paths carry assume-unchanged/skip-worktree bits (git diff would skip them) — refusing (fail closed):" >&2
       printf '  %s\n' $hidden >&2
@@ -272,12 +277,17 @@ case "$sub" in
     # The BASE policy object must be a regular file blob. If base has .plinth/protected-paths as a
     # SYMLINK (mode 120000) or a TREE (040000), `git show base:` returns the link's target text or
     # nothing — silently narrowing the base-union defense. Fail closed on any non-regular base object.
-    bmode="$(git ls-tree "$base" -- .plinth/protected-paths 2>/dev/null | awk '{print $1}')"
+    bls="$(git ls-tree "$base" -- .plinth/protected-paths)" || { echo "scope: 'git ls-tree' on base failed — refusing (fail closed)" >&2; exit 5; }
+    bmode="$(printf '%s' "$bls" | awk '{print $1}')"
     case "$bmode" in
       ''|100644|100755) : ;;  # absent (nothing to narrow) or a regular blob — OK
       *) echo "scope: base .plinth/protected-paths is not a regular file (git mode $bmode) — refusing to run (fail closed)" >&2; exit 5 ;;
     esac
-    base_prot="$(git show "${base}:.plinth/protected-paths" 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' || true)"
+    if [ -n "$bmode" ]; then
+      # object exists (bmode set) -> a git show failure here is a REAL error, not absence: fail closed.
+      bshow="$(git show "${base}:.plinth/protected-paths")" || { echo "scope: 'git show' of base protected-paths failed — refusing (fail closed)" >&2; exit 5; }
+      base_prot="$(printf '%s' "$bshow" | grep -Ev '^[[:space:]]*(#|$)' || true)"
+    else base_prot=""; fi
     # `|| true`: an EMPTY pattern set (no protected-paths anywhere) is legitimate — grep -v
     # then exits 1 under pipefail, which must read as "no patterns", not as a failure.
     all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u || true)"

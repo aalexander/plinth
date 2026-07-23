@@ -61,7 +61,7 @@ edit_file() {  # edit_file <file> <sed-expr>...
   local tmp; tmp="$(mktemp "$(dirname "$f")/.plinth-tmp.XXXXXX")" || { echo "edit_file: mktemp failed for $f" >&2; exit 1; }
   # mktemp creates 0600; preserve the ORIGINAL file's mode so the rewritten file stays
   # group/other-readable (else the generated ci.yml becomes 0600 until git recreates it).
-  chmod "$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null || echo 644)" "$tmp" 2>/dev/null || true
+  chmod "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo 644)" "$tmp" 2>/dev/null || true
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
@@ -336,6 +336,7 @@ github_preflight() {
     # prefix rejects decoy siblings ("old / checks / build", "CI / floor / not-sast",
     # "CI / floor / dependencies / npm-audit") that a loose grep would read as healthy.
     wf="$(sed -n 's/^name:[[:space:]]*//p' "$target/.github/workflows/ci.yml" 2>/dev/null | head -1)"
+    wf="${wf%\"}"; wf="${wf#\"}"; wf="${wf%\'}"; wf="${wf#\'}"   # strip surrounding quotes (name: "CI")
     [ -n "$wf" ] || wf="CI"
     wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
@@ -357,7 +358,7 @@ github_preflight() {
     if [ -z "$ckctx" ]; then
       miss="${miss:+$miss, }checks"
     else
-      runs="$(gh api "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
+      runs="$(gh api --paginate "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
       if [ -z "$runs" ]; then
         miss="${miss:+$miss, }checks (UNVERIFIED: no check-run data on $defb — cannot confirm the required context names a real job; re-run the preflight after the first PR)"
       else

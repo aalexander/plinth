@@ -1,6 +1,6 @@
 # Plinth changelog
 
-## v4.5.0 — implementer lanes (architect pattern) + advisor discipline — July 11, 2026
+## v4.5.0 — implementer lanes (architect pattern) + advisor discipline + v4 model seats — July 23, 2026
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
