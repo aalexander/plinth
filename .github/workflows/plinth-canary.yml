@@ -1558,6 +1558,11 @@ jobs:
             grep -q 'lane-guard.sh snapshot' "$A" || { echo "::error::${a}-implementer does not snapshot sensitive paths before the run"; exit 1; }
             grep -q 'lane-guard.sh scope .* --snapshot' "$A" || { echo "::error::${a}-implementer does not pass --snapshot to lane-guard scope"; exit 1; }
             grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
+            # failure propagation (round-46): the run block must fail loud on a broken snapshot
+            # and carry the CLI's rc into the echoed state — a timeout/failed run can't read as ok:
+            grep -q 'SNAPSHOT FAILED' "$A" || { echo "::error::${a}-implementer run block does not fail loud on a snapshot failure"; exit 1; }
+            grep -q 'RUN_RC=\$RC' "$A" || { echo "::error::${a}-implementer run block does not propagate the CLI rc (RUN_RC)"; exit 1; }
+            grep -q 'NEVER "complete"' "$A" || { echo "::error::${a}-implementer lost the nonzero-RUN_RC-is-never-complete rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
           done
           # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits

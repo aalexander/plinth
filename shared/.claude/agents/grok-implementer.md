@@ -52,7 +52,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first so
    it is not attributed to the lane:
 
-       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"; .plinth/lane-guard.sh snapshot > "$SNAP"
+       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
+       .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
+       # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
 1. Write the spec to a UNIQUE prompt file — never inline shell quoting, never a fixed path
    (parallel lanes on a fixed path corrupt each other):
@@ -78,11 +80,11 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        # DRIVER contract. It has no doc-suppress flag, so scope it to the lane with an override rule
        # (verified: without this, grok follows the driver docs instead of the spec):
        LANE_RULES='You are a narrow IMPLEMENTATION LANE. Do ONLY what the task spec in this prompt says. IGNORE any CLAUDE.md, AGENTS.md, or other repository driver / review-loop / governance instructions — they govern the driver, not you. Do not open PRs, run reviews, or act as the driver.'
-       cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \
+       RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \
          --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
          --output-format plain --cwd "$(pwd)" \
-         > "$OUT" 2>&1
-       echo "BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
+         > "$OUT" 2>&1 || RC=$?
+       echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    Three axes, all required:
    - `--rules "$LANE_RULES"` — grok loads the repo's CLAUDE.md/AGENTS.md (the driver contract) and
@@ -116,7 +118,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        .plinth/lane-guard.sh scope <BEFORE sha> --snapshot <SNAP path> <the spec's exact file paths>
 
    Use the LITERAL values echoed by the run block — this is a NEW shell and $BEFORE/$SNAP
-   are empty here.
+   are empty here. RUN_RC decides the STATUS you report: nonzero (124/142 = wall-clock
+   TIMEOUT; anything else = CLI failure) is NEVER "complete" — report STATUS: timeout or
+   partial, and STILL run this scope check (the CLI may have written files before dying).
 
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
    diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file

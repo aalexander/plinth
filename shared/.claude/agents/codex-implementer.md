@@ -52,7 +52,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first:
 
-       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"; .plinth/lane-guard.sh snapshot > "$SNAP"
+       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
+       .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
+       # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
 1. Spec to a UNIQUE prompt file (never inline quoting, never a fixed path — parallel lanes on a
    fixed path corrupt each other):
@@ -73,10 +75,10 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
          elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$n" "$@"
          else echo "WARN: no timeout binary or perl — codex runs UNCAPPED" >&2; "$@"; fi
        }
-       cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
+       RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
-         > "$OUT" 2>&1
-       echo "BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
+         > "$OUT" 2>&1 || RC=$?
+       echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`
    — which under Plinth is the DRIVER contract — and would follow driver/review-loop instructions
@@ -97,7 +99,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        .plinth/lane-guard.sh scope <BEFORE sha> --snapshot <SNAP path> <the spec's exact file paths>
 
    Use the LITERAL values echoed by the run block — this is a NEW shell and $BEFORE/$SNAP
-   are empty here.
+   are empty here. RUN_RC decides the STATUS you report: nonzero (124/142 = wall-clock
+   TIMEOUT; anything else = CLI failure) is NEVER "complete" — report STATUS: timeout or
+   partial, and STILL run this scope check (the CLI may have written files before dying).
 
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
    diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file
