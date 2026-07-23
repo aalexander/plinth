@@ -1394,6 +1394,11 @@ jobs:
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-broken; exit 0; }\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "INCONCLUSIVE"; } || { echo "::error::hookprobe read a BROKEN CLI as evidence (rc=$rc, want 4/INCONCLUSIVE): $out"; exit 1; }
+          # sibling fail-open: CLI executes the sentinel then exits NONZERO (late finalization/
+          # teardown failure — could swallow late hook events like Stop) -> 4, never NONE:
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-latefail; exit 0; }\ntouch cli-ran.txt\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CLI as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
           rc=0; PATH="/usr/bin:/bin" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok >/dev/null 2>&1 || rc=$?
           [ "$rc" = 3 ] || { echo "::error::hookprobe missing-CLI exit $rc (want 3)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"

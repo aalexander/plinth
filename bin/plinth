@@ -1022,7 +1022,10 @@ $question"
 # some events and not others, and only the executed ones are enforced. The answer is
 # VERSION/ENVIRONMENT-dependent; vendor docs and prose claims both go stale — this probe
 # is the source of truth. Exit 0 = ALL FOUR executed; 1 = none or some (each named);
-# 2 = usage; 3 = CLI missing; 4 = timed out (PLINTH_HOOKPROBE_TIMEOUT, default 120s).
+# 2 = usage; 3 = CLI missing; 4 = INCONCLUSIVE: timed out (PLINTH_HOOKPROBE_TIMEOUT,
+# default 120s), the CLI never executed the probe sentinel (unauth/sandbox/model
+# failure), or it exited nonzero AFTER the sentinel (a late failure could swallow
+# late hook events such as Stop) — an inconclusive run is never hook evidence.
 run_hookprobe() {
   shift  # drop 'hookprobe'
   local vendor="${1:-grok}" d marker ver p ev report="" allfired=1 fired vrc=0
@@ -1064,6 +1067,10 @@ run_hookprobe() {
   fi
   if [ ! -f "$d/cli-ran.txt" ]; then
     echo "hookprobe: $vendor ($ver) FAILED to execute the probe command (CLI exit $vrc — unauthenticated? sandbox refused? model error?) — INCONCLUSIVE: this is NOT evidence about hook execution. Fix the CLI and re-run."
+    exit 4
+  fi
+  if [ "$vrc" != 0 ]; then
+    echo "hookprobe: $vendor ($ver) exited NONZERO ($vrc) after executing the probe command — INCONCLUSIVE: a late failure (finalization/teardown) could swallow late hook events such as Stop. Nothing verified; fix the CLI and re-run."
     exit 4
   fi
   fired="$(sort -u "$marker" 2>/dev/null || true)"

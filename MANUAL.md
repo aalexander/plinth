@@ -79,7 +79,10 @@ Everything between is the model's call.
   call, wall-clock capped: PLINTH_HOOKPROBE_TIMEOUT, default 120s), and reports
   each event separately. Exit 0 = ALL FOUR executed; 1 = none or some — only the
   events marked EXECUTED are enforced for that driver; 3 = CLI missing; 4 =
-  timed out (inconclusive). Version/environment-dependent — trust the probe over
+  INCONCLUSIVE (timed out, the CLI never executed the probe's sentinel command —
+  unauth/sandbox/model failure — or it exited nonzero after executing it, where a
+  late failure could swallow late hook events such as Stop; an inconclusive run
+  is never hook evidence). Version/environment-dependent — trust the probe over
   vendor docs and over this manual. Re-run after CLI upgrades.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,

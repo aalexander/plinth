@@ -117,8 +117,10 @@
   call, wall-clock capped via PLINTH_HOOKPROBE_TIMEOUT, default 120s — a hung CLI exits 4,
   bounded, instead of hanging the operator), and reports each event separately: exit 0 =
   all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing;
-  4 = INCONCLUSIVE (timeout, or the CLI never executed the probe's sentinel command — an
-  unauthenticated/broken CLI is NOT evidence of hook non-execution and never reads as NONE).
+  4 = INCONCLUSIVE — timeout, the CLI never executed the probe sentinel, OR the CLI exited
+  nonzero after executing it (a late finalization/teardown failure could swallow late hook
+  events such as Stop): a broken/failing CLI is NOT evidence of hook non-execution and
+  never reads as NONE.
   A release-time local run against `grok 0.2.93` reported NONE executed — checked receipt:
   docs/receipts/hookprobe-grok-0.2.93.txt; reproduce with `plinth hookprobe grok`; the probe, not this sentence, is the source of truth. Every doc
   claim about non-Claude
