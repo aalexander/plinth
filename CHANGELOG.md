@@ -154,9 +154,13 @@
   against the pinned release, in `protected-paths` (Claude guard blocks driver edits) and
   `HARNESS_RE`/`HARNESS_PATHS` (review treats edits as tooling-tamper / UPSTREAM). `plinth
   init`/`update` materialize them; `copy_shared` gains `.claude/agents/` + `lane-guard.sh`.
-- **Model assignments v4 (MODELS.md + MANUAL.md).** Seats assigned per model across vendors:
-  Grok 4.5 takes the DRIVER seat (the grok CLI is the harness; the lanes go dormant — the
-  driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
+- **Model assignments v4 (MODELS.md + MANUAL.md).** Three models work together. DEFAULT
+  topology: ARCHITECT-RESIDENT — the top model (Fable 5 by exception, Opus 4.8 otherwise)
+  orchestrates in Claude Code (judgment, specs, routing, a final read-only audit; no routine
+  typing, no direct edits to the worker's diff) with the guard and Stop gate ENFORCED, and
+  Grok 4.5 does most of the coding as the WORKER lane, escalating open questions back.
+  ALTERNATIVE topology: grok-RESIDENT (the grok CLI is the harness; the lanes go dormant —
+  that driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
   Fable 5 advises (`advisor_model_max = fable`, peer Opus 4.8), GPT-5.6 reviews
   (`reviewer_model_tier1/tier2 = gpt-5.6`; ineligible accounts stay on the GPT-5.5 vendor
   default), Claude audits (`audit_vendor = claude` — a third family, distinct from both
@@ -164,9 +168,9 @@
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
   non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
   reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there — an EXPLICIT,
-  ACKNOWLEDGED limitation of the v4 default until the receipt check ships with auto
-  mode: review under a non-Claude driver is contract discipline, not an enforced
-  gate, and the Claude driver remains the enforced-gate path; the vendor-neutral
+  ACKNOWLEDGED limitation of the grok-RESIDENT alternative until the receipt check ships
+  with auto mode: review under a non-Claude driver is contract discipline, not an enforced
+  gate, and the architect-resident default keeps the enforced-gate path; the vendor-neutral
   binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
   is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
   IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude

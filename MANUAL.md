@@ -43,7 +43,7 @@ Everything between is the model's call.
   works for you; an ineligible account stays on the GPT-5.5 vendor default, and
   an active 5.6 knob there would fail loud, not fall back), and **Claude
   (Opus 4.8)** audits (`audit_vendor = claude` — a different family than both
-  driver and reviewer). Contingency: if Fable's availability lapses
+  the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
   **KNOWN LIMITATION (until the receipt check ships with auto mode):** under the
@@ -314,7 +314,7 @@ Two operator chores the rules generate:
    **You:** watch Pane B, not the scrollback. Under a CLAUDE driver the live feed
    is full: the evidence line shows the last real test run and its exit code, the
    model line shows who is actually answering, and red guard-blocks mean the base
-   deflected something. Under the default grok driver the hook-fed lines are
+   deflected something. Under the grok-RESIDENT alternative the hook-fed lines are
    SILENT (its CLI does not execute `.claude/` hooks — per-CLI, probe with `plinth
    hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) — Pane B still shows review rounds and verdicts
    (written by `review.sh`), the NEEDS-HUMAN queue, and branch state. Those are

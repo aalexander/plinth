@@ -103,7 +103,7 @@ yourself — two shipped Claude-Code subagents do this, `grok-implementer` (defa
 (objective · files · interfaces · constraints · verification) and VERIFYING the result
 independently (Rule 10: the lane's report is a claim; your re-run of the verification command
 is the evidence). A NON-Claude driver cannot run those subagents — and doesn't need them when
-it IS the cheap fast model (the v4 grok driver): type your own volume, consult judgment UP
+it IS the cheap fast model (the grok-RESIDENT alternative topology): type your own volume, consult judgment UP
 via `plinth advise` (`--impactful` for architectural calls), and for a second implementation
 shell out to the other family's CLI with the same five-part spec plus
 `.plinth/lane-guard.sh` (preflight / snapshot / scope — vendor-neutral shell).

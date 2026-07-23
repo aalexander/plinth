@@ -21,7 +21,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 | **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until the receipt check ships) and consults judgment via `plinth advise` |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
-| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both driver and reviewer, pinned so a Sonnet/Fable CLI default can't drift the seat |
+| **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both the WORKER (the diff's producer) and the reviewer, in either topology; pinned so a Sonnet/Fable CLI default can't drift the seat |
 
 Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
 the speed of the codex lane on well-specified work, so the seat that types the
@@ -39,9 +39,9 @@ back toward the driver (consult more, or restore a Claude driver): rising review
 round counts, or reviewer findings clustering on design errors rather than
 typing errors.
 
-Under a grok driver the implementer lanes are dormant (they are Claude-Code
+Under the grok-RESIDENT alternative the implementer lanes are dormant (they are Claude-Code
 subagents) — and mostly moot, since the driver already is the cheap fast typist.
-They reactivate unchanged whenever a Claude driver runs a session. A grok driver
+Under the architect-resident DEFAULT they are the worker seat. A grok-resident driver
 that wants a second implementation shells out to `codex` directly with the same
 five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope are
 vendor-neutral shell).
@@ -289,7 +289,7 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   `~/.codex/config.toml` model_provider needed anymore.)
 
 Default scaffold (`plinth init` writes `.plinth/config`): `audit_vendor = claude` —
-the v4 audit seat, a different family than both the grok driver and the codex
+the v4 audit seat, a different family than both the WORKER (the diff's producer) and the codex
 reviewer (needs the `claude` CLI signed in; a non-fatal UNAVAILABLE if not).
 Under a Claude driver flip it to grok or agy to keep the audit cross-family.
 Revisit on any model/subscription change.
