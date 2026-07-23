@@ -94,13 +94,16 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
    - `--permission-mode bypassPermissions` — headless has no TUI to answer a permission prompt, so
      under `acceptEdits`/`default` grok *announces* an edit and silently drops it; the file is never
      written (verified against grok 4.x). Bypass lets it apply edits and run the verification.
-   - `--sandbox workspace` — FENCES the run to the working tree and blocks SHELL network side
-     effects (grok's built-in writable profile; FAILS CLOSED — refuses to start — if it can't be
-     applied). Web search/fetch stays ON deliberately: the worker needs it to find coding
-     solutions, and this lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an
-     adversarial sandbox against a malicious one (see the header). The trust basis is an honest
-     lane + `scope` + your independent re-run, not a locked-down network. Matches the codex lane's
-     `--sandbox workspace-write`.
+   - `--sandbox workspace` — grok's built-in writable profile (FAILS CLOSED — refuses to start if
+     it can't be applied). Be accurate about what it does: per xAI's profile table it permits writes
+     to the CWD, `~/.grok/`, and temp dirs, and ALLOWS child-process network — so it is NOT a tight
+     fence to the repo and does NOT block network. It bounds casual side effects, not determined
+     ones. `lane-guard scope` checks the REPO tree (tracked + gitignored) after the run; a write to
+     `~/.grok/`, a temp dir, or a network call is OUTSIDE its view — acceptable for a TRUSTED-but-
+     fallible worker (those are not repo changes), not a defense against a malicious one (see the
+     header). Web search/fetch stays ON deliberately: the worker needs it to find coding solutions.
+     The trust basis is an honest lane + `scope` on repo changes + your independent re-run. Matches
+     the codex lane's `--sandbox workspace-write` (same caveats).
    Even so, be clear-eyed: grok has whole-tree write WITHIN the workspace (`--cwd "$(pwd)"`) — it DOES
    write to your tree. That is why step 0 has you commit/stash your own WIP first (so its writes are
    cleanly attributable) and why step 3 is mandatory: `scope` REJECTS anything it wrote outside the

@@ -48,12 +48,14 @@
   to confirm against) — the file is never written. The grok lane now uses `--permission-mode
   bypassPermissions --sandbox workspace --max-turns 20`: bypass applies edits and runs verification
   headlessly, and `--sandbox workspace` (grok's built-in writable profile, which FAILS CLOSED —
-  refuses to start — if it can't be applied) fences the run to the tree + blocks SHELL-network
-  side effects, matching the codex lane's
-  `--sandbox workspace-write`. (Web search/fetch stays ON — the worker needs it to find coding
-  solutions; the lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an adversarial
-  sandbox against a malicious one, so it does not try to close every exfil path.) The grant is
-  bounded because the run is boxed by the sandbox + `lane-guard scope` + the driver's independent
+  refuses to start — if it can't be applied) bounds CASUAL side effects — but be accurate: per
+  xAI's profile table it permits writes to CWD, `~/.grok/`, and temp dirs and ALLOWS child-process
+  network, so it is NOT a tight repo fence and does NOT block network, matching the codex lane's
+  `--sandbox workspace-write` (same caveats). (Web search/fetch stays ON — the worker needs it to
+  find coding solutions; the lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an
+  adversarial sandbox against a malicious one, so it does not try to close every side-effect path.
+  `lane-guard scope` checks the REPO tree; writes to `~/.grok`/temp or network are outside its view.)
+  The grant is bounded because the run is boxed by the sandbox + `lane-guard scope` + the driver's independent
   re-run, on a trusted-but-fallible lane. Verified end-to-end: grok
   (sandboxed) and codex each create the in-spec file, `scope` returns ok, and the independent
   verification prints the real output. The canary pins the working flags (incl. the sandbox) so a

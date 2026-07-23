@@ -477,7 +477,8 @@ warn_stale_reusable_refs() {
     # the old reusable floor/checks may still be active (mirrors the non-git INIT fail-loud path).
     echo "NOTE: could not resolve the Plinth release commit (non-git install?), so update cannot"
     echo "verify .github/workflows/ci.yml's reusable floor/checks refs. If they pin an older"
-    echo "release, the NEW floor checks will not run — repin both refs to this release's commit SHA."
+    echo "release, the NEW floor checks will not run — repin the reusable floor/checks ref(s) that"
+    echo "are present to this release's commit SHA."
     return 0
   fi
   # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.
@@ -502,8 +503,8 @@ warn_stale_reusable_refs() {
   elif [ "$fstale" = 1 ]; then which="reusable floor ref (checks is a custom/direct gate or already current)"; sedpat='plinth-floor'
   else which="reusable checks ref (floor is a custom/direct gate or already current)"; sedpat='plinth-checks'; fi
   echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
-  echo "commit, so the NEW floor checks (lane tooling bytes + executable mode) will NOT run until you"
-  echo "repin. Set the stale ref to this release:"
+  echo "commit, so that gate runs an OLDER Plinth workflow (new floor checks — lane tooling bytes +"
+  echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref to this release:"
   echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[^[:space:]]+#\1${psha}#g' \\"
   echo "    \"$target/.github/workflows/ci.yml\" && rm -f \"$target/.github/workflows/ci.yml.bak\""
 }

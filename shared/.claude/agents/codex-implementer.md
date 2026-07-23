@@ -83,7 +83,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
    `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`
    — which under Plinth is the DRIVER contract — and would follow driver/review-loop instructions
    instead of the spec (verified: it answers as the driver otherwise). This is the same suppression
-   review.sh uses for codex reviewers. `--sandbox workspace-write` scopes writes to the tree. High
+   review.sh uses for codex reviewers. `--sandbox workspace-write` bounds writes toward the workspace
+   (like grok's `workspace`, it is not a tight repo fence — see the grok lane's sandbox note; scope
+   checks the repo tree, and the trust basis is an honest lane + your re-run). High
    reasoning is for correctness. The codex CLI's configured model is used; if the caller's spec names
    a model, add `-m <model>` (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 

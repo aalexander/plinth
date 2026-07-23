@@ -1852,7 +1852,7 @@ jobs:
             git add .gitignore; git commit -qm 'ignore elsewhere (path probe)' >/dev/null 2>&1 || true
             rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; ln -s elsewhere/real.env .env
             SNAPPT="$(mktemp)"; bash "$LG" snapshot > "$SNAPPT"; printf 'X=2\n' >> elsewhere/real.env
-            out="$(bash "$LG" scope HEAD --snapshot "$SNAPPT" app.py 2>&1)"; r=$?
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNAPPT" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -qE '^  \.env — SENSITIVE'; } || { echo "::error::changed symlink record did not report the exact path '.env' (rc=$r): $(printf '%s' "$out" | grep -i sensitive | head -1)"; exit 1; }
             rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
             # an IN-SPEC symlinked SECRET_SAFE template (.env.example -> a real template file) PASSES
@@ -1937,22 +1937,22 @@ jobs:
           # ref-file write (new ref under .git/refs) -> 4, path reported:
           FI="$(mkfx_i)"; ( cd "$FI"; B0="$(git rev-parse HEAD)"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
             echo cpw >> app.py; git update-ref refs/heads/decoy "$B0"
-            out="$(bash "$LG" scope "$B0" --snapshot "$SN" app.py 2>&1)"; r=$?
+            r=0; out="$(bash "$LG" scope "$B0" --snapshot "$SN" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'refs/heads/decoy'; } || { echo "::error::scope missed a ref-file write (rc=$r)"; exit 1; } )
           # skip-worktree hidden bit -> 4:
           FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
             echo EVIL >> mod.py; git update-index --skip-worktree mod.py
-            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on a skip-worktree bit (rc=$r)"; exit 1; } )
           # assume-unchanged hidden bit -> 4:
           FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
             echo EVIL2 >> mod.py; git update-index --assume-unchanged mod.py
-            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on an assume-unchanged bit (rc=$r)"; exit 1; } )
           # staged-only out-of-spec change (index=EVIL, worktree reverted) -> 4:
           FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
             printf 'EVIL\n' > mod.py; git add mod.py; printf 'm\n' > mod.py
-            out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)"; r=$?
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'mod.py'; } || { echo "::error::scope missed a STAGED-ONLY out-of-spec change (rc=$r)"; exit 1; } )
           # NON-HOLLOW guard: a clean in-spec-only change PASSES (0) in the same fixture shape:
           FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"; echo clean >> app.py
