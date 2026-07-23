@@ -17,7 +17,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 
 | Seat | Model | Wiring |
 |------|-------|--------|
-| **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell |
+| **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell. KNOWN LIMITATION until the receipt check ships (auto mode): review is contract-bound, not gate-enforced — drive with Claude when the enforced Stop gate matters |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
 | **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both driver and reviewer, pinned so a Sonnet/Fable CLI default can't drift the seat |

@@ -163,7 +163,10 @@
   driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
   non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
-  reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there; the vendor-neutral
+  reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there — an EXPLICIT,
+  ACKNOWLEDGED limitation of the v4 default until the receipt check ships with auto
+  mode: review under a non-Claude driver is contract discipline, not an enforced
+  gate, and the Claude driver remains the enforced-gate path; the vendor-neutral
   binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
   is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
   IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude

@@ -38,6 +38,12 @@ Everything between is the model's call.
   driver and reviewer). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
+  **KNOWN LIMITATION (until the receipt check ships with auto mode):** under the
+  grok default the review-before-PR loop is CONTRACT discipline — no local Stop
+  gate fires (grok 0.2.93 executes no `.claude/` hooks) and no required status
+  check verifies APPROVED-at-HEAD. The ENFORCED-gate path today is a Claude
+  driver; choose per task, and treat non-Claude-driven PRs accordingly (the PR
+  body's review audit is the evidence trail).
 - **Under a Claude driver** the in-family routing still applies — Sonnet 5 for
   mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by exception on usage
   credits — and the implementer lanes delegate the typing to grok/codex. Under the
@@ -258,7 +264,10 @@ Two operator chores the rules generate:
    - Pane A: `cd ~/Dev/<repo> && grok` — state the task in plain language.
      (grok is the v4 default driver and auto-loads both contract files; a
      claude/codex driver runs its own CLI instead — the *Background* notes
-     below describe the extra hook machinery a Claude driver gets.)
+     below describe the extra hook machinery a Claude driver gets. NOTE the
+     known limitation: pre-receipt-check, review under grok is contract
+     discipline, not an enforced gate — drive with Claude when you want the
+     enforced Stop gate.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
