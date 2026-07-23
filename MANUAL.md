@@ -25,10 +25,18 @@ own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
 
 ## Current models (July 12 2026 — see .plinth/MODELS.md, updated via `plinth update`)
-- **Seats are assigned per model, across vendors (v4)**: **Grok 4.5** drives (the
-  grok CLI is the harness — it auto-loads the driver shell), **Fable 5** advises
-  (`plinth advise`; peer tier Opus 4.8, `--impactful` → Fable — scaffolded live,
-  since advise is non-blocking), **GPT-5.6** reviews
+- **Seats are assigned per model, across vendors (v4)** — three models work
+  together. **DEFAULT topology (architect-resident):** the top model (Fable 5 by
+  exception on credits, Opus 4.8 otherwise) sits in Claude Code as the ARCHITECT
+  — judgment, specs, routing, and a final read-only audit; no routine typing —
+  and **Grok 4.5 does most of the coding as the WORKER** (`grok-implementer`
+  lane; the worker escalates open questions back to the architect). The local
+  guard and Stop gate stay ENFORCED because the resident harness is Claude.
+  **Alternative (grok-resident):** the grok CLI as the harness for
+  wall-clock-critical sessions — it carries the KNOWN LIMITATION below, and its
+  judgment channel is **Fable 5 advising** (`plinth advise`; peer tier Opus 4.8,
+  `--impactful` → Fable — scaffolded live, since advise is non-blocking).
+  Either way, **GPT-5.6** reviews
   (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`, shipped
   COMMENTED in fresh scaffolds — GPT-5.6 GA'd July 9 2026 but access is
   per-account and needs Codex CLI >= 0.144.0: uncomment once `codex -m gpt-5.6`
@@ -39,16 +47,17 @@ Everything between is the model's call.
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
   **KNOWN LIMITATION (until the receipt check ships with auto mode):** under the
-  grok default the review-before-PR loop is CONTRACT discipline — no local Stop
+  grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
   gate fires (grok 0.2.93 executes no `.claude/` hooks) and no required status
   check verifies APPROVED-at-HEAD. The ENFORCED-gate path today is a Claude
   driver; choose per task, and treat non-Claude-driven PRs accordingly (the PR
   body's review audit is the evidence trail).
-- **Under a Claude driver** the in-family routing still applies — Sonnet 5 for
-  mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by exception on usage
-  credits — and the implementer lanes delegate the typing to grok/codex. Under the
-  grok driver the lanes are dormant (they are Claude-Code subagents) and mostly
-  moot: the driver is already the cheap fast typist and consults judgment UP via
+- **Under the architect-resident default** the in-family routing still applies —
+  Sonnet 5 for mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by
+  exception on usage credits — and the implementer lanes carry the typing
+  (grok default, codex cross-vendor). Under the grok-RESIDENT alternative the
+  lanes are dormant (they are Claude-Code subagents) and mostly moot: that
+  driver is already the cheap fast typist and consults judgment UP via
   `plinth advise` instead. Either way the driver's model is its own speed/cost
   call: GUIDANCE, not a gate.
 - Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a match disables
@@ -261,13 +270,12 @@ Two operator chores the rules generate:
 ## Daily loop — what you do, and what happens underneath
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.
-   - Pane A: `cd ~/Dev/<repo> && grok` — state the task in plain language.
-     (grok is the v4 default driver and auto-loads both contract files; a
-     claude/codex driver runs its own CLI instead — the *Background* notes
-     below describe the extra hook machinery a Claude driver gets. NOTE the
-     known limitation: pre-receipt-check, review under grok is contract
-     discipline, not an enforced gate — drive with Claude when you want the
-     enforced Stop gate.)
+   - Pane A: `cd ~/Dev/<repo> && claude` — state the task in plain language.
+     (The v4 default is ARCHITECT-RESIDENT: the top model orchestrates here with
+     the full hook machinery enforced, and delegates the coding volume to the
+     grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
+     the enforced Stop gate for wall-clock: review becomes contract discipline
+     until the receipt check ships; see the known limitation.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session

@@ -17,19 +17,20 @@ judgment is imported per-decision, and every seat has a named fallback.
 
 | Seat | Model | Wiring |
 |------|-------|--------|
-| **Driver** — the session; most of the coding | **Grok 4.5** (the grok CLI is the harness) | grok auto-loads `CLAUDE.md` + `AGENTS.md` — both carry the driver shell. KNOWN LIMITATION until the receipt check ships (auto mode): review is contract-bound, not gate-enforced — drive with Claude when the enforced Stop gate matters |
+| **Architect** — the resident session: judgment, specs, routing, final read-only audit (DEFAULT) | **Fable 5** by exception / **Opus 4.8** (Claude Code is the harness) | Guard + Stop gate ENFORCED; the coding volume goes to the Worker lane. The architect does not type routine code and does not edit the worker's diff directly — corrections go back as specs |
+| **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until the receipt check ships) and consults judgment via `plinth advise` |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
 | **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both driver and reviewer, pinned so a Sonnet/Fable CLI default can't drift the seat |
 
 Why this shape: repeated lane calibration showed Grok at ~even quality and 3–6×
-the speed of the codex lane on well-specified work — and wall-clock is the
-priority — so the seat that types the most goes to the fastest near-parity model.
-Judgment doesn't need to be resident to be present: the driver consults UP
-per-decision (`plinth advise` → Opus 4.8; `--impactful` → Fable 5) instead of the
-v3 shape where the frontier model drove and delegated typing DOWN to lanes. Same
-architect pattern, inverted; the deepest models sit at the gates, where depth
-binds.
+the speed of the codex lane on well-specified work, so the seat that types the
+most goes to the fastest near-parity model — while the ARCHITECT stays resident
+in the Claude harness, which keeps the guard and Stop gate enforced (the
+grok-resident alternative trades that gate for wall-clock and consults judgment
+UP per-decision via `plinth advise`). Three models work together: architect
+(judgment), worker (volume), reviewer (the gate) — plus the cross-vendor
+auditor on Tier 2.
 
 Honest scope of the evidence: the calibration measured the LANE seat
 (well-specified typing). Grok in the DRIVER seat — decomposition, routing, loop
