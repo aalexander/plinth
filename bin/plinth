@@ -472,10 +472,14 @@ warn_stale_reusable_refs() {
   [ -n "$psha" ] || return 0
   # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.
   local ci="$target/.github/workflows/ci.yml"
-  # Anchor to the reusable `uses:` line — a decoy current ref in a comment or a non-gating
-  # duplicate line must not suppress the warning while the real job stays stale.
-  if grep -qE "^[[:space:]]*uses:.*plinth-floor\.yml@${psha}([[:space:]]|\$)" "$ci" 2>/dev/null \
-     && grep -qE "^[[:space:]]*uses:.*plinth-checks\.yml@${psha}([[:space:]]|\$)" "$ci" 2>/dev/null; then return 0; fi
+  # Tie the check to the GATING jobs (`floor:` / `checks:`), not any uses: line anywhere —
+  # a current ref under a decoy non-gating job must not suppress the warning. Best-effort
+  # (this is an advisory warning, not a gate): read the uses: line within each job block.
+  local fref cref
+  fref="$(awk '/^  floor:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
+  cref="$(awk '/^  checks:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
+  if printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]]|\$)" \
+     && printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]]|\$)"; then return 0; fi
   if true; then
     echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the reusable floor/checks"
     echo "workflows at an OLDER Plinth commit, so the NEW floor checks (lane tooling bytes +"

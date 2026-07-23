@@ -78,6 +78,13 @@ jobs:
           ( cd "$RPD3" && git add -A && git commit -qm base >/dev/null )
           rp3="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD3" 2>&1)"
           printf '%s' "$rp3" | grep -q "pins the reusable floor/checks" || { echo "::error::a decoy comment ref suppressed the stale-ref warning (grep not anchored to uses:)"; exit 1; }
+          # a decoy NON-GATING job with a current uses: ref must not suppress the warning either:
+          RPD4="$(mktemp -d)"; ( cd "$RPD4"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD4" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD4/.github/workflows/ci.yml"
+          printf '  decoyjob:\n    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s\n' "$PSHA" >> "$RPD4/.github/workflows/ci.yml"
+          ( cd "$RPD4" && git add -A && git commit -qm base >/dev/null )
+          rp4="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD4" 2>&1)"
+          printf '%s' "$rp4" | grep -q "pins the reusable floor/checks" || { echo "::error::a decoy non-gating job with a current uses: ref suppressed the stale-ref warning"; exit 1; }
           # and a FULLY-current ci.yml must NOT warn:
           RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
           rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
@@ -1798,6 +1805,15 @@ jobs:
             printf 'STOLEN=1\n' >> elsewhere/real.env   # ONLY the referent content changes; tree is otherwise clean
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPSY" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope missed a WRITE-THROUGH a pre-existing sensitive symlink (rc=$r) — referent hash not compared"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            # CHMOD on a pre-existing sensitive symlink's REFERENT (mode must dereference the link):
+            grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
+            git add .gitignore; git commit -qm 'ignore elsewhere (chmod probe)' >/dev/null 2>&1 || true
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; chmod 600 elsewhere/real.env; ln -s elsewhere/real.env .env
+            SNAPCH="$(mktemp)"; bash "$LG" snapshot > "$SNAPCH"
+            chmod 644 elsewhere/real.env   # ONLY the referent mode changes
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPCH" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a CHMOD on a sensitive symlink referent (rc=$r) — mode not dereferenced"; exit 1; }
             rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
             # a sensitive path that is a symlink to a DIRECTORY (the write-through-a-dir vector)
             # fails closed at snapshot — a secret is never a dir-symlink (round-67):

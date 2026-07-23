@@ -79,6 +79,16 @@
   SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
   name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
   accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **Reviewer contract encodes the ratified threat model.** `.plinth/AGENTS-project.md` now states,
+  for this repo's reviewer, that the implementer lanes run a TRUSTED-but-fallible worker and
+  `lane-guard.sh` is an ERROR-catcher, not an adversarial sandbox: block on real error-catching
+  gaps / fail-opens / unimplemented enforcement claims / missing tests, but NOT on defeating the
+  trusted worker's deliberate evasion (web-search exfil — web search stays ON, the worker needs it;
+  chmod past a sensitive symlink; decoy CI refs). A general version ships in templates/. Two
+  correctness fixes landed alongside it (in-charter completeness): the sensitive-symlink referent
+  MODE now dereferences the link (a chmod on a secret's referent is caught), and the stale-ref
+  warning is tied to the actual `floor:`/`checks:` gating jobs (a decoy non-gating job can't
+  suppress it). Canary covers both.
 - **lane-guard scope checks the INDEX, and `plinth update` warns on stale reusable refs.** scope
   now unions `git diff $base` with `git diff --cached $base` — a lane that stages an
   out-of-spec/protected change and reverts the working tree (so `git diff $base` is clean while

@@ -112,6 +112,8 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 modeof() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }  # perm bits — GNU (-c) first;
+modeof_deref() { stat -L -c '%a' "$1" 2>/dev/null || stat -Lf '%p' "$1" 2>/dev/null | sed 's/.*\(...\)$/\1/'; }  # FOLLOW the link:
+  # referent mode, not the link's own. GNU -L; BSD -Lf '%p' (full mode; take the low 3 perm digits).
   # BSD stat rejects -c and falls through to -f. The reverse order is WRONG: GNU `stat -f` SUCCEEDS
   # (filesystem status, not the file's mode) so the `||` would never fall through on Linux.
 sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for a regular file, or
@@ -164,7 +166,7 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
       # Fail closed if the target is present-but-unhashable (a forgeable empty record).
       lt="$(readlink "$f" 2>/dev/null || echo '?')"
       if [ -f "$f" ]; then   # -f follows the link: true iff it resolves to a regular file
-        th="$(hashof "$f")"; tm="$(modeof "$f")"
+        th="$(hashof "$f")"; tm="$(modeof_deref "$f")"   # deref: referent content + referent MODE (chmod-on-target caught)
         { [ -n "$th" ] && [ -n "$tm" ]; } || { echo "lane-guard: cannot hash/stat symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }
         printf 'symlink %s %s %s  %s\n' "$lt" "$th" "$tm" "$f"   # target + referent content + mode
       elif [ -d "$f" ]; then
