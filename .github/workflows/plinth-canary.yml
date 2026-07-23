@@ -1356,7 +1356,7 @@ jobs:
           #!/usr/bin/env bash
           [ "${1:-}" = --version ] && { echo stub-hookful; exit 0; }
           touch cli-ran.txt
-          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c"; done
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
           echo done
           HPX
           chmod +x "$HPB/grok"
@@ -1372,7 +1372,7 @@ jobs:
           [ "${1:-}" = --version ] && { echo stub-codex; exit 0; }
           cat >/dev/null
           touch cli-ran.txt
-          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c"; done
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
           echo done
           HPC
           chmod +x "$HPB/codex"
