@@ -99,7 +99,8 @@ enforce them below.
    single turn ends before the edit lands). Model: the grok CLI's configured default is used; if the
    caller's spec names a model (grok-4.5 is the current top tier), pass `-m <model>`.
 
-3. **Enforce SCOPE.** The delegated grok has whole-tree write and does NOT run the `.claude/`
+3. **Enforce SCOPE.** The delegated grok has whole-tree write and (probe-verified per CLI —
+`plinth hookprobe`; grok 0.2.93: no hook execution) does not run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
    path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
    (secrets like `.env`/`secrets/`/keys, AND `.plinth/session/` verdict/receipt state — a delegated

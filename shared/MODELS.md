@@ -155,7 +155,8 @@ part. Cheap/fast (Sonnet, or a lighter model) for mechanical or heavily-parallel
 where the diff is its own proof; a strong model (Opus at high effort, Fable by exception)
 for the hard or high-consequence pieces. Prefer in-family for parallel fan-out; a
 cross-family CLI shell-out routes a single subtask to another family's strength (such a
-codex/grok delegate does not inherit the `.claude/` hooks — see plinth-rules.md). As with
+codex/grok delegate inherits `.claude/` hooks only if its CLI executes them — per-CLI,
+probe with `plinth hookprobe`; see plinth-rules.md). As with
 the driver, model tier != review tier: the classifier routes the RESULT by risk
 regardless of which model wrote it.
 
@@ -186,7 +187,8 @@ model the ambiguity.
 
 **Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
 the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
-has whole-tree write and does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
+has whole-tree write and (per the hookprobe result for its CLI — grok 0.2.93: no
+hook execution) typically does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
 guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets/keys,
 protected — even gitignored) may have been added/changed/repointed by the lane (else SCOPE VIOLATION,

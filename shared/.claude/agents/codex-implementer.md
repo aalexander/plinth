@@ -79,7 +79,8 @@ the exact **files** — you enforce them below.
    reasoning is for correctness. The codex CLI's configured model is used; if the caller's spec names
    a model, add `-m <model>` (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 
-3. **Enforce SCOPE.** The delegated codex has workspace-wide write and does NOT run the `.claude/`
+3. **Enforce SCOPE.** The delegated codex has workspace-wide write and (probe-verified per CLI —
+`plinth hookprobe`; no hook execution observed) does not run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
    path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
    (secrets like `.env`/`secrets/`/keys, AND `.plinth/session/` verdict/receipt state — a delegated

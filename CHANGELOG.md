@@ -159,7 +159,8 @@
   default), Claude audits (`audit_vendor = claude` — a third family, distinct from both
   driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
-  non-Claude driver (no `.claude/` hooks or Stop gate in-session; the vendor-neutral
+  non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
+  reported none, so no local hooks or Stop gate there; the vendor-neutral
   binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
   is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
   IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude

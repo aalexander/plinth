@@ -288,7 +288,8 @@ Two operator chores the rules generate:
    is full: the evidence line shows the last real test run and its exit code, the
    model line shows who is actually answering, and red guard-blocks mean the base
    deflected something. Under the default grok driver the hook-fed lines are
-   SILENT (no `.claude/` hooks) — Pane B still shows review rounds and verdicts
+   SILENT (its CLI does not execute `.claude/` hooks — per-CLI, probe with `plinth
+   hookprobe`; grok 0.2.93: none) — Pane B still shows review rounds and verdicts
    (written by `review.sh`), the NEEDS-HUMAN queue, and branch state. Those are
    local files, and a hookless driver could write them — the dashboard is
    OBSERVABILITY, not a gate; what actually binds any driver is server-side:
@@ -351,7 +352,9 @@ Two operator chores the rules generate:
 Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
 ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
-NORMAL under the default grok driver (no `.claude/` hooks): the frame reduces to
+NORMAL under a driver whose CLI does not execute `.claude/` hooks (per-CLI —
+`plinth hookprobe`; grok 0.2.93: none; if the probe reports PostToolUse EXECUTED,
+the same banner means BROKEN wiring instead): the frame reduces to
 branch @ head, review verdict, and the NEEDS-HUMAN queue (observability from
 local files — the binding gate for any driver is branch protection, not this
 dashboard). If you are driving with CLAUDE and still see that banner, the pulse
