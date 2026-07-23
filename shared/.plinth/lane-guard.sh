@@ -85,6 +85,8 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
   done < <(prot_pats)
 }
 sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER matters: an explicit
+  # Git control-plane surfaces are ALWAYS sensitive (see sens_snapshot's enumeration note):
+  case "$1" in .git/config|.git/info/exclude|.git/hooks/*) return 0 ;; esac
   # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
   # regardless of basename; then the secret-FILE names — which INCLUDE the SECRET_SAFE lookalikes
   # (they are recorded here, and spec-gated at scope time, never blind-exempt).
@@ -106,8 +108,17 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # secret-named dir). BOUND: an EMPTY sensitive directory (e.g. an empty `secrets/`) is not git-
   # enumerated and so isn't recorded — but an empty dir holds no secret, so this is vacuous; any
   # secret FILE placed inside it IS enumerated and caught. (efficiency-over-adversarial on a trusted lane.)
+  # Git CONTROL-PLANE state is never git-enumerated but is writable by a whole-tree lane,
+  # and these surfaces weaponize silently: a planted .git/hooks/* executes code on the
+  # driver's next git command, .git/config can redirect remotes/hooks-path, and
+  # .git/info/exclude can hide files from every git listing. Snapshot them explicitly.
+  # BOUND (deliberate): .git/index and refs churn under normal read-side git use
+  # (status refreshes the index) and lane content is anchored by the BEFORE-sha diff —
+  # covering them would false-flag clean runs.
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
-    git ls-files -o --exclude-standard 2>/dev/null; } | sort -u | while IFS= read -r f; do
+    git ls-files -o --exclude-standard 2>/dev/null; \
+    for cp in .git/config .git/info/exclude; do [ -f "$cp" ] && printf '%s\n' "$cp"; done; \
+    find .git/hooks -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null; :; } | sort -u | while IFS= read -r f; do
     # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
     # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
     # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
