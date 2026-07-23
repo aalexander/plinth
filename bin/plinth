@@ -420,8 +420,10 @@ warn_missing_gate_wiring() {
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
     echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
-    echo "(grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt] — feedless is expected there; a hook-EXECUTING"
-    echo "driver with no feed means broken wiring). For Claude, see CHANGELOG v3.8."
+    echo "(grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt] — feedless is"
+    echo "expected there; a driver the probe shows INVOKING PostToolUse yet feedless needs"
+    echo "investigating: broken wiring, or the hook gets no usable stdin/env — see the probe"
+    echo "json-stdin flag). For Claude, see CHANGELOG v3.8."
   fi
 }
 
@@ -1019,7 +1021,9 @@ $question"
 # guard.sh, PostToolUse = pulse.sh, Stop = review-gate.sh); the probe wires a marker for
 # EACH in a SCRATCH repo, drives the CLI through one trivial command (one small model
 # call, wall-clock capped), and reports each event separately — a driver could execute
-# some events and not others, and only the executed ones are enforced. The answer is
+# some events and not others; a NOT-invoked event is certainly unenforced, and an
+# invoked one is necessary-but-not-sufficient (enforcement also needs Claude-shaped
+# stdin + env — verify end-to-end). The answer is
 # VERSION/ENVIRONMENT-dependent; vendor docs and prose claims both go stale — this probe
 # is the source of truth. Exit 0 = ALL FOUR executed; 1 = none or some (each named);
 # 2 = usage; 3 = CLI missing; 4 = INCONCLUSIVE: timed out (PLINTH_HOOKPROBE_TIMEOUT,

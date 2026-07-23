@@ -515,8 +515,9 @@ it has run green with a real smoke_cmd.
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver or a probe-verified hook-executing CLI (per-CLI —
-  `plinth hookprobe`; grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). Under a non-executing
+  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
+  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.93
+  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
   server-side verifier until the receipt check ships, and the cloud review is

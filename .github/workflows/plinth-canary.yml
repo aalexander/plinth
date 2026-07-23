@@ -1362,6 +1362,10 @@ jobs:
           chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe missed an all-events driver (rc=$rc): $out"; exit 1; }
+          # SAFETY-CRITICAL semantics: a positive result must say necessary-not-sufficient and
+          # must report the missing payload (these stubs feed no stdin -> json-stdin:no):
+          printf '%s' "$out" | grep -q "NOT SUFFICIENT" || { echo "::error::all-four output lost the necessary-not-sufficient warning: $out"; exit 1; }
+          printf '%s' "$out" | grep -q "json-stdin:no" || { echo "::error::all-four output did not report the missing stdin payload (json-stdin:no): $out"; exit 1; }
           # codex invocation path (stdin form) — same all-events stub shape:
           cat > "$HPB/codex" <<'HPC'
           #!/usr/bin/env bash
@@ -1384,7 +1388,7 @@ jobs:
           HPP
           chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
-          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SOME hook events only" && printf '%s' "$out" | grep -q "PreToolUse: INVOKED" && printf '%s' "$out" | grep -q "Stop: no"; } \
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SOME hook events only" && printf '%s' "$out" | grep -q "PreToolUse: INVOKED(json-stdin:no)" && printf '%s' "$out" | grep -q "Stop: no"; } \
             || { echo "::error::hookprobe mis-reported a PARTIAL-compat driver (rc=$rc): $out"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hookless; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?

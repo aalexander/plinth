@@ -63,10 +63,11 @@ You decide how to orchestrate — single pass, parallel subagents, or a dynamic
 workflow (ultracode). Choose whatever fits the task. No need to get orchestration
 approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 `.claude/` guard hooks and gates; whether a cross-family codex/grok delegate inherits
-them is PER-CLI — probe with `plinth hookprobe <vendor>` and treat hooks as absent
-ONLY when the probe says so (grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; a probe reporting
-invocation means hook commands RUN — verify end-to-end before treating the
-guard and gates as live). For a non-executing
+them is PER-CLI — treat local enforcement as ABSENT until verified END-TO-END
+(wire the real hooks, observe the pulse feed and a guard block). `plinth hookprobe
+<vendor>` settles the negative direction: a NONE result means certainly unenforced
+(grok 0.2.93 [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]); a positive probe
+shows invocation only, never enforcement. For a non-executing
 delegate, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
 and tooling integrity; they do NOT verify the review verdict). The Codex cloud
