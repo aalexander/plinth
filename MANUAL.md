@@ -415,16 +415,22 @@ UI route, once the first PR shows its checks:
 2. Branch name pattern: `main`.
 3. Tick "Require status checks to pass before merging" (add "Require branches
    to be up to date" if you want rebase-before-merge discipline).
-4. In the search box, pick the floor and checks jobs EXACTLY as they appeared
-   on the PR (e.g. "CI / floor / secrets", "CI / checks / ..."). The Codex cloud
-   review will NOT appear in this list — it posts PR comments, not a status
-   check, so it cannot be required here.
+4. In the search box, pick EVERY floor job — `secrets`, `sast`,
+   `dependencies / osv-scan`, `harness` — and the checks job, EXACTLY as they
+   appeared on the PR (e.g. "CI / floor / secrets", …, "CI / checks / ...").
+   The floor is FOUR independent required contexts, not one: any job you omit
+   stays advisory. The Codex cloud review will NOT appear in this list — it
+   posts PR comments, not a status check, so it cannot be required here.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing; paste the names the PR showed):
+CLI route (same timing; paste the names the PR showed — all four floor jobs
+plus checks):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {"required_status_checks":{"strict":false,"contexts":["FLOOR CHECK NAME","CHECKS CHECK NAME"]},
+    {"required_status_checks":{"strict":false,
+      "contexts":["CI / floor / secrets","CI / floor / sast",
+                  "CI / floor / dependencies / osv-scan","CI / floor / harness",
+                  "CHECKS CHECK NAME"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
 
@@ -490,10 +496,11 @@ it has run green with a real smoke_cmd.
   shipping with auto mode, closes this)
   on a broken pipeline — and every release is logged as a `gate_release` event
   the dashboard shows in red.
-- Branch protection: `floor` + `checks` required to merge (requires public repo
-  or GitHub Pro; the preflight reports which state you're in AND verifies the
-  required contexts are actually present). The cloud review is advisory; the
-  receipt check (auto mode) adds the review-verdict gate.
+- Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
+  harness) + `checks` required to merge (requires public repo or GitHub Pro; the
+  preflight reports which state you're in AND names any missing required
+  context). The cloud review is advisory; the receipt check (auto mode) adds
+  the review-verdict gate.
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —

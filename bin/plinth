@@ -323,15 +323,20 @@ github_preflight() {
     # cover the floor and checks jobs; protection with the wrong (or no) contexts
     # leaves merges ungated while the preflight reads as healthy.
     ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
+    # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
+    # each needs its own required context; one present floor job does not gate the others.
     miss=""
-    printf '%s' "$ctxs" | grep -qi 'floor'  || miss="floor"
-    printf '%s' "$ctxs" | grep -qi 'checks' || miss="${miss:+$miss and }checks"
+    for fj in secrets sast harness; do
+      printf '%s' "$ctxs" | grep -qi "floor.*$fj" || miss="${miss:+$miss, }floor/$fj"
+    done
+    printf '%s' "$ctxs" | grep -qiE 'floor.*(dependencies|osv)' || miss="${miss:+$miss, }floor/dependencies"
+    printf '%s' "$ctxs" | grep -qi 'checks' || miss="${miss:+$miss, }checks"
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
     elif [ -n "$miss" ]; then
-      echo "  protection:    configured on $defb — but the required contexts are missing $miss:"
-      echo "                 $(printf '%s' "$ctxs" | tr '\n' ' '). Merges are not gated by the absent job(s)."
+      echo "  protection:    configured on $defb — but required contexts are MISSING: $miss."
+      echo "                 Present: $(printf '%s' "$ctxs" | tr '\n' ' '). Absent jobs do not gate merges."
     else
       echo "  protection:    configured on $defb (required: $(printf '%s' "$ctxs" | tr '\n' ' '))"
     fi

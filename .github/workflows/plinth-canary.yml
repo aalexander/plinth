@@ -1337,8 +1337,11 @@ jobs:
             out="$(GHP_JSON="$j" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
             printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           }
-          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / checks / build"]}}' 'required: CI / floor / secrets' full
-          pf_probe '{"required_status_checks":{"contexts":["CI / checks / build"]}}' 'missing floor' no-floor
+          FULLCTX='["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / build"]'
+          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: CI / floor / secrets' full
+          # ONE floor job present is NOT a gated floor — each of the four is independent:
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / checks / build"]}}' 'MISSING: floor/sast' partial-floor
+          pf_probe '{"required_status_checks":{"contexts":["CI / checks / build"]}}' 'MISSING: floor/secrets' no-floor
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
 
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
