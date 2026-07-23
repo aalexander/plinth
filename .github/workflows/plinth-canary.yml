@@ -84,7 +84,23 @@ jobs:
           printf '  decoyjob:\n    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s\n' "$PSHA" >> "$RPD4/.github/workflows/ci.yml"
           ( cd "$RPD4" && git add -A && git commit -qm base >/dev/null )
           rp4="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD4" 2>&1)"
-          printf '%s' "$rp4" | grep -q "pins the reusable floor/checks" || { echo "::error::a decoy non-gating job with a current uses: ref suppressed the stale-ref warning"; exit 1; }
+          printf '%s' "$rp4" | grep -q "pins the reusable" || { echo "::error::a decoy non-gating job with a current uses: ref suppressed the stale-ref warning"; exit 1; }
+          # MIXED: stale reusable floor + a CUSTOM checks gate (checks uses: is NOT plinth-checks.yml) —
+          # warn about the floor ref ONLY; the suggested sed must target floor only. Repoint the checks
+          # reusable ref to a non-plinth workflow (that makes checks a custom gate, cstale=0):
+          RPD5="$(mktemp -d)"; ( cd "$RPD5"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD5" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD5/.github/workflows/ci.yml"
+          sed -i "s|[^ ]*plinth-checks.yml@[^ ]*|./.github/workflows/my-checks.yml|" "$RPD5/.github/workflows/ci.yml"
+          ( cd "$RPD5" && git add -A && git commit -qm base >/dev/null )
+          rp5="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD5" 2>&1)"
+          printf '%s' "$rp5" | grep -q "reusable floor ref" || { echo "::error::mixed stale-floor+custom-checks did not name the floor ref only: $(printf '%s' "$rp5" | grep -i reusable | head -1)"; exit 1; }
+          printf '%s' "$rp5" | grep -q "plinth-checks" && { echo "::error::mixed warning's sed still targets the custom checks ref"; exit 1; } || true
+          # current floor + custom checks must NOT warn (nothing reusable is stale):
+          RPD6="$(mktemp -d)"; ( cd "$RPD6"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD6" >/dev/null 2>&1 )
+          sed -i "s|[^ ]*plinth-checks.yml@[^ ]*|./.github/workflows/my-checks.yml|" "$RPD6/.github/workflows/ci.yml"
+          ( cd "$RPD6" && git add -A && git commit -qm base >/dev/null )
+          rp6="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD6" 2>&1)"
+          printf '%s' "$rp6" | grep -q "pins the reusable" && { echo "::error::current-floor + custom-checks falsely warned"; exit 1; } || true
           # and a FULLY-current ci.yml must NOT warn:
           RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
           rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
@@ -99,6 +115,11 @@ jobs:
           [ -f "$GITHUB_WORKSPACE/.plinth-version" ] && cp "$GITHUB_WORKSPACE/.plinth-version" "$NGP/" || true
           NGPROJ="$(mktemp -d)"; ( cd "$NGPROJ" && git init -qb main . >/dev/null && "$NGP/bin/plinth" init "$NGPROJ" >/dev/null 2>&1 )
           grep -q 'PIN_TO_YOUR_PLINTH_RELEASE_COMMIT' "$NGPROJ/.github/workflows/ci.yml" || { echo "::error::non-git init did not write the UNPINNED sentinel for the reusable refs"; exit 1; }
+          # non-git UPDATE (supported install class): must WARN it cannot resolve the release SHA to
+          # verify the reusable refs (was a silent skip before round 70):
+          NGUP="$(mktemp -d)"; ( cd "$NGUP" && git init -qb main . >/dev/null 2>&1 && "$GITHUB_WORKSPACE/bin/plinth" init "$NGUP" >/dev/null 2>&1 && git add -A && git commit -qm base >/dev/null 2>&1 )
+          ngu="$("$NGP/bin/plinth" update "$NGUP" 2>&1)"
+          printf '%s' "$ngu" | grep -qi "could not resolve the Plinth release commit" || { echo "::error::non-git UPDATE did not warn it cannot verify the reusable refs (silent stale floor)"; exit 1; }
           grep -Eq 'plinth-(floor|checks)\.yml@[0-9a-f]{7,}' "$NGPROJ/.github/workflows/ci.yml" && { echo "::error::non-git init left a resolved SHA despite no resolvable Plinth HEAD"; exit 1; } || true
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"
@@ -1826,13 +1847,30 @@ jobs:
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
             rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
+            # EXACT reported path for a changed 4-field symlink record (format-independent extraction):
+            grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
+            git add .gitignore; git commit -qm 'ignore elsewhere (path probe)' >/dev/null 2>&1 || true
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; ln -s elsewhere/real.env .env
+            SNAPPT="$(mktemp)"; bash "$LG" snapshot > "$SNAPPT"; printf 'X=2\n' >> elsewhere/real.env
+            out="$(bash "$LG" scope HEAD --snapshot "$SNAPPT" app.py 2>&1)"; r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qE '^  \.env — SENSITIVE'; } || { echo "::error::changed symlink record did not report the exact path '.env' (rc=$r): $(printf '%s' "$out" | grep -i sensitive | head -1)"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            # an IN-SPEC symlinked SECRET_SAFE template (.env.example -> a real template file) PASSES
+            # (the carve-out authorizes it), proving the parser feeds the carve-out the right path:
+            rm -f .env.example; mkdir -p tpl; printf 'K=v\n' > tpl/example.env; ln -s tpl/example.env .env.example
+            printf 'tpl/\n' >> .gitignore; git add .gitignore; git commit -qm 'ignore tpl' >/dev/null 2>&1 || true
+            SNAPTS="$(mktemp)"; bash "$LG" snapshot > "$SNAPTS"; printf 'K=v2\n' > tpl/example.env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPTS" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an IN-SPEC symlinked SECRET_SAFE template (.env.example) was rejected (rc=$r) — carve-out fed the wrong path"; exit 1; }
+            rm -f .env.example tpl/example.env; rmdir tpl 2>/dev/null || true; git checkout -q -- .gitignore 2>/dev/null || true
             # secret under a secret-NAMED directory. The dir is ABSENT at snapshot time (so no baseline
             # node removal can independently trip exit 4), and the descendant is IN-SPEC (so the
             # out-of-spec rule cannot be the cause) and uses a PLAIN name matching NO secret-FILE
             # pattern — proving it is the DIRECTORY classification (SECRET_DIRS) catching it:
             git checkout -q -- . 2>/dev/null || true; git clean -fdq -e node_modules 2>/dev/null || true
+            rm -f .env   # remove the baseline (ignored) .env FILE so the ".env"-as-DIR sibling below is non-hollow
             SNAPD="$(mktemp)"; bash "$LG" snapshot > "$SNAPD"
-            for sd in secrets .ssh vault.pem; do
+            for sd in secrets credentials .ssh .aws .env vault.pem vault.key; do
               rm -rf "$sd"; mkdir -p "$sd"; printf 'K\n' > "$sd/readme.md"
               r=0; bash "$LG" scope HEAD --snapshot "$SNAPD" app.py "$sd/readme.md" >/dev/null 2>&1 || r=$?
               [ "$r" = 4 ] || { echo "::error::scope missed an IN-SPEC plain descendant under a secret-named dir ($sd/readme.md) (rc=$r) — SECRET_DIRS descendant match"; exit 1; }

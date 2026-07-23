@@ -495,13 +495,17 @@ warn_stale_reusable_refs() {
   printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]]|\$)" && fstale=1
   printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]]|\$)" && cstale=1
   [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
-  if true; then
-    echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the reusable floor/checks"
-    echo "workflows at an OLDER Plinth commit, so the NEW floor checks (lane tooling bytes +"
-    echo "executable mode) will NOT run until you repin. Set both refs to this release:"
-    echo "  sed -i.bak -E 's#(plinth-(floor|checks)\.yml@)[^[:space:]]+#\1${psha}#g' \\"
-    echo "    "$target/.github/workflows/ci.yml" && rm -f "$target/.github/workflows/ci.yml.bak""
-  fi
+  # Name exactly which REUSABLE ref is stale (a custom/direct job is not stale), and emit a sed
+  # that only touches the stale one(s) — never instruct repinning a job that has no reusable ref.
+  local which sedpat
+  if [ "$fstale" = 1 ] && [ "$cstale" = 1 ]; then which="reusable floor and checks refs"; sedpat='plinth-(floor|checks)'
+  elif [ "$fstale" = 1 ]; then which="reusable floor ref (checks is a custom/direct gate or already current)"; sedpat='plinth-floor'
+  else which="reusable checks ref (floor is a custom/direct gate or already current)"; sedpat='plinth-checks'; fi
+  echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
+  echo "commit, so the NEW floor checks (lane tooling bytes + executable mode) will NOT run until you"
+  echo "repin. Set the stale ref to this release:"
+  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[^[:space:]]+#\1${psha}#g' \\"
+  echo "    \"$target/.github/workflows/ci.yml\" && rm -f \"$target/.github/workflows/ci.yml.bak\""
 }
 
 # PER-PROJECT (templates, copied once, never overwritten):
