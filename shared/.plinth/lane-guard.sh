@@ -85,8 +85,13 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
   done < <(prot_pats)
 }
 sens_match() {  # <path> -> 0 if SENSITIVE (recorded in the snapshot). ORDER matters: an explicit
-  # Git control-plane surfaces are ALWAYS sensitive (see sens_snapshot's enumeration note):
-  case "$1" in .git/config|.git/info/exclude|.git/HEAD|.git/packed-refs|.git/hooks/*|.git/refs/*) return 0 ;; esac
+  # Git control-plane surfaces are ALWAYS sensitive (see sens_snapshot's enumeration note).
+  # Match by COMPONENT so a resolved gitdir path (worktree: .git/worktrees/<n>/HEAD, or an
+  # absolute common-dir) is covered, not just a literal top-level .git/:
+  case "/$1" in \
+    */config|*/info/exclude|*/HEAD|*/packed-refs) \
+      case "/$1" in */.git/*|*/.git) return 0 ;; esac ;; esac
+  case "/$1" in */hooks/*|*/refs/*) case "/$1" in */.git/*) return 0 ;; esac ;; esac
   # protected-paths pattern ALWAYS wins; then anything inside a secret DIRECTORY is sensitive
   # regardless of basename; then the secret-FILE names — which INCLUDE the SECRET_SAFE lookalikes
   # (they are recorded here, and spec-gated at scope time, never blind-exempt).
@@ -118,10 +123,17 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # its stat cache on a CLEAN run, so covering it would false-flag; and it is not a content
   # authority anyway (the scope check diffs against the immutable BEFORE *sha*, not a ref, so
   # neither an index-flag change nor a ref rewrite can hide a working-tree content change).
+  # Resolve the REAL git dirs — `.git` is a directory in a normal clone but a FILE in a
+  # linked worktree (the lane docs recommend one worktree per lane), so hardcoding `.git/`
+  # would miss the control plane there. GIT_DIR = per-worktree (HEAD, refs, index);
+  # GIT_COMMON = shared (config, hooks, packed-refs, info/exclude). Both may equal `.git`.
+  local GITDIR GITCOMMON
+  GITDIR="$(git rev-parse --git-dir 2>/dev/null)"; GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
   { git ls-files -c 2>/dev/null; git ls-files -o -i --exclude-standard 2>/dev/null; \
     git ls-files -o --exclude-standard 2>/dev/null; \
-    for cp in .git/config .git/info/exclude .git/HEAD .git/packed-refs; do [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
-    find .git/hooks .git/refs \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sort -u | while IFS= read -r f; do
+    for cp in "$GITCOMMON/config" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do \
+      [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done; \
+    find "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" \( -type f -o -type l \) 2>/dev/null | grep -v '\.sample$'; :; } | sort -u | while IFS= read -r f; do
     # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
     # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
     # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
@@ -189,6 +201,15 @@ case "$sub" in
     # in-spec name would list only the new path — the old file's deletion would escape
     # the scope check. Force delete+add so BOTH paths are checked against the spec.
     dif="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    # HIDDEN INDEX BITS: assume-unchanged (lowercase status letter) / skip-worktree (S) make
+    # git diff/ls-files SKIP a modified tracked file — a lane could set them to sneak an
+    # out-of-spec edit past the enumeration above. They are never normal lane state; fail closed.
+    hidden="$(git ls-files -v 2>/dev/null | grep -E '^([a-z]|S)' | sed 's/^..//' || true)"
+    if [ -n "$hidden" ]; then
+      echo "scope: tracked paths carry assume-unchanged/skip-worktree bits (git diff would skip them) — refusing (fail closed):" >&2
+      printf '  %s\n' $hidden >&2
+      exit 4
+    fi
     unt="$(git ls-files --others --exclude-standard)" || { echo "scope: 'git ls-files' failed — refusing to accept the lane"; exit 5; }
     # The hook-appended event feed is excluded here as well as in the snapshot: pulse.sh
     # appends it on every tool use during a hooked lane run, and a project whose preserved

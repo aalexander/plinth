@@ -1825,7 +1825,31 @@ jobs:
             SNAPG4="$(mktemp)"; bash "$LG" snapshot > "$SNAPG4"
             echo cpw >> app.py; git update-ref refs/heads/main HEAD~1
             r=0; bash "$LG" scope "$(git rev-parse HEAD)" --snapshot "$SNAPG4" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 4 ] || { echo "::error::scope missed a ref rewrite (rc=$r)"; exit 1; } )
+            [ "$r" = 4 ] || { echo "::error::scope missed a ref rewrite (rc=$r)"; exit 1; }
+            git checkout -q -- . 2>/dev/null || true
+            # HIDDEN INDEX BITS: skip-worktree/assume-unchanged make git diff SKIP a modified
+            # tracked file — scope must fail closed on the bit (round-58):
+            SNAPH="$(mktemp)"; bash "$LG" snapshot > "$SNAPH"
+            echo hb >> app.py; echo EVIL >> mod.py; git update-index --skip-worktree mod.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPH" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope did not fail closed on a skip-worktree hidden-bit edit (rc=$r)"; exit 1; }
+            git update-index --no-skip-worktree mod.py; git checkout -q -- mod.py app.py )
+          # ── v4.5: control-plane snapshot works in a LINKED WORKTREE (.git is a FILE) ──
+          WTM="$(mktemp -d)"; ( cd "$WTM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          WTL="$(mktemp -d)/wt"; ( cd "$WTM" && git worktree add -q "$WTL" >/dev/null 2>&1 )
+          [ -f "$WTL/.git" ] || { echo "::error::worktree .git is not a file — setup wrong"; exit 1; }
+          COMMON="$( cd "$WTL" && git rev-parse --git-common-dir )"
+          SNAPW="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW" )
+          printf '#!/bin/sh\necho pwned\n' > "$COMMON/hooks/pre-commit"; chmod +x "$COMMON/hooks/pre-commit"
+          ( cd "$WTL" && echo b >> app.py )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a hook planted via the worktree common-dir (rc=$r) — hardcoded .git/ path"; exit 1; }
+          rm -f "$COMMON/hooks/pre-commit"
+          SNAPW2="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW2" )
+          ( cd "$WTL" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::clean worktree lane run false-flagged (rc=$r)"; exit 1; }
           # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
           r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
           r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
