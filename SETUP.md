@@ -1,7 +1,10 @@
 # Plinth — one-time setup
 
-1. Push this repo to GitHub as PUBLIC `OWNER/plinth`; tag it:
-       git tag v3 && git push origin v3
+1. Push this repo to GitHub as PUBLIC `OWNER/plinth`; tag EVERY release with the
+   version in `VERSION` (today:
+       git tag v4.5.0 && git push origin v4.5.0
+   ) — projects write `.plinth-version` at init/update and the CI floor clones
+   `v<version>`, so an unpushed tag breaks every downstream harness job.
    (Public means projects can call plinth-floor.yml with zero access config.)
 2. Put the CLI on PATH:
        sudo ln -s "$(pwd)/bin/plinth" /usr/local/bin/plinth
@@ -19,7 +22,9 @@
    no separate "Codex Security" product is assumed to exist.
 5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
    zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
-   requiring the `floor` and `checks` status checks. (The Codex cloud review
+   requiring ALL FOUR floor jobs (`secrets`, `sast`, `dependencies / osv-scan`,
+   `harness`) plus the `checks` job — the floor is four independent contexts,
+   and the preflight names any missing one. (The Codex cloud review
    posts comments — advisory, not a requirable check; the receipt check shipping
    with auto mode adds the server-side review gate.)
 6. Daily driving happens in the grok CLI (the v4 driver). When you drive with
