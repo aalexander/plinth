@@ -23,9 +23,11 @@
    no separate "Codex Security" product is assumed to exist.
 5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
    zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
-   requiring ALL FOUR floor jobs (`secrets`, `sast`, `dependencies / osv-scan`,
-   `harness`) plus the `checks` job — the floor is four independent contexts,
-   and the preflight names any missing one. (The Codex cloud review
+   requiring the FOUR floor contexts (`floor / secrets`, `floor / sast`,
+   `floor / dependencies / osv-scan`, `floor / harness`) plus `checks / checks`
+   (or `checks` for a direct checks job) — GitHub names required checks by JOB
+   name, not the workflow name (no `CI / ` prefix); the preflight names any
+   missing one. (The Codex cloud review
    posts comments — advisory, not a requirable check; the receipt check shipping
    with auto mode adds the server-side review gate.)
 6. Daily driving happens in Claude Code (the architect-resident default):

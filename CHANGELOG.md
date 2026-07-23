@@ -145,8 +145,12 @@
   real contract: floor + checks are the required contexts; the cloud review is advisory;
   the server-verifiable APPROVED-at-HEAD receipt check (auto mode, next release) is the
   designated adversarial gate for non-Claude drivers. `github_preflight` now VERIFIES the
-  required contexts — missing floor/checks or an empty context list is called out loudly
-  instead of reading as "configured" (canary-probed with a stubbed gh).
+  required contexts by their EXACT GitHub job-name form — `floor / secrets`, `floor / sast`,
+  `floor / dependencies / osv-scan`, `floor / harness`, and `checks / checks` (or `checks` for a
+  direct checks job); GitHub does NOT prefix required-check contexts with the workflow name, so a
+  `CI / floor / …` decoy reads as MISSING. The checks context is cross-checked against the actual
+  check-run names; missing contexts or an empty list are called out loudly instead of reading as
+  "configured" (canary-probed with a stubbed gh, real + decoy + no-run-data cases).
 - **Floor checks executable MODE, not just bytes.** The pinned executables are executed
   directly (`./.plinth/review.sh`, the lanes' `.plinth/lane-guard.sh` calls, the `.claude`
   hooks); `cmp` alone would pass pinned bytes committed at 0644 while every exec fails.

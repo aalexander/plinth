@@ -178,7 +178,7 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
       # regular file, the referent's content hash — else a WRITE-THROUGH a pre-existing
       # sensitive symlink (target string unchanged, content changed) would compare equal.
       # Fail closed if the target is present-but-unhashable (a forgeable empty record).
-      lt="$(readlink "$f" 2>/dev/null || echo '?')"
+      lt="$(readlink "$f")" || { echo "lane-guard: readlink failed on sensitive symlink '$f' — refusing (fail closed)" >&2; exit 5; }
       if [ -f "$f" ]; then   # -f follows the link: true iff it resolves to a regular file
         th="$(hashof "$f")"; tm="$(modeof_deref "$f")"   # deref: referent content + referent MODE (chmod-on-target caught)
         { [ -n "$th" ] && [ -n "$tm" ]; } || { echo "lane-guard: cannot hash/stat symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }

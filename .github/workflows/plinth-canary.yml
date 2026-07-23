@@ -54,6 +54,10 @@ jobs:
           # v4 model wiring: the scaffold's audit seat is claude — a different family than
           # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
           grep -q '^audit_vendor = claude$' .plinth/config || { echo "::error::scaffold did not set audit_vendor = claude (v4 default)"; exit 1; }
+          # generated ci.yml must preserve the template's mode (edit_file's mktemp is 0600) — it must
+          # stay group/other-readable, not 0600:
+          cim="$(stat -c '%a' .github/workflows/ci.yml 2>/dev/null || stat -f '%Lp' .github/workflows/ci.yml 2>/dev/null)"
+          case "$cim" in *600) echo "::error::generated ci.yml is mode $cim (0600) — edit_file did not preserve the source mode"; exit 1 ;; esac
           # v4 advisor seat is scaffolded LIVE (advise is non-blocking; a missing model just
           # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 access is
           # PER-ACCOUNT (GA July 9 2026; Codex CLI >= 0.144.0) and an ACTIVE line on an
@@ -1396,7 +1400,7 @@ jobs:
           esac
           GHS
           chmod +x "$PFG/gh"
-          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
           pf_probe() {  # <protection-json> <expect-grep> <label>
             local d j="$PFG/p.json"; d="$(mktemp -d)"; printf '%s' "$1" > "$j"
             ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
@@ -1404,39 +1408,48 @@ jobs:
             out="$(GHP_JSON="$j" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
             printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           }
-          FULLCTX='["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / build"]'
-          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: CI / floor / secrets' full
+          FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]'
+          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
           # ONE floor job present is NOT a gated floor — each of the four is independent:
-          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / checks / build"]}}' 'MISSING: floor/sast' partial-floor
-          pf_probe '{"required_status_checks":{"contexts":["CI / checks / build"]}}' 'MISSING: floor/secrets' no-floor
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
+          pf_probe '{"required_status_checks":{"contexts":["checks / checks"]}}' 'MISSING: floor/secrets' no-floor
           # misleading SIBLING names must not satisfy the contexts (loose-substring regression):
-          pf_probe '{"required_status_checks":{"contexts":["CI / floor / not-sast","old floor harness","prechecks","CI / floor / dependencies / npm-audit","old / checks / build"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks' misleading-names
+          pf_probe '{"required_status_checks":{"contexts":["floor / not-sast","oldfloor / harness","prechecks","floor / dependencies / npm-audit","old-checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks' misleading-names
           # SUFFIX siblings share the prefix but are different exact contexts — all five must
           # read as missing ("CI / checks / old" has valid shape but is not a real check run):
-          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets / old","CI / floor / sast / old","CI / floor / harness / old","CI / floor / dependencies / osv-scan / old","CI / checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks (required context not among actual check runs' suffix-siblings
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets / old","floor / sast / old","floor / harness / old","floor / dependencies / osv-scan / old","checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks (required context not among actual check runs' suffix-siblings
           # spacing/leaf variants are DIFFERENT exact contexts — all must read as missing
           # ("CI/floor/secrets", odd spacing, trailing space, "osv scan" leaf):
-          pf_probe '{"required_status_checks":{"contexts":["CI/floor/secrets","CI /floor/ sast","CI / floor / harness ","CI / floor / dependencies / osv scan","CI / checks / build"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan' spacing-variants
+          pf_probe '{"required_status_checks":{"contexts":["floor/secrets","floor/ sast","floor / harness ","floor / dependencies / osv scan","checks / checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan' spacing-variants
           # NO check-run data must be fail-CLOSED for the checks verification (UNVERIFIED),
           # never silent health — shape-valid decoys can hide behind an empty API answer:
           NONAMES="$PFG/nonames"; : > "$NONAMES"
           d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          printf '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / old"]}}' > "$PFG/p.json"
+          printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / old"]}}' > "$PFG/p.json"
           out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$NONAMES" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
           printf '%s' "$out" | grep -q "UNVERIFIED: no check-run data" || { echo "::error::preflight[no-run-data]: checks verification fell open without run data: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
-          # context names are case-EXACT — a lowercased workflow prefix must read as missing:
-          pf_probe '{"required_status_checks":{"contexts":["ci / floor / secrets","ci / floor / sast","ci / floor / dependencies / osv-scan","ci / floor / harness","ci / checks / build"]}}' 'MISSING: floor/secrets' wrong-case
+          # context names are case-EXACT (job names) — a wrong-cased job name must read as missing:
+          pf_probe '{"required_status_checks":{"contexts":["Floor / secrets","floor / Sast","floor / dependencies / OSV-scan","floor / harness","Checks / checks"]}}' 'MISSING: floor/secrets' wrong-case
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
-          # a DIRECT checks job (template-supported: in-line steps, context "<wf> / checks", no /<job>)
-          # must read as HEALTHY, not MISSING. Its context is cross-checked against the check-runs:
-          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks"]}}' 'required: CI / floor / secrets' direct-checks-job
-          # GitHub may emit contexts WITHOUT the workflow-name prefix ("floor / secrets"): must read healthy:
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / build\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / build"]}}' 'required: floor / secrets' no-prefix-contexts
-          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
-          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
+          # a DIRECT checks job (template-supported: in-line steps) has context exactly "checks" —
+          # must read HEALTHY. Its context is cross-checked against the check-runs:
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks"]}}' 'required: floor / secrets' direct-checks-job
+          # WORKFLOW-PREFIXED contexts ("CI / floor / secrets") do NOT exist on GitHub — must read MISSING:
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / checks"]}}' 'MISSING: floor/secrets' workflow-prefixed-is-invalid
+          # a QUOTED workflow name (name: "CI") must not break matching (contexts are job-name based,
+          # so this is unaffected — but exercise the quoted path); and the checks cross-check must see
+          # the checks context even when many other check-runs precede it (>30, pagination):
+          many="$(mktemp)"; { for i in $(seq 1 40); do printf 'noise-%s\n' "$i"; done; printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n'; } > "$many"
+          dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
+            sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' > "$PFG/p.json"
+          out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$many" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
+          printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
           # The vendor behavior itself is only testable against the real CLI (run locally:
@@ -2007,6 +2020,17 @@ jobs:
             GDx="$(git rev-parse --git-dir)"; ln -s /nonexistent-target "$GDx/config.worktree"; echo z >> app.py
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPDL" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope missed a DANGLING control-plane symlink at config.worktree (rc=$r) — [ -e ] enumeration gap"; exit 1; } )
+          # a legitimate REF whose name ends .sample must be ENUMERATED (the .sample filter is
+          # limited to stock hook templates, hooks/*.sample — not arbitrary refs):
+          SMP="$(mktemp -d)"; ( cd "$SMP"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            git update-ref refs/heads/foo.sample HEAD
+            snp="$(bash "$LG" snapshot)"
+            printf '%s' "$snp" | grep -q 'refs/heads/foo.sample' || { echo "::error::a legit ref ending .sample was stripped by the hooks .sample filter (Rule 7)"; exit 1; }
+            # and a stock sample HOOK is still stripped (not recorded):
+            cp .git/hooks/pre-commit.sample .git/hooks/kept.sample 2>/dev/null || printf '#sample\n' > .git/hooks/kept.sample
+            snp2="$(bash "$LG" snapshot)"
+            printf '%s' "$snp2" | grep -q 'hooks/kept.sample' && { echo "::error::a stock sample hook was wrongly recorded (filter too narrow)"; exit 1; } || true )
           # CLASS CLOSURE: a SEPARATE-GIT-DIR repo has an arbitrarily-named gitdir (no `.git`
           # component); control-plane is recorded by resolved path, no name heuristic (round-61):
           SGW="$(mktemp -d)"; SGC="$(mktemp -d)/control"

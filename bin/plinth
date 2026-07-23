@@ -333,28 +333,21 @@ github_preflight() {
     ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
     # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
     # each needs its own required context; one present floor job does not gate the others.
-    # STRUCTURAL, CASE-EXACT matching, not substrings (context names are exact strings —
-    # "ci / floor / secrets" does NOT satisfy "CI / floor / secrets"): a legit context is "<workflow> / <job> / …"
-    # where <workflow> is the project ci.yml's own name (scaffold: CI). Anchoring on that
-    # prefix rejects decoy siblings ("old / checks / build", "CI / floor / not-sast",
-    # "CI / floor / dependencies / npm-audit") that a loose grep would read as healthy.
-    wf="$(sed -n 's/^name:[[:space:]]*//p' "$target/.github/workflows/ci.yml" 2>/dev/null | head -1)"
-    wf="${wf%\"}"; wf="${wf#\"}"; wf="${wf%\'}"; wf="${wf#\'}"   # strip surrounding quotes (name: "CI")
-    [ -n "$wf" ] || wf="CI"
-    wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
+    # Contexts are matched by JOB NAME (grep -xF, exact) — GitHub does not prefix required-check
+    # contexts with the workflow name; the caller jobs are the scaffold's `floor` and `checks`.
     miss=""
-    # Floor contexts must match by their fixed job COMPONENT ("floor / <job>"). The workflow-name
-    # prefix is OPTIONAL: GitHub's required-check context for a reusable-workflow job is version-
-    # dependent — it may be "<wf> / floor / <job>" OR just "floor / <job>" — so we accept either and
-    # reject decoys by anchoring the exact floor/<job> tail (no flexible spacing, no extra segments).
+    # GitHub required-check contexts are JOB names, NOT workflow-name-prefixed labels: a direct job
+    # is "<job>"; a reusable-workflow job is "<caller-job> / <reusable-job>" (nested further for a
+    # nested reusable call). The scaffold's caller jobs are `floor` and `checks`, so the floor
+    # contexts are "floor / secrets", "floor / sast", "floor / dependencies / osv-scan",
+    # "floor / harness". A "$wf / floor / ..." (workflow-prefixed) form does NOT exist and is rejected.
     for fj in secrets sast harness; do
-      printf '%s\n' "$ctxs" | grep -qE "^($wfe / )?floor / $fj\$" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s\n' "$ctxs" | grep -qxF "floor / $fj" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s\n' "$ctxs" | grep -qE "^($wfe / )?floor / dependencies / osv-scan\$" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    # checks: reusable "-> [<wf> /] checks / <job>" OR a DIRECT job "-> [<wf> /] checks" (prefix
-    # optional, same reason). Shape-valid required contexts are cross-checked against the ACTUAL
-    # check-run names on $defb; NO run data is fail-CLOSED (UNVERIFIED), never silent health.
-    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^($wfe / )?checks( / [^/]+)?\$" || true)"
+    printf '%s\n' "$ctxs" | grep -qxF "floor / dependencies / osv-scan" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    # checks: a DIRECT job is exactly "checks"; a reusable call is "checks / <reusable-job>". Either
+    # shape is cross-checked against the ACTUAL check-run names on $defb; NO run data is fail-CLOSED.
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^checks( / [^/]+)?\$" || true)"
     if [ -z "$ckctx" ]; then
       miss="${miss:+$miss, }checks"
     else

@@ -468,26 +468,25 @@ UI route, once the first PR shows its checks:
 2. Branch name pattern: `main`.
 3. Tick "Require status checks to pass before merging" (add "Require branches
    to be up to date" if you want rebase-before-merge discipline).
-4. In the search box, pick EVERY floor job — `secrets`, `sast`,
-   `dependencies / osv-scan`, `harness` — and the checks job, using the EXACT
-   context strings AS THEY APPEAR in that PR's checks list. Do NOT hand-type
-   from the examples here: GitHub's context for a reusable-workflow job is
-   version-dependent — it may render as `CI / floor / secrets` (workflow-name
-   prefixed) OR as `floor / secrets` (job component only). Copy what your PR
-   actually shows; `plinth watch`/the update preflight accept either shape. The
-   floor is FOUR independent required contexts, not one: any job you omit stays
+4. In the search box, pick EVERY floor context and the checks context. GitHub
+   names a required check by its JOB name, NOT the workflow name — for a
+   reusable-workflow job the context is `<caller-job> / <reusable-job>`. With the
+   scaffold's `floor` and `checks` caller jobs that is:
+   `floor / secrets`, `floor / sast`, `floor / dependencies / osv-scan`,
+   `floor / harness`, and `checks / checks` (or just `checks` if you replaced the
+   reusable checks call with a direct-steps job). There is NO `CI / ` prefix. The
+   floor is FOUR independent required contexts, not one: any you omit stays
    advisory. The Codex cloud review will NOT appear in this list — it posts PR
    comments, not a status check, so it cannot be required here.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing — replace every VALUE below with the EXACT context string
-your PR showed; the `CI / ` prefix may or may not be present):
+CLI route (same contexts; use `checks` alone if your checks job is direct-steps):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
     {"required_status_checks":{"strict":false,
-      "contexts":["FLOOR SECRETS CONTEXT","FLOOR SAST CONTEXT",
-                  "FLOOR DEPENDENCIES/OSV-SCAN CONTEXT","FLOOR HARNESS CONTEXT",
-                  "CHECKS CONTEXT"]},
+      "contexts":["floor / secrets","floor / sast",
+                  "floor / dependencies / osv-scan","floor / harness",
+                  "checks / checks"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
 
