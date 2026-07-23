@@ -1738,6 +1738,11 @@ jobs:
             mkdir -p .plinth/session/review/br; printf 'FAKE-APPROVED\n' > .plinth/session/review/br/verdict.json
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a lane forging .plinth/session/review/.../verdict.json (rc=$r)"; exit 1; }
             rm -rf .plinth/session
+            # the carve-out is ROOT-ONLY (round-49): a SUBDIR copy of the event feed matches the
+            # protected policy and must be flagged — the prior */ glob let it escape:
+            mkdir -p subdir/.plinth/session; printf 'FAKE\n' > subdir/.plinth/session/events.jsonl
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a SUBDIR copy of events.jsonl (rc=$r) — carve-out regressed to the */ glob"; exit 1; }
+            rm -rf subdir
             # a secret REPLACED BY A SYMLINK (recorded by target, not followed) must be caught:
             rm -f .env; ln -sf /etc/hosts .env
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a secret replaced by a SYMLINK (rc=$r)"; exit 1; }
