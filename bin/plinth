@@ -327,7 +327,8 @@ github_preflight() {
     ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
     # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
     # each needs its own required context; one present floor job does not gate the others.
-    # STRUCTURAL matching, not substrings: a legit context is "<workflow> / <job> / …"
+    # STRUCTURAL, CASE-EXACT matching, not substrings (context names are exact strings —
+    # "ci / floor / secrets" does NOT satisfy "CI / floor / secrets"): a legit context is "<workflow> / <job> / …"
     # where <workflow> is the project ci.yml's own name (scaffold: CI). Anchoring on that
     # prefix rejects decoy siblings ("old / checks / build", "CI / floor / not-sast",
     # "CI / floor / dependencies / npm-audit") that a loose grep would read as healthy.
@@ -336,10 +337,10 @@ github_preflight() {
     wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
     for fj in secrets sast harness; do
-      printf '%s' "$ctxs" | grep -qiE "^$wfe */ *floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s' "$ctxs" | grep -qiE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    printf '%s' "$ctxs" | grep -qiE "^$wfe */ *checks([ /]|\$)" || miss="${miss:+$miss, }checks"
+    printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    printf '%s' "$ctxs" | grep -qE "^$wfe */ *checks([ /]|\$)" || miss="${miss:+$miss, }checks"
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
