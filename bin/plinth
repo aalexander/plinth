@@ -196,8 +196,11 @@ reject_nonregular_file() {  # <path>
   if [ -f "$1" ]; then
     # GNU (-c) first; BSD stat rejects -c and falls through to -f. Reverse order is WRONG: GNU
     # `stat -f '%l'` succeeds with filesystem status (not nlink), so the `||` never falls through.
-    local n; n="$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null || echo 1)"
-    if [ "${n:-1}" -gt 1 ] 2>/dev/null; then echo "ERROR: $1 is a hardlink (nlink=$n) — refusing to overwrite a shared inode (would clobber the other link)." >&2; exit 1; fi
+    local n; n="$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null)"
+    # FAIL CLOSED if the link count can't be determined (both stat forms failed / non-numeric):
+    # defaulting to 1 would let a copy proceed and clobber an external hardlink (data loss).
+    case "$n" in ''|*[!0-9]*) echo "ERROR: cannot determine link count of $1 (stat failed) — refusing to touch it (fail closed)." >&2; exit 1 ;; esac
+    if [ "$n" -gt 1 ]; then echo "ERROR: $1 is a hardlink (nlink=$n) — refusing to overwrite a shared inode (would clobber the other link)." >&2; exit 1; fi
   fi
 }
 preflight_reserved_lanes() {
@@ -340,21 +343,18 @@ github_preflight() {
     [ -n "$wf" ] || wf="CI"
     wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
-    # Floor contexts are EXACT full strings (GitHub matches required contexts literally,
-    # and the jobs are fixed by plinth-floor.yml) — grep -xF, no regex, no flexible
-    # spacing: "CI/floor/secrets" or a trailing space is a DIFFERENT context and reads
-    # as missing:
+    # Floor contexts must match by their fixed job COMPONENT ("floor / <job>"). The workflow-name
+    # prefix is OPTIONAL: GitHub's required-check context for a reusable-workflow job is version-
+    # dependent — it may be "<wf> / floor / <job>" OR just "floor / <job>" — so we accept either and
+    # reject decoys by anchoring the exact floor/<job> tail (no flexible spacing, no extra segments).
     for fj in secrets sast harness; do
-      printf '%s\n' "$ctxs" | grep -qxF "$wf / floor / $fj" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s\n' "$ctxs" | grep -qE "^($wfe / )?floor / $fj\$" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s\n' "$ctxs" | grep -qxF "$wf / floor / dependencies / osv-scan" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    # The checks job name varies by detected stack, so the shape is "<wf> / checks / <job>"
-    # (fixed single-space separators, exactly one trailing component) — and each shape-valid
-    # required context is cross-checked against the ACTUAL check-run names on $defb. NO run
-    # data is fail-CLOSED for this verification: it reports UNVERIFIED, never silent health.
-    # Accept BOTH shapes: a reusable checks call -> "<wf> / checks / <job>"; a DIRECT checks job
-    # (template-supported: replace the reusable call with in-line steps) -> "<wf> / checks".
-    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^$wfe / checks( / [^/]+)?\$" || true)"
+    printf '%s\n' "$ctxs" | grep -qE "^($wfe / )?floor / dependencies / osv-scan\$" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    # checks: reusable "-> [<wf> /] checks / <job>" OR a DIRECT job "-> [<wf> /] checks" (prefix
+    # optional, same reason). Shape-valid required contexts are cross-checked against the ACTUAL
+    # check-run names on $defb; NO run data is fail-CLOSED (UNVERIFIED), never silent health.
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^($wfe / )?checks( / [^/]+)?\$" || true)"
     if [ -z "$ckctx" ]; then
       miss="${miss:+$miss, }checks"
     else

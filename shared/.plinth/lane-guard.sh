@@ -153,11 +153,12 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
   # so a non-zero find is a REAL error (permission, etc.) -> fail closed.
   for _d in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs"; do [ -d "$_d" ] && _cpdirs="$_cpdirs $_d"; done
-  _cp="$(for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do [ -n "${cp#/}" ] && [ -e "$cp" ] && printf '%s\n' "$cp"; done)"
+  _cp="$(for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do [ -n "${cp#/}" ] && { [ -e "$cp" ] || [ -L "$cp" ]; } && printf '%s\n' "$cp"; done)"
   if [ -n "$_cpdirs" ]; then
     _cpf="$(find $_cpdirs \( -type f -o -type l \) 2>/dev/null)" \
       || { echo "lane-guard: control-plane 'find' failed — refusing (fail closed)" >&2; return 5; }
-    _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -v '\.sample$' || true)"
+    # strip ONLY stock sample hooks (hooks/<name>.sample), not a legitimate ref that ends .sample:
+    _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$' || true)"
   fi
   { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } \
     | sort -u | while IFS="$(printf '\t')" read -r tag f; do

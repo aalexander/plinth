@@ -1432,6 +1432,10 @@ jobs:
           # must read as HEALTHY, not MISSING. Its context is cross-checked against the check-runs:
           printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks\n' > "$PFG/names"
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks"]}}' 'required: CI / floor / secrets' direct-checks-job
+          # GitHub may emit contexts WITHOUT the workflow-name prefix ("floor / secrets"): must read healthy:
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / build\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / build"]}}' 'required: floor / secrets' no-prefix-contexts
+          printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
           printf 'CI / floor / secrets\nCI / floor / sast\nCI / floor / dependencies / osv-scan\nCI / floor / harness\nCI / checks / build\n' > "$PFG/names"
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
@@ -1599,6 +1603,13 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
+          # hardlink guard FAILS CLOSED when link count can't be determined: shim `stat` to emit
+          # non-numeric output; init must refuse (exit != 0), not proceed and clobber the inode:
+          HSB="$(mktemp -d)"; printf '#!/usr/bin/env bash\necho notanumber\nexit 0\n' > "$HSB/stat"; chmod +x "$HSB/stat"
+          IHS="$(mktemp -d)"; EHS="$(mktemp)"; printf 'EXTERNAL-STAT\n' > "$EHS"; ( cd "$IHS"; git init -qb main . >/dev/null; mkdir -p .plinth; ln "$EHS" .plinth/review.sh
+            r=0; PATH="$HSB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" init "$IHS" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::hardlink guard did not FAIL CLOSED when stat returns non-numeric (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-STAT "$EHS" || { echo "::error::hardlink guard clobbered an external file when stat was unreliable"; exit 1; }; rm -f "$EHS"
           # edit_file must use an UNPREDICTABLE mktemp temp — a precreated ci.yml.plinth-tmp symlink to an
           # external file must NOT be written through (the old predictable sibling temp was a path-escape):
           IET="$(mktemp -d)"; EET="$(mktemp)"; printf 'EXTERNAL-TMP\n' > "$EET"; ( cd "$IET"; git init -qb main . >/dev/null; mkdir -p .github/workflows; ln -sf "$EET" .github/workflows/ci.yml.plinth-tmp
@@ -1988,6 +1999,14 @@ jobs:
           ( cd "$WTL" && echo d >> app.py && git config --worktree core.hooksPath /tmp/evil )
           r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW3" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 4 ] || { echo "::error::scope missed a config.worktree hooksPath mutation (rc=$r)"; exit 1; }
+          # a DANGLING symlink at a normally-absent control-plane path (config.worktree) must be
+          # caught — [ -e ] is false for dangling links, so enumeration also checks [ -L ]:
+          DLF="$(mktemp -d)"; ( cd "$DLF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SNAPDL="$(mktemp)"; bash "$LG" snapshot > "$SNAPDL"
+            GDx="$(git rev-parse --git-dir)"; ln -s /nonexistent-target "$GDx/config.worktree"; echo z >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPDL" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a DANGLING control-plane symlink at config.worktree (rc=$r) — [ -e ] enumeration gap"; exit 1; } )
           # CLASS CLOSURE: a SEPARATE-GIT-DIR repo has an arbitrarily-named gitdir (no `.git`
           # component); control-plane is recorded by resolved path, no name heuristic (round-61):
           SGW="$(mktemp -d)"; SGC="$(mktemp -d)/control"

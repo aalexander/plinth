@@ -469,21 +469,25 @@ UI route, once the first PR shows its checks:
 3. Tick "Require status checks to pass before merging" (add "Require branches
    to be up to date" if you want rebase-before-merge discipline).
 4. In the search box, pick EVERY floor job — `secrets`, `sast`,
-   `dependencies / osv-scan`, `harness` — and the checks job, EXACTLY as they
-   appeared on the PR (e.g. "CI / floor / secrets", …, "CI / checks / ...").
-   The floor is FOUR independent required contexts, not one: any job you omit
-   stays advisory. The Codex cloud review will NOT appear in this list — it
-   posts PR comments, not a status check, so it cannot be required here.
+   `dependencies / osv-scan`, `harness` — and the checks job, using the EXACT
+   context strings AS THEY APPEAR in that PR's checks list. Do NOT hand-type
+   from the examples here: GitHub's context for a reusable-workflow job is
+   version-dependent — it may render as `CI / floor / secrets` (workflow-name
+   prefixed) OR as `floor / secrets` (job component only). Copy what your PR
+   actually shows; `plinth watch`/the update preflight accept either shape. The
+   floor is FOUR independent required contexts, not one: any job you omit stays
+   advisory. The Codex cloud review will NOT appear in this list — it posts PR
+   comments, not a status check, so it cannot be required here.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing; paste the names the PR showed — all four floor jobs
-plus checks):
+CLI route (same timing — replace every VALUE below with the EXACT context string
+your PR showed; the `CI / ` prefix may or may not be present):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
     {"required_status_checks":{"strict":false,
-      "contexts":["CI / floor / secrets","CI / floor / sast",
-                  "CI / floor / dependencies / osv-scan","CI / floor / harness",
-                  "CHECKS CHECK NAME"]},
+      "contexts":["FLOOR SECRETS CONTEXT","FLOOR SAST CONTEXT",
+                  "FLOOR DEPENDENCIES/OSV-SCAN CONTEXT","FLOOR HARNESS CONTEXT",
+                  "CHECKS CONTEXT"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
 
