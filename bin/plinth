@@ -336,11 +336,32 @@ github_preflight() {
     [ -n "$wf" ] || wf="CI"
     wfe="$(printf '%s' "$wf" | sed 's/[][\.*^$(){}?+|/]/\\&/g')"
     miss=""
+    # Floor contexts are EXACT full names (the jobs are fixed by plinth-floor.yml) —
+    # anchored to end-of-line so "CI / floor / secrets / old" cannot satisfy them:
     for fj in secrets sast harness; do
-      printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *$fj *\$" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
-    printf '%s' "$ctxs" | grep -qE "^$wfe */ *checks([ /]|\$)" || miss="${miss:+$miss, }checks"
+    printf '%s' "$ctxs" | grep -qE "^$wfe */ *floor */ *dependencies */ *osv[- ]?scan *\$" || miss="${miss:+$miss, }floor/dependencies/osv-scan"
+    # The checks job name varies by detected stack, so shape alone cannot reject a decoy
+    # like "CI / checks / old". Validate the shape, then cross-check each required
+    # checks-context against the ACTUAL check-run names on $defb (best-effort; skipped
+    # when the API gives no runs — e.g. before the first PR).
+    ckctx="$(printf '%s' "$ctxs" | grep -E "^$wfe */ *checks */ *[^/]+ *\$" || true)"
+    if [ -z "$ckctx" ]; then
+      miss="${miss:+$miss, }checks"
+    else
+      runs="$(gh api "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
+      if [ -n "$runs" ]; then
+        ghost=""
+        while IFS= read -r c; do
+          [ -n "$c" ] || continue
+          printf '%s\n' "$runs" | grep -qxF "$c" || ghost="${ghost:+$ghost; }$c"
+        done <<GHOSTEOF
+$ckctx
+GHOSTEOF
+        [ -z "$ghost" ] || miss="${miss:+$miss, }checks (required context not among actual check runs: $ghost)"
+      fi
+    fi
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
