@@ -203,7 +203,11 @@ case "$sub" in
     # --no-renames: with diff.renames enabled, a rename from an OUT-OF-SPEC path to an
     # in-spec name would list only the new path — the old file's deletion would escape
     # the scope check. Force delete+add so BOTH paths are checked against the spec.
-    dif="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    # BOTH working-tree AND staged (--cached) vs base: a lane could `git add` an out-of-spec
+    # change and revert the working tree, leaving `git diff $base` clean while the INDEX holds
+    # the change (the driver's later `git commit` would ship it) — union catches that.
+    dif="$( { git diff --name-only --no-renames "$base"; git diff --cached --name-only --no-renames "$base"; } | sort -u )" \
+      || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     # HIDDEN INDEX BITS: assume-unchanged (lowercase status letter) / skip-worktree (S) make
     # git diff/ls-files SKIP a modified tracked file — a lane could set them to sneak an
     # out-of-spec edit past the enumeration above. They are never normal lane state; fail closed.
