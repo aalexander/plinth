@@ -44,6 +44,11 @@ the exact **files** — you enforce them below.
 
 ## How you run codex
 
+**Steps 0–2 are ONE Bash invocation.** Shell variables do NOT persist across separate
+tool calls — run the snapshot, the spec write, and the codex invocation as a single
+command, and END it by echoing the state later steps need (BEFORE, SNAP, OUT): you
+will paste those LITERAL values into steps 3–4, which run in fresh shells.
+
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first:
 
@@ -71,6 +76,7 @@ the exact **files** — you enforce them below.
        cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
          > "$OUT" 2>&1
+       echo "BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`
    — which under Plinth is the DRIVER contract — and would follow driver/review-loop instructions
@@ -88,7 +94,10 @@ the exact **files** — you enforce them below.
    CLI bypasses the `.claude/` guard, so scope is what stops it forging a fake approval), even
    gitignored ones. (Only the hook-appended `.plinth/session/events.jsonl` is excluded.)
 
-       .plinth/lane-guard.sh scope "$BEFORE" --snapshot "$SNAP" <the spec's exact file paths>
+       .plinth/lane-guard.sh scope <BEFORE sha> --snapshot <SNAP path> <the spec's exact file paths>
+
+   Use the LITERAL values echoed by the run block — this is a NEW shell and $BEFORE/$SNAP
+   are empty here.
 
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the
    diff. A lane that edited `.plinth/`, a hook, an agent, config, a secret, or an out-of-spec file
@@ -99,7 +108,7 @@ the exact **files** — you enforce them below.
    ran against un-reviewed state, so weigh CI's fresh install as the authority.
 
 4. **Verify independently.** Read the diff (`git diff` / `git status`), re-run the spec's
-   verification command YOURSELF, and read codex's final message from `"$OUT"`. Codex's claim of
+   verification command YOURSELF, and read codex's final message from the OUT path echoed by the run block. Codex's claim of
    success is not evidence; your re-run is.
 
 ## What you return
