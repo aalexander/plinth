@@ -112,7 +112,10 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
     # on every PostToolUse DURING the lane run, so comparing it would false-flag every clean lane.
     # The REST of `.plinth/session/` (verdict.json, run receipts) stays in scope: a whole-tree lane
     # bypasses the Claude guard and could otherwise forge local gate/dashboard state.
-    case "$f" in .plinth/session/events.jsonl|*/.plinth/session/events.jsonl) continue ;; esac
+    # ROOT feed only: the pulse hook appends $CLAUDE_PROJECT_DIR/.plinth/session/events.jsonl —
+    # a SUBDIR copy (subdir/.plinth/session/events.jsonl) matches the protected policy and
+    # stays fully enforced (an overbroad glob here was a carve-out escape).
+    case "$f" in .plinth/session/events.jsonl) continue ;; esac
     sens_match "$f" || continue
     if [ -L "$f" ]; then
       printf 'symlink %s  %s\n' "$(readlink "$f" 2>/dev/null || echo '?')" "$f"   # record a symlink by its target, do not follow
@@ -176,7 +179,7 @@ case "$sub" in
     # The hook-appended event feed is excluded here as well as in the snapshot: pulse.sh
     # appends it on every tool use during a hooked lane run, and a project whose preserved
     # .gitignore does not ignore it would otherwise false-flag every clean lane.
-    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '(^|/)\.plinth/session/events\.jsonl$' || true )"
+    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '^\.plinth/session/events\.jsonl$' || true )"
     # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a
     # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
     # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy

@@ -1425,6 +1425,21 @@ jobs:
           rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT"; } || { echo "::error::hookprobe hang not bounded (rc=$rc): $out"; exit 1; }
 
+          # ── v4.5: floor symlink/mode rejection is TESTED against the REAL harness body ──
+          FHB="$(mktemp)"
+          sed -n '/^          fail=0$/,/^          exit "\$fail"$/p' "$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml" | sed 's/^          //' > "$FHB"
+          { grep -q 'checkx()' "$FHB" && grep -q 'exit "\$fail"' "$FHB"; } || { echo "::error::could not extract the floor harness body"; exit 1; }
+          rm -rf /tmp/plinth; mkdir -p /tmp/plinth; cp -R "$GITHUB_WORKSPACE/shared" /tmp/plinth/
+          FLP="$(mktemp -d)"; ( cd "$FLP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$FLP" >/dev/null 2>&1 )
+          rc=0; ( cd "$FLP" && ver=test bash "$FHB" ) >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::floor harness body failed a CLEAN scaffold (rc=$rc)"; exit 1; }
+          ( cd "$FLP" && rm .plinth/lane-guard.sh && ln -s /tmp/plinth/shared/.plinth/lane-guard.sh .plinth/lane-guard.sh )
+          rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SYMLINK"; } || { echo "::error::floor did not reject a SYMLINKED pinned path (rc=$rc)"; exit 1; }
+          ( cd "$FLP" && rm .plinth/lane-guard.sh && cp /tmp/plinth/shared/.plinth/lane-guard.sh .plinth/lane-guard.sh && chmod 755 .plinth/lane-guard.sh && chmod 644 .plinth/review.sh )
+          rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "not executable"; } || { echo "::error::floor did not reject a NON-EXECUTABLE pinned script (rc=$rc)"; exit 1; }
+
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
           printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > "$NH/NEEDS-HUMAN.md"
