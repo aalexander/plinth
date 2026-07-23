@@ -80,7 +80,7 @@ the exact **files** — you enforce them below.
    a model, add `-m <model>` (e.g. a Sol/high-reasoning tier). Never grant blanket command approval.
 
 3. **Enforce SCOPE.** The delegated codex has workspace-wide write and (probe-verified per CLI —
-`plinth hookprobe`; no hook execution observed) does not run the `.claude/`
+`plinth hookprobe`; no hook execution observed at grok 0.2.93 [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) does not run the `.claude/`
    guard, so confirm its tracked changes + new files are within the spec and touch no protected
    path — and, via the pre-run snapshot, that it did not add/change/repoint any SENSITIVE path
    (secrets like `.env`/`secrets/`/keys, AND `.plinth/session/` verdict/receipt state — a delegated

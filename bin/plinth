@@ -420,7 +420,7 @@ warn_missing_gate_wiring() {
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
     echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
-    echo "(grok 0.2.93 reported no execution — feedless is expected there; a hook-EXECUTING"
+    echo "(grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt] — feedless is expected there; a hook-EXECUTING"
     echo "driver with no feed means broken wiring). For Claude, see CHANGELOG v3.8."
   fi
 }

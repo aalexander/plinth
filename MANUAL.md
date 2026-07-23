@@ -268,6 +268,7 @@ Two operator chores the rules generate:
    guard, PostToolUse = pulse, Stop = review gate), drives the CLI once, and
    reports each event separately — ONLY the events reported EXECUTED are
    enforced for that driver. At release time grok 0.2.93 reported: NONE executed
+   (receipt: docs/receipts/hookprobe-grok-0.2.93.txt)
    (its Claude-compat is instruction/flag-level — CLAUDE.md auto-load,
    `--allowedTools` naming). Vendor compat moves — re-run the probe after CLI
    upgrades; trust the probe, not vendor docs or this sentence. An all-four
@@ -289,7 +290,7 @@ Two operator chores the rules generate:
    model line shows who is actually answering, and red guard-blocks mean the base
    deflected something. Under the default grok driver the hook-fed lines are
    SILENT (its CLI does not execute `.claude/` hooks — per-CLI, probe with `plinth
-   hookprobe`; grok 0.2.93: none) — Pane B still shows review rounds and verdicts
+   hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) — Pane B still shows review rounds and verdicts
    (written by `review.sh`), the NEEDS-HUMAN queue, and branch state. Those are
    local files, and a hookless driver could write them — the dashboard is
    OBSERVABILITY, not a gate; what actually binds any driver is server-side:
@@ -334,7 +335,7 @@ Two operator chores the rules generate:
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
    whose CLI does not execute the Stop hook (per-CLI — `plinth hookprobe`; grok
-   0.2.93 reported no execution) has nothing LOCAL forcing it to review — it is bound
+   0.2.93 reported no execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) has nothing LOCAL forcing it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
    status checks that branch protection enforces. Those required checks verify the
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
@@ -353,7 +354,7 @@ Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
 ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
 NORMAL under a driver whose CLI does not execute `.claude/` hooks (per-CLI —
-`plinth hookprobe`; grok 0.2.93: none; if the probe reports PostToolUse EXECUTED,
+`plinth hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; if the probe reports PostToolUse EXECUTED,
 the same banner means BROKEN wiring instead): the frame reduces to
 branch @ head, review verdict, and the NEEDS-HUMAN queue (observability from
 local files — the binding gate for any driver is branch protection, not this
@@ -500,13 +501,13 @@ it has run green with a real smoke_cmd.
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
-  probeable — `plinth hookprobe <vendor>`; grok 0.2.93 reported no execution). The guard is a
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
   fires only under a Claude driver or a probe-verified hook-executing CLI (per-CLI —
-  `plinth hookprobe`; grok 0.2.93 reported no execution). Under a non-executing
+  `plinth hookprobe`; grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
   server-side verifier until the receipt check ships, and the cloud review is
@@ -517,7 +518,7 @@ it has run green with a real smoke_cmd.
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
   can't trap a session. A driver whose CLI does not execute the Stop hook (per-CLI —
-  `plinth hookprobe`; grok 0.2.93: no execution) has no
+  `plinth hookprobe`; grok 0.2.93: no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) has no
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
   APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,

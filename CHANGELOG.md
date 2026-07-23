@@ -119,15 +119,15 @@
   all four executed; 1 = none or some (only EXECUTED events are enforced); 3 = CLI missing;
   4 = INCONCLUSIVE (timeout, or the CLI never executed the probe's sentinel command — an
   unauthenticated/broken CLI is NOT evidence of hook non-execution and never reads as NONE).
-  A release-time local run against `grok 0.2.93` reported NONE executed — reproduce with
-  `plinth hookprobe grok`; the probe, not this sentence, is the source of truth. Every doc
+  A release-time local run against `grok 0.2.93` reported NONE executed — checked receipt:
+  docs/receipts/hookprobe-grok-0.2.93.txt; reproduce with `plinth hookprobe grok`; the probe, not this sentence, is the source of truth. Every doc
   claim about non-Claude
   hook behavior now cites the probe; the canary verifies the probe's detection five ways
   with stub drivers — all-four, partial (per-event report), none, missing CLI, hang→timeout
   (the vendor behavior itself is only testable against the real CLI, locally).
 - **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a driver whose
   CLI does not execute `.claude/` hooks — probe with `plinth hookprobe`; grok 0.2.93 reported
-  no execution — or pulse.sh unwired) the dashboard no longer bails — it
+  no execution (receipt: docs/receipts/hookprobe-grok-0.2.93.txt) — or pulse.sh unwired) the dashboard no longer bails — it
   renders a reduced frame from the non-hook inputs: branch @ head, the review verdict
   (vendor-neutral `review.sh` state, incl. round and tier), and the NEEDS-HUMAN queue
   (viewport-budgeted like the live frame — `plinth queue` prints every item),
@@ -160,7 +160,7 @@
   driver and reviewer). Documents the contingency for a Fable availability lapse (advisor
   seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
   non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
-  reported none, so no local hooks or Stop gate there; the vendor-neutral
+  reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there; the vendor-neutral
   binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
   is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
   IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude

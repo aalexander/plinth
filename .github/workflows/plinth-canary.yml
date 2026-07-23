@@ -960,7 +960,7 @@ jobs:
           # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
           # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
           # that codex or grok invoke `.claude/` hooks: whether they do is PROBEABLE, not assumed
-          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.93 reported no execution), so a non-Claude
+          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]), so a non-Claude
           # driver whose CLI does not execute hooks has a SERVER-SIDE ship gate, not this hook. Deliberate
           # obfuscation is out of scope (a client hook cannot win that race).
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
@@ -1305,7 +1305,7 @@ jobs:
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 
           # ── v4.5: plinth watch renders FEEDLESS (a driver whose hooks are not executing — e.g. grok,
-          # VERIFIED at 0.2.93 not to execute wired .claude hooks; the vendor-behavior verification is
+          # probed at 0.2.93: no execution — receipt: docs/receipts/hookprobe-grok-0.2.93.txt; the vendor-behavior verification is
           # the MANUAL's local marker-hook probe, not this canary, which has no grok CLI) ──
           FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1

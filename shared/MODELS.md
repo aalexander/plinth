@@ -49,7 +49,7 @@ What a non-Claude driver does and doesn't get: grok reads the driver contract
 (both contract files); whether it EXECUTES `.claude/` hooks is probeable, not
 assumed — run `plinth hookprobe grok` (shipped; one small capped model call that
 reports EACH of the four enforcement hook events separately). At release time
-grok 0.2.93 reported NONE executed: no in-session guard hooks, no Stop gate.
+grok 0.2.93 reported NONE executed [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]: no in-session guard hooks, no Stop gate.
 Re-run after CLI upgrades; only events the probe marks EXECUTED are enforced —
 an all-four result is a strict upgrade and this section becomes the floor. The binding layer is unchanged and vendor-neutral: `review.sh` /
 `risk-classify.sh` are plain shell, verdicts bind to commit SHAs, and branch
@@ -188,7 +188,7 @@ model the ambiguity.
 **Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
 the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
 has whole-tree write and (per the hookprobe result for its CLI — grok 0.2.93: no
-hook execution) typically does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
+hook execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) typically does not run the `.claude/` guard, so each lane enforces `.plinth/lane-
 guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets/keys,
 protected — even gitignored) may have been added/changed/repointed by the lane (else SCOPE VIOLATION,

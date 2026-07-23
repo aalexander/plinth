@@ -64,7 +64,7 @@ workflow (ultracode). Choose whatever fits the task. No need to get orchestratio
 approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 `.claude/` guard hooks and gates; whether a cross-family codex/grok delegate inherits
 them is PER-CLI — probe with `plinth hookprobe <vendor>` and treat hooks as absent
-ONLY when the probe says so (grok 0.2.93 reported no execution; a probe reporting
+ONLY when the probe says so (grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; a probe reporting
 execution means the guard and gates are LIVE for that delegate). For a non-executing
 delegate, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
@@ -86,7 +86,7 @@ for parallel fan-out; when one subtask genuinely wants another family's strength
 cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
 subagents inherit the `.claude/` guard
 hooks and gates automatically; whether a cross-family codex/grok shell-out does is
-PER-CLI (probe with `plinth hookprobe` — grok 0.2.93 reported no execution; only
+PER-CLI (probe with `plinth hookprobe` — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; only
 probe-EXECUTED events are enforced), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
 protection's required checks (floor + checks; the cloud review is advisory PR
@@ -152,7 +152,7 @@ gate has two pressure valves — a recent mechanical review failure, and a per-s
 block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
 driver whose CLI does not execute `.claude/` hooks (probe with `plinth hookprobe
-<vendor>` — grok 0.2.93 reported no execution; re-run after upgrades) has no Stop
+<vendor>` — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; re-run after upgrades) has no Stop
 gate — nothing LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no
