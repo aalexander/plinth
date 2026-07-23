@@ -327,12 +327,15 @@ github_preflight() {
     ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
     # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
     # each needs its own required context; one present floor job does not gate the others.
+    # Component-boundary matching, not loose substrings: "CI / floor / not-sast" or
+    # "prechecks" must NOT satisfy the sast/checks contexts (a misleading sibling name
+    # would read as a healthy gate while the real job is unrequired).
     miss=""
     for fj in secrets sast harness; do
-      printf '%s' "$ctxs" | grep -qi "floor.*$fj" || miss="${miss:+$miss, }floor/$fj"
+      printf '%s' "$ctxs" | grep -qiE "(^|[ /])floor */ *$fj([ /]|\$)" || miss="${miss:+$miss, }floor/$fj"
     done
-    printf '%s' "$ctxs" | grep -qiE 'floor.*(dependencies|osv)' || miss="${miss:+$miss, }floor/dependencies"
-    printf '%s' "$ctxs" | grep -qi 'checks' || miss="${miss:+$miss, }checks"
+    printf '%s' "$ctxs" | grep -qiE "(^|[ /])floor */ *dependencies([ /]|\$)" || miss="${miss:+$miss, }floor/dependencies"
+    printf '%s' "$ctxs" | grep -qiE "(^|[ /])checks([ /]|\$)" || miss="${miss:+$miss, }checks"
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."

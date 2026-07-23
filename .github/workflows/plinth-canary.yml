@@ -1345,6 +1345,8 @@ jobs:
           # ONE floor job present is NOT a gated floor — each of the four is independent:
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / checks / build"]}}' 'MISSING: floor/sast' partial-floor
           pf_probe '{"required_status_checks":{"contexts":["CI / checks / build"]}}' 'MISSING: floor/secrets' no-floor
+          # misleading SIBLING names must not satisfy the contexts (loose-substring regression):
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / not-sast","old floor harness","prechecks"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies, checks' misleading-names
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
