@@ -2214,6 +2214,20 @@ jobs:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
           as="$(date +%s)"; r=0; PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; ae="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging grok auth check (rc=$r elapsed=$(( ae - as ))s) — auth preflight uncapped"; exit 1; }
+          # `_cap` itself, not just the agent caps, must bound via its PYTHON fallback (timeout hidden)
+          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep + hanging grok, plus
+          # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps:
+          CPY="$(mktemp -d)"; for b in bash grep sleep python3; do ln -s "$(command -v "$b")" "$CPY/$b"; done
+          printf '#!/usr/bin/env bash\ncase "$1" in models) trap "" TERM; sleep 90;; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
+          ps="$(date +%s)"; r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; pe="$(date +%s)"
+          { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging auth check (rc=$r elapsed=$(( pe - ps ))s; want 3 and a real ~30s bound, not an instant fail)"; exit 1; }
+          # authed via the python path -> ready (0):
+          printf '#!/usr/bin/env bash\ncase "$1" in models) printf "grok-4.5\\n";; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
+          r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::_cap python path rejected an authenticated grok (rc=$r)"; exit 1; }
+          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3:
+          CNO="$(mktemp -d)"; for b in bash grep; do ln -s "$(command -v "$b")" "$CNO/$b"; done
+          printf '#!/usr/bin/env bash\ncase "$1" in models) echo ok;; esac\n' > "$CNO/grok"; chmod +x "$CNO/grok"
+          r=0; PATH="$CNO" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
           # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), NEVER run UNCAPPED, when
           # neither timeout/gtimeout nor python3 exists. EXECUTE the shipped cap() (not just grep) with a
           # CLEAN PATH that has bash + a sentinel-touching model stub but NO timeout/gtimeout/python3, and
