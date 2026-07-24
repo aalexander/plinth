@@ -662,6 +662,19 @@ installed copies.
   `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
   snapshot metadata accumulate under the system temp dir; add a post-report /
   post-audit cleanup step. (Round 11, minors.)
+- **Review-loop cost controls (2026-07-24 credit exhaustion post-mortem).** The codex
+  account ran dry mid-loop; root causes and proposed product fixes, for the next
+  release: (1) verify-mode rounds re-send the FULL diff + ALL prior findings — chunk
+  or scope them to the fix diffs + open findings (upstream issue #20 corroborates);
+  (2) the clean-slate confirmation re-reviews the whole branch fresh — gate it to
+  Tier 2 and run it at most once per loop; (3) promote the ratified phase/convergence
+  charter from this repo's AGENTS-project.md into the SHARED reviewer contract
+  (`shared/reviewer.md`) so every project gets convergence bounds without per-repo
+  pastes; (4) add a round-count circuit breaker (past N rounds, stop and surface
+  rather than keep billing); (5) driver discipline: free self-review pre-flight
+  (/code-review) before round 1, and batch ALL open-finding fixes into one commit per
+  round. Seat economics: subscription seats (claude/grok) for high-frequency loop
+  roles; metered seats only for rare deep passes.
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

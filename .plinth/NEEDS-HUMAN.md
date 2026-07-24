@@ -6,17 +6,22 @@
   `.plinth/DRIVER-project.md` first — only the final step needs you, with **plinth in the
   commit subject** (the tamper label rule):
   `cd <repo> && rm CLAUDE.md && plinth update . && git add -A && git commit -m "chore: regenerate plinth driver shell (one-time v4.4 migration via plinth update)"`
-- [ ] Add the v4 seat lines to `.plinth/config` (guard-protected, so set-once by you) in
-  **all four repos** — plinth, wren, certeus, anvil all lack them (update preserves
-  existing configs; only fresh init writes them):
-  `audit_vendor = claude`, `audit_model = opus`, `advisor_model = opus`,
-  `advisor_model_max = fable`. Without `audit_vendor`, Tier-2 approvals get NO
-  cross-vendor second opinion in any of the four. (GPT-5.6 tier pins are unnecessary —
-  your codex account already defaults to gpt-5.6-sol.)
-- [ ] Grok-reviewer trial (your 2026-07-24 decision): on the NEXT build-phase branch's
-  repo, add `reviewer_vendor = grok` to its `.plinth/config` before the loop starts, so
-  we can compare rounds/wall-clock against codex. (audit_vendor = claude stays valid —
-  it still differs from the primary.)
+- [ ] Add the seat lines to `.plinth/config` (guard-protected, so set-once by you) in
+  **all four repos** — plinth, wren, certeus, anvil (update preserves existing configs;
+  only fresh init writes them). Per your 2026-07-24 decision the REVIEWER is Sonnet 5:
+  ```
+  reviewer_vendor = claude
+  reviewer_model_tier1 = sonnet
+  reviewer_model_tier2 = sonnet
+  advisor_model = opus
+  advisor_model_max = fable
+  ```
+  Add `audit_vendor = grok`: with codex OUT OF CREDITS (2026-07-24), the unset default
+  (codex) would fail non-fatally and Tier-2 approvals would get no working second
+  opinion; grok is signed in, subscription-billed, and differs from the claude reviewer.
+  (Do NOT use `audit_vendor = claude` — with a claude reviewer that turns the audit OFF.)
+  One-liner per repo, run from each repo root:
+  `printf 'reviewer_vendor = claude\nreviewer_model_tier1 = sonnet\nreviewer_model_tier2 = sonnet\naudit_vendor = grok\nadvisor_model = opus\nadvisor_model_max = fable\n' >> .plinth/config`
 - [ ] Set branch protection to require the exact job-name contexts (GitHub does NOT prefix
   with the workflow name): `floor / secrets`, `floor / sast`,
   `floor / dependencies / osv-scan`, `floor / harness`, and `checks / checks` (or

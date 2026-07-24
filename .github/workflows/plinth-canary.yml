@@ -1219,7 +1219,8 @@ jobs:
             ia=""; im=fail
             case "${6:-}" in *all*) ia=1 ;; esac
             case "${6:-}" in *trunc*) im=trunc ;; esac
-            so=0; TMPDIR="$SPTD" INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_ALL="$ia" INJ_MODE="$im" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
+            ICNT="$(mktemp)"  # created OUTSIDE the private TMPDIR: bash applies earlier env-prefix assignments to later expansions in the same command, so an inline $(mktemp) would land inside SPTD and read as a leak
+            so=0; TMPDIR="$SPTD" INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_ALL="$ia" INJ_MODE="$im" INJ_CNT="$ICNT" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
             [ "$so" -ne 0 ] || { echo "::error::update succeeded despite an injected $1 failure at '$4' — a producer status check is missing, or the shim signature went stale after a refactor (update it with the stage)"; exit 1; }
             cmp -s "$SB/.plinth/protected-paths" "$SB/pp.snap" || { echo "::error::injected $1 failure at '$4' left a mutated policy file"; exit 1; }
             ls "$SB/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::injected $1 failure at '$4' left a stray same-dir temp"; exit 1; } || true
@@ -1266,7 +1267,8 @@ jobs:
           printf '(^|/)my-rule$\n' > "$SW/.plinth/protected-paths"
           cp "$SW/.plinth/protected-paths" "$SW/pp.snap"
           SWTD="$(mktemp -d)"
-          so=0; swout="$(TMPDIR="$SWTD" INJ_TOOL=stat INJ_SIG='%Lp' INJ_SIG2='%a' INJ_PATH='.plinth/protected-paths' INJ_ALL=1 INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SW" 2>&1)" || so=$?
+          WCNT="$(mktemp)"
+          so=0; swout="$(TMPDIR="$SWTD" INJ_TOOL=stat INJ_SIG='%Lp' INJ_SIG2='%a' INJ_PATH='.plinth/protected-paths' INJ_ALL=1 INJ_CNT="$WCNT" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SW" 2>&1)" || so=$?
           [ "$so" -ne 0 ] || { echo "::error::update succeeded with the writer's mode-read stat failing on both fallback forms"; exit 1; }
           printf '%s' "$swout" | grep -q "policy mode read" || { echo "::error::writer mode-read injection aborted somewhere else (out: $(printf '%s' "$swout" | tail -c 200))"; exit 1; }
           cmp -s "$SW/.plinth/protected-paths" "$SW/pp.snap" || { echo "::error::writer mode-read failure mutated the policy"; exit 1; }
@@ -1288,7 +1290,8 @@ jobs:
           TDP="$(mktemp -d)"; TSB="$(mktemp -d)"
           ( cd "$TSB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$TSB" >/dev/null 2>&1 )
           printf '(^|/)my-rule$\n' > "$TSB/.plinth/protected-paths"
-          to=0; TMPDIR="$TDP" INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$TSB" >/dev/null 2>&1 || to=$?
+          TCNT="$(mktemp)"
+          to=0; TMPDIR="$TDP" INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_CNT="$TCNT" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$TSB" >/dev/null 2>&1 || to=$?
           [ "$to" -ne 0 ] || { echo "::error::TMPDIR-cleanliness run unexpectedly succeeded (shim vacuous)"; exit 1; }
           [ -z "$(ls -A "$TDP")" ] || { echo "::error::an aborted update leaked registered system temps: $(ls -A "$TDP" | tr '\n' ' ')"; exit 1; }
           # SIGNAL regression, BOTH signals with EXACT conventional exits (INT=130, TERM=143):
