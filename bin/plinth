@@ -416,16 +416,6 @@ ensure_protected_paths() {
   # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
   # runs UNPIPED with its status checked; ppfail is the one exit path.
   ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
-  # If the file doesn't end in a newline, appending would concatenate the first
-  # managed pattern onto the user's last line, corrupting BOTH. Fix it first —
-  # and a FAILED trailing-byte read must abort, not read as "newline present"
-  # (a silent tail failure here would corrupt the user's last rule on append).
-  local lastc rc
-  if [ -s "$f" ]; then
-    rc=0; lastc="$(tail -c1 "$f")" || rc=$?
-    [ "$rc" -eq 0 ] || ppfail "trailing-byte read of $f, tail rc=$rc"
-    if [ -n "$lastc" ]; then printf '\n' >> "$f" || ppfail "newline termination append"; fi
-  fi
   # The plinth-managed pattern list (canonical (^|/) anchoring), in a temp file
   # so the convention detection and the append loop below read one source of
   # truth.
@@ -482,11 +472,28 @@ PATTERNS
     rc=0; printf '' | grep -E -- "$line" >/dev/null 2>&1 || rc=$?
     [ "$rc" -le 1 ] || ppfail "malformed policy regex in $f: '$line' does not compile (grep rc=$rc)"
   done < "$active_t"
+  # Only AFTER the whole policy validates may the file be touched at all. If it
+  # doesn't end in a newline, appending would concatenate the first managed
+  # pattern onto the user's last line, corrupting BOTH — fix that now (before
+  # the appends below). A FAILED trailing-byte read must abort, not read as
+  # "newline present" (a silent tail failure would corrupt the last rule).
+  local lastc
+  if [ -s "$f" ]; then
+    rc=0; lastc="$(tail -c1 "$f")" || rc=$?
+    [ "$rc" -eq 0 ] || ppfail "trailing-byte read of $f, tail rc=$rc"
+    if [ -n "$lastc" ]; then printf '\n' >> "$f" || ppfail "newline termination append"; fi
+  fi
   # Stage 2: drop lines byte-equal to a managed pattern; stage 3: keep only
   # leading (^|X) anchor groups; stage 4: unique prefixes.
+  # SUPPORTED convention grammar (constrained by design): (^|X) where X is a
+  # plain path prefix — no '(' ')' or '|' (e.g. plinth/). A line whose leading
+  # group nests parens or alternates, like (^|(foo|bar)/)x, is VALID policy
+  # (stage 1b) but contributes no convention and is never anchor-stripped —
+  # the fallback is canonical appends + whole-line dedup, i.e. exactly the
+  # safe pre-convention behavior, never a malformed extracted prefix.
   rc=0; grep -vxF -f "$mpat" "$active_t" > "$strip_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "managed-line exclusion, grep rc=$rc"
-  rc=0; grep -oE '^\(\^\|[^)]*\)' "$strip_t" > "$active_t" || rc=$?
+  rc=0; grep -oE '^\(\^\|[^()|]*\)' "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
   # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
@@ -512,7 +519,7 @@ PATTERNS
   # and trigger a blind append.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "dedup active-line read, grep rc=$rc"
-  sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
+  sed -E -e 's/^\(\^\|[^()|]*\)//' -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
   local sfx
   while IFS= read -r line; do
     [ -n "$line" ] || continue
