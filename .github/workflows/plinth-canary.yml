@@ -232,6 +232,22 @@ jobs:
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPQJ/.github/workflows/ci.yml"
           ( cd "$RPQJ" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPQJ" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a quoted top-level \"jobs\": mapping was not recognized (stale gate missed)"; exit 1; }
+          # awk robustness (h): inline `# comment` on the jobs:/floor: line, a quoted `"uses":` key, and a
+          # deep comment decoy (which must not establish the inferred child indent) must all still find
+          # the real stale gate:
+          for tweak in 'inline-jobs-comment' 'inline-floor-comment' 'quoted-uses' 'comment-indent'; do
+            RPT="$(mktemp -d)"; ( cd "$RPT"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPT" >/dev/null 2>&1 )
+            case "$tweak" in
+              inline-jobs-comment)  sed -i 's|^jobs:|jobs: # workflow jobs|' "$RPT/.github/workflows/ci.yml" ;;
+              inline-floor-comment) sed -i 's|^  floor:|  floor: # the gate|' "$RPT/.github/workflows/ci.yml" ;;
+              quoted-uses)          sed -i 's|^    uses:|    "uses":|' "$RPT/.github/workflows/ci.yml" ;;
+              comment-indent)       python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("jobs:\n","jobs:\n      # deep decoy comment\n",1))' "$RPT/.github/workflows/ci.yml" ;;
+            esac
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPT/.github/workflows/ci.yml" || { echo "::error::[test-setup] awk tweak '$tweak' produced invalid YAML"; exit 1; }
+            sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPT/.github/workflows/ci.yml"
+            ( cd "$RPT" && git add -A && git commit -qm base >/dev/null )
+            printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPT" 2>&1)" | grep -q "pins the reusable" || { echo "::error::awk missed the stale gate under layout '$tweak'"; exit 1; }
+          done
           # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
           # gate must still be discovered (the parser must not assume exactly two-space indentation):
           RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )

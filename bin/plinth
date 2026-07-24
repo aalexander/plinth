@@ -512,15 +512,19 @@ warn_stale_reusable_refs() {
   # and a DIRECT-CHILD `uses:` of that job (ind == the job's first-child indent) — so a same-named
   # MATRIX/nested key (`jobs.setup.strategy.matrix.floor`, `jobs.floor.strategy.matrix.uses`) at a
   # deeper indent does NOT divert discovery. Top-level `jobs:` may itself be quoted.
+  # `:[[:space:]]*(#.*)?$` tolerates an inline `# comment` on the `jobs:`/gating-job line; comment
+  # lines never establish the inferred child indent (excluded from the jobcind/usescind capture);
+  # `uses:` may itself be quoted (`"uses":`). Full YAML flow-style (`jobs: {floor: {…}}`) is out of
+  # scope for this line-based best-effort advisory.
   jobawk='
     { match($0, /^[[:space:]]*/); ind0=RLENGTH }
-    ind0==0 && $0 ~ /^['\''\"]?jobs['\''\"]?[[:space:]]*:[[:space:]]*$/ { injobs=1; next }
-    injobs && !f && ind0==0 && $0 ~ /[^[:space:]]/ { injobs=0 }
-    injobs && !f && jobcind==0 && ind0>0 && $0 ~ /[^[:space:]]/ { jobcind=ind0 }
-    injobs && !f && ind0==jobcind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*$") { f=1; jind=ind0; next }
-    f && usescind==0 && ind0>jind && $0 ~ /[^[:space:]]/ { usescind=ind0 }
-    f && ind0==usescind && $0 ~ /^[[:space:]]*uses[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
-    f && ind0<=jind && $0 ~ /[^[:space:]]/ { exit }'
+    ind0==0 && $0 ~ /^['\''\"]?jobs['\''\"]?[[:space:]]*:[[:space:]]*(#.*)?$/ { injobs=1; next }
+    injobs && !f && ind0==0 && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { injobs=0 }
+    injobs && !f && jobcind==0 && ind0>0 && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { jobcind=ind0 }
+    injobs && !f && ind0==jobcind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*(#.*)?$") { f=1; jind=ind0; next }
+    f && usescind==0 && ind0>jind && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { usescind=ind0 }
+    f && ind0==usescind && $0 ~ /^[[:space:]]*['\''\"]?uses['\''\"]?[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
+    f && ind0<=jind && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { exit }'
   fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
   cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"
   # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
@@ -534,7 +538,7 @@ warn_stale_reusable_refs() {
   # an unconditional terminator (which mis-read `<sha>'old` as current) and lets the repin match the
   # LITERAL stale ref (below) — quote-agnostic AND scoped to that ref value.
   _ref_of() {  # _ref_of <uses-line> <workflow-basename> -> the pinned ref, "" if none
-    local _v; _v="$(printf '%s' "$1" | sed -E 's/^[[:space:]]*uses[[:space:]]*:[[:space:]]*//')"
+    local _v; _v="$(printf '%s' "$1" | sed -E 's/^[[:space:]]*["'\'']?uses["'\'']?[[:space:]]*:[[:space:]]*//')"
     case "$_v" in
       '"'*) _v="${_v#\"}"; _v="${_v%%\"*}" ;;
       "'"*) _v="${_v#\'}"; _v="${_v%%\'*}" ;;
