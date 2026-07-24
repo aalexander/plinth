@@ -187,7 +187,11 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
     _cpf="$(find "${_cpdirs[@]}" \( -type f -o -type l \) 2>/dev/null)" \
       || { echo "lane-guard: control-plane 'find' failed — refusing (fail closed)" >&2; return 5; }
     # strip ONLY stock sample hooks (hooks/<name>.sample), not a legitimate ref that ends .sample:
-    _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$' || true)"
+    # Status-checked (pipefail -> $? is grep's): 0/1 fine (1 = everything was a sample hook), >=2 is
+    # a real error that must NOT silently empty the control-plane baseline (that would drop a hook/ref
+    # from the snapshot and let a control-plane write pass scope). Inputs are already status-checked.
+    _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$')"; local _cprc=$?
+    [ "$_cprc" -le 1 ] || { echo "lane-guard: control-plane sample-hook filter failed (grep rc=$_cprc) — refusing (fail closed)" >&2; return 5; }
   fi
   { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } \
     | sort -u | while IFS="$(printf '\t')" read -r tag f; do
@@ -289,7 +293,10 @@ case "$sub" in
     # git diff/ls-files SKIP a modified tracked file — a lane could set them to sneak an
     # out-of-spec edit past the enumeration above. They are never normal lane state; fail closed.
     lsv="$(git ls-files -v)" || { echo "scope: 'git ls-files -v' failed — refusing (fail closed)" >&2; exit 5; }
-    hidden="$(printf '%s\n' "$lsv" | grep -E '^([a-z]|S)' | sed 's/^..//' || true)"
+    # Status-checked: grep 1 = no hidden bits (the common case), >=2 = a real error that must not
+    # silently empty `hidden` and SKIP the skip-worktree/assume-unchanged refusal below (fail open).
+    hidden="$(printf '%s\n' "$lsv" | grep -E '^([a-z]|S)' | sed 's/^..//')"; hrc=$?
+    [ "$hrc" -le 1 ] || { echo "scope: could not scan for hidden index bits (grep rc=$hrc) — refusing (fail closed)" >&2; exit 5; }
     if [ -n "$hidden" ]; then
       echo "scope: tracked paths carry assume-unchanged/skip-worktree bits (git diff would skip them) — refusing (fail closed):" >&2
       printf '  %s\n' $hidden >&2
@@ -299,7 +306,12 @@ case "$sub" in
     # The hook-appended event feed is excluded here as well as in the snapshot: pulse.sh
     # appends it on every tool use during a hooked lane run, and a project whose preserved
     # .gitignore does not ignore it would otherwise false-flag every clean lane.
-    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '^\.plinth/session/events\.jsonl$' || true )"
+    # Status-checked (this is the PRIMARY scope input): a masked grep/sort error that emptied
+    # `changed` would make the violation loop iterate over nothing and print "scope ok" for an
+    # out-of-spec diff. pipefail -> $? is the rightmost non-zero; 0/1 are fine (1 = the diff was
+    # only the excluded event feed), >=2 fails closed. dif/unt are already status-checked.
+    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '^\.plinth/session/events\.jsonl$' )"; crc=$?
+    [ "$crc" -le 1 ] || { echo "scope: could not compute the changed-path set (rc=$crc) — refusing (fail closed)" >&2; exit 5; }
     # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a
     # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
     # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy
@@ -366,7 +378,11 @@ CHANGED
         # the path — regardless of format (regular `<hash> <mode>`, symlink `symlink <t> <h> <m>`,
         # dangling `symlink <t> - -`, or `special present`). Strip the diff marker, then everything
         # up to and including the LAST two-space run — format-independent path extraction.
-        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] //; s/^.*  //' | sort -u || true)"
+        # Status-checked: a masked error here would empty `touched` and skip the sensitive-path
+        # violations below (fail open). dout is already status-checked (drc<=1); we are inside
+        # before!=after, so grep WILL match diff lines (0). pipefail -> $?; 0/1 fine, >=2 fails closed.
+        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] //; s/^.*  //' | sort -u)"; trc=$?
+        [ "$trc" -le 1 ] || { echo "scope: could not extract the touched sensitive paths (rc=$trc) — refusing (fail closed)" >&2; exit 5; }
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           # SPEC-GATED template lookalikes: a SECRET_SAFE name (.env.example, id_rsa_notes.txt)

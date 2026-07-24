@@ -233,6 +233,14 @@ preflight_reserved_lanes() {
     SPEC.md .gitignore AGENTS.md CLAUDE.md .plinth-version; do
     reject_nonregular_file "$target/$f"
   done
+  # (3) the NEEDS-HUMAN queue MIGRATION targets. update mv's a legacy root NEEDS-HUMAN.md into
+  #     .plinth/NEEDS-HUMAN.md (migrate_needs_human). If the canonical DESTINATION is a directory,
+  #     `mv` nests the queue inside it; if it (or the legacy SOURCE) is a symlink, `mv`/later reads
+  #     follow it and move/expose the queue OUTSIDE the workspace. Reject any non-regular node at
+  #     BOTH before update writes anything (absent is fine — the common case).
+  for f in .plinth/NEEDS-HUMAN.md NEEDS-HUMAN.md; do
+    reject_nonregular_file "$target/$f"
+  done
   # (4) the two RESERVED lane-agent names.
   for a in grok-implementer codex-implementer; do
     dst="$parent/$a.md"
@@ -490,8 +498,11 @@ warn_stale_reusable_refs() {
   # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
   # actually present; a customized checks job is not "stale".
   local fstale=0 cstale=0
-  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]]|\$)" && fstale=1
-  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]]|\$)" && cstale=1
+  # The char after the SHA may be whitespace (before a `# comment`), a closing quote (a QUOTED
+  # `uses: "…@sha"` value), or end-of-line — never another hex digit. Anchor on "not a hex digit
+  # or EOL" so a CURRENT but QUOTED ref is not falsely flagged stale.
+  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([^0-9a-fA-F]|\$)" && fstale=1
+  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([^0-9a-fA-F]|\$)" && cstale=1
   [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
   # Name exactly which REUSABLE ref is stale (a custom/direct job is not stale), and emit a sed
   # that only touches the stale one(s) — never instruct repinning a job that has no reusable ref.
@@ -502,7 +513,12 @@ warn_stale_reusable_refs() {
   echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
   echo "commit, so that gate runs an OLDER Plinth workflow (new floor checks — lane tooling bytes +"
   echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref to this release:"
-  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[^[:space:]]+#\1${psha}#g' \\"
+  # Match the ref token as valid SHA/tag characters only (`[[:alnum:]._-]+`): it stops at the
+  # closing quote of a QUOTED `uses: "…@sha"` value, at whitespace before a `# comment`, and at
+  # end-of-line — so the repin preserves the quote and stays valid YAML. (`[^[:space:]]+` would
+  # swallow a closing quote; a class excluding quotes cannot contain a literal `'` without breaking
+  # the single-quoted sed expression this line emits.)
+  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[[:alnum:]._-]+#\1${psha}#g' \\"
   echo "    \"$target/.github/workflows/ci.yml\" && rm -f \"$target/.github/workflows/ci.yml.bak\""
 }
 
@@ -1136,9 +1152,10 @@ run_hookprobe() {
   printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
     "$p" "$p" "$p" "$p" > "$d/.claude/settings.json" \
     || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
-  ver="$("$vendor" --version 2>/dev/null | head -1 || echo unknown)"
   # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else a python3 process-group
   # cap) — a CLI hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
+  # Defined BEFORE the --version probe: an installed CLI that hangs during version discovery would
+  # otherwise hang hookprobe forever (the cap must cover EVERY external CLI call, --version included).
   local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
   command -v timeout >/dev/null 2>&1 && tmo="timeout"
   [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
@@ -1156,6 +1173,11 @@ except subprocess.TimeoutExpired:
     except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
     sys.exit(124)' "$cap" "$@"; fi
   }
+  # --version is capped too: a broken/unauthenticated CLI that hangs on version discovery must
+  # fail bounded, not hang hookprobe forever. `head` closing the pipe early is fine; the cap
+  # guarantees a bounded wait regardless of the CLI's behavior.
+  ver="$(capped "$vendor" --version 2>/dev/null | head -1 || echo unknown)"
+  [ -n "$ver" ] || ver=unknown
   # The probe command leaves a SENTINEL (cli-ran.txt): hooks only had a chance to fire
   # if the CLI actually executed a tool command. Without the sentinel the result is
   # INCONCLUSIVE (unauthenticated CLI, sandbox refusal, model failure, …), never

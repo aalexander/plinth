@@ -35,13 +35,13 @@ jobs:
   # .plinth/NEEDS-HUMAN.md). Downstream pins a Plinth release the same way (see templates/ci.yml).
   # Require `floor` and `checks` (the pinned jobs), not the `-current` twins.
   floor:
-    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9
+    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@5a39ab334219b389c40885b88076774bfbcf2ebf # v4.4.0
 
   floor-current:
     uses: ./.github/workflows/plinth-floor.yml
 
   checks:
-    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@5a39ab334219b389c40885b88076774bfbcf2ebf # v4.4.0
 
   checks-current:
     uses: ./.github/workflows/plinth-checks.yml

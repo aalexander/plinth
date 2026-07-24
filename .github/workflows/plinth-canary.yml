@@ -116,6 +116,27 @@ jobs:
           RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
           rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
           printf '%s' "$rp2" | grep -q "pins the reusable" && { echo "::error::plinth update FALSE-warned on a current ci.yml"; exit 1; } || true
+          # QUOTED uses: values — a current QUOTED ref must NOT be falsely flagged stale (the char after
+          # the SHA is a quote, not whitespace/EOL), and a stale QUOTED ref's repin sed must keep the
+          # closing quote (a `[^[:space:]]+` SHA match would swallow it and emit invalid YAML):
+          RPDQ="$(mktemp -d)"; ( cd "$RPDQ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPDQ" >/dev/null 2>&1 )
+          # wrap BOTH uses: values in double quotes, keeping the current SHA -> must NOT warn:
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPDQ/.github/workflows/ci.yml"
+          ( cd "$RPDQ" && git add -A && git commit -qm base >/dev/null )
+          rpq="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDQ" 2>&1)"
+          printf '%s' "$rpq" | grep -q "pins the reusable" && { echo "::error::a CURRENT but QUOTED reusable ref was falsely flagged stale"; exit 1; } || true
+          # now make the quoted floor ref STALE -> must warn, and the emitted repin sed must produce valid YAML:
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPDQ/.github/workflows/ci.yml"
+          ( cd "$RPDQ" && git add -A && git commit -qm base >/dev/null )
+          rpq2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDQ" 2>&1)"
+          printf '%s' "$rpq2" | grep -q "pins the reusable" || { echo "::error::a STALE QUOTED reusable floor ref did not warn"; exit 1; }
+          # extract the FULL suggested repin command (it spans two lines: the sed + the target path/rm)
+          # and RUN it; the result must be valid YAML with the closing quote intact:
+          sedcmd="$(printf '%s' "$rpq2" | grep -A1 -F 'sed -i.bak')"
+          printf '%s' "$sedcmd" | grep -qF "$PSHA" || { echo "::error::stale quoted-ref warning carried no repin command with this SHA"; exit 1; }
+          ( cd "$RPDQ" && eval "$sedcmd" )
+          python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$RPDQ/.github/workflows/ci.yml" || { echo "::error::the repin sed on a QUOTED ref produced INVALID YAML (swallowed the closing quote)"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}\"" "$RPDQ/.github/workflows/ci.yml" || { echo "::error::repin did not restore the current SHA with its closing quote on the quoted floor ref"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
@@ -1544,6 +1565,18 @@ jobs:
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"
           rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT"; } || { echo "::error::hookprobe hang not bounded (rc=$rc): $out"; exit 1; }
+          # SETUP/INTERNAL-error injection (Rule 7 for the INCONCLUSIVE contract): a failing scratch
+          # setup step must map to exit 4, never collide with NONE/SOME. Fake vendor passes command -v;
+          # a shadowed failing binary breaks a setup step. (a) mktemp fails -> 4:
+          HPS="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPS/grok"; chmod +x "$HPS/grok"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$HPS/mktemp"; chmod +x "$HPS/mktemp"
+          rc=0; out="$(PATH="$HPS:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe mktemp-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          # (b) the setup SUBSHELL (git init/mkdir/probe-write/chmod) fails -> 4, not NONE:
+          HPS2="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPS2/grok"; chmod +x "$HPS2/grok"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$HPS2/git"; chmod +x "$HPS2/git"
+          rc=0; out="$(PATH="$HPS2:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup-subshell-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
 
           # ── v4.5: floor symlink/mode rejection is TESTED against the REAL harness body ──
           FHB="$(mktemp)"
@@ -1628,6 +1661,27 @@ jobs:
             r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IUL" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/review.sh is an external symlink (rc=$r)"; exit 1; } )
           grep -q EXTERNAL-REVIEW "$EUL" || { echo "::error::update overwrote an EXTERNAL file through a .plinth/review.sh symlink leaf"; exit 1; }; rm -f "$EUL"
+          # NEEDS-HUMAN queue MIGRATION preflight (round-24 sibling): update mv's a legacy root queue
+          # into .plinth/NEEDS-HUMAN.md. A DIRECTORY or SYMLINK at the canonical destination (mv would
+          # nest inside it / follow it out of the workspace) or a non-regular legacy SOURCE must abort:
+          NHD="$(mktemp -d)"; ( cd "$NHD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHD" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; mkdir -p .plinth/NEEDS-HUMAN.md   # a DIRECTORY at the canonical dest
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHD" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/NEEDS-HUMAN.md is a DIRECTORY (mv would nest the queue)"; exit 1; } )
+          NHX="$(mktemp -d)"; NHS="$(mktemp -d)"; ( cd "$NHX"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHX" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; ln -s "$NHS" .plinth/NEEDS-HUMAN.md   # SYMLINK-to-dir at the canonical dest
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHX" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/NEEDS-HUMAN.md is a SYMLINK to an external dir (mv/reads escape the workspace)"; exit 1; } )
+          NHR="$(mktemp -d)"; NHE="$(mktemp)"; printf 'x\n' > "$NHE"; ( cd "$NHR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHR" >/dev/null 2>&1
+            ln -s "$NHE" NEEDS-HUMAN.md   # a SYMLINK legacy SOURCE must not be followed by mv
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHR" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when the legacy root NEEDS-HUMAN.md is a SYMLINK (rc=$r)"; exit 1; } ); rm -f "$NHE"
+          # a LEGITIMATE legacy root queue (a regular file) still migrates cleanly to the canonical path:
+          NHM="$(mktemp -d)"; ( cd "$NHM"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHM" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; printf '%s\n' '- [ ] legacy item' > NEEDS-HUMAN.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHM" >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::update failed to migrate a legitimate legacy root NEEDS-HUMAN.md (rc=$r)"; exit 1; }
+            [ -f .plinth/NEEDS-HUMAN.md ] && grep -q 'legacy item' .plinth/NEEDS-HUMAN.md || { echo "::error::legacy NEEDS-HUMAN.md was not migrated to the canonical .plinth/ path"; exit 1; } )
           # a PROJECT-OWNED .claude/agents/custom.md symlink must NOT block init — the symlink check is per
           # Plinth-owned path only, not a whole-tree sweep (project agents stay usable):
           ILC="$(mktemp -d)"; ECF="$(mktemp)"; echo x > "$ECF"; ( cd "$ILC"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln -sf "$ECF" .claude/agents/custom.md
@@ -1742,21 +1796,29 @@ jobs:
             grep -qF "python3 -c 'import subprocess,sys,signal,os" "$A" || { echo "::error::$(basename "$A") lacks the python3 process-group timeout fallback — cap is unenforced without coreutils"; exit 1; }
             grep -qF 'os.killpg' "$A" || { echo "::error::$(basename "$A") cap does not TERM/KILL the process group — a signal-ignoring CLI could hang"; exit 1; }
           done
-          # behaviorally confirm the python3 fallback KILLS a TERM-IGNORING child (a cooperative cap
-          # would hang forever here). Write the cap to a file to keep this YAML block scalar valid:
-          PYCAPF="$(mktemp)"
-          {
-            echo 'import subprocess,sys,signal,os'
-            echo 'cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)'
-            echo 'try: sys.exit(p.wait(timeout=cap))'
-            echo 'except subprocess.TimeoutExpired:'
-            echo '    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)'
-            echo '    try: p.wait(timeout=3)'
-            echo '    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)'
-            echo '    sys.exit(124)'
-          } > "$PYCAPF"
-          cs="$(date +%s)"; r=0; python3 "$PYCAPF" 1 bash -c 'trap "" TERM; sleep 30' >/dev/null 2>&1 || r=$?; ce="$(date +%s)"
-          { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 12 ]; } || { echo "::error::python3 cap did not TERM->KILL a signal-ignoring runaway (exit=$r elapsed=$(( ce - cs ))s)"; exit 1; }
+          # behaviorally confirm the SHIPPED cap() (EXTRACTED from each agent, not a reconstruction)
+          # bounds a TERM-IGNORING child — a cooperative cap would hang here forever. Test BOTH
+          # production paths against a signal-ignoring child: the coreutils `timeout -k 10` path
+          # (TERM ignored -> KILL escalation -> 137) and the python3 process-group fallback (-> 124).
+          for A in "$GA" "$CA"; do
+            CAPF="$(mktemp)"
+            awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^       \}$/{exit}' "$A" | sed 's/^       //' > "$CAPF"
+            grep -q '^cap() {' "$CAPF" || { echo "::error::could not extract the shipped cap() from $(basename "$A")"; exit 1; }
+            # (1) DEFAULT production path (whatever cap selects — `timeout -k` on CI, python3 on a
+            # coreutils-less box): a TERM-ignoring child must be KILLED and BOUNDED. Accept any nonzero
+            # exit (124 python, 137 timeout->KILL) — the point is it does not hang, not the exact code.
+            cs="$(date +%s)"; r=0
+            bash -c 'source "$1"; cap 1 bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPF" >/dev/null 2>&1 || r=$?
+            ce="$(date +%s)"
+            { [ "$r" != 0 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::$(basename "$A") shipped cap (default path) did not KILL a TERM-ignoring child (exit=$r elapsed=$(( ce-cs ))s)"; exit 1; }
+            # (2) python3 fallback: hide timeout/gtimeout by running with a CLEAN PATH that symlinks
+            # only the needed binaries (NOT timeout) so `command -v timeout` fails -> python3 branch -> 124.
+            CLEAN="$(mktemp -d)"; for b in bash sleep python3; do ln -s "$(command -v "$b")" "$CLEAN/$b"; done
+            cs="$(date +%s)"; r=0
+            PATH="$CLEAN" bash -c 'source "$1"; cap 1 bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPF" >/dev/null 2>&1 || r=$?
+            ce="$(date +%s)"
+            { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::$(basename "$A") shipped cap (python3 fallback) did not TERM->KILL a TERM-ignoring child (exit=$r elapsed=$(( ce-cs ))s; want 124)"; exit 1; }
+          done
           # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
           # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
           # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:
