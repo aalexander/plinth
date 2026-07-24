@@ -11,5 +11,9 @@
   `floor / harness`, and `checks / checks` (or `checks` if you use a direct checks job). The
   preflight matches these; confirm against the first PR's checks list and adjust only if your
   ci.yml renamed the `floor`/`checks` caller jobs.
+- [ ] THIS repo only (plinth-canary.yml): also require the `scaffold` context in branch protection.
+  The regression suite that gates Plinth's own behavior (lane-guard, hookprobe, edit_file, stale-ref,
+  preflight) lives in that job; without it required, those tests are advisory and a regression could
+  merge. (Downstream projects don't have plinth-canary.yml — this item is specific to the Plinth repo.)
 - [ ] Certeus: confirm the Codex cloud CI reviews are now being pulled and their findings addressed
   (they were previously not fetched). Re-run the review loop there if any were missed.

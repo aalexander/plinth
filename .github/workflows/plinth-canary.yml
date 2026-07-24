@@ -145,7 +145,7 @@ jobs:
           sedcmd="$(printf '%s' "$rpq2" | grep -A1 -F 'sed -i.bak')"
           printf '%s' "$sedcmd" | grep -qF "$PSHA" || { echo "::error::stale quoted-ref warning carried no repin command with this SHA"; exit 1; }
           ( cd "$RPDQ" && eval "$sedcmd" )
-          python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$RPDQ/.github/workflows/ci.yml" || { echo "::error::the repin sed on a QUOTED ref produced INVALID YAML (swallowed the closing quote)"; exit 1; }
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPDQ/.github/workflows/ci.yml" || { echo "::error::the repin sed on a QUOTED ref produced INVALID YAML (swallowed the closing quote)"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}\"" "$RPDQ/.github/workflows/ci.yml" || { echo "::error::repin did not restore the current SHA with its closing quote on the quoted floor ref"; exit 1; }
           # SINGLE-quoted refs (current must not warn; stale must warn and repin to valid YAML), on the
           # CHECKS gate (the double-quoted case above covered floor):
@@ -159,7 +159,7 @@ jobs:
           rps2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPS" 2>&1)"
           printf '%s' "$rps2" | grep -q "pins the reusable" || { echo "::error::a STALE single-quoted CHECKS ref did not warn"; exit 1; }
           scmd="$(printf '%s' "$rps2" | grep -A1 -F 'sed -i.bak')"; ( cd "$RPS" && eval "$scmd" )
-          python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$RPS/.github/workflows/ci.yml" || { echo "::error::repin on a SINGLE-quoted ref produced invalid YAML"; exit 1; }
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPS/.github/workflows/ci.yml" || { echo "::error::repin on a SINGLE-quoted ref produced invalid YAML"; exit 1; }
           grep -q "plinth-checks.yml@${PSHA}'" "$RPS/.github/workflows/ci.yml" || { echo "::error::single-quote delimiter not preserved on the checks repin"; exit 1; }
           # a QUOTED JOB KEY ("floor":) with a stale ref must still be discovered and warned:
           RPK="$(mktemp -d)"; ( cd "$RPK"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPK" >/dev/null 2>&1 )
@@ -179,8 +179,20 @@ jobs:
           ( cd "$RSL" && git add -A && git commit -qm base >/dev/null )
           rsl="$("$GITHUB_WORKSPACE/bin/plinth" update "$RSL" 2>&1)"; rcmd="$(printf '%s' "$rsl" | grep -A1 -F 'sed -i.bak')"
           ( eval "$rcmd" ) || { echo "::error::the advertised repin command broke on a space-containing target path (not shell-quoted)"; exit 1; }
-          python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$RSL/.github/workflows/ci.yml" || { echo "::error::slash-ref/space-path repin produced invalid YAML"; exit 1; }
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RSL/.github/workflows/ci.yml" || { echo "::error::slash-ref/space-path repin produced invalid YAML"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}" "$RSL/.github/workflows/ci.yml" && ! grep -q "@${PSHA}/v4" "$RSL/.github/workflows/ci.yml" || { echo "::error::slash ref (release/v4) was not fully replaced — left a /v4 residue"; exit 1; }
+          # PLUS/EXOTIC ref chars are valid git-ref characters, NOT token terminators: <current-sha>+old
+          # is a DIFFERENT ref -> STALE, and a stale `release+v4` must be fully repinned (no +v4 residue):
+          RPP="$(mktemp -d)"; ( cd "$RPP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPP" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}+old|" "$RPP/.github/workflows/ci.yml"
+          ( cd "$RPP" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPP" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>+old (a different, longer ref) was falsely treated as current — boundary must stop only at whitespace/quote/#"; exit 1; }
+          RPV="$(mktemp -d)"; ( cd "$RPV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPV" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release+v4|" "$RPV/.github/workflows/ci.yml"
+          ( cd "$RPV" && git add -A && git commit -qm base >/dev/null )
+          rpv="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPV" 2>&1)"; vcmd="$(printf '%s' "$rpv" | grep -A1 -F 'sed -i.bak')"; ( cd "$RPV" && eval "$vcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPV/.github/workflows/ci.yml" || { echo "::error::plus-ref repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}" "$RPV/.github/workflows/ci.yml" && ! grep -q "release+v4\|@${PSHA}+v4" "$RPV/.github/workflows/ci.yml" || { echo "::error::a stale release+v4 ref was not fully replaced — left a +v4 residue (repin class too narrow)"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
@@ -1621,6 +1633,14 @@ jobs:
           printf '#!/usr/bin/env bash\nexit 1\n' > "$HPS2/git"; chmod +x "$HPS2/git"
           rc=0; out="$(PATH="$HPS2:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
           { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup-subshell-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          # sibling setup failures inside the guarded subshell — mkdir and chmod — must also be
+          # INCONCLUSIVE(4), not NONE. Shadow each to fail (fake vendor passes command -v):
+          for bad in mkdir chmod; do
+            HSB="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HSB/grok"; chmod +x "$HSB/grok"
+            printf '#!/usr/bin/env bash\nexit 1\n' > "$HSB/$bad"; chmod +x "$HSB/$bad"
+            rc=0; out="$(PATH="$HSB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup $bad-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          done
           # --version HANG must be BOUNDED (the version probe is now capped): a CLI that hangs on
           # version discovery must not hang hookprobe. The version stub sleeps 60s; with a 3s cap the
           # whole probe (version capped -> ver=unknown, then a fast all-events probe) completes in a
@@ -1635,6 +1655,13 @@ jobs:
           chmod +x "$HPB/grok"
           vs="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; ve="$(date +%s)"
           { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( ve - vs ))" -lt 30 ]; } || { echo "::error::hookprobe did not BOUND a CLI that hangs on --version (rc=$rc elapsed=$(( ve - vs ))s; the capped --version path is unverified)"; exit 1; }
+          # a cap of 0 DISABLES GNU `timeout` entirely (and a non-numeric value is meaningless); both
+          # must be rejected as INCONCLUSIVE(4), never run uncapped (a silent hard-cap bypass):
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          for badcap in 0 abc -1; do
+            rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT="$badcap" PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            [ "$rc" = 4 ] || { echo "::error::hookprobe ran with an invalid cap '$badcap' (rc=$rc, want 4 — 0 disables the timeout)"; exit 1; }
+          done
           # SAFETY-CRITICAL: a scratch dir under a TMPDIR CONTAINING A SPACE must not break the hook
           # command (unquoted path would split, the hook would never fire, and hookprobe would FALSELY
           # report NONE — contradicting "NONE = unenforced"). Build settings with json/shlex; expect ALL FOUR.
@@ -1646,9 +1673,11 @@ jobs:
           echo done
           HPSP
           chmod +x "$HPB/grok"
-          SPT="$(mktemp -d)/dir with space"; mkdir -p "$SPT"
-          rc=0; out="$(TMPDIR="$SPT" PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
-          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe under a SPACE-containing TMPDIR mis-fired the hooks and read them as NONE (rc=$rc): $out"; exit 1; }
+          for meta in 'dir with space' 'ta`x`tick' 'd$(x)ollar'; do
+            SPT="$(mktemp -d)/$meta"; mkdir -p "$SPT"
+            rc=0; out="$(TMPDIR="$SPT" PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe under a METACHARACTER TMPDIR ('$meta') mis-fired the hooks / read them as NONE (rc=$rc) — probe.sh or settings.json path is not quoted: $out"; exit 1; }
+          done
           # settings.json BUILD failure (python3 encoder unavailable/erroring) -> INCONCLUSIVE(4), not NONE:
           SPB="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$SPB/grok"; chmod +x "$SPB/grok"
           printf '#!/usr/bin/env bash\nexit 1\n' > "$SPB/python3"; chmod +x "$SPB/python3"

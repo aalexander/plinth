@@ -505,12 +505,13 @@ warn_stale_reusable_refs() {
   # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
   # actually present; a customized checks job is not "stale".
   local fstale=0 cstale=0
-  # EXACT-TOKEN boundary: the char after the current SHA must TERMINATE the ref token — whitespace
-  # (before a `# comment`), a quote (a QUOTED value), or EOL — never another ref-token char
-  # (`[[:alnum:]._/-]`). Anchoring on "not a ref char" so `<current-sha>-old` (a DIFFERENT, longer
-  # ref) is correctly seen as STALE, and a quoted current ref is NOT falsely flagged.
-  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([^[:alnum:]._/-]|\$)" && fstale=1
-  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([^[:alnum:]._/-]|\$)" && cstale=1
+  # EXACT-TOKEN boundary: the char after the current SHA must be a genuine ref-token TERMINATOR in
+  # YAML — whitespace (before a `# comment`), a quote (a QUOTED value), `#`, or EOL. Everything else
+  # (alnum, `.`, `_`, `/`, `-`, `+`, `=`, `,`, …) is a valid git-ref character that CONTINUES the
+  # token, so `<current-sha>+old` / `<sha>-old` (DIFFERENT, longer refs) are correctly seen as STALE,
+  # and a quoted current ref is NOT falsely flagged. Match the terminator set positively.
+  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([[:space:]\"'#]|\$)" && fstale=1
+  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([[:space:]\"'#]|\$)" && cstale=1
   [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
   # Name exactly which REUSABLE ref is stale (a custom/direct job is not stale), and emit a sed
   # that only touches the stale one(s) — never instruct repinning a job that has no reusable ref.
@@ -520,19 +521,19 @@ warn_stale_reusable_refs() {
   else which="reusable checks ref (floor is a custom/direct gate or already current)"; sedpat='plinth-checks'; fi
   echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
   echo "commit, so that gate runs an OLDER Plinth workflow (new floor checks — lane tooling bytes +"
-  echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref to this release:"
-  # Match the ref token as the full set of valid git-ref characters (`[[:alnum:]._/-]+` — includes
-  # `/` for refs like `release/v4`): it stops at the closing quote of a QUOTED `uses: "…@sha"` value,
-  # at whitespace before a `# comment`, and at end-of-line — so the repin preserves the quote/comment
-  # and stays valid YAML. (`[^[:space:]]+` would swallow a closing quote; a class EXCLUDING quotes
-  # cannot contain a literal `'` without breaking the single-quoted sed expression this line emits.)
-  # Shell-quote the paths with `printf %q` so a target path containing a space, quote, backtick, or
-  # $() is a safe single shell token in the advertised command (not broken or injectable).
-  local qci qbak
+  echo "executable mode — only run once the FLOOR ref is current). Repin every ${which} to this release"
+  echo "(it rewrites all matching plinth-floor/checks @refs in the file — they should all be current):"
+  # Match the FULL ref token: any run of chars that are NOT a YAML terminator (`[^[:space:]"'#]+`), so
+  # every valid git-ref char (incl. `/`, `+`, `=`, `,`) is replaced while the closing quote / comment /
+  # EOL is preserved. Because that class must contain a `"` AND a `'`, the emitted sed is DOUBLE-quoted
+  # (a single-quoted expression cannot hold a literal `'`); build it via printf with the class passed
+  # as an argument so no shell-escaping of the class is needed here. Shell-quote the paths with %q so
+  # a target path with a space, quote, backtick, or $() is a safe single token (not broken/injectable).
+  local qci qbak cc
   qci="$(printf '%q' "$target/.github/workflows/ci.yml")"
   qbak="$(printf '%q' "$target/.github/workflows/ci.yml.bak")"
-  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[[:alnum:]._/-]+#\1${psha}#g' \\"
-  echo "    $qci && rm -f $qbak"
+  cc='[^[:space:]\"'\''#]'   # -> [^[:space:]\"'#]  (the \" keeps the class valid inside a "…"-quoted sed)
+  printf '  sed -i.bak -E "s#(%s\\.yml@)%s+#\\1%s#g" %s && rm -f %s\n' "$sedpat" "$cc" "$psha" "$qci" "$qbak"
 }
 
 # PER-PROJECT (templates, copied once, never overwritten):
@@ -1156,9 +1157,15 @@ run_hookprobe() {
   # Guard the whole setup subshell: under set -e a failed git-init/mkdir/probe-write/chmod would
   # exit 1 and COLLIDE with the NONE/SOME result code. A setup failure is not evidence about which
   # events fired — it must surface as INCONCLUSIVE (exit 4), never as "executed NONE".
+  # SHELL-QUOTE $marker/$d before embedding them in the generated probe.sh: a TMPDIR containing a
+  # quote, backtick, or $() would otherwise corrupt the script or execute command substitution when
+  # the hook runs — and a corrupted probe.sh means the marker never gets written, so hookprobe would
+  # FALSELY report NONE. printf %q makes each path a safe single shell token in the emitted source.
+  local qmarker qd
+  qmarker="$(printf '%q' "$marker")"; qd="$(printf '%q' "$d")"
   ( cd "$d" && git init -qb main . >/dev/null 2>&1 \
     && mkdir -p .claude/hooks \
-    && printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ -t 0 ] || head -c 4096 > "%s/payload-$1" 2>/dev/null\nexit 0\n' "$marker" "$d" > .claude/hooks/probe.sh \
+    && printf '#!/usr/bin/env bash\necho "$1" >> %s\n[ -t 0 ] || head -c 4096 > %s/payload-"$1" 2>/dev/null\nexit 0\n' "$qmarker" "$qd" > .claude/hooks/probe.sh \
     && chmod +x .claude/hooks/probe.sh ) \
     || { echo "hookprobe: could not build the scratch .claude probe harness — INCONCLUSIVE (setup failed)"; exit 4; }
   p="$d/.claude/hooks/probe.sh"
@@ -1188,6 +1195,11 @@ PY
   # Defined BEFORE the --version probe: an installed CLI that hangs during version discovery would
   # otherwise hang hookprobe forever (the cap must cover EVERY external CLI call, --version included).
   local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
+  # Validate the cap: it MUST be a positive integer. GNU `timeout 0` (and the python fallback with
+  # a 0/negative/non-numeric value) DISABLES the timeout entirely — a silent hard-cap bypass. Reject
+  # rather than run uncapped: a bad env value is a setup error, not a licence to hang.
+  case "$cap" in ''|*[!0-9]*) echo "hookprobe: PLINTH_HOOKPROBE_TIMEOUT='$cap' is not a positive integer — INCONCLUSIVE (refusing to run uncapped)"; exit 4 ;; esac
+  [ "$cap" -ge 1 ] || { echo "hookprobe: PLINTH_HOOKPROBE_TIMEOUT='$cap' must be >= 1s (0 disables the cap) — INCONCLUSIVE (refusing to run uncapped)"; exit 4; }
   command -v timeout >/dev/null 2>&1 && tmo="timeout"
   [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
   # HARD cap: timeout -k 10 escalates TERM->KILL after 10s; the python3 fallback (no coreutils)
