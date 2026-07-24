@@ -2465,6 +2465,17 @@ jobs:
           ( cd "$SGW" && echo c >> app.py && git status >/dev/null 2>&1 )
           r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS2" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 0 ] || { echo "::error::separate-git-dir clean run false-flagged (rc=$r)"; exit 1; }
+          # CONTROL-PLANE DIRECTORY metadata (round-35): a `chmod` on `.git/hooks` itself changes no
+          # FILE record, but the snapshot records each control-plane dir's own mode — so it is caught:
+          CPD="$(mktemp -d)"; ( cd "$CPD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SNCP="$(mktemp)"; bash "$LG" snapshot > "$SNCP"
+            grep -q '^cpdir ' "$SNCP" || { echo "::error::snapshot records no control-plane dir modes (cpdir)"; exit 1; }
+            chmod 777 .git/hooks; echo b >> app.py
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNCP" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'hooks'; } || { echo "::error::scope missed a chmod on the .git/hooks control-plane DIRECTORY (rc=$r) — dir-mode not recorded"; exit 1; }
+            git checkout -q app.py; chmod 755 .git/hooks
+            r=0; ( bash "$LG" snapshot > /dev/null ) 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::snapshot with cpdir modes false-failed a clean tree (rc=$r)"; exit 1; } )
           # CLASS CLOSURE: a gitdir PATH CONTAINING A SPACE must not word-split the control-plane
           # enumeration (round-23 regression: `find $_cpdirs` unquoted would enumerate the wrong dirs
           # and silently OMIT the hook, letting a control-plane write escape). Array + quoted expansion.
