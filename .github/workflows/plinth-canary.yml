@@ -2459,6 +2459,21 @@ jobs:
           FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"; echo clean >> app.py
             r=0; bash "$LG" scope HEAD --snapshot "$SN" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 0 ] || { echo "::error::a clean in-spec-only change was flagged (rc=$r) — the index probes above would be hollow"; exit 1; } )
+          # STAGED-ONLY SENSITIVE evasion (round-38): an IN-SPEC built-in-sensitive path (cert.pem) whose
+          # INDEX is modified but WORKTREE is restored to base — the before/after snapshot hashes the
+          # worktree (before==after) so it must be caught by the STAGED-diff sensitive check, not the
+          # snapshot. Uses an IN-SPEC file so the pathname/spec check is not the cause:
+          FS="$(mktemp -d)"; ( cd "$FS"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; printf 'BASE\n' > cert.pem; git add -A; git commit -qm base >/dev/null
+            SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            printf 'STAGED-SECRET\n' > cert.pem; git add cert.pem; printf 'BASE\n' > cert.pem   # stage, then restore worktree
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py cert.pem 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'cert.pem'; } || { echo "::error::scope missed a STAGED-ONLY sensitive change on an in-spec path (rc=$r) — index-sensitive state not checked"; exit 1; }
+            # NON-HOLLOW: an in-spec .env.example (SECRET_SAFE) staged is spec-gated and still PASSES:
+            git checkout -q cert.pem; git reset -q; printf 'v\n' > .env.example; git add .env.example; git commit -qm add-example >/dev/null
+            SN2="$(mktemp)"; bash "$LG" snapshot > "$SN2"; printf 'v2\n' > .env.example; git add .env.example; printf 'v\n' > .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SN2" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an in-spec staged SECRET_SAFE .env.example was flagged (rc=$r) — carve-out lost on the staged path"; exit 1; } )
           # ── v4.5: control-plane snapshot works in a LINKED WORKTREE (.git is a FILE) ──
           WTM="$(mktemp -d)"; ( cd "$WTM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             echo a > app.py; git add -A; git commit -qm base >/dev/null )

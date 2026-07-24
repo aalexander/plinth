@@ -478,6 +478,22 @@ TOUCHED
     else
       echo "scope: NOTE — no --snapshot given; gitignored sensitive paths (secrets, .plinth/session/) were not verified" >&2
     fi
+    # STAGED sensitive changes: the before/after snapshot hashes the WORKING TREE, so a sensitive file
+    # whose INDEX was modified/deleted but whose worktree was restored to base (index != base, worktree
+    # == base) leaves before == after and evades the comparison — yet the staged change is ready to
+    # commit. `difc` is the staged diff vs base; flag any staged change to a sensitive path directly
+    # (same SECRET_SAFE spec-gated carve-out as the snapshot comparison; runs with or without --snapshot).
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      sens_match "$f" || continue
+      if sens_grep "$SECRET_SAFE" "$f" && ! sens_grep "$SECRET_DIRS" "$f" && ! protected "$f" && in_spec "$f" "$@"; then
+        continue
+      fi
+      viol="${viol}  ${f} — SENSITIVE path with a STAGED change (index differs from base; ready to commit)
+"
+    done <<STAGEDSENS
+$difc
+STAGEDSENS
     # Non-blocking HERMETICITY note (report, don't reject). Ignored build artifacts (node_modules/,
     # dist/, …) are legitimate lane output and are NOT rejected — but the lane's verification ran
     # against them, so that Rule-10 evidence may not reproduce in a clean env. Surface the top-level
