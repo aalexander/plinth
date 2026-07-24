@@ -311,6 +311,18 @@ jobs:
           ( cd "$RPSC" && git add -A && git commit -qm base >/dev/null )
           scout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPSC" 2>&1)"; sccmd="$(printf '%s' "$scout" | grep -F 'sed -i.bak')"; ( cd "$RPSC" && eval "$sccmd" )
           grep -q "plinth-floor.yml@differentref00000000000000000000000000000000" "$RPSC/.github/workflows/ci.yml" || { echo "::error::the repin rewrote an UNRELATED job pinning a DIFFERENT ref (not scoped to the stale ref value)"; exit 1; }
+          # SECURITY: a stale ref containing shell metacharacters (backtick / $()) must produce an INERT
+          # advertised command — running it must NOT execute the metacharacters (the emitted sed is
+          # single-quoted). git+YAML accept `release`+backtick+`x`+backtick as a plain scalar:
+          RPMR="$(mktemp -d)"; ( cd "$RPMR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPMR" >/dev/null 2>&1 )
+          sed -i 's|plinth-floor.yml@'"${PSHA}"'|plinth-floor.yml@rel`touch INJECTED`x|' "$RPMR/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPMR/.github/workflows/ci.yml" || { echo "::error::[test-setup] backtick-ref fixture invalid YAML"; exit 1; }
+          ( cd "$RPMR" && git add -A && git commit -qm base >/dev/null )
+          mrout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPMR" 2>&1)"; mrcmd="$(printf '%s' "$mrout" | grep -F 'sed -i.bak')"
+          rm -f "$RPMR/INJECTED" INJECTED
+          ( cd "$RPMR" && eval "$mrcmd" ) >/dev/null 2>&1 || true
+          { [ ! -e "$RPMR/INJECTED" ] && [ ! -e INJECTED ]; } || { echo "::error::the advertised repin command EXECUTED a backtick from a stale REF value — shell-injectable (single-quote the emitted sed)"; exit 1; }
+          rm -f "$RPMR/INJECTED" INJECTED
           # `#` is NOT an unconditional terminator: a YAML comment needs whitespace before `#`, so
           # <sha>#old (no space) is a single scalar = a DIFFERENT ref -> STALE, and a stale quoted
           # `release#v4` must repin fully. A trailing ` # comment` (space before #) is still preserved.

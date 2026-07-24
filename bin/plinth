@@ -561,14 +561,21 @@ warn_stale_reusable_refs() {
   # is escaped for a `#`-delimited sed regex and for the DOUBLE-quoted emitted expression (so an
   # embedded `'` does not break it); paths are %q shell-quoted.
   # BRE (no -E): the old ref is a LITERAL string, so `+ ( ) { } ? |` must stay literal — only the BRE
-  # specials `\ . * [ ] ^ $` (plus the `#` delimiter and replacement `&`) are escaped, and `"` for the
-  # double-quoted emitted expression.
-  _re_esc() { printf '%s' "$1" | sed -e 's/[][\.*^$/#&]/\\&/g' -e 's/"/\\"/g'; }
+  # specials `\ . * [ ] ^ $` (plus the `#` delimiter and replacement `&`) are escaped. The emitted sed
+  # expression is SINGLE-quoted so a ref containing shell metacharacters (backtick, `$`, `"`) is INERT
+  # — no command substitution/injection when a human runs the advertised command. A `'` inside the ref
+  # is embedded via the `'\''` idiom (close-quote, escaped-quote, reopen).
+  _re_esc() {
+    local _e _sq=\'\\\'\'   # _sq is the 4-char sequence  '  \  '  '  (the single-quote-in-single-quote idiom)
+    _e="$(printf '%s' "$1" | sed 's/[][\.*^$/#&]/\\&/g')"
+    _e="${_e//\'/$_sq}"     # ' -> '\''  so it can sit inside the single-quoted sed expression
+    printf '%s' "$_e"
+  }
   local qci qbak sedx=""
   qci="$(printf '%q' "$target/.github/workflows/ci.yml")"
   qbak="$(printf '%q' "$target/.github/workflows/ci.yml.bak")"
-  [ "$fstale" = 1 ] && sedx="${sedx} -e \"s#plinth-floor\\.yml@$(_re_esc "$fref_r")#plinth-floor.yml@${psha}#g\""
-  [ "$cstale" = 1 ] && sedx="${sedx} -e \"s#plinth-checks\\.yml@$(_re_esc "$cref_r")#plinth-checks.yml@${psha}#g\""
+  [ "$fstale" = 1 ] && sedx="${sedx} -e 's#plinth-floor\\.yml@$(_re_esc "$fref_r")#plinth-floor.yml@${psha}#g'"
+  [ "$cstale" = 1 ] && sedx="${sedx} -e 's#plinth-checks\\.yml@$(_re_esc "$cref_r")#plinth-checks.yml@${psha}#g'"
   echo "  sed -i.bak${sedx} ${qci} && rm -f ${qbak}"
 }
 
