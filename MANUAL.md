@@ -675,6 +675,14 @@ installed copies.
   (/code-review) before round 1, and batch ALL open-finding fixes into one commit per
   round. Seat economics: subscription seats (claude/grok) for high-frequency loop
   roles; metered seats only for rare deep passes.
+- **On-the-fly reviewer seat switching (maintainer requirement, 2026-07-24).** The
+  ratified-base config read means a seat change only governs after it lands on main —
+  correct against driver self-serve, but too slow when a vendor's credits run out
+  mid-loop. Proposed: review.sh honors operator ENV overrides
+  (PLINTH_REVIEWER_VENDOR / PLINTH_REVIEWER_MODEL / PLINTH_AUDIT_VENDOR) that take
+  precedence over the base config for THAT run, recorded LOUDLY in verdict.json, the
+  session event feed, and the PR audit summary — auditability over prevention, per the
+  trusted-operator model. Base-ref config stays the governing default.
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
