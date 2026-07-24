@@ -656,7 +656,13 @@ PATTERNS
     # the final size read: a wc failure must abort, not be compared as text.
     osz="$(wc -c < "$f")" || ppfail "policy size read"
     psz="$(printf '%s' "$payload" | wc -c)" || ppfail "payload size"
-    fmode="$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" || ppfail "policy mode read"
+    # GNU (-c) FIRST; BSD stat rejects -c and falls through to -f. Reverse
+    # order is WRONG (the same trap the hardlink check documents): GNU
+    # `stat -f %Lp f` treats %Lp as a file operand, can emit filesystem data
+    # for f with a nonzero status, and the || then APPENDS the fallback —
+    # yielding a non-octal fmode that would abort every Linux backfill.
+    fmode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)" || ppfail "policy mode read"
+    case "$fmode" in ''|*[!0-7]*) ppfail "policy mode read (non-octal '$fmode')" ;; esac
     cat "$f" > "$tmpf" || ppfail "temp compose copy"
     printf '%s' "$payload" >> "$tmpf" || ppfail "pattern append (temp)"
     nsz="$(wc -c < "$tmpf")" || ppfail "composed size read"
