@@ -336,28 +336,38 @@ Two operator chores the rules generate:
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
      (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
-     reviewer rules in `.plinth/reviewer.md`. A resumed approval binds
-     directly — the warm reviewer thread still holds its first-pass full read, and
-     iterative convergence speed is worth more than a second full read for ordinary
-     code. A fallback verify (a fresh session, used when the prior thread is too
-     large to resume) reads the prior findings plus the FULL diff — thorough, but
-     anchored on those findings, so it does NOT bind on its own; like Tier 2 it gets
-     a clean-slate confirmation first.
+     reviewer rules in `.plinth/reviewer.md`. Approvals bind directly in every
+     mode: a resumed approval carries its warm first-pass full read, and a
+     SCOPED verify (a fresh session used when the prior thread is too large,
+     dead, or from a different vendor) reads the open findings plus the
+     CUMULATIVE fix diff since the last full read — which, together with that
+     anchored full pass, covers the whole branch (the full diff is sent only
+     when no valid anchor exists, e.g. after a rebase).
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
-     public API, dependencies, weakened tests): full review, approval binds only
-     through a clean-slate full pass (a warm reviewer can't approve its own
-     checklist). When a cross-vendor auditor is configured (`audit_vendor` — new
-     projects default to `claude`, the v4 audit seat; on an upgraded project you add
-     the line yourself, and `plinth update` reminds you if it is unset), every Tier-2 approval also
-     gets a best-effort second opinion from that different vendor; its failure is
+     public API, dependencies, weakened tests): full review; a non-fresh
+     approval binds only after a clean-slate full pass (a warm reviewer can't
+     approve its own checklist) — run at most ONCE per loop: the unanchored
+     read is recorded, and later non-fresh approvals in the same loop bind with
+     the skip noted in `verdict.json`. When a cross-vendor auditor is
+     configured (`audit_vendor` — new projects default to `claude`, the v4
+     audit seat; on an upgraded project you add the line yourself, and `plinth
+     update` reminds you if it is unset), every Tier-2 approval also gets a
+     best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
-   same reviewer session with just the incremental diff, or — if that session is too
-   large or dead — a verify round that reads prior findings plus the FULL diff
-   (anchored on those findings) and does NOT bind on its own, so an approval still
-   gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
+   same reviewer session with just the incremental diff, or — if that session is
+   too large, dead, or from a different vendor — a SCOPED verify round that reads
+   the open findings plus the cumulative fix diff since the last full read; Tier-1
+   verify approvals bind directly, Tier-2 ones after the once-per-loop clean-slate
+   pass), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
+   knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
+   surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
+   `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
+   `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
+   credits run out mid-loop); every override is announced and recorded in
+   `verdict.json`, and a vendor swap never resumes the previous vendor's thread.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver

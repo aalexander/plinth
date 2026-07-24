@@ -920,6 +920,48 @@ jobs:
             # no new branch/commit needed.
             rc=0; PLINTH_REVIEWER_VENDOR=bogus PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 2 ] || { echo "::error::an invalid vendor override must die_infra (rc=$rc)"; exit 1; } )
+          # (4b) vendor-swap model drop: base pins a per-vendor tier model; a CROSS-vendor
+          # override WITHOUT a model override must NOT pass that model to the new CLI.
+          ovd2="$(mktemp -d)"
+          ( cd "$ovd2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd2" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_model_tier1 = basemodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; PLINTH_REVIEWER_VENDOR=claude PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::cross-vendor no-model override run failed (rc=$rc)"; exit 1; }
+            grep -qx -- '--model' /tmp/ov-claude-args && { echo "::error::base per-vendor tier model was passed to a DIFFERENT vendor's CLI (drop-on-swap regressed)"; exit 1; } || true )
+          # (4c) same-vendor override keeps the ratified tier model.
+          ovd3="$(mktemp -d)"
+          ( cd "$ovd3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd3" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = claude\nreviewer_model_tier1 = basemodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; PLINTH_REVIEWER_VENDOR=claude PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::same-vendor override run failed (rc=$rc)"; exit 1; }
+            awk '/^--model$/{getline nx; if(nx=="basemodel") ok=1} END{exit ok?0:1}' /tmp/ov-claude-args || { echo "::error::same-vendor override dropped the ratified tier model (should keep basemodel)"; exit 1; } )
+          # (4d) audit-seat override: Tier-2 approval with PLINTH_AUDIT_VENDOR swapping the
+          # base claude/opus audit to grok WITHOUT a model — the grok auditor must run with
+          # NO -m flag (per-vendor model dropped), and both the acting audit vendor and the
+          # override must be recorded in verdict.json.
+          cat > "$OV/grok" <<'GK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/ov-grok-args
+          printf '%s' '{"sessionId":"ga","text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x "$OV/grok"
+          ovd4="$(mktemp -d)"
+          ( cd "$ovd4"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd4" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            rc=0; PLINTH_AUDIT_VENDOR=grok PATH="$OV:$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::audit-override run failed (rc=$rc)"; exit 1; }
+            [ "$(jq -r '.audit.vendor // empty' "$vj")" = grok ] || { echo "::error::overridden audit vendor not the acting auditor (got $(jq -r '.audit.vendor' "$vj"))"; exit 1; }
+            [ "$(jq -r '.overrides.audit_vendor // empty' "$vj")" = grok ] || { echo "::error::audit_vendor override not recorded in verdict.json"; exit 1; }
+            grep -qx -- '-m' /tmp/ov-grok-args && { echo "::error::base audit_model (opus, a claude name) was passed to the grok auditor (audit drop-on-swap regressed)"; exit 1; } || true )
           # (5) FALLBACK verify: with no valid fix-diff anchor (lastfullread gone —
           # rebase/legacy state), the verify round must send the FULL diff and say so.
           FB="$(mktemp -d)"; mkstate "$FB"; mk_cap_codex "$FB"

@@ -181,7 +181,10 @@ REVIEWER_VENDOR="$(bcfg reviewer_vendor)"; [ -n "$REVIEWER_VENDOR" ] || REVIEWER
 # pre-check here would wrongly reject).
 BASE_REVIEWER_VENDOR="$REVIEWER_VENDOR"
 BASE_AUDIT_VENDOR="$AUDIT_VENDOR"
-OVERRIDES="$(jq -cn --arg rv "${PLINTH_REVIEWER_VENDOR:-}" --arg rm "${PLINTH_REVIEWER_MODEL:-}"                     --arg av "${PLINTH_AUDIT_VENDOR:-}" --arg am "${PLINTH_AUDIT_MODEL:-}"   '{reviewer_vendor:$rv, reviewer_model:$rm, audit_vendor:$av, audit_model:$am} | with_entries(select(.value != ""))')"
+OVERRIDES="$(jq -cn --arg rv "${PLINTH_REVIEWER_VENDOR:-}" --arg rm "${PLINTH_REVIEWER_MODEL:-}" \
+                    --arg av "${PLINTH_AUDIT_VENDOR:-}" --arg am "${PLINTH_AUDIT_MODEL:-}" \
+                    --arg rc "${PLINTH_ROUND_CAP:-}" \
+  '{reviewer_vendor:$rv, reviewer_model:$rm, audit_vendor:$av, audit_model:$am, round_cap:$rc} | with_entries(select(.value != ""))')"
 if [ -n "${PLINTH_REVIEWER_VENDOR:-}" ]; then
   REVIEWER_VENDOR="$PLINTH_REVIEWER_VENDOR"
   echo "Plinth review: OVERRIDE — reviewer_vendor='${REVIEWER_VENDOR}' from PLINTH_REVIEWER_VENDOR (base config bypassed for this run; recorded in verdict.json)."
