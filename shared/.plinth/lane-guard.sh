@@ -335,10 +335,14 @@ case "$sub" in
     # .gitignore does not ignore it would otherwise false-flag every clean lane.
     # Status-checked (this is the PRIMARY scope input): a masked grep/sort error that emptied
     # `changed` would make the violation loop iterate over nothing and print "scope ok" for an
-    # out-of-spec diff. pipefail -> $? is the rightmost non-zero; 0/1 are fine (1 = the diff was
-    # only the excluded event feed), >=2 fails closed. dif/unt are already status-checked.
-    changed="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u | grep -vE '^\.plinth/session/events\.jsonl$' )"; crc=$?
-    [ "$crc" -le 1 ] || { echo "scope: could not compute the changed-path set (rc=$crc) — refusing (fail closed)" >&2; exit 5; }
+    # out-of-spec diff. SPLIT the sort from the trailing grep and check EACH: in `sort | grep -v`,
+    # a sort error (2) would be MASKED by the final grep's legitimate rc=1 (empty) under pipefail
+    # (rightmost non-zero wins). sort exits 0 on success; the grep -v exits 0/1 (1 = the diff was only
+    # the excluded event feed). Both checked -> a partial `changed` set can never reach "scope ok".
+    _du="$( { printf '%s\n' "$dif"; printf '%s\n' "$unt"; } | sort -u )"; _dursc=$?
+    [ "$_dursc" -eq 0 ] || { echo "scope: could not sort the changed-path set (sort rc=$_dursc) — refusing (fail closed)" >&2; exit 5; }
+    changed="$(printf '%s\n' "$_du" | grep -vE '^\.plinth/session/events\.jsonl$')"; crc=$?
+    [ "$crc" -le 1 ] || { echo "scope: could not filter the changed-path set (grep rc=$crc) — refusing (fail closed)" >&2; exit 5; }
     # Read the protected-path POLICY from the ratified BASE and UNION it with the working tree, so a
     # lane cannot NARROW protection by editing .plinth/protected-paths in its own run (base patterns
     # always apply; tree additions are honored — only ever stricter). Mirrors review.sh reading policy

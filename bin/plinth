@@ -495,14 +495,19 @@ warn_stale_reusable_refs() {
   # Tie the check to the GATING jobs (`floor:` / `checks:`), not any uses: line anywhere —
   # a current ref under a decoy non-gating job must not suppress the warning. Best-effort
   # (this is an advisory warning, not a gate): read the uses: line within each job block.
-  local fref cref
-  # Match the gating job key robustly: ANY indentation (`[[:space:]]+`, not exactly two spaces),
-  # optional surrounding quotes (`"floor":` / `'checks':`), and optional space before the colon
-  # (`floor :`). End the block at the NEXT key-like line at any indent, whose identifier may start
-  # with a quote, letter, digit, or underscore (`_job` IDs are valid). The `uses:` check runs first,
-  # so it wins over the terminator on the block's own uses line.
-  fref="$(awk '/^[[:space:]]+['\''"]?floor['\''"]?[[:space:]]*:/{f=1;next} f&&/uses:/{print;exit} f&&/^[[:space:]]+['\''"A-Za-z0-9_]/{exit}' "$ci" 2>/dev/null)"
-  cref="$(awk '/^[[:space:]]+['\''"]?checks['\''"]?[[:space:]]*:/{f=1;next} f&&/uses:/{print;exit} f&&/^[[:space:]]+['\''"A-Za-z0-9_]/{exit}' "$ci" 2>/dev/null)"
+  local fref cref jobawk
+  # Match the gating job key robustly: ANY indentation (not exactly two spaces), optional surrounding
+  # quotes (`"floor":` / `'checks':`), and optional space before the colon (`floor :`). Record the job
+  # key's INDENTATION and end the block only at a SIBLING-or-shallower non-blank line (indent <= the
+  # job's) — a MORE-indented child property (`permissions:`, `needs:`, `if:`, `strategy:` before
+  # `uses:`) must NOT terminate the block and suppress the warning. `uses:` is checked first.
+  jobawk='
+    match($0, /^[[:space:]]*/); ind0=RLENGTH
+    !f && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:") { f=1; jind=ind0; next }
+    f && /uses:/ { print; exit }
+    f && ind0 <= jind && $0 ~ /[^[:space:]]/ { exit }'
+  fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
+  cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"
   # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
   # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
   # actually present; a customized checks job is not "stale".

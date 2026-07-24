@@ -167,19 +167,36 @@ jobs:
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPK/.github/workflows/ci.yml"
           ( cd "$RPK" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPK" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale ref under a QUOTED job key was not discovered (awk key match too strict)"; exit 1; }
-          # awk robustness: a 4-space-indented gate WITH a space before the colon (`    floor :`) is
-          # valid YAML — a stale ref there must still be discovered (the parser must not assume exactly
-          # two-space indent / no space before `:`):
+          # awk robustness (a): a child PROPERTY before `uses:` (permissions/needs/if/strategy) inside
+          # the floor job is VALID YAML and must NOT terminate the block and suppress a stale warning —
+          # the block-end must compare INDENTATION (a deeper child != a sibling job). Tests the real gap.
           RPI="$(mktemp -d)"; ( cd "$RPI"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI" >/dev/null 2>&1 )
           python3 - "$RPI/.github/workflows/ci.yml" <<'PYIND'
           import sys
           p=sys.argv[1]; s=open(p).read()
-          s=s.replace('\n  floor:\n', '\n    floor :\n')   # reindent to 4 spaces + space before colon
+          s=s.replace('\n  floor:\n    uses:', '\n  floor:\n    permissions: read-all\n    uses:')
           open(p,'w').write(s)
           PYIND
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPI/.github/workflows/ci.yml" || { echo "::error::[test-setup] property-before-uses fixture is invalid YAML"; exit 1; }
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI/.github/workflows/ci.yml"
           ( cd "$RPI" && git add -A && git commit -qm base >/dev/null )
-          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale gate at 4-space indent / space-before-colon was missed (awk assumed exact 2-space layout)"; exit 1; }
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a child property (permissions:) before uses: suppressed the stale warning — awk terminator not indentation-aware"; exit 1; }
+          # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
+          # gate must still be discovered (the parser must not assume exactly two-space indentation):
+          RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )
+          python3 - "$RPI2/.github/workflows/ci.yml" <<'PYIND2'
+          import sys
+          p=sys.argv[1]; lines=open(p).read().split('\n'); out=[]; injobs=False
+          for ln in lines:
+              if ln.startswith('jobs:'): injobs=True; out.append(ln); continue
+              if injobs and ln and not ln[0].isspace(): injobs=False   # a new top-level key ends jobs:
+              out.append(('  '+ln) if (injobs and ln.strip()) else ln)  # +2 spaces to every jobs: body line
+          open(p,'w').write('\n'.join(out))
+          PYIND2
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPI2/.github/workflows/ci.yml" || { echo "::error::[test-setup] 4-space reindent fixture is invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI2/.github/workflows/ci.yml"
+          ( cd "$RPI2" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI2" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale gate in a consistently 4-space-indented jobs tree was missed (awk assumed exact 2-space layout)"; exit 1; }
           # <current-sha>-old is a DIFFERENT ref -> must be STALE (exact-token boundary, not prefix):
           RPO="$(mktemp -d)"; ( cd "$RPO"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPO" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}-old|" "$RPO/.github/workflows/ci.yml"
@@ -194,9 +211,10 @@ jobs:
           ( eval "$rcmd" ) || { echo "::error::the advertised repin command broke on a space-containing target path (not shell-quoted)"; exit 1; }
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RSL/.github/workflows/ci.yml" || { echo "::error::slash-ref/space-path repin produced invalid YAML"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}" "$RSL/.github/workflows/ci.yml" && ! grep -q "@${PSHA}/v4" "$RSL/.github/workflows/ci.yml" || { echo "::error::slash ref (release/v4) was not fully replaced — left a /v4 residue"; exit 1; }
-          # metacharacter TARGET PATHS (backtick, $()): the advertised %q-quoted repin command must be
-          # a safe single token — not broken, and NOT executing command substitution:
-          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar'; do
+          # metacharacter TARGET PATHS (backtick, $(), single quote, double quote): the advertised
+          # %q-quoted repin command must be a safe single token — not broken, and NOT executing
+          # command substitution (matches the production "quote/backtick/$()" claim):
+          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar' "apos'"'"'trophe" 'quo"te'; do
             RMP="$(mktemp -d)/$meta"; mkdir -p "$RMP"; ( cd "$RMP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RMP" >/dev/null 2>&1 )
             sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RMP/.github/workflows/ci.yml"
             ( cd "$RMP" && git add -A && git commit -qm base >/dev/null )
@@ -211,7 +229,7 @@ jobs:
           RPP="$(mktemp -d)"; ( cd "$RPP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPP" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}+old|" "$RPP/.github/workflows/ci.yml"
           ( cd "$RPP" && git add -A && git commit -qm base >/dev/null )
-          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPP" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>+old (a different, longer ref) was falsely treated as current — boundary must stop only at whitespace/quote/#"; exit 1; }
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPP" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>+old (a different, longer ref) was falsely treated as current — boundary must stop only at whitespace/quote/EOL"; exit 1; }
           RPV="$(mktemp -d)"; ( cd "$RPV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPV" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release+v4|" "$RPV/.github/workflows/ci.yml"
           ( cd "$RPV" && git add -A && git commit -qm base >/dev/null )
@@ -1681,6 +1699,17 @@ jobs:
             rc=0; out="$(PATH="$HSB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
             { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup $bad-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
           done
+          # PROBE-SCRIPT WRITE/redirection failure inside the guarded subshell (`printf > probe.sh`):
+          # a `mkdir` shim that makes .claude/hooks read-only forces the redirection to fail -> the
+          # setup subshell's `|| exit 4` fires -> INCONCLUSIVE. (Skipped as root, where 0500 is writable.)
+          if [ "$(id -u)" != 0 ]; then
+            MKB="$(mktemp -d)"
+            printf '%s\n' '#!/usr/bin/env bash' '/bin/mkdir "$@"; rc=$?' 'for a in "$@"; do case "$a" in *.claude/hooks) chmod 0500 "$a" 2>/dev/null;; esac; done' 'exit $rc' > "$MKB/mkdir"
+            printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$MKB/grok"
+            chmod +x "$MKB/mkdir" "$MKB/grok"
+            rc=0; out="$(PATH="$MKB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            [ "$rc" = 4 ] || { echo "::error::hookprobe probe-script WRITE failure not INCONCLUSIVE (rc=$rc, want 4) — the redirection failure branch is unguarded"; exit 1; }
+          fi
           # --version HANG must be BOUNDED (the version probe is now capped): a CLI that hangs on
           # version discovery must not hang hookprobe. The version stub sleeps 60s; with a 3s cap the
           # whole probe (version capped -> ver=unknown, then a fast all-events probe) completes in a
