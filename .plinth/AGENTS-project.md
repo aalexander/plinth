@@ -44,3 +44,33 @@ and `lane-guard.sh`:
   the vendor sandbox + human review, NOT `lane-guard`. Flagging these trades the
   worker's real capability for hypothetical coverage the design deliberately
   declines. If tempted to flag one, confirm it is a FALLIBLE-lane error first.
+
+## Review phases — build fast first, harden when declared (maintainer-ratified 2026-07-24)
+
+The Plinth goal is to build quickly and cheaply, then harden deliberately once a
+version works and its utility is proven. Reviews serve that order.
+
+- **BUILD phase (the default).** Blocking findings are: the diff not doing what
+  the spec says; real bugs a user or the loop would hit; data loss; fail-OPEN in
+  a guarantee the code CLAIMS to enforce; enforcement overclaims; missing tests
+  for changed behavior. This keeps honesty and correctness non-negotiable.
+- **Adversarial-hardening findings are REPORTED, never blocking, in build
+  phase.** Robustness against deliberate/hostile or exotic inputs (attacker
+  races on locally-owned files, injected/binary content in operator-owned
+  config, per-stage environment failure injection, defense-in-depth layers):
+  file as MINOR with a one-line rationale so they land in the spec's
+  `## Noticed` as the hardening backlog. Nothing is lost — it is deferred.
+- **HARDENING phase (explicit).** The full adversarial sweep is in-charter only
+  when the commit/PR/spec declares a hardening pass, or when code crosses a REAL
+  trust boundary (network/PR-supplied input, secrets handling) — those never
+  wait.
+
+## Convergence — bound the loop
+- Round 1 is EXHAUSTIVE: report every finding and every finding-class you can
+  see, enumerating all siblings of a class in ONE finding, so fixes batch.
+- Later rounds verify fixes: review (a) whether prior findings are resolved and
+  (b) defects INTRODUCED by the fix diffs. Do not raise a new finding class
+  against lines unchanged since the round that first saw them — file such
+  observations as MINOR → `## Noticed` instead.
+- A clean loop is 2–3 rounds. Past round 4 on new classes, prefer Noticed over
+  escalation.
