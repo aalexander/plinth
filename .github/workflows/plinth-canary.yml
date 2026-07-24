@@ -541,7 +541,9 @@ jobs:
           # removing either control turns this test red (the stub always returns structured output and
           # the empty cwd independently blocks reads, so without these argv checks the test is hollow):
           grep -qx -- '--json-schema' /tmp/asb/claude-args || { echo "::error::claude auditor missing --json-schema (structured-output constraint dropped)"; exit 1; }
-          grep -qx -- 'Bash,Edit,Write,Read,Grep,Glob' /tmp/asb/claude-args || { echo "::error::claude auditor missing --disallowed-tools Bash,Edit,Write,Read,Grep,Glob (tool isolation dropped)"; exit 1; }
+          # require the FLAG immediately followed by its VALUE (a bare positional token would not deny
+          # any tool) — dropping `--disallowed-tools` while leaving the value must turn this red:
+          awk '/^--disallowed-tools$/{getline nx; if(nx=="Bash,Edit,Write,Read,Grep,Glob") ok=1} END{exit ok?0:1}' /tmp/asb/claude-args || { echo "::error::claude auditor missing '--disallowed-tools' flag immediately before its value (tool isolation dropped)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/claude; chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
@@ -1856,12 +1858,21 @@ jobs:
           FLP="$(mktemp -d)"; ( cd "$FLP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$FLP" >/dev/null 2>&1 )
           rc=0; ( cd "$FLP" && ver=test bash "$FHB" ) >/dev/null 2>&1 || rc=$?
           [ "$rc" = 0 ] || { echo "::error::floor harness body failed a CLEAN scaffold (rc=$rc)"; exit 1; }
-          ( cd "$FLP" && rm .plinth/lane-guard.sh && ln -s /tmp/plinth/shared/.plinth/lane-guard.sh .plinth/lane-guard.sh )
+          # SYMLINK guard is the GENERAL check() — exercise it with a NON-executable pinned file
+          # (review-schema.json) so it is not conflated with the checkx executable path:
+          ( cd "$FLP" && rm .plinth/review-schema.json && ln -s /tmp/plinth/shared/.plinth/review-schema.json .plinth/review-schema.json )
           rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
-          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SYMLINK"; } || { echo "::error::floor did not reject a SYMLINKED pinned path (rc=$rc)"; exit 1; }
-          ( cd "$FLP" && rm .plinth/lane-guard.sh && cp /tmp/plinth/shared/.plinth/lane-guard.sh .plinth/lane-guard.sh && chmod 755 .plinth/lane-guard.sh && chmod 644 .plinth/review.sh )
-          rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
-          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "not executable"; } || { echo "::error::floor did not reject a NON-EXECUTABLE pinned script (rc=$rc)"; exit 1; }
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SYMLINK"; } || { echo "::error::floor did not reject a SYMLINKED NON-EXEC pinned path via the general check() guard (rc=$rc)"; exit 1; }
+          ( cd "$FLP" && rm .plinth/review-schema.json && cp /tmp/plinth/shared/.plinth/review-schema.json .plinth/review-schema.json )
+          # the checkx executable-mode guard must cover EVERY pinned script — make EACH one non-exec in
+          # turn (bytes unchanged, so check() passes; only checkx catches it) and confirm it is rejected.
+          # Deleting the checkx call for any of these would then turn this red (Rule 7):
+          for exe in .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh .claude/hooks/pulse.sh; do
+            ( cd "$FLP" && chmod 644 "$exe" )
+            rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
+            { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "not executable"; } || { echo "::error::floor did not reject a NON-EXECUTABLE pinned script '$exe' (rc=$rc) — checkx does not cover it"; exit 1; }
+            ( cd "$FLP" && chmod 755 "$exe" )
+          done
 
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
@@ -2528,17 +2539,17 @@ jobs:
             out="$(PATH="$SC4:$PATH" bash "$LG" scope HEAD app.py 2>&1)"; r=$?
             { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'hermeticity UNKNOWN'; } || { echo "::error::ignored-artifact ck_sed site: a sed error did not report hermeticity UNKNOWN (rc=$r) — masked producer failure"; exit 1; } )
           # SUBMODULE visibility (round-34): a `diff.ignoreSubmodules=all` config must NOT hide an
-          # off-spec staged gitlink update — scope forces --ignore-submodules=none. (Needs file-protocol
-          # submodules; skip if the runner forbids them.)
-          SUBM="$(mktemp -d)"; ( cd "$SUBM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo v1 > lib.txt; git add -A; git commit -qm s1 >/dev/null )
-          SMT="$(mktemp -d)"; if ( cd "$SMT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            echo a > app.py; git -c protocol.file.allow=always submodule add -q "$SUBM" vendor >/dev/null 2>&1 ); then
-            ( cd "$SMT"; git add -A; git commit -qm base >/dev/null
-              git config diff.ignoreSubmodules all                         # the config that would hide it
-              ( cd vendor && echo v2 > lib.txt && git add -A && git commit -qm s2 >/dev/null ); git add vendor  # off-spec gitlink bump
-              r=0; out="$(bash "$LG" scope HEAD app.py 2>&1)" || r=$?
-              { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor'; } || { echo "::error::scope missed an off-spec submodule gitlink update under diff.ignoreSubmodules=all (rc=$r) — --ignore-submodules=none missing"; exit 1; } )
-          else echo "note: submodule test skipped — runner forbids file-protocol submodules"; fi
+          # off-spec staged gitlink update — scope forces --ignore-submodules=none. The gitlink is built
+          # WITHOUT a clone (a raw 160000 index entry) so the test is deterministic and never a skip
+          # (Rule 10: a skipped check must not report as passing):
+          SMT="$(mktemp -d)"; ( cd "$SMT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add app.py
+            git update-index --add --cacheinfo 160000,0000000000000000000000000000000000000001,vendor  # a gitlink, no clone
+            git commit -qm base >/dev/null
+            git config diff.ignoreSubmodules all                                                        # the config that would hide it
+            git update-index --cacheinfo 160000,0000000000000000000000000000000000000002,vendor         # off-spec staged gitlink bump
+            r=0; out="$(bash "$LG" scope HEAD app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor'; } || { echo "::error::scope missed an off-spec submodule gitlink update under diff.ignoreSubmodules=all (rc=$r) — --ignore-submodules=none missing"; exit 1; } )
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
