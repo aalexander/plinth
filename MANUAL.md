@@ -635,6 +635,14 @@ installed copies.
   leave a forged Tier-0 classification in force. Distinguish absence (rc 1)
   from failure (rc >= 2 / 128) and fail closed; existing tests cover absence
   only. (v4.5.0 refresh review, round 3 sweep.)
+- **review.sh: porcelain `-z` rename records are mis-parsed**
+  (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits
+  its second pathname as a separate NUL record with no `XY ` prefix, but the
+  loop strips three bytes from every record — a staged rename from a short
+  name (e.g. `a` → `.plinth/NEEDS-HUMAN.md`) can exempt the destination and
+  truncate the source record to empty, permitting review of a dirty index.
+  Parse rename/copy continuation records explicitly; add a regression test.
+  (v4.5.0 refresh review, round 6.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

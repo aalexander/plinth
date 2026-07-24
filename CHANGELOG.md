@@ -21,16 +21,20 @@
   BEFORE the file is touched in any way (even newline termination), so a rejected policy is left
   byte-identical — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
   yielding a malformed anchor that propagates into appended managed rules, and the composed rule
-  is re-checked before each append. The convention grammar is constrained by design to `(^|X)`
-  with X a plain path prefix (no parens/alternation); a valid-but-nested leading group (e.g.
-  `(^|(foo|bar)/)x`) contributes no convention and falls back to the safe canonical behavior
-  instead of deriving a malformed prefix. The canary suite pins convention backfill,
-  canonical-line preservation, no-duplicate-suffix, exact lane-agent lines, second-run `cmp`
-  idempotence, the nested-grammar fallback, and failure injections for every processing stage:
-  unreadable policy, malformed regex (with and without trailing newline), unwritable append, and
-  nine argv-signature shim injections (grep/sed/sort, Nth-hit selectable) covering each producer
-  status check — each asserts a non-zero exit and a byte-identical policy file, and the
-  expect-failure design makes a stale shim signature fail loudly instead of going vacuous
+  is re-checked before each append. The convention grammar supports `(^|X)` with X a path
+  prefix that may alternate at the top level or nest parens ONE level (`plinth/`,
+  `plinth/|vendor/`, `(plinth|vendor)/`) — one shared ANCHOR_RE drives extraction AND the dedup
+  strip, so a nested-anchor line with a managed suffix is stripped correctly and never
+  re-appended in the broader canonical form. Beyond that grammar (deeper nesting) the update
+  REFUSES, fail closed, rather than risk broadening a managed pattern past what the file's own
+  anchors cover. The canary suite pins convention backfill, canonical-line preservation,
+  no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor
+  convention (managed suffix not broadened; appends in the nested prefix), the deep-nesting
+  refusal, and failure injections for every processing stage: unreadable policy, malformed
+  regex (with and without trailing newline), unwritable append, and ten argv-signature shim
+  injections (grep/sed/sort/tail, Nth-hit selectable) covering each producer status check —
+  each asserts a non-zero exit and a byte-identical policy file, and the expect-failure design
+  makes a stale shim signature fail loudly instead of going vacuous
   (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,

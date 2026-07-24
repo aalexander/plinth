@@ -486,14 +486,18 @@ PATTERNS
   # Stage 2: drop lines byte-equal to a managed pattern; stage 3: keep only
   # leading (^|X) anchor groups; stage 4: unique prefixes.
   # SUPPORTED convention grammar (constrained by design): (^|X) where X is a
-  # plain path prefix — no '(' ')' or '|' (e.g. plinth/). A line whose leading
-  # group nests parens or alternates, like (^|(foo|bar)/)x, is VALID policy
-  # (stage 1b) but contributes no convention and is never anchor-stripped —
-  # the fallback is canonical appends + whole-line dedup, i.e. exactly the
-  # safe pre-convention behavior, never a malformed extracted prefix.
+  # path prefix that may alternate at the top level or nest parens ONE level —
+  # e.g. plinth/, plinth/|vendor/, (plinth|vendor)/ — matched by the shared
+  # ANCHOR_RE in extraction AND the dedup strip, so a nested-anchor line with a
+  # managed suffix is stripped correctly and its suffix never re-appends in the
+  # broader canonical form. Deeper nesting cannot be matched by this grammar;
+  # such lines are VALID policy (stage 1b) but any that still LEAD with '(^|'
+  # after the strip make the update REFUSE (fail closed, below) rather than
+  # risk broadening a managed pattern past what the file's own anchors cover.
+  local ANCHOR_RE='^\(\^\|((\([^()]*\))|[^()])*\)'
   rc=0; grep -vxF -f "$mpat" "$active_t" > "$strip_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "managed-line exclusion, grep rc=$rc"
-  rc=0; grep -oE '^\(\^\|[^()|]*\)' "$strip_t" > "$active_t" || rc=$?
+  rc=0; grep -oE "$ANCHOR_RE" "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
   # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
@@ -519,7 +523,14 @@ PATTERNS
   # and trigger a blind append.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "dedup active-line read, grep rc=$rc"
-  sed -E -e 's/^\(\^\|[^()|]*\)//' -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
+  sed -E -e "s/$ANCHOR_RE//" -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
+  # REFUSE-TO-BROADEN: any line still leading with '(^|' after the strip has an
+  # anchor beyond the supported grammar (nesting deeper than one level). Its
+  # suffix would wrongly read as "missing" and re-append in the broader
+  # canonical form — abort and tell the operator to normalize the line instead.
+  rc=0; grep -qE '^\(\^\|' "$strip_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "residual-anchor scan, grep rc=$rc"
+  [ "$rc" -eq 1 ] || ppfail "unsupported anchor grammar in $f (a leading (^|...) group nested deeper than one level) — normalize that line; refusing to append a broader canonical pattern over it"
   local sfx
   while IFS= read -r line; do
     [ -n "$line" ] || continue
