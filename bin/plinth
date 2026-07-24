@@ -445,48 +445,84 @@ PATTERNS
   # file's active lines, ignoring lines byte-equal to a canonical managed
   # pattern (our own past backfills must not veto detection). Mixed, absent, or
   # canonical prefixes = canonical behavior, unchanged.
-  local anchor='(^|/)' prefixes repaired=0
-  prefixes="$(grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | grep -vxF -f "$mpat" \
-    | grep -oE '^\(\^\|[^)]*\)' | sort -u || true)"
-  if [ "$(printf '%s\n' "$prefixes" | grep -c . || true)" = "1" ] && [ "$prefixes" != '(^|/)' ]; then
-    anchor="$prefixes"
-    # REPAIR past canonical backfills to the file's convention: only active lines
-    # byte-equal to a managed pattern are rewritten; user lines and comments are
-    # untouched. Every managed line starts with the literal 5-char '(^|/)', so
-    # substr(...,6) is the suffix. ANCHOR travels via the environment because
-    # `awk -v` mangles backslashes.
-    repaired="$(grep -cxF -f "$mpat" -- "$f" 2>/dev/null || true)"
-    if [ "${repaired:-0}" -gt 0 ]; then
-      local rtmp
-      rtmp="$(mktemp)"
-      ANCHOR="$anchor" awk -v mpat="$mpat" '
-        BEGIN { a=ENVIRON["ANCHOR"]; while ((getline l < mpat) > 0) if (l != "") is[l]=1; close(mpat) }
-        { if ($0 in is) print a substr($0, 6); else print }' "$f" > "$rtmp" && cat "$rtmp" > "$f"
-      rm -f "$rtmp"
-      echo "  protected-paths: re-anchored $repaired canonical plinth-managed pattern(s) to this file's $anchor convention"
-    fi
-  fi
+  #
+  # FAIL CLOSED (round 2): a security-policy processing ERROR must abort the
+  # update, never degrade into "no convention" / "not covered" — that would
+  # recreate the overbroad canonical append (or append blind). grep rc 1 (no
+  # match) is a normal answer; rc >= 2 (unreadable input, bad pattern) aborts.
+  # Every stage below runs UNPIPED with its status checked; ppfail is the one
+  # exit path so no stage can be added later without a status.
+  ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
+  local anchor='(^|/)' prefixes repaired=0 rc active_t strip_t NL='
+'
+  active_t="$(mktemp)" || ppfail "mktemp active"
+  strip_t="$(mktemp)" || ppfail "mktemp strip"
+  # Stage 1: the file's ACTIVE (non-comment, non-blank) lines.
+  rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "active-line read of $f, grep rc=$rc"
+  # Stage 2: drop lines byte-equal to a managed pattern; stage 3: keep only
+  # leading (^|X) anchor groups; stage 4: unique prefixes.
+  rc=0; grep -vxF -f "$mpat" "$active_t" > "$strip_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "managed-line exclusion, grep rc=$rc"
+  rc=0; grep -oE '^\(\^\|[^)]*\)' "$strip_t" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
+  prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
+  # Single non-canonical prefix? (pure-bash count: empty or multiline = no)
+  case "$prefixes" in
+    ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical behavior
+    '(^|/)') : ;;     # canonical convention: keep canonical behavior
+    *)
+      anchor="$prefixes"
+      # REPAIR past canonical backfills to the file's convention: only active
+      # lines byte-equal to a managed pattern are rewritten; user lines and
+      # comments are untouched. Every managed line starts with the literal
+      # 5-char '(^|/)', so substr(...,6) is the suffix. ANCHOR travels via the
+      # environment because `awk -v` mangles backslashes.
+      rc=0; repaired="$(grep -cxF -f "$mpat" "$f")" || rc=$?
+      [ "$rc" -le 1 ] || ppfail "repair count, grep rc=$rc"
+      if [ "${repaired:-0}" -gt 0 ]; then
+        local rtmp
+        rtmp="$(mktemp)" || ppfail "mktemp repair"
+        ANCHOR="$anchor" awk -v mpat="$mpat" '
+          BEGIN { a=ENVIRON["ANCHOR"]; while ((getline l < mpat) > 0) if (l != "") is[l]=1; close(mpat) }
+          { if ($0 in is) print a substr($0, 6); else print }' "$f" > "$rtmp" || ppfail "repair rewrite (awk)"
+        # Refuse a short write-back: the rewrite is line-for-line, so a smaller
+        # output means a truncated policy.
+        [ "$(wc -l < "$rtmp")" -eq "$(wc -l < "$f")" ] || ppfail "repair rewrite changed the line count"
+        cat "$rtmp" > "$f" || ppfail "repair write-back"
+        rm -f "$rtmp"
+        echo "  protected-paths: re-anchored $repaired canonical plinth-managed pattern(s) to this file's $anchor convention"
+      fi
+      ;;
+  esac
+  # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
+  # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
+  # patterns match the INSTALLED copies but NOT the editable shared/ sources.
+  # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
+  # wrongly freezing the PRODUCT (hence $anchor on the append below). "Covered"
+  # therefore means: some ACTIVE (non-comment, non-blank) line, after stripping
+  # its leading anchor — a (^|...) group or a bare ^ — EQUALS the suffix
+  # exactly. Equality, not substring: an active-but-different pattern like
+  # (^|/)old-CLAUDE\.md$ CONTAINS the suffix CLAUDE\.md$ yet protects a
+  # different path, and must not suppress backfilling the real protection.
+  # Comments are excluded too. The suffix set is computed ONCE, status-checked
+  # (managed suffixes are pairwise distinct, so an append never changes a later
+  # pattern's answer); a membership ERROR aborts — it must not read as "missing"
+  # and trigger a blind append.
+  rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "dedup active-line read, grep rc=$rc"
+  sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
   local sfx
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
-    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
-    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
-    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
-    # wrongly freezing the PRODUCT (hence $anchor on the append below). "Covered"
-    # therefore means: some ACTIVE
-    # (non-comment, non-blank) line, after stripping its leading anchor — a
-    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
-    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
-    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
-    # not suppress backfilling the real protection. Comments are excluded too.
     sfx="${line#'(^|/)'}"
-    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
-      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
-      | grep -qxF -- "$sfx" \
-      || { printf '%s\n' "${anchor}${sfx}" >> "$f"; added=$((added + 1)); }
+    rc=0; grep -qxF -- "$sfx" "$strip_t" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "dedup membership check, grep rc=$rc"
+    [ "$rc" -eq 0 ] && continue
+    printf '%s\n' "${anchor}${sfx}" >> "$f" || ppfail "pattern append"
+    added=$((added + 1))
   done < "$mpat"
-  rm -f "$mpat"
+  rm -f "$mpat" "$active_t" "$strip_t"
   [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
   return 0
 }

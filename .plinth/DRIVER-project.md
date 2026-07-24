@@ -3,7 +3,10 @@
 This repository is Plinth itself — the scope INVERSION below overrides the
 usual "tooling is off-limits" instinct, so read it before touching anything:
 
-- `shared/`, `templates/`, and `bin/` are the PRODUCT — edit them freely.
+- `shared/`, `templates/`, `bin/`, and the `.github/workflows/` sources (the
+  reusable `plinth-floor.yml`/`plinth-checks.yml` that downstream repos pin by
+  SHA, plus this repo's `plinth-canary.yml` regression suite and `ci.yml`) are
+  the PRODUCT — edit them freely.
 - The installed `.plinth/` and `.claude/` copies are the pinned previous
   release judging your work: never edit them; they refresh only via the
   release flow (`plinth update`, run against this repo).

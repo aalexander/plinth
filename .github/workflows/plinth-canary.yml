@@ -1039,6 +1039,16 @@ jobs:
           cp "$C4/.plinth/protected-paths" "$C4/pp.snap"
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           cmp -s "$C4/.plinth/protected-paths" "$C4/pp.snap" || { echo "::error::ensure_protected_paths is not idempotent on a convention-anchored file"; exit 1; }
+          # FAILURE INJECTION: a policy-processing ERROR must abort the update (fail closed),
+          # never degrade into "no convention"/"not covered" and rewrite or append blind. An
+          # unreadable policy file makes every read stage rc=2 — update must exit non-zero,
+          # say so, and leave the file byte-identical.
+          chmod 000 "$C4/.plinth/protected-paths"
+          fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$C4" 2>&1)" || fo=$?
+          chmod 644 "$C4/.plinth/protected-paths"
+          [ "$fo" -ne 0 ] || { echo "::error::update succeeded despite an unreadable protected-paths policy (fail-open regression)"; exit 1; }
+          printf '%s' "$fout" | grep -q "fail closed" || { echo "::error::unreadable-policy abort did not identify itself as the fail-closed path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
+          cmp -s "$C4/.plinth/protected-paths" "$C4/pp.snap" || { echo "::error::the aborted update modified the policy file"; exit 1; }
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.
