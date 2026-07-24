@@ -416,6 +416,15 @@ ensure_protected_paths() {
   # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
   # runs UNPIPED with its status checked; ppfail is the one exit path.
   ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
+  local rc
+  # BINARY REJECTION: a NUL byte cannot appear in a valid text policy, and
+  # common greps report binary input via a "Binary file matches" DIAGNOSTIC
+  # with rc 0 — the regex validation below would then be judging the
+  # diagnostic, not the policy bytes (and bash cannot even carry a NUL in a
+  # variable). Refuse outright: cmp rc 1 = NULs present; higher = broken scan.
+  rc=0; LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "binary scan of $f, rc=$rc"
+  [ "$rc" -eq 0 ] || ppfail "policy file $f contains NUL/binary bytes — refusing to process"
   # The plinth-managed pattern list (canonical (^|/) anchoring), in a temp file
   # so the convention detection and the append loop below read one source of
   # truth.
@@ -548,14 +557,27 @@ PATTERNS
     added=$((added + 1))
   done < "$mpat"
   rm -f "$mpat" "$active_t" "$strip_t"
-  # MUTATION PHASE — one write, reached only with every check green. The
-  # payload carries the newline-termination fix (when the file lacked one)
-  # plus every missing managed pattern, so an abort at ANY earlier stage — or
-  # a failure of this single append — never leaves an early-normalized or
-  # partially-backfilled policy behind.
+  # MUTATION PHASE — atomic, reached only with every check green. The ENTIRE
+  # new policy (original bytes + newline-termination fix + missing patterns)
+  # is composed in a SAME-DIRECTORY temp whose mode is copied from the
+  # original, its byte length is verified, and it is rename(2)d over the
+  # original. A short write (ENOSPC, quota, I/O) can only truncate the TEMP —
+  # the size check catches it and the abort removes it — so the live policy is
+  # either the old bytes or the complete new bytes, never a partial. (rename
+  # needs only directory write; the policy file is replaced, never written
+  # through.)
   if [ "$added" -gt 0 ]; then
     [ -z "$lastc" ] || payload="${NL}${payload}"
-    printf '%s' "$payload" >> "$f" || ppfail "pattern append"
+    local fdir tmpf osz psz
+    fdir="$(dirname "$f")" || ppfail "policy dirname"
+    tmpf="$(mktemp "$fdir/.protected-paths.tmp.XXXXXX")" || ppfail "same-dir temp create"
+    pfail_clean() { rm -f "$tmpf"; ppfail "$1"; }
+    osz="$(wc -c < "$f")" || pfail_clean "policy size read"
+    psz="$(printf '%s' "$payload" | wc -c)" || pfail_clean "payload size"
+    { rm -f "$tmpf" && cp "$f" "$tmpf"; } || pfail_clean "temp compose copy"
+    printf '%s' "$payload" >> "$tmpf" || pfail_clean "pattern append (temp)"
+    [ "$(wc -c < "$tmpf")" -eq $(( osz + psz )) ] || pfail_clean "short write detected composing the new policy"
+    mv -f "$tmpf" "$f" || pfail_clean "atomic replace (rename)"
     echo "  protected-paths: added $added plinth-managed security pattern(s)"
   fi
   return 0

@@ -1104,6 +1104,31 @@ jobs:
           [ "$fo" -ne 0 ] || { echo "::error::update reported success while the managed-pattern append silently failed (fail-open regression)"; exit 1; }
           printf '%s' "$fout" | grep -q "fail closed" || { echo "::error::append-failure abort did not identify itself as the fail-closed path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
           cmp -s "$WJ/.plinth/protected-paths" "$WJ/pp.snap" || { echo "::error::the aborted append modified the policy file"; exit 1; }
+          ls "$WJ/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::the aborted atomic replace left a stray temp in .plinth/ (would dirty the tree)"; exit 1; } || true
+          # (3b) NUL/binary policy: grep's "Binary file matches" diagnostic (rc 0) would defeat
+          # regex validation, so update must refuse a NUL-bearing policy outright, unmodified.
+          BB="$(mktemp -d)"; ( cd "$BB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$BB" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n\0bad\n' > "$BB/.plinth/protected-paths"
+          cp "$BB/.plinth/protected-paths" "$BB/pp.snap"
+          fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$BB" 2>&1)" || fo=$?
+          [ "$fo" -ne 0 ] || { echo "::error::update processed a NUL-bearing (binary) policy"; exit 1; }
+          printf '%s' "$fout" | grep -q "NUL/binary" || { echo "::error::binary rejection did not name itself (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
+          cmp -s "$BB/.plinth/protected-paths" "$BB/pp.snap" || { echo "::error::the binary rejection modified the policy file"; exit 1; }
+          # Parser branch coverage: (a) top-level alternation IS a supported convention;
+          # (b) two distinct prefixes fall back to canonical; (c) no recognized (^|X) prefix
+          # falls back to canonical.
+          PA="$(mktemp -d)"; ( cd "$PA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PA" >/dev/null 2>&1 )
+          printf '(^|plinth/|vendor/)custom$\n' > "$PA/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PA" >/dev/null 2>&1 || { echo "::error::update aborted on a top-level-alternation convention"; exit 1; }
+          grep -qxF '(^|plinth/|vendor/)\.plinth/session/' "$PA/.plinth/protected-paths" || { echo "::error::alternation convention was not adopted for backfill"; exit 1; }
+          PB="$(mktemp -d)"; ( cd "$PB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PB" >/dev/null 2>&1 )
+          printf '(^|plinth/)a$\n(^|vendor/)b$\n' > "$PB/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PB" >/dev/null 2>&1 || { echo "::error::update aborted on mixed prefixes"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PB/.plinth/protected-paths" || { echo "::error::mixed prefixes did not fall back to canonical appends"; exit 1; }
+          PC="$(mktemp -d)"; ( cd "$PC" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PC" >/dev/null 2>&1 )
+          printf 'unanchored_rule$\n' > "$PC/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PC" >/dev/null 2>&1 || { echo "::error::update aborted on an unanchored policy"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PC/.plinth/protected-paths" || { echo "::error::no-prefix policy did not fall back to canonical appends"; exit 1; }
           # (4) per-stage producer failures: a PATH shim fails ONLY the exact argv signature
           # (Nth matching hit) of one processing stage, else execs the real tool. Every stage's
           # status check must turn that failure into a non-zero exit with the policy file left

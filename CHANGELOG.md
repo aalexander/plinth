@@ -17,10 +17,14 @@
   backfill (trailing-byte read, active-line read, managed exclusion, anchor extraction, prefix
   sort, dedup membership, append) runs unpiped with its status checked: grep rc 1 (no match) is
   a normal answer, rc >= 2 aborts the update loudly instead of degrading into "no convention" /
-  "not covered" and appending blind. The whole run is read-only until ONE final write: the
-  newline-termination fix and every missing pattern are composed into a single payload appended
-  only after every check passes, so an abort at any stage leaves the policy byte-identical —
-  never early-normalized or partially backfilled. Every active policy line must compile as an
+  "not covered" and appending blind. The whole run is read-only until ONE atomic replace: the
+  original bytes, the newline-termination fix, and every missing pattern are composed into a
+  same-directory temp (mode copied from the original), byte-length-verified, and rename(2)d
+  over the policy only after every check passes — a short write (ENOSPC/quota/I/O) can only
+  truncate the temp, which the size check catches and removes, so the live policy is either the
+  old bytes or the complete new bytes, never a partial. A NUL-bearing (binary) policy is
+  refused outright — grep's "Binary file matches" diagnostic (rc 0) would otherwise defeat the
+  regex validation. Every active policy line must compile as an
   ERE — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
   yielding a malformed anchor that propagates into appended managed rules, and the composed rule
   is re-checked before each append. The convention grammar supports `(^|X)` with X a path
