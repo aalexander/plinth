@@ -1176,7 +1176,9 @@ jobs:
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
               '  hit=""' \
               '  if [ "$INJ_SIG" = "@none" ]; then [ $# -eq 0 ] && hit=1' \
-              '  else case "$*" in *"$INJ_SIG"*) hit=1 ;; esac; fi' \
+              '  else case "$*" in *"$INJ_SIG"*) hit=1 ;; esac' \
+              '       [ -z "$hit" ] && [ -n "${INJ_SIG2:-}" ] && case "$*" in *"$INJ_SIG2"*) hit=1 ;; esac; fi' \
+              '  if [ -n "$hit" ] && [ -n "${INJ_PATH:-}" ]; then case "$*" in *"$INJ_PATH"*) : ;; *) hit="" ;; esac; fi' \
               '  if [ -n "$hit" ]; then' \
               '    n="$(/bin/cat "$INJ_CNT" 2>/dev/null)"; n=$(( ${n:-0} + 1 )); echo "$n" > "$INJ_CNT"' \
               '    if [ -n "${INJ_ALL:-}" ] || [ "$n" -eq "${INJ_HIT:-1}" ]; then' \
@@ -1241,7 +1243,22 @@ jobs:
           # injection just falls through to -f), so the portable injection fails EVERY
           # matching hit — the first policy-path stat consumer (the hardlink check) then
           # fails closed, proving stat failures cannot pass silently on either platform.
-          shimrun stat '.plinth/protected-paths' 1 'stat failure (all hits, portable)' '' all
+          shimrun stat '.plinth/protected-paths' 1 'stat failure (all hits, first consumer: preflight hardlink check)' '' all
+          # Targeted WRITER mode-read failure: fail BOTH fallback forms (%Lp OR %a) but ONLY
+          # on the policy path (the AND-guard lets the %h/%l hardlink checks and edit_file's
+          # stats pass), so the run reaches the atomic writer and its fmode status check must
+          # abort — removing that one check would turn THIS case green-to-red on both
+          # platforms. The message is asserted to prove the abort happened AT the writer.
+          SW="$(mktemp -d)"; ( cd "$SW" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SW" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n' > "$SW/.plinth/protected-paths"
+          cp "$SW/.plinth/protected-paths" "$SW/pp.snap"
+          SWTD="$(mktemp -d)"
+          so=0; swout="$(TMPDIR="$SWTD" INJ_TOOL=stat INJ_SIG='%Lp' INJ_SIG2='%a' INJ_PATH='.plinth/protected-paths' INJ_ALL=1 INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SW" 2>&1)" || so=$?
+          [ "$so" -ne 0 ] || { echo "::error::update succeeded with the writer's mode-read stat failing on both fallback forms"; exit 1; }
+          printf '%s' "$swout" | grep -q "policy mode read" || { echo "::error::writer mode-read injection aborted somewhere else (out: $(printf '%s' "$swout" | tail -c 200))"; exit 1; }
+          cmp -s "$SW/.plinth/protected-paths" "$SW/pp.snap" || { echo "::error::writer mode-read failure mutated the policy"; exit 1; }
+          ls "$SW/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::writer mode-read failure left a stray same-dir temp"; exit 1; } || true
+          [ -z "$(ls -A "$SWTD")" ] || { echo "::error::writer mode-read failure leaked scratch state"; exit 1; }
           # The printf appends are builtins (not PATH-interceptable); the guarantee that
           # matters is that a SHORT WRITE cannot reach the live policy — inject a truncating
           # compose (cat emits 3 bytes then claims success) and the byte-length check must
