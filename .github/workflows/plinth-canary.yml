@@ -214,7 +214,7 @@ jobs:
           # metacharacter TARGET PATHS (backtick, $(), single quote, double quote): the advertised
           # %q-quoted repin command must be a safe single token — not broken, and NOT executing
           # command substitution (matches the production "quote/backtick/$()" claim):
-          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar' "apos'"'"'trophe" 'quo"te'; do
+          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar' "apos'trophe" 'quo"te'; do
             RMP="$(mktemp -d)/$meta"; mkdir -p "$RMP"; ( cd "$RMP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RMP" >/dev/null 2>&1 )
             sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RMP/.github/workflows/ci.yml"
             ( cd "$RMP" && git add -A && git commit -qm base >/dev/null )

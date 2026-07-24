@@ -501,8 +501,11 @@ warn_stale_reusable_refs() {
   # key's INDENTATION and end the block only at a SIBLING-or-shallower non-blank line (indent <= the
   # job's) — a MORE-indented child property (`permissions:`, `needs:`, `if:`, `strategy:` before
   # `uses:`) must NOT terminate the block and suppress the warning. `uses:` is checked first.
+  # NOTE: the indentation capture MUST be an ACTION block `{ ... }` — a bare `match(...); x=RLENGTH`
+  # would be parsed as two PATTERNS (each with the default {print}), default-printing every line and
+  # corrupting the captured ref. `{ ... }` with no pattern runs for every line.
   jobawk='
-    match($0, /^[[:space:]]*/); ind0=RLENGTH
+    { match($0, /^[[:space:]]*/); ind0=RLENGTH }
     !f && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:") { f=1; jind=ind0; next }
     f && /uses:/ { print; exit }
     f && ind0 <= jind && $0 ~ /[^[:space:]]/ { exit }'

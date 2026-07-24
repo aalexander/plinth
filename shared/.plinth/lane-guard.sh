@@ -449,10 +449,15 @@ TOUCHED
     # over-reject on a cosmetic note). But it must not SILENTLY claim hermeticity either. Capture the
     # git PRODUCER status SEPARATELY: in the full pipeline a trailing `grep -v '^$'` rc=1 (empty) would
     # otherwise mask an upstream `git ls-files` failure under pipefail. Then the pure filter chain.
+    # Split the SORT-terminated filter from the trailing blank-strip grep: a sed/sort error (2) in the
+    # first chain must not be MASKED by the final `grep -v '^$'` rc=1 (empty). The first chain ends in
+    # sort (0 or >=2 — a grep -Ev rc=1 means "all excluded", legit), so allow <=1; the blank-strip grep
+    # separately allows <=1 (empty). Any real producer/transform error -> report hermeticity UNKNOWN.
     _iraw="$(git ls-files -o -i --exclude-standard 2>/dev/null)"; _irc=$?
-    iga="$(printf '%s\n' "$_iraw" | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$')"; igrc=$?
-    if [ "$_irc" -ne 0 ] || [ "$igrc" -gt 1 ]; then
-      echo "scope note: could not enumerate ignored artifacts (git rc=$_irc, filter rc=$igrc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
+    _ifilt="$(printf '%s\n' "$_iraw" | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u)"; igrc=$?
+    iga="$(printf '%s\n' "$_ifilt" | grep -v '^$')"; ig2rc=$?
+    if [ "$_irc" -ne 0 ] || [ "$igrc" -gt 1 ] || [ "$ig2rc" -gt 1 ]; then
+      echo "scope note: could not enumerate ignored artifacts (git rc=$_irc, filter rc=$igrc/$ig2rc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
     elif [ -n "$iga" ]; then
       echo "scope note: verification is NOT hermetic — ignored artifacts in the tree (not in the reviewed diff): $(printf '%s' "$iga" | tr '\n' ' ')" >&2
       echo "  -> your independent Rule-10 re-run may depend on this un-reviewed state; treat CI's fresh install as the authority." >&2
