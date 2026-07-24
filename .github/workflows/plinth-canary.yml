@@ -2447,6 +2447,44 @@ jobs:
               r=0; PATH="$SEDB:$PATH" bash "$LG" scope HEAD --snapshot "$TSI/sn" app.py >/dev/null 2>&1 || r=$?
               [ "$r" = 5 ] || { echo "::error::scope did not fail closed when sed errored (exit $sedrc, rc=$r) — BSD sed rc=1 masking in a grep|sed pipeline"; exit 1; } )
           done
+          # PER-SITE ck_sed coverage: a GLOBAL sed shim fails at the FIRST call site (_gtag/hidden), so it
+          # can't prove the LATER sites (_ctag, touched, ignored-artifact). Use a SELECTIVE shim that
+          # fails ONLY for a specific sed script (real sed otherwise) so each ck_sed site is exercised —
+          # reverting ck_sed->sed at any one site would then turn a specific assertion red (Rule 7).
+          mk_sed_shim() { { printf '#!/usr/bin/env bash\n'; printf 'for a in "$@"; do case "$a" in %s) exit 1;; esac; done\n' "$2"; printf 'exec /usr/bin/sed "$@"\n'; } > "$1/sed"; chmod +x "$1/sed"; }
+          # CONTROL: a no-match shim must let a clean snapshot SUCCEED (proves the shim is selective, not
+          # failing everything — else the per-site assertions below would be hollow):
+          SC="$(mktemp -d)"; mk_sed_shim "$SC" '*NOMATCH_XYZ*'
+          T_C="$(mktemp -d)"; ( cd "$T_C"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SC:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::[test-control] selective sed shim failed a clean snapshot (rc=$r) — per-site sed assertions would be hollow"; exit 1; } )
+          # _ctag site (fail only `s/^/C…`; _gtag `s/^/G…` still succeeds) -> snapshot fails closed:
+          SC1="$(mktemp -d)"; mk_sed_shim "$SC1" '*s/^/C*'
+          T_1="$(mktemp -d)"; ( cd "$T_1"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths; echo r > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SC1:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::_ctag ck_sed site not fail-closed (rc=$r) — a sed error there would mask control-plane classification"; exit 1; } )
+          # hidden-bit site (fail only `s/^..//`) -> scope fails closed:
+          SC2="$(mktemp -d)"; mk_sed_shim "$SC2" '*s/^..*'
+          T_2="$(mktemp -d)"; ( cd "$T_2"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null; echo b >> app.py
+            r=0; PATH="$SC2:$PATH" bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::hidden-bit ck_sed site not fail-closed (rc=$r) — a sed error would skip the skip-worktree refusal"; exit 1; } )
+          # touched site (fail only the `[<>]` extraction; a sensitive file changed so touched is computed):
+          SC3="$(mktemp -d)"; mk_sed_shim "$SC3" '*[<>]*'
+          T_3="$(mktemp -d)"; ( cd "$T_3"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths; echo r > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SN="$(mktemp)"; bash "$LG" snapshot > "$SN" 2>/dev/null; echo CH > secret.txt; echo b >> app.py
+            r=0; PATH="$SC3:$PATH" bash "$LG" scope HEAD --snapshot "$SN" app.py secret.txt >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::touched-path ck_sed site not fail-closed (rc=$r) — a sed error would drop a changed sensitive path"; exit 1; } )
+          # ignored-artifact site (fail only `s#/…`) -> NON-BLOCKING: scope succeeds but must report UNKNOWN:
+          SC4="$(mktemp -d)"; mk_sed_shim "$SC4" '*s#/*'
+          T_4="$(mktemp -d)"; ( cd "$T_4"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; printf 'node_modules/\n' > .gitignore; git add app.py .gitignore; git commit -qm base >/dev/null
+            mkdir -p node_modules; echo x > node_modules/d.js; echo b >> app.py
+            out="$(PATH="$SC4:$PATH" bash "$LG" scope HEAD app.py 2>&1)"; r=$?
+            { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'hermeticity UNKNOWN'; } || { echo "::error::ignored-artifact ck_sed site: a sed error did not report hermeticity UNKNOWN (rc=$r) — masked producer failure"; exit 1; } )
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
