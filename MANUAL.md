@@ -651,6 +651,17 @@ installed copies.
   file record passes `scope`. Record directory modes in the snapshot and
   compare them; extend the canary beyond the regular-file `.env` case.
   (v4.5.0 refresh review, round 9.)
+- **review.sh: auditor isolation is overclaimed for codex/agy**
+  (`shared/.plinth/review.sh` ~line 252). The comment says an empty cwd means
+  the auditor "CANNOT" read the repository, but codex's `read-only` sandbox
+  prevents writes while permitting filesystem reads — cwd merely hides the
+  path. Either enforce the isolation or reword the claim (overclaiming is this
+  repo's worst defect class). (v4.5.0 refresh review, round 11.)
+- **Lane + auditor temp files are never cleaned up** (both
+  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
+  `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
+  snapshot metadata accumulate under the system temp dir; add a post-report /
+  post-audit cleanup step. (Round 11, minors.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

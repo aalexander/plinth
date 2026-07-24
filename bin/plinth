@@ -423,7 +423,12 @@ ensure_protected_paths() {
   # intentionally not local: the EXIT trap outlives this function's frame.)
   PP_TMPS=()
   pp_cleanup() { [ "${#PP_TMPS[@]}" -eq 0 ] || rm -f -- "${PP_TMPS[@]}"; }
-  trap pp_cleanup EXIT INT TERM
+  # Signals must CLEAN UP AND STOP: a bare handler would resume after cleanup
+  # and let a cancelled init/update run on and mutate the policy. Conventional
+  # 128+SIG exits; `exit` re-fires the EXIT trap (pp_cleanup is idempotent).
+  trap pp_cleanup EXIT
+  trap 'pp_cleanup; exit 130' INT
+  trap 'pp_cleanup; exit 143' TERM
   local rc
   # BINARY REJECTION: a NUL byte cannot appear in a valid text policy, and
   # common greps report binary input via a "Binary file matches" DIAGNOSTIC
@@ -505,33 +510,35 @@ PATTERNS
   fi
   # Stage 2: drop lines byte-equal to a managed pattern; stage 3: keep only
   # leading (^|X) anchor groups; stage 4: unique prefixes.
-  # SUPPORTED convention grammar (constrained by design): (^|X) where X is a
-  # path prefix that may alternate at the top level or nest parens ONE level —
-  # e.g. plinth/, plinth/|vendor/, (plinth|vendor)/ — matched by the shared
-  # ANCHOR_RE in extraction AND the dedup strip, so a nested-anchor line with a
-  # managed suffix is stripped correctly and its suffix never re-appends in the
-  # broader canonical form. Deeper nesting cannot be matched by this grammar;
-  # such lines are VALID policy (stage 1b) but any that still LEAD with '(^|'
-  # after the strip make the update REFUSE (fail closed, below) rather than
-  # risk broadening a managed pattern past what the file's own anchors cover.
+  # SUPPORTED convention grammar (constrained by design), two regexes:
+  # - ANCHOR_RE parses any leading (^|X) group with at most ONE level of paren
+  #   nesting (what the grammar can REASON about);
+  # - SHAPE_RE additionally requires every top-level alternative of X to be a
+  #   PATH PREFIX ending in '/' — e.g. plinth/, plinth/|vendor/,
+  #   (plinth|vendor)/ — the only anchors whose composed managed rules match
+  #   the absolute paths the hooks check. Only SHAPE-conforming anchors are
+  #   adopted for appends and stripped in dedup.
   local ANCHOR_RE='^\(\^\|((\([^()]*\))|[^()])*\)'
+  # The literal pipe after the group-open is written [|]: BSD sed's ERE parser
+  # rejects the escaped form '(\|' ("parentheses not balanced") while [|] is
+  # unambiguous everywhere (grep and sed, GNU and BSD).
+  local SHAPE_RE='^\(\^([|]((\([^()]*\))|[^()|])*/)+\)'
   rc=0; grep -vxF -f "$mpat" "$active_t" > "$strip_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "managed-line exclusion, grep rc=$rc"
   rc=0; grep -oE "$ANCHOR_RE" "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
   # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
-  # count: empty or multiline = no single convention) — but only when every
-  # top-level alternative of X is a PATH PREFIX ending in '/'. Without that,
-  # an anchor like (^|foo) would compose managed rules such as
-  # (^|foo)\.plinth/session/ that match "foo.plinth/…" but NOT the absolute
-  # paths the hooks check ("…/foo/.plinth/…") — silently un-protecting the
-  # managed paths. A non-conforming shape falls back to canonical appends.
+  # count: empty or multiline = no single convention) — but only when it is
+  # SHAPE-conforming. Without that, an anchor like (^|foo) would compose
+  # managed rules such as (^|foo)\.plinth/session/ that match "foo.plinth/…"
+  # but NOT the absolute paths the hooks check ("…/foo/.plinth/…") — silently
+  # un-protecting the managed paths. Non-conforming = canonical appends.
   case "$prefixes" in
     ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical appends
     '(^|/)') : ;;     # canonical convention: keep canonical appends
     *)
-      rc=0; printf '%s' "$prefixes" | grep -qE '^\(\^(\|((\([^()]*\))|[^()|])*/)+\)$' || rc=$?
+      rc=0; printf '%s' "$prefixes" | grep -qE "${SHAPE_RE}\$" || rc=$?
       [ "$rc" -le 1 ] || ppfail "anchor shape check, grep rc=$rc"
       [ "$rc" -ne 0 ] || anchor="$prefixes"
       ;;
@@ -552,14 +559,36 @@ PATTERNS
   # and trigger a blind append.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "dedup active-line read, grep rc=$rc"
-  sed -E -e "s/$ANCHOR_RE//" -e 's/^\^//' "$active_t" > "$strip_t" || ppfail "dedup anchor strip (sed)"
-  # REFUSE-TO-BROADEN: any line still leading with '(^|' after the strip has an
-  # anchor beyond the supported grammar (nesting deeper than one level). Its
-  # suffix would wrongly read as "missing" and re-append in the broader
-  # canonical form — abort and tell the operator to normalize the line instead.
-  rc=0; grep -qE '^\(\^\|' "$strip_t" || rc=$?
+  # The strip removes only SHAPE-CONFORMING anchors (every arm a path prefix
+  # ending in '/'). A parseable-but-NON-conforming anchor like (^|foo) is left
+  # in place ON PURPOSE: its rule misses the absolute paths the hooks check, so
+  # its managed suffix must read as UNCOVERED and receive the canonical append —
+  # stripping it would let a broken rule suppress real protection.
+  # Per-line grep probe + bash prefix removal, not sed: BSD sed's ERE parser
+  # rejects SHAPE_RE's nesting depth outright ("parentheses not balanced")
+  # while grep parses it identically on GNU and BSD. SHAPE_RE is ^-anchored so
+  # -o yields at most one match per line.
+  : > "$strip_t" || ppfail "dedup strip init"
+  local pfx
+  while IFS= read -r line; do
+    rc=0; pfx="$(printf '%s\n' "$line" | grep -oE "$SHAPE_RE")" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "dedup anchor strip probe, grep rc=$rc"
+    line="${line#"$pfx"}"
+    line="${line#^}"
+    printf '%s\n' "$line" >> "$strip_t" || ppfail "dedup strip write"
+  done < "$active_t"
+  # REFUSE-TO-BROADEN: a residual leading '(^|' the grammar can PARSE is the
+  # non-conforming case above (safe: canonical append restores protection). One
+  # it CANNOT parse (nesting deeper than one level) might legitimately cover
+  # its suffix — appending canonical over it would broaden past the file's
+  # intent, so that aborts.
+  rc=0; grep -E '^\(\^\|' "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "residual-anchor scan, grep rc=$rc"
-  [ "$rc" -eq 1 ] || ppfail "unsupported anchor grammar in $f (a leading (^|...) group nested deeper than one level) — normalize that line; refusing to append a broader canonical pattern over it"
+  if [ "$rc" -eq 0 ]; then
+    rc=0; grep -Evq "$ANCHOR_RE" "$active_t" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "residual-anchor parse scan, grep rc=$rc"
+    [ "$rc" -eq 1 ] || ppfail "unsupported anchor grammar in $f (a leading (^|...) group the grammar cannot parse — nesting deeper than one level) — normalize that line; refusing to append a broader canonical pattern over it"
+  fi
   local sfx payload=''
   while IFS= read -r line; do
     [ -n "$line" ] || continue

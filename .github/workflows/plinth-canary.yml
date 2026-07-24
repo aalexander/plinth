@@ -1138,15 +1138,17 @@ jobs:
           # adopted: canonical fallback, no (^|foo)-anchored managed rules. Same for a
           # mixed-arm anchor where one alternative lacks the trailing slash.
           PD="$(mktemp -d)"; ( cd "$PD" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PD" >/dev/null 2>&1 )
-          printf '(^|foo)custom$\n' > "$PD/.plinth/protected-paths"
+          printf '(^|foo)custom$\n(^|foo)\\.plinth/session/\n' > "$PD/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PD" >/dev/null 2>&1 || { echo "::error::update aborted on a non-path-prefix anchor"; exit 1; }
-          grep -qxF '(^|/)\.plinth/session/' "$PD/.plinth/protected-paths" || { echo "::error::non-path-prefix anchor did not fall back to canonical appends"; exit 1; }
-          grep -qF '(^|foo)\.plinth/session/' "$PD/.plinth/protected-paths" && { echo "::error::a non-path-prefix anchor was adopted — managed rules would miss absolute paths"; exit 1; } || true
+          grep -qxF '(^|/)\.plinth/session/' "$PD/.plinth/protected-paths" || { echo "::error::a non-path-prefix (^|foo) rule SUPPRESSED the canonical managed append — its own rule misses absolute paths, so the suffix must read as uncovered"; exit 1; }
+          grep -qxF '(^|foo)\.plinth/session/' "$PD/.plinth/protected-paths" || { echo "::error::user's non-path-prefix line was not preserved"; exit 1; }
+          grep -qF '(^|foo)\.plinth/config' "$PD/.plinth/protected-paths" && { echo "::error::a non-path-prefix anchor was adopted for appends — managed rules would miss absolute paths"; exit 1; } || true
           PE="$(mktemp -d)"; ( cd "$PE" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PE" >/dev/null 2>&1 )
-          printf '(^|plinth|vendor/)custom$\n' > "$PE/.plinth/protected-paths"
+          printf '(^|plinth|vendor/)custom$\n(^|plinth|vendor/)\\.plinth/session/\n' > "$PE/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PE" >/dev/null 2>&1 || { echo "::error::update aborted on a mixed-arm anchor"; exit 1; }
-          grep -qxF '(^|/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::mixed-arm anchor (one alternative not a path prefix) was not rejected to canonical"; exit 1; }
-          grep -qF '(^|plinth|vendor/)\.plinth/session/' "$PE/.plinth/protected-paths" && { echo "::error::a mixed-arm anchor was adopted — its non-slash arm would miss absolute paths"; exit 1; } || true
+          grep -qxF '(^|/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::a mixed-arm rule SUPPRESSED the canonical managed append — its non-slash arm misses absolute paths"; exit 1; }
+          grep -qxF '(^|plinth|vendor/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::user's mixed-arm line was not preserved"; exit 1; }
+          grep -qF '(^|plinth|vendor/)\.plinth/config' "$PE/.plinth/protected-paths" && { echo "::error::a mixed-arm anchor was adopted for appends — its non-slash arm would miss absolute paths"; exit 1; } || true
           # (4) per-stage producer failures: a PATH shim fails ONLY the exact argv signature
           # (Nth matching hit) of one processing stage, else execs the real tool. Every stage's
           # status check must turn that failure into a non-zero exit with the policy file left
@@ -1154,13 +1156,13 @@ jobs:
           # vacuity: if a refactor changes a stage's argv so the shim stops firing, update
           # SUCCEEDS and the case fails loudly — update the signature alongside the stage.
           SHIMD="$(mktemp -d)"
-          for t in grep sed sort tail wc mktemp; do
+          for t in grep sort tail wc mktemp; do
             printf '%s\n' \
               '#!/usr/bin/env bash' \
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
               '  case "$*" in *"$INJ_SIG"*)' \
               '    n="$(cat "$INJ_CNT" 2>/dev/null)"; n=$(( ${n:-0} + 1 )); echo "$n" > "$INJ_CNT"' \
-              '    if [ "$n" -eq "${INJ_HIT:-1}" ]; then echo "shim: injected failure ($(basename "$0") hit $n)" >&2; exit 9; fi' \
+              '    if [ "$n" -eq "${INJ_HIT:-1}" ]; then if [ "${INJ_MODE:-fail}" = pause ]; then sleep 8; else echo "shim: injected failure ($(basename "$0") hit $n)" >&2; exit 9; fi; fi' \
               '  ;; esac' \
               'fi' \
               'exec "/usr/bin/$(basename "$0")" "$@"' > "$SHIMD/$t"
@@ -1169,9 +1171,10 @@ jobs:
           shimrun() { # shimrun <tool> <sig> <hit> <stage-label> [nonl]
             SB="$(mktemp -d)"; ( cd "$SB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SB" >/dev/null 2>&1 )
             case "${5:-}" in
-              nonl) printf '(^|/)my-rule$' > "$SB/.plinth/protected-paths" ;;
-              conv) printf '(^|plinth/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
-              *)    printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
+              nonl)      printf '(^|/)my-rule$' > "$SB/.plinth/protected-paths" ;;
+              conv)      printf '(^|plinth/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
+              badanchor) printf '(^|foo)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
+              *)         printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
             esac
             cp "$SB/.plinth/protected-paths" "$SB/pp.snap"
             so=0; INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
@@ -1185,9 +1188,10 @@ jobs:
           shimrun grep '-vxF' 1 'managed-line exclusion'
           shimrun grep '-oE' 1 'anchor extraction'
           shimrun sort '-u' 1 'prefix sort'
-          shimrun sed 's/^\(\^\|' 1 'dedup anchor strip'
+          shimrun grep '-oE ^\(\^(' 1 'dedup anchor strip probe'
           shimrun grep '-qxF --' 1 'dedup membership'
-          shimrun grep '-qE ^\(\^\|' 1 'residual-anchor scan'
+          shimrun grep '-E ^\(\^\|' 1 'residual-anchor scan'
+          shimrun grep '-Evq' 1 'residual-anchor parse scan' badanchor
           shimrun grep '-qE ^\(\^(' 1 'anchor shape check' conv
           shimrun grep '-E --' 1 'stage-1b line validation'
           shimrun grep '-E --' 2 'composed-rule validation'
@@ -1202,6 +1206,19 @@ jobs:
           shimrun wc '-c' 2 'atomic replace: payload size read'
           shimrun wc '-c' 3 'atomic replace: composed size read'
           shimrun mktemp '.protected-paths.tmp' 1 'atomic replace: same-dir temp create'
+          # SIGNAL regression: TERM during a paused mid-stage must clean up AND STOP — a
+          # handler that resumes after cleanup would let a cancelled update run on and mutate
+          # the policy. Pause the dedup-membership grep (shim pause mode), TERM the CLI,
+          # expect a signal exit, a byte-identical policy, and no stray temp.
+          SG="$(mktemp -d)"; ( cd "$SG" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SG" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n' > "$SG/.plinth/protected-paths"
+          cp "$SG/.plinth/protected-paths" "$SG/pp.snap"
+          INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_MODE=pause INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SG" >/dev/null 2>&1 & upid=$!
+          sleep 3; kill -TERM "$upid" 2>/dev/null || true
+          so=0; wait "$upid" || so=$?
+          [ "$so" -ne 0 ] || { echo "::error::a TERM-cancelled update completed successfully — the signal trap resumed instead of stopping"; exit 1; }
+          cmp -s "$SG/.plinth/protected-paths" "$SG/pp.snap" || { echo "::error::a TERM-cancelled update mutated the policy"; exit 1; }
+          ls "$SG/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::a TERM-cancelled update left a stray temp"; exit 1; } || true
           # Mode preservation is EXACT (stat+chmod, not cp-through-umask): a non-default 0664
           # policy must still be 0664 after a successful backfill.
           MP="$(mktemp -d)"; ( cd "$MP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MP" >/dev/null 2>&1 )

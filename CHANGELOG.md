@@ -32,13 +32,19 @@
   yielding a malformed anchor that propagates into appended managed rules, and the composed rule
   is re-checked before each append. The convention grammar supports `(^|X)` with X a path
   prefix that may alternate at the top level or nest parens ONE level (`plinth/`,
-  `plinth/|vendor/`, `(plinth|vendor)/`) — one shared ANCHOR_RE drives extraction AND the dedup
-  strip, so a nested-anchor line with a managed suffix is stripped correctly and never
-  re-appended in the broader canonical form. Every top-level alternative of X must END in `/`
-  (a path prefix): a non-path anchor like `(^|foo)` — whose composed rules would match
-  `foo.plinth/…` but not the absolute paths the hooks check — is NOT adopted and falls back to
-  canonical appends. Beyond the grammar (deeper nesting) the update REFUSES, fail closed,
-  rather than risk broadening a managed pattern past what the file's own anchors cover. Every
+  `plinth/|vendor/`, `(plinth|vendor)/`). Two regexes drive it: ANCHOR_RE parses any
+  one-level-nested leading group; SHAPE_RE additionally requires every top-level alternative
+  of X to END in `/` (a path prefix). Only SHAPE-conforming anchors are adopted for appends
+  AND stripped in dedup — a non-path anchor like `(^|foo)`, whose composed rules would match
+  `foo.plinth/…` but not the absolute paths the hooks check, is neither adopted nor allowed to
+  make its managed suffix read as covered: `(^|foo)\.plinth/session/` no longer suppresses
+  the canonical managed append (the line itself is preserved; canonical protection is added
+  alongside). The dedup strip is a per-line grep probe + bash prefix removal, not sed — BSD
+  sed's ERE parser rejects SHAPE_RE's nesting depth outright while grep parses it identically
+  on GNU and BSD. Beyond the parseable grammar (deeper nesting) the update REFUSES, fail
+  closed, rather than risk broadening a managed pattern past anchors it cannot reason about.
+  Signal handling stops the run: INT/TERM traps clean up and exit 130/143 — a cancelled
+  init/update can no longer resume past cleanup and mutate the policy. Every
   temp the function creates is registered and removed on ANY exit (abort, interrupt, success) —
   no leaks under the system temp dir, no stray `.protected-paths.tmp.*` dirtying the tree.
   Because the policy is replaced via rename(2) and never written through, a read-only 0444
@@ -48,14 +54,16 @@
   suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
   non-path-prefix and mixed-arm canonical fallbacks, read-only-policy rename semantics, and
   failure injections for every processing stage: unreadable policy, malformed regex (with and
-  without trailing newline), NUL-bearing policy, and seventeen argv-signature shim injections
-  (grep/sed/sort/tail/wc/mktemp, Nth-hit selectable — including a no-newline-seed late-stage
-  case that kills an early-normalization mutant, all three size-producer reads and the
-  same-dir temp creation of the atomic replace, and the anchor shape check) covering each
-  producer status check — each asserts a non-zero exit, a byte-identical policy file, and no
-  stray same-dir temp, and the expect-failure design makes a stale shim signature fail loudly
-  instead of going vacuous. Exact-mode preservation (0664 stays 0664) is asserted on the
-  success path (`.github/workflows/plinth-canary.yml`).
+  without trailing newline), NUL-bearing policy, eighteen argv-signature shim injections
+  (grep/sort/tail/wc/mktemp, Nth-hit selectable — including a no-newline-seed late-stage case
+  that kills an early-normalization mutant, the strip probe, the residual and parse scans, the
+  anchor shape check, all three size-producer reads, and the same-dir temp creation of the
+  atomic replace) covering each producer status check — each asserts a non-zero exit, a
+  byte-identical policy file, and no stray same-dir temp, with the expect-failure design
+  making a stale shim signature fail loudly instead of going vacuous — plus a SIGNAL
+  regression (TERM during a shim-paused mid-stage must exit non-zero with the policy
+  byte-identical and no stray temp). Exact-mode preservation (0664 stays 0664) is asserted on
+  the success path (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
