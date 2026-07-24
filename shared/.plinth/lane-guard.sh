@@ -50,7 +50,9 @@ set -uo pipefail
 
 _cap() {  # _cap <secs> <cmd...> — hard wall-clock cap for an external CLI call (auth preflight), so a
   # stalled CLI cannot hang the lane. timeout/gtimeout (-k 5 TERM->KILL) if present, else a python3
-  # process-group cap; only uncapped (returns the command's own status) if NEITHER exists.
+  # process-group cap. If NEITHER exists it FAILS (does NOT run the command uncapped) — the hard-cap
+  # contract is never silently broken; the caller treats the nonzero as "unavailable" (python3 is a
+  # declared dependency, so this path should not occur in a supported install).
   local _n="$1"; shift
   local _T
   if _T="$(command -v gtimeout || command -v timeout)"; then "$_T" -k 5 "$_n" "$@"; return; fi
@@ -64,7 +66,8 @@ except subprocess.TimeoutExpired:
     except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
     sys.exit(124)' "$_n" "$@"; return
   fi
-  "$@"
+  echo "lane-guard: no wall-clock cap tool (timeout/gtimeout or python3) — cannot bound '$1'; refusing to run it UNCAPPED" >&2
+  return 124
 }
 
 # ── shared: the SENSITIVE set = protected-paths patterns + a builtin secret denylist ──
