@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.5.0 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.5.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -414,25 +414,12 @@ ensure_protected_paths() {
   # If the file doesn't end in a newline, appending would concatenate the first
   # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
   [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
-  local sfx
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
-    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
-    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
-    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
-    # wrongly freezing the PRODUCT. "Covered" therefore means: some ACTIVE
-    # (non-comment, non-blank) line, after stripping its leading anchor — a
-    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
-    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
-    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
-    # not suppress backfilling the real protection. Comments are excluded too.
-    sfx="${line#'(^|/)'}"
-    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
-      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
-      | grep -qxF -- "$sfx" \
-      || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
-  done <<'PATTERNS'
+  # The plinth-managed pattern list (canonical (^|/) anchoring), in a temp file
+  # so the convention detection, the repair pass, and the append loop below all
+  # read one source of truth.
+  local mpat
+  mpat="$(mktemp)"
+  cat > "$mpat" <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
 (^|/)\.claude/hooks/
@@ -450,6 +437,56 @@ ensure_protected_paths() {
 (^|/)CLAUDE\.md$
 (^|/)AGENTS\.md$
 PATTERNS
+  # Anchor CONVENTION (v4.5.1). Backfilling in the canonical (^|/) form is wrong
+  # in a repo whose file anchors differently: the Plinth-on-plinth repo uses
+  # (^|plinth/) so patterns match the INSTALLED copies but never the editable
+  # shared/ sources — a canonical append there freezes the PRODUCT (the v4.5.0
+  # backfill did exactly that). Convention = the single (^|X) prefix among the
+  # file's active lines, ignoring lines byte-equal to a canonical managed
+  # pattern (our own past backfills must not veto detection). Mixed, absent, or
+  # canonical prefixes = canonical behavior, unchanged.
+  local anchor='(^|/)' prefixes repaired=0
+  prefixes="$(grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | grep -vxF -f "$mpat" \
+    | grep -oE '^\(\^\|[^)]*\)' | sort -u || true)"
+  if [ "$(printf '%s\n' "$prefixes" | grep -c . || true)" = "1" ] && [ "$prefixes" != '(^|/)' ]; then
+    anchor="$prefixes"
+    # REPAIR past canonical backfills to the file's convention: only active lines
+    # byte-equal to a managed pattern are rewritten; user lines and comments are
+    # untouched. Every managed line starts with the literal 5-char '(^|/)', so
+    # substr(...,6) is the suffix. ANCHOR travels via the environment because
+    # `awk -v` mangles backslashes.
+    repaired="$(grep -cxF -f "$mpat" -- "$f" 2>/dev/null || true)"
+    if [ "${repaired:-0}" -gt 0 ]; then
+      local rtmp
+      rtmp="$(mktemp)"
+      ANCHOR="$anchor" awk -v mpat="$mpat" '
+        BEGIN { a=ENVIRON["ANCHOR"]; while ((getline l < mpat) > 0) if (l != "") is[l]=1; close(mpat) }
+        { if ($0 in is) print a substr($0, 6); else print }' "$f" > "$rtmp" && cat "$rtmp" > "$f"
+      rm -f "$rtmp"
+      echo "  protected-paths: re-anchored $repaired canonical plinth-managed pattern(s) to this file's $anchor convention"
+    fi
+  fi
+  local sfx
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
+    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
+    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
+    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
+    # wrongly freezing the PRODUCT (hence $anchor on the append below). "Covered"
+    # therefore means: some ACTIVE
+    # (non-comment, non-blank) line, after stripping its leading anchor — a
+    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
+    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
+    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
+    # not suppress backfilling the real protection. Comments are excluded too.
+    sfx="${line#'(^|/)'}"
+    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
+      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
+      | grep -qxF -- "$sfx" \
+      || { printf '%s\n' "${anchor}${sfx}" >> "$f"; added=$((added + 1)); }
+  done < "$mpat"
+  rm -f "$mpat"
   [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
   return 0
 }

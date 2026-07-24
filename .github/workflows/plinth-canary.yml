@@ -1019,14 +1019,26 @@ jobs:
           [ -f "$C4/.plinth/DRIVER-project.md" ] || { echo "::error::.plinth/DRIVER-project.md not created"; exit 1; }
           grep -qF '(^|/)\.plinth/reviewer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::protected-paths missing reviewer.md"; exit 1; }
           grep -qF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::protected-paths missing CLAUDE.md"; exit 1; }
-          printf '(^|plinth/)\\.plinth/review\\.sh$\n(^|plinth/)\\.claude/hooks/\n' > "$C4/.plinth/protected-paths"
+          # Convention-anchored file (the Plinth-on-plinth (^|plinth/) scheme), seeded with one
+          # BAD canonical managed line — v4.5.0's backfill appended canonical (^|/) forms into
+          # such files, freezing the editable shared/ product sources; v4.5.1 must (a) never
+          # append canonical forms there, (b) backfill missing patterns IN the file's convention,
+          # and (c) REPAIR its own past canonical appends (the seeded CLAUDE.md line). The bad
+          # canonical seed also exercises detection: managed lines must not veto the convention.
+          printf '(^|plinth/)\\.plinth/review\\.sh$\n(^|plinth/)\\.claude/hooks/\n(^|/)CLAUDE\\.md$\n' > "$C4/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
-          grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
+          grep -qxF '(^|plinth/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a missing pattern in the file's own anchor convention"; exit 1; }
+          grep -qxF '(^|plinth/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not REPAIR a past canonical append to the file's convention"; exit 1; }
+          grep -qF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" && { echo "::error::the bad canonical CLAUDE.md line survived the repair"; exit 1; } || true
           # the UPDATE backfill must add the EXACT two lane agents, never the broad dir (bin/plinth:281):
-          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$'  "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing grok-implementer"; exit 1; }
-          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing codex-implementer"; exit 1; }
-          grep -qxF '(^|/)\.claude/agents/' "$C4/.plinth/protected-paths" && { echo "::error::update backfill added the BROAD .claude/agents/ pattern — it would freeze a project's own agents"; exit 1; } || true
+          grep -qxF '(^|plinth/)\.claude/agents/grok-implementer\.md$'  "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing grok-implementer (convention-anchored)"; exit 1; }
+          grep -qxF '(^|plinth/)\.claude/agents/codex-implementer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing codex-implementer (convention-anchored)"; exit 1; }
+          { grep -qxF '(^|/)\.claude/agents/' "$C4/.plinth/protected-paths" || grep -qxF '(^|plinth/)\.claude/agents/' "$C4/.plinth/protected-paths"; } && { echo "::error::update backfill added the BROAD .claude/agents/ pattern — it would freeze a project's own agents"; exit 1; } || true
+          # repair + convention backfill are IDEMPOTENT: a second update must not change the file.
+          cp "$C4/.plinth/protected-paths" "$C4/pp.snap"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
+          cmp -s "$C4/.plinth/protected-paths" "$C4/pp.snap" || { echo "::error::ensure_protected_paths is not idempotent on a convention-anchored file"; exit 1; }
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.

@@ -1,7 +1,15 @@
 # Project-Specific Driver Notes
-<!-- Anything unique to THIS project the DRIVER must know: domain constraints,
-     hard "never do" rules, stack quirks. The shared plinth-rules import via the
-     CLAUDE.md / AGENTS.md driver shell; this file is yours and is never
-     overwritten by `plinth update`. The symmetric twin of AGENTS-project.md
-     (which carries project-specific REVIEWER rules). Delete this comment when
-     you add real notes. -->
+
+This repository is Plinth itself — the scope INVERSION below overrides the
+usual "tooling is off-limits" instinct, so read it before touching anything:
+
+- `shared/`, `templates/`, and `bin/` are the PRODUCT — edit them freely.
+- The installed `.plinth/` and `.claude/` copies are the pinned previous
+  release judging your work: never edit them; they refresh only via the
+  release flow (`plinth update`, run against this repo).
+- Every `shared/` or `bin/` change needs a CHANGELOG entry and VERSION bump.
+- Work on branches — the Stop gate and review loop apply here like any
+  project.
+- The canonical spec is `MANUAL.md` (see `spec_path` in `.plinth/config`);
+  review-loop findings against the INSTALLED tooling are fixed in the
+  `shared/`/`bin/` SOURCES (product work), never in the installed copies.

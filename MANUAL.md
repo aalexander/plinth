@@ -597,3 +597,39 @@ order when anything conflicts: deterministic floor (CI) > cross-model review >
 driver self-report — `verdict.json` and runner output are evidence; the model's
 summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
+
+## Noticed
+Non-blocking findings and drive-by observations — the backlog inbox (see
+"Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
+installed copies.
+
+- **guard.sh: protected-path loops fail open on heredoc temp failure**
+  (`shared/.claude/hooks/guard.sh`, both pattern loops). If Bash cannot create
+  the heredoc temp file, the loop is skipped and the hook still exits 0 —
+  project protections AND the builtin `.plinth/session/` protection silently
+  off. Reproduced under a non-writable TMPDIR (v4.5.0 refresh review, round 1).
+  Fix: temp-create preflight or status-checked input, plus failure-injection
+  coverage.
+- **guard.sh: unreadable/invalid protected-path policy fails open**
+  (`shared/.claude/hooks/guard.sh` policy read). `grep ... || true` discards an
+  unreadable policy; an invalid pattern makes `grep -Eq` return 2 inside `if`,
+  treated as no-match — the protected write is then permitted despite MANUAL's
+  tool-level-blocking claim. Fix: validate readability, node type, and each
+  regex before use (as lane-guard does). (Round 1, same review.)
+- **guard.sh: secret denylist omits `*.pem`/`*.key`**
+  (`shared/.claude/hooks/guard.sh` secret classes vs `templates/.gitignore`).
+  Bash and Edit/Write writes to e.g. `server.pem`/`deploy.key` pass (both
+  reproduced). Align the hook's denylist with the gitignore's declared secret
+  classes. (Round 1, same review.)
+- **review.sh: dirty-tree check loses the `git status` exit status**
+  (`shared/.plinth/review.sh` porcelain enumeration via process substitution).
+  If status enumeration fails, the loop sees no records, `dirty=0`, and review
+  proceeds as if clean. Capture and validate the producer status; add
+  failure-injection coverage. (Round 1, same review.)
+- **`plinth update` cannot complete the driver-shell migration autonomously.**
+  The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
+  delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
+  driver from performing (`rm CLAUDE.md`), so it lands in NEEDS-HUMAN on every
+  affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
+  wave, consider an explicit `plinth update --regen-shell` that completes the
+  migration under a byte-honest no-content-loss check.

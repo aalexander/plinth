@@ -1,5 +1,23 @@
 # Blocked on you
 
+- [ ] **[BLOCKING] Complete this repo's one-time driver-shell migration** (v4.4 design; the
+  guard rightly blocks the driver from `rm CLAUDE.md`, so this last step is yours). The
+  project notes are already migrated into `.plinth/DRIVER-project.md`; run exactly:
+  `cd ~/Dev/plinth && rm CLAUDE.md && plinth update ~/Dev/plinth && git add -A && git commit -m "chore: regenerate driver shell (one-time v4.4 migration)"`
+  Until then CLAUDE.md ≠ the driver shell, the v4.5.0-pinned CI floor fails on it, and the
+  `chore/instrument-v4.5.0` branch review keeps a major open on exactly this.
+- [ ] Same one-time driver-shell migration in **certeus** and **anvil** (their v4.5.0
+  updates printed the same NOTE; each still has a custom CLAUDE.md). Their next driver
+  session can populate `.plinth/DRIVER-project.md` from the CLAUDE.md notes first —
+  only the `rm CLAUDE.md && plinth update <repo> && commit` step needs you.
+- [ ] Add the v4 seat lines to `.plinth/config` (guard-protected, so set-once by you) in
+  **all four repos** — plinth, wren, certeus, anvil all lack them (update preserves
+  existing configs; only fresh init writes them):
+  `audit_vendor = claude`, `audit_model = opus`, `advisor_model = opus`,
+  `advisor_model_max = fable`; optionally `reviewer_model_tier1/2 = gpt-5.6` once
+  `codex -m gpt-5.6` works on your account (Codex CLI >= 0.144.0 — an active line on an
+  ineligible account makes the reviewer fail loud by design). Without `audit_vendor`,
+  Tier-2 approvals get NO cross-vendor second opinion in any of the four.
 - [x] After tagging **v4.5.0**, bump this repo's own required gates in `.github/workflows/ci.yml`
   (`floor` + `checks`, now pinned `@5a39ab…` / v4.4.0) to the v4.5.0 SHA — the required gate
   intentionally trails the latest tag by one release for immutability, so v4.5.0's own floor

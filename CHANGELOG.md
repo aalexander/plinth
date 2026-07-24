@@ -1,6 +1,18 @@
 # Plinth changelog
 
-## v4.5.0 — implementer lanes (architect pattern) + advisor discipline + v4 model seats — July 23, 2026
+## v4.5.1 — protected-paths backfill honors the file's anchor convention — July 24, 2026
+- **`ensure_protected_paths` backfills and repairs in the file's own anchor convention.** The
+  v4.5.0 backfill appended genuinely-missing managed patterns in the canonical `(^|/)` form even
+  into a file anchored differently — in the Plinth-on-plinth repo (convention `(^|plinth/)`, so
+  patterns match the INSTALLED copies but never the editable `shared/` sources) that froze four
+  shared product sources (found by the v4.5.0 instrument-refresh review, round 1). Now: the
+  convention is detected as the single `(^|X)` prefix among the file's active lines (lines
+  byte-equal to a canonical managed pattern — our own past appends — are excluded from detection
+  and cannot veto it); missing patterns backfill WITH that prefix; and past canonical appends are
+  REPAIRED to it (only byte-equal managed lines are rewritten — user lines and comments are never
+  touched). Mixed, absent, or canonical prefixes keep the old behavior exactly. Idempotent; the
+  canary suite pins backfill-in-convention, repair, bad-line removal, exact lane-agent lines, and
+  a second-run `cmp` (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
