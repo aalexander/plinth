@@ -122,6 +122,15 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
       echo "lane-guard: .plinth/protected-paths has an INVALID regex ($pat) — refusing to run (fail closed)" >&2; exit 5; }
   done < <(prot_pats)
 }
+sens_grep() {  # sens_grep <pattern> <string> -> 0 match, 1 no-match; EXIT 5 on a grep ERROR (>=2).
+  # A classification grep must never let a producer error read as "no match" and silently un-classify
+  # a sensitive path. Patterns are pre-validated (validate_prot_pats / the builtin constants), so a
+  # >=2 is a real error, not a bad regex.
+  printf '%s' "$2" | grep -Eq "$1"; local _g=$?
+  [ "$_g" -le 1 ] && return "$_g"
+  echo "lane-guard: sensitivity match failed (grep rc=$_g) — refusing (fail closed)" >&2
+  exit 5
+}
 sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path). Git control-plane
   # files are NOT classified here — sens_snapshot records them DIRECTLY (it resolves the real
   # gitdir and knows they are control-plane), so no path-name heuristic can miss an unusual
@@ -131,10 +140,10 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
   # (they are recorded here, and spec-gated at scope time, never blind-exempt).
   local pat; while IFS= read -r pat; do
     [ -n "$pat" ] || continue
-    printf '%s' "$1" | grep -Eq "$pat" && return 0
+    sens_grep "$pat" "$1" && return 0
   done < <(active_pats)
-  printf '%s' "$1" | grep -Eq "$SECRET_DIRS"  && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
-  printf '%s' "$1" | grep -Eq "$SECRET_FILES" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
+  sens_grep "$SECRET_DIRS"  "$1" && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
+  sens_grep "$SECRET_FILES" "$1" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
@@ -164,7 +173,10 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # would miss the control plane there. GIT_DIR = per-worktree (HEAD, refs, index);
   # GIT_COMMON = shared (config, hooks, packed-refs, info/exclude). Both may equal `.git`.
   local GITDIR GITCOMMON
-  GITDIR="$(git rev-parse --git-dir 2>/dev/null)"; GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
+  # Check each rev-parse STATUS (not just nonempty output): a nonzero exit that still prints something
+  # must not be accepted as a resolved git dir. Fail closed on either.
+  GITDIR="$(git rev-parse --git-dir 2>/dev/null)" || { echo "lane-guard: cannot resolve the git dir — refusing (fail closed)" >&2; return 5; }
+  GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)" || { echo "lane-guard: cannot resolve the git common dir — refusing (fail closed)" >&2; return 5; }
   { [ -n "$GITDIR" ] && [ -n "$GITCOMMON" ]; } || { echo "lane-guard: cannot resolve the git dir — refusing (fail closed)" >&2; return 5; }
   # TWO tagged sources into one record loop (tab-separated tag<TAB>path):
   #   G = git-visible file — GATE through sens_match (secret/protected classification)
@@ -193,12 +205,16 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
     _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$')"; local _cprc=$?
     [ "$_cprc" -le 1 ] || { echo "lane-guard: control-plane sample-hook filter failed (grep rc=$_cprc) — refusing (fail closed)" >&2; return 5; }
   fi
-  # Build the tagged, de-duplicated baseline; status-check the sort/sed transform so a producer
-  # error fails CLOSED with a clean 5 (not a partial baseline). The record loop still runs in a
-  # pipeline subshell (after `printf |`), so its own `exit 5` fail-closed paths still propagate.
-  local _tagged _snrc
-  _tagged="$( { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } | sort -u )"; _snrc=$?
-  [ "$_snrc" -le 1 ] || { echo "lane-guard: could not build the sensitive baseline (sort/sed rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
+  # Build the tagged, de-duplicated baseline. Tag EACH source separately with its own status check —
+  # a `{ g; c; }` group exits with only the LAST command's status, so a failed G-transform would be
+  # masked. Then sort. Any producer error fails CLOSED with a clean 5 (not a partial baseline). The
+  # record loop still runs in a pipeline subshell (after `printf |`), so its `exit 5` paths propagate.
+  local _tagged _snrc _gtag _ctag _ctrc
+  _gtag="$(printf '%s\n' "$_gv" | sed 's/^/G\t/')"   # a fixed-prefix sed on captured input cannot fail
+  _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/')"; _ctrc=$?
+  [ "$_ctrc" -le 1 ] || { echo "lane-guard: control-plane tag transform failed (rc=$_ctrc) — refusing (fail closed)" >&2; return 5; }
+  _tagged="$(printf '%s\n%s\n' "$_gtag" "$_ctag" | sort -u)"; _snrc=$?
+  [ "$_snrc" -le 1 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
   printf '%s\n' "$_tagged" | while IFS="$(printf '\t')" read -r tag f; do
     [ -n "$f" ] || continue
     if [ "$tag" = G ]; then
@@ -326,7 +342,10 @@ case "$sub" in
     # SYMLINK (mode 120000) or a TREE (040000), `git show base:` returns the link's target text or
     # nothing — silently narrowing the base-union defense. Fail closed on any non-regular base object.
     bls="$(git ls-tree "$base" -- .plinth/protected-paths)" || { echo "scope: 'git ls-tree' on base failed — refusing (fail closed)" >&2; exit 5; }
-    bmode="$(printf '%s' "$bls" | awk '{print $1}')"
+    # Status-check the mode extraction: an awk error must not yield an empty bmode that the case below
+    # would read as "absent" (nothing to narrow) and skip the base-policy union — fail closed instead.
+    bmode="$(printf '%s' "$bls" | awk '{print $1}')"; bmrc=$?
+    [ "$bmrc" -eq 0 ] || { echo "scope: could not read base protected-paths mode (awk rc=$bmrc) — refusing (fail closed)" >&2; exit 5; }
     case "$bmode" in
       ''|100644|100755) : ;;  # absent (nothing to narrow) or a regular blob — OK
       *) echo "scope: base .plinth/protected-paths is not a regular file (git mode $bmode) — refusing to run (fail closed)" >&2; exit 5 ;;
@@ -340,13 +359,13 @@ case "$sub" in
       base_prot="$(printf '%s' "$bshow" | grep -Ev '^[[:space:]]*(#|$)')"; brc=$?
       [ "$brc" -le 1 ] || { echo "scope: could not parse base protected-paths (grep rc=$brc) — refusing (fail closed)" >&2; exit 5; }
     else base_prot=""; fi
-    # Union base + working-tree (now cached, status-checked) patterns. This is a pure in-memory
-    # transform on two already-status-checked captures: grep -v exits 1 when the union is empty
-    # (legitimate — no protected-paths anywhere) and sort cannot fail on valid input, so `|| true`
-    # here means "empty union", not a masked producer error.
-    all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u || true)"
+    # Union base + working-tree (now cached, status-checked) patterns. Status-checked: grep -v exits 1
+    # when the union is empty (legitimate — no protected-paths anywhere) and sort exits 0; >=2 is a
+    # real error that must fail CLOSED, never silently drop patterns and narrow protection.
+    all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u)"; aprc=$?
+    [ "$aprc" -le 1 ] || { echo "scope: could not build the protected-path union (rc=$aprc) — refusing (fail closed)" >&2; exit 5; }
     while IFS= read -r p; do [ -n "$p" ] || continue; grep -E "$p" </dev/null 2>/dev/null; [ "$?" -le 1 ] || { echo "scope: .plinth/protected-paths (base or tree) has an INVALID regex ($p) — refusing to run (fail closed)" >&2; exit 5; }; done <<< "$all_prot"
-    protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; printf '%s' "$1" | grep -Eq "$p" && return 0; done <<< "$all_prot"; return 1; }
+    protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; sens_grep "$p" "$1" && return 0; done <<< "$all_prot"; return 1; }
     in_spec() { local f="$1" a; shift; for a in "$@"; do [ "$f" = "$a" ] && return 0; done; return 1; }
     viol=""
     while IFS= read -r f; do
@@ -395,8 +414,8 @@ CHANGED
           # explicitly listed in the spec is legitimate project work — authorize exactly that.
           # Never authorizable: a real secret name, anything inside a secret DIRECTORY, or a
           # protected path (same precedence as sens_match).
-          if printf '%s' "$f" | grep -Eq "$SECRET_SAFE" \
-             && ! printf '%s' "$f" | grep -Eq "$SECRET_DIRS" \
+          if sens_grep "$SECRET_SAFE" "$f" \
+             && ! sens_grep "$SECRET_DIRS" "$f" \
              && ! protected "$f" && in_spec "$f" "$@"; then
             continue
           fi
@@ -417,8 +436,13 @@ TOUCHED
     # Exclude Plinth's own session state from the note: it is not un-reviewed build input
     # (verdicts/receipts are sensitive-COMPARED above; the event feed is hook-appended), and
     # naming `.plinth` here would false-fire the warning on every hooked Claude lane run.
-    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$' || true)"
-    if [ -n "$iga" ]; then
+    # This is a NON-BLOCKING report — a producer error must NOT reject the lane (that would
+    # over-reject on a cosmetic note). But it must not SILENTLY claim hermeticity either: on a real
+    # enumeration error (rc>1; rc=1 = legitimately no ignored artifacts) say hermeticity is UNKNOWN.
+    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$')"; igrc=$?
+    if [ "$igrc" -gt 1 ]; then
+      echo "scope note: could not enumerate ignored artifacts (rc=$igrc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
+    elif [ -n "$iga" ]; then
       echo "scope note: verification is NOT hermetic — ignored artifacts in the tree (not in the reviewed diff): $(printf '%s' "$iga" | tr '\n' ' ')" >&2
       echo "  -> your independent Rule-10 re-run may depend on this un-reviewed state; treat CI's fresh install as the authority." >&2
     fi

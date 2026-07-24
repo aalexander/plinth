@@ -142,7 +142,7 @@ jobs:
           printf '%s' "$rpq2" | grep -q "pins the reusable" || { echo "::error::a STALE QUOTED reusable floor ref did not warn"; exit 1; }
           # extract the FULL suggested repin command (it spans two lines: the sed + the target path/rm)
           # and RUN it; the result must be valid YAML with the closing quote intact:
-          sedcmd="$(printf '%s' "$rpq2" | grep -A1 -F 'sed -i.bak')"
+          sedcmd="$(printf '%s' "$rpq2" | grep -F 'sed -i.bak')"
           printf '%s' "$sedcmd" | grep -qF "$PSHA" || { echo "::error::stale quoted-ref warning carried no repin command with this SHA"; exit 1; }
           ( cd "$RPDQ" && eval "$sedcmd" )
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPDQ/.github/workflows/ci.yml" || { echo "::error::the repin sed on a QUOTED ref produced INVALID YAML (swallowed the closing quote)"; exit 1; }
@@ -158,7 +158,7 @@ jobs:
           ( cd "$RPS" && git add -A && git commit -qm base >/dev/null )
           rps2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPS" 2>&1)"
           printf '%s' "$rps2" | grep -q "pins the reusable" || { echo "::error::a STALE single-quoted CHECKS ref did not warn"; exit 1; }
-          scmd="$(printf '%s' "$rps2" | grep -A1 -F 'sed -i.bak')"; ( cd "$RPS" && eval "$scmd" )
+          scmd="$(printf '%s' "$rps2" | grep -F 'sed -i.bak')"; ( cd "$RPS" && eval "$scmd" )
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPS/.github/workflows/ci.yml" || { echo "::error::repin on a SINGLE-quoted ref produced invalid YAML"; exit 1; }
           grep -q "plinth-checks.yml@${PSHA}'" "$RPS/.github/workflows/ci.yml" || { echo "::error::single-quote delimiter not preserved on the checks repin"; exit 1; }
           # a QUOTED JOB KEY ("floor":) with a stale ref must still be discovered and warned:
@@ -177,10 +177,22 @@ jobs:
           RSL="$(mktemp -d)/pa th"; mkdir -p "$RSL"; ( cd "$RSL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RSL" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release/v4|" "$RSL/.github/workflows/ci.yml"
           ( cd "$RSL" && git add -A && git commit -qm base >/dev/null )
-          rsl="$("$GITHUB_WORKSPACE/bin/plinth" update "$RSL" 2>&1)"; rcmd="$(printf '%s' "$rsl" | grep -A1 -F 'sed -i.bak')"
+          rsl="$("$GITHUB_WORKSPACE/bin/plinth" update "$RSL" 2>&1)"; rcmd="$(printf '%s' "$rsl" | grep -F 'sed -i.bak')"
           ( eval "$rcmd" ) || { echo "::error::the advertised repin command broke on a space-containing target path (not shell-quoted)"; exit 1; }
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RSL/.github/workflows/ci.yml" || { echo "::error::slash-ref/space-path repin produced invalid YAML"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}" "$RSL/.github/workflows/ci.yml" && ! grep -q "@${PSHA}/v4" "$RSL/.github/workflows/ci.yml" || { echo "::error::slash ref (release/v4) was not fully replaced — left a /v4 residue"; exit 1; }
+          # metacharacter TARGET PATHS (backtick, $()): the advertised %q-quoted repin command must be
+          # a safe single token — not broken, and NOT executing command substitution:
+          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar'; do
+            RMP="$(mktemp -d)/$meta"; mkdir -p "$RMP"; ( cd "$RMP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RMP" >/dev/null 2>&1 )
+            sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RMP/.github/workflows/ci.yml"
+            ( cd "$RMP" && git add -A && git commit -qm base >/dev/null )
+            rmp="$("$GITHUB_WORKSPACE/bin/plinth" update "$RMP" 2>&1)"; mcmd="$(printf '%s' "$rmp" | grep -F 'sed -i.bak')"
+            ( eval "$mcmd" ) || { echo "::error::the advertised repin command broke on a metacharacter target path ('$meta')"; exit 1; }
+            [ -e OWNED ] && { echo "::error::the advertised repin command EXECUTED command substitution from a \$() target path — not shell-safe"; exit 1; } || true
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RMP/.github/workflows/ci.yml" || { echo "::error::metachar-path repin produced invalid YAML ('$meta')"; exit 1; }
+            grep -q "plinth-floor.yml@${PSHA}" "$RMP/.github/workflows/ci.yml" || { echo "::error::metachar-path repin did not land ('$meta')"; exit 1; }
+          done
           # PLUS/EXOTIC ref chars are valid git-ref characters, NOT token terminators: <current-sha>+old
           # is a DIFFERENT ref -> STALE, and a stale `release+v4` must be fully repinned (no +v4 residue):
           RPP="$(mktemp -d)"; ( cd "$RPP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPP" >/dev/null 2>&1 )
@@ -190,9 +202,24 @@ jobs:
           RPV="$(mktemp -d)"; ( cd "$RPV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPV" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release+v4|" "$RPV/.github/workflows/ci.yml"
           ( cd "$RPV" && git add -A && git commit -qm base >/dev/null )
-          rpv="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPV" 2>&1)"; vcmd="$(printf '%s' "$rpv" | grep -A1 -F 'sed -i.bak')"; ( cd "$RPV" && eval "$vcmd" )
+          rpv="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPV" 2>&1)"; vcmd="$(printf '%s' "$rpv" | grep -F 'sed -i.bak')"; ( cd "$RPV" && eval "$vcmd" )
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPV/.github/workflows/ci.yml" || { echo "::error::plus-ref repin produced invalid YAML"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}" "$RPV/.github/workflows/ci.yml" && ! grep -q "release+v4\|@${PSHA}+v4" "$RPV/.github/workflows/ci.yml" || { echo "::error::a stale release+v4 ref was not fully replaced — left a +v4 residue (repin class too narrow)"; exit 1; }
+          # `#` is NOT an unconditional terminator: a YAML comment needs whitespace before `#`, so
+          # <sha>#old (no space) is a single scalar = a DIFFERENT ref -> STALE, and a stale quoted
+          # `release#v4` must repin fully. A trailing ` # comment` (space before #) is still preserved.
+          RPH="$(mktemp -d)"; ( cd "$RPH"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPH" >/dev/null 2>&1 )
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPH/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}#old|" "$RPH/.github/workflows/ci.yml"
+          ( cd "$RPH" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPH" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>#old (a different scalar ref) was falsely treated as current — `#` wrongly used as an unconditional terminator"; exit 1; }
+          RPH2="$(mktemp -d)"; ( cd "$RPH2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPH2" >/dev/null 2>&1 )
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPH2/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release#v4|" "$RPH2/.github/workflows/ci.yml"
+          ( cd "$RPH2" && git add -A && git commit -qm base >/dev/null )
+          rph="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPH2" 2>&1)"; hcmd="$(printf '%s' "$rph" | grep -F 'sed -i.bak')"; ( cd "$RPH2" && eval "$hcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPH2/.github/workflows/ci.yml" || { echo "::error::quoted release#v4 repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}\"" "$RPH2/.github/workflows/ci.yml" && ! grep -q "release#v4" "$RPH2/.github/workflows/ci.yml" || { echo "::error::a quoted release#v4 ref was not fully replaced — repin stopped at #"; exit 1; }
           grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
           grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
           grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
@@ -1655,6 +1682,19 @@ jobs:
           chmod +x "$HPB/grok"
           vs="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; ve="$(date +%s)"
           { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( ve - vs ))" -lt 30 ]; } || { echo "::error::hookprobe did not BOUND a CLI that hangs on --version (rc=$rc elapsed=$(( ve - vs ))s; the capped --version path is unverified)"; exit 1; }
+          # TERM-RESISTANT --version (traps TERM, sleeps 60): hookprobe's OWN capped() must escalate to
+          # KILL (timeout -k / python process-group) and finish BOUNDED — a cooperative cap would hang.
+          # This exercises the production capped(), not the extracted lane-agent cap.
+          cat > "$HPB/grok" <<'HPTR'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { trap "" TERM; sleep 60; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPTR
+          chmod +x "$HPB/grok"
+          ts="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; te="$(date +%s)"
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( te - ts ))" -lt 40 ]; } || { echo "::error::hookprobe production capped() did not KILL a TERM-RESISTANT --version (rc=$rc elapsed=$(( te - ts ))s) — cooperative cap would hang"; exit 1; }
           # a cap of 0 DISABLES GNU `timeout` entirely (and a non-numeric value is meaningless); both
           # must be rejected as INCONCLUSIVE(4), never run uncapped (a silent hard-cap bypass):
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
@@ -2292,6 +2332,18 @@ jobs:
             bash "$LG" snapshot > "$TFI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$SRTB:$PATH" bash "$LG" scope HEAD --snapshot "$TFI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when a transform (sort) errored (rc=$r) — would print scope ok for an out-of-spec diff"; exit 1; } )
+          # sibling: a shadowed failing `grep` (the classification/enumeration producer) must ALSO
+          # fail closed — sens_grep + the status-checked transforms convert a grep error into exit 5,
+          # never a silently un-classified sensitive path.
+          GRPB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 2\n' > "$GRPB/grep"; chmod +x "$GRPB/grep"
+          TGI="$(mktemp -d)"; ( cd "$TGI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$GRPB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" -ne 0 ] || { echo "::error::snapshot did not fail closed when grep (classification) errored — un-classified sensitive fail-open"; exit 1; }
+            bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
