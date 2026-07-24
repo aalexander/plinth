@@ -2378,15 +2378,17 @@ jobs:
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
             rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
-            # SIBLING (round-33): a tracked SYMLINK named exactly `.ssh`/`secrets`/… (the secret-DIR NODE
-            # itself) — NOT matched by SECRET_FILES, only by SECRET_DIR_NODES — must be classified so the
-            # dir-symlink guard fires. Without the node classification the write-through-the-dir vector
-            # (a lane writing `.ssh/authorized_keys` through the link) leaves identical snapshots:
+            # SIBLING (round-33): a SYMLINK named exactly `.ssh`/`secrets`/… (the secret-DIR NODE) — only
+            # SECRET_DIR_NODES matches it — must be classified so the dir-symlink guard fires. Uses a
+            # FRESH fixture with NO `.gitignore` per name: a gitignored symlink-to-dir is enumerated
+            # INCONSISTENTLY across platforms (ubuntu git descends the link and lists its contents, not
+            # the node), so the deterministic case is an untracked symlink node (listed as the node).
             for dn in .ssh secrets credentials .aws; do
-              mkdir -p extdir2; ln -s extdir2 "$dn"
-              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
-              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a dir-symlink named '$dn' (rc=$r) — secret-dir NODE not classified (SECRET_FILES misses it), write-through vector open"; exit 1; }
-              rm -f "$dn"; rmdir extdir2 2>/dev/null || true
+              NF="$(mktemp -d)"; ( cd "$NF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+                echo a > app.py; git add -A; git commit -qm base >/dev/null
+                mkdir -p extdir2; ln -s extdir2 "$dn"
+                r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+                [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a dir-symlink named '$dn' (rc=$r) — secret-dir NODE not classified (SECRET_FILES misses it), write-through vector open"; exit 1; } )
             done
             # EXACT reported path for a changed 4-field symlink record (format-independent extraction):
             grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
