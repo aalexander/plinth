@@ -643,6 +643,14 @@ installed copies.
   truncate the source record to empty, permitting review of a dirty index.
   Parse rename/copy continuation records explicitly; add a regression test.
   (v4.5.0 refresh review, round 6.)
+- **lane-guard: sensitive-directory MODES are not snapshotted**
+  (`shared/.plinth/lane-guard.sh` `sens_snapshot`, ~line 194). The snapshot
+  records sensitive files and symlinks but not the modes of the sensitive
+  DIRECTORIES themselves (`secrets/`, `credentials/`, `.ssh/`, `.aws/`, …), so
+  a fallible lane that widens a directory's permissions without changing any
+  file record passes `scope`. Record directory modes in the snapshot and
+  compare them; extend the canary beyond the regular-file `.env` case.
+  (v4.5.0 refresh review, round 9.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

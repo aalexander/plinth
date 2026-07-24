@@ -19,10 +19,13 @@
   a normal answer, rc >= 2 aborts the update loudly instead of degrading into "no convention" /
   "not covered" and appending blind. The whole run is read-only until ONE atomic replace: the
   original bytes, the newline-termination fix, and every missing pattern are composed into a
-  same-directory temp (mode copied from the original), byte-length-verified, and rename(2)d
-  over the policy only after every check passes — a short write (ENOSPC/quota/I/O) can only
-  truncate the temp, which the size check catches and removes, so the live policy is either the
-  old bytes or the complete new bytes, never a partial. A NUL-bearing (binary) policy is
+  same-directory O_EXCL temp that is written THROUGH (never deleted and re-created — that would
+  reopen the pathname to a symlink/hardlink swap), given the original's EXACT mode via
+  stat+chmod (cp would filter 0664 through the umask to 0644), byte-length-verified with every
+  size producer status-checked, and rename(2)d over the policy only after every check passes —
+  a short write (ENOSPC/quota/I/O) can only truncate the temp, which the size check catches and
+  removes, so the live policy is either the old bytes or the complete new bytes, never a
+  partial. A NUL-bearing (binary) policy is
   refused outright — grep's "Binary file matches" diagnostic (rc 0) would otherwise defeat the
   regex validation. Every active policy line must compile as an
   ERE — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
@@ -37,11 +40,13 @@
   no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor
   convention (managed suffix not broadened; appends in the nested prefix), the deep-nesting
   refusal, and failure injections for every processing stage: unreadable policy, malformed
-  regex (with and without trailing newline), unwritable append, and twelve argv-signature shim
-  injections (grep/sed/sort/tail, Nth-hit selectable, including a no-newline-seed late-stage
-  case that kills an early-normalization mutant) covering each producer status check — each
-  asserts a non-zero exit and a byte-identical policy file, and the expect-failure design makes
-  a stale shim signature fail loudly instead of going vacuous
+  regex (with and without trailing newline), unwritable append, NUL-bearing policy, and fifteen
+  argv-signature shim injections (grep/sed/sort/tail/wc, Nth-hit selectable, including a
+  no-newline-seed late-stage case that kills an early-normalization mutant and all three
+  size-producer reads of the atomic replace) covering each producer status check — each asserts
+  a non-zero exit and a byte-identical policy file, and the expect-failure design makes a stale
+  shim signature fail loudly instead of going vacuous. Exact-mode preservation (0664 stays
+  0664) and no-stray-temp are asserted on the success and failure paths
   (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,

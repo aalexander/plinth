@@ -568,15 +568,25 @@ PATTERNS
   # through.)
   if [ "$added" -gt 0 ]; then
     [ -z "$lastc" ] || payload="${NL}${payload}"
-    local fdir tmpf osz psz
+    local fdir tmpf osz psz nsz fmode
     fdir="$(dirname "$f")" || ppfail "policy dirname"
     tmpf="$(mktemp "$fdir/.protected-paths.tmp.XXXXXX")" || ppfail "same-dir temp create"
     pfail_clean() { rm -f "$tmpf"; ppfail "$1"; }
+    # The O_EXCL mktemp file is written THROUGH — never deleted and re-created,
+    # which would reopen the pathname and let a concurrent process swap in a
+    # symlink/hardlink (the write-through class the CLI prevents elsewhere).
+    # Its mode is set EXACTLY from the original via stat+chmod — a cp-created
+    # file is filtered through the umask (0664 would silently become 0644,
+    # dropping group write). Every producer here is status-checked, including
+    # the final size read: a wc failure must abort, not be compared as text.
     osz="$(wc -c < "$f")" || pfail_clean "policy size read"
     psz="$(printf '%s' "$payload" | wc -c)" || pfail_clean "payload size"
-    { rm -f "$tmpf" && cp "$f" "$tmpf"; } || pfail_clean "temp compose copy"
+    fmode="$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" || pfail_clean "policy mode read"
+    cat "$f" > "$tmpf" || pfail_clean "temp compose copy"
     printf '%s' "$payload" >> "$tmpf" || pfail_clean "pattern append (temp)"
-    [ "$(wc -c < "$tmpf")" -eq $(( osz + psz )) ] || pfail_clean "short write detected composing the new policy"
+    nsz="$(wc -c < "$tmpf")" || pfail_clean "composed size read"
+    [ "$nsz" -eq $(( osz + psz )) ] || pfail_clean "short write detected composing the new policy"
+    chmod "$fmode" "$tmpf" || pfail_clean "mode preserve (chmod $fmode)"
     mv -f "$tmpf" "$f" || pfail_clean "atomic replace (rename)"
     echo "  protected-paths: added $added plinth-managed security pattern(s)"
   fi

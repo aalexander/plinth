@@ -1136,7 +1136,7 @@ jobs:
           # vacuity: if a refactor changes a stage's argv so the shim stops firing, update
           # SUCCEEDS and the case fails loudly — update the signature alongside the stage.
           SHIMD="$(mktemp -d)"
-          for t in grep sed sort tail; do
+          for t in grep sed sort tail wc; do
             printf '%s\n' \
               '#!/usr/bin/env bash' \
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
@@ -1171,6 +1171,21 @@ jobs:
           # policy missing its trailing newline must be byte-identical after a late failure —
           # this kills an early-normalization (newline-before-checks) mutant.
           shimrun grep '-qxF --' 1 'dedup membership (no-newline seed)' nonl
+          # Size-verification producers in the atomic replace: a wc failure at the original,
+          # payload, or composed read must abort with the policy untouched — the final one in
+          # particular must never be compared as text with its status discarded.
+          shimrun wc '-c' 1 'atomic replace: policy size read'
+          shimrun wc '-c' 2 'atomic replace: payload size read'
+          shimrun wc '-c' 3 'atomic replace: composed size read'
+          # Mode preservation is EXACT (stat+chmod, not cp-through-umask): a non-default 0664
+          # policy must still be 0664 after a successful backfill.
+          MP="$(mktemp -d)"; ( cd "$MP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MP" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n' > "$MP/.plinth/protected-paths"
+          chmod 664 "$MP/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$MP" >/dev/null 2>&1 || { echo "::error::update failed on a 0664 policy"; exit 1; }
+          mm="$(stat -c %a "$MP/.plinth/protected-paths" 2>/dev/null || stat -f %Lp "$MP/.plinth/protected-paths")"
+          [ "$mm" = "664" ] || { echo "::error::policy mode not preserved exactly (0664 -> 0$mm)"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$MP/.plinth/protected-paths" || { echo "::error::0664 policy was not backfilled"; exit 1; }
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.
