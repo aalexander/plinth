@@ -234,17 +234,25 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   _tagged="$(printf '%s\n%s\n' "$_gtag" "$_ctag" | sort -u)"; _snrc=$?
   [ "$_snrc" -eq 0 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
   # CONTROL-PLANE DIRECTORY modes: git tracks files, not directory nodes, and the `find` above records
-  # control-plane FILES/symlinks — so a `chmod` on `.git/hooks`, `refs`, or `.git/info` itself would
-  # leave identical file records. Record each control-plane dir's own MODE (stat, not git) so a
-  # metadata-only widening of the control plane is caught. Computed HERE (function body) so `return 5`
-  # on a stat failure propagates; the records are emitted first inside the group below and sorted in.
-  local _cd _cm _cpdirmodes=""
-  for _cd in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" "$GITCOMMON/info"; do
-    [ -d "$_cd" ] || continue
-    _cm="$(modeof "$_cd")"; [ -n "$_cm" ] || { echo "lane-guard: cannot stat control-plane dir '$_cd' — refusing (fail closed)" >&2; return 5; }
-    _cpdirmodes="${_cpdirmodes}cpdir ${_cm}  ${_cd}
+  # control-plane FILES/symlinks — so a `chmod` on a control-plane directory itself would leave
+  # identical file records. Record every control-plane dir's MODE (stat, not git) RECURSIVELY, so a
+  # metadata-only widening of `.git/hooks`, `.git/info`, or a nested ref namespace like
+  # `.git/refs/heads` is caught. Computed HERE (function body) so a `return 5` on a stat failure
+  # propagates; the records are emitted first inside the group below and sorted in.
+  local _cd _cm _cpdirmodes="" _cproots=() _cpalldirs
+  for _cd in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs" "$GITCOMMON/info"; do [ -d "$_cd" ] && _cproots+=("$_cd"); done
+  if [ "${#_cproots[@]}" -gt 0 ]; then
+    _cpalldirs="$(find "${_cproots[@]}" -type d 2>/dev/null)" \
+      || { echo "lane-guard: control-plane 'find -type d' failed — refusing (fail closed)" >&2; return 5; }
+    while IFS= read -r _cd; do
+      [ -n "$_cd" ] || continue
+      _cm="$(modeof "$_cd")"; [ -n "$_cm" ] || { echo "lane-guard: cannot stat control-plane dir '$_cd' — refusing (fail closed)" >&2; return 5; }
+      _cpdirmodes="${_cpdirmodes}cpdir ${_cm}  ${_cd}
 "
-  done
+    done <<CPDIRS
+$_cpalldirs
+CPDIRS
+  fi
   # The while-pipeline is the LAST statement in the group so its `exit 5` fail-closed paths make the
   # group (hence `group | sort`, the function's last statement) return 5.
   { printf '%s' "$_cpdirmodes"

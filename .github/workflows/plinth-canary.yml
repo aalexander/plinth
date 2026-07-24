@@ -2511,7 +2511,14 @@ jobs:
             r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNCP" app.py 2>&1)" || r=$?
             { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'hooks'; } || { echo "::error::scope missed a chmod on the .git/hooks control-plane DIRECTORY (rc=$r) — dir-mode not recorded"; exit 1; }
             git checkout -q app.py; chmod 755 .git/hooks
-            r=0; ( bash "$LG" snapshot > /dev/null ) 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::snapshot with cpdir modes false-failed a clean tree (rc=$r)"; exit 1; } )
+            r=0; ( bash "$LG" snapshot > /dev/null ) 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::snapshot with cpdir modes false-failed a clean tree (rc=$r)"; exit 1; }
+            # RECURSIVE (round-36): a chmod on a control-plane SUBDIR (.git/refs/heads) is also caught:
+            SNCP2="$(mktemp)"; bash "$LG" snapshot > "$SNCP2"
+            grep -q 'cpdir.*refs/heads' "$SNCP2" || { echo "::error::snapshot does not record control-plane SUBDIR modes (refs/heads)"; exit 1; }
+            chmod 777 .git/refs/heads; echo c >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNCP2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a chmod on the .git/refs/heads control-plane SUBDIR (rc=$r) — dir-mode enumeration not recursive"; exit 1; }
+            git checkout -q app.py; chmod 755 .git/refs/heads )
           # CLASS CLOSURE: a gitdir PATH CONTAINING A SPACE must not word-split the control-plane
           # enumeration (round-23 regression: `find $_cpdirs` unquoted would enumerate the wrong dirs
           # and silently OMIT the hook, letting a control-plane write escape). Array + quoted expansion.
