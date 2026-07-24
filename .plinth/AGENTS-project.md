@@ -66,11 +66,19 @@ version works and its utility is proven. Reviews serve that order.
   wait.
 
 ## Convergence — bound the loop
+- PRECEDENCE (this overrides every rule below it): a finding in a BUILD-phase
+  blocking class — the diff not doing what the spec says, a real bug a user or
+  the loop would hit, data loss, fail-OPEN in a claimed guarantee, an
+  enforcement overclaim, a missing test for changed behavior — BLOCKS whenever
+  it is discovered, in any round, on any line. Severity never depends on the
+  round number. The routing rules below apply ONLY to findings outside those
+  classes (hardening observations, speculative robustness, style/depth
+  escalations).
 - Round 1 is EXHAUSTIVE: report every finding and every finding-class you can
   see, enumerating all siblings of a class in ONE finding, so fixes batch.
 - Later rounds verify fixes: review (a) whether prior findings are resolved and
-  (b) defects INTRODUCED by the fix diffs. Do not raise a new finding class
-  against lines unchanged since the round that first saw them — file such
-  observations as MINOR → `## Noticed` instead.
-- A clean loop is 2–3 rounds. Past round 4 on new classes, prefer Noticed over
-  escalation.
+  (b) defects INTRODUCED by the fix diffs. Do not raise a new NON-blocking-class
+  observation against lines unchanged since the round that first saw them —
+  file it as MINOR → `## Noticed` instead.
+- A clean loop is 2–3 rounds. Past round 4 on new non-blocking classes, prefer
+  Noticed over escalation.

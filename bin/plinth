@@ -416,13 +416,19 @@ ensure_protected_paths() {
   # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
   # runs UNPIPED with its status checked; ppfail is the one exit path.
   ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
-  # Temp hygiene: every temp this function creates is registered and removed on
-  # ANY exit — ppfail aborts, interrupts, and normal completion alike — so a
-  # failed update leaks nothing under the system temp dir and never leaves a
-  # stray .protected-paths.tmp.* dirtying the repository tree. (PP_TMPS is
-  # intentionally not local: the EXIT trap outlives this function's frame.)
+  # Temp hygiene: ALL system scratch files live inside ONE private mktemp -d
+  # directory, registered the command after it is created and removed
+  # recursively on any exit — ppfail aborts, signals, and normal completion
+  # alike — so a failed update leaks nothing under the system temp dir and
+  # never leaves a stray .protected-paths.tmp.* dirtying the repository tree.
+  # One directory means ONE create-to-register window (an interrupt inside it
+  # can leak at most a single empty directory; shell has no atomic
+  # create+register). The same-dir atomic-replace temp is the only other
+  # registered path (rename(2) requires the policy's own filesystem).
+  # (PP_TMPS/PPD are intentionally not local: the EXIT trap outlives this
+  # function's frame.)
   PP_TMPS=()
-  pp_cleanup() { [ "${#PP_TMPS[@]}" -eq 0 ] || rm -f -- "${PP_TMPS[@]}"; }
+  pp_cleanup() { [ "${#PP_TMPS[@]}" -eq 0 ] || rm -rf -- "${PP_TMPS[@]}"; }
   # Signals must CLEAN UP AND STOP: a bare handler would resume after cleanup
   # and let a cancelled init/update run on and mutate the policy. Conventional
   # 128+SIG exits; `exit` re-fires the EXIT trap (pp_cleanup is idempotent).
@@ -430,6 +436,8 @@ ensure_protected_paths() {
   trap 'pp_cleanup; exit 130' INT
   trap 'pp_cleanup; exit 143' TERM
   local rc
+  PPD="$(mktemp -d)" || ppfail "scratch dir create"
+  PP_TMPS+=("$PPD")
   # BINARY REJECTION: a NUL byte cannot appear in a valid text policy, and
   # common greps report binary input via a "Binary file matches" DIAGNOSTIC
   # with rc 0 — the regex validation below would then be judging the
@@ -437,21 +445,17 @@ ensure_protected_paths() {
   # variable). UNPIPED, two checked producers: piped, pipefail reports the
   # RIGHTMOST nonzero status, so cmp's rc 1 (EOF vs file) would mask a tr
   # CRASH and misreport a broken scan as "the file contains NULs".
-  local bscan
-  bscan="$(mktemp)" || ppfail "mktemp binary-scan"
-  PP_TMPS+=("$bscan")
+  local bscan="$PPD/bscan"
   rc=0; LC_ALL=C tr -d '\000' < "$f" > "$bscan" || rc=$?
   [ "$rc" -eq 0 ] || ppfail "binary scan of $f (tr rc=$rc)"
   rc=0; cmp -s "$bscan" "$f" || rc=$?
   [ "$rc" -le 1 ] || ppfail "binary scan of $f (cmp rc=$rc)"
   [ "$rc" -eq 0 ] || ppfail "policy file $f contains NUL/binary bytes — refusing to process"
-  # The plinth-managed pattern list (canonical (^|/) anchoring), in a temp file
-  # so the convention detection and the append loop below read one source of
-  # truth.
-  local mpat
-  mpat="$(mktemp)" || ppfail "mktemp managed-list"
-  PP_TMPS+=("$mpat")
-  cat > "$mpat" <<'PATTERNS'
+  # The plinth-managed pattern list (canonical (^|/) anchoring), in a scratch
+  # file so the convention detection and the append loop below read one source
+  # of truth. The heredoc write is status-checked like every other producer.
+  local mpat="$PPD/mpat"
+  cat > "$mpat" <<'PATTERNS' || ppfail "managed-list write"
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
 (^|/)\.claude/hooks/
@@ -485,17 +489,10 @@ PATTERNS
   # and the file records no provenance, so rewriting it could silently WEAKEN
   # user policy. It stays; suffix-dedup below treats it as covering its path, so
   # nothing is duplicated and every append uses the file's own convention.
-  local anchor='(^|/)' prefixes rc active_t strip_t NL='
+  local anchor='(^|/)' prefixes active_t strip_t NL='
 '
-  # Each temp registers IMMEDIATELY after its own creation — batching the
-  # registrations would deterministically leak the first temp when creating a
-  # later one fails. (An interrupt in the single-command window between a
-  # mktemp returning and its += line can still leak at most that one temp;
-  # shell offers no atomic create+register.)
-  active_t="$(mktemp)" || ppfail "mktemp active"
-  PP_TMPS+=("$active_t")
-  strip_t="$(mktemp)" || ppfail "mktemp strip"
-  PP_TMPS+=("$strip_t")
+  active_t="$PPD/active"
+  strip_t="$PPD/strip"
   # Stage 1: the file's ACTIVE (non-comment, non-blank) lines.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "active-line read of $f, grep rc=$rc"
@@ -617,7 +614,6 @@ PATTERNS
     payload="${payload}${anchor}${sfx}${NL}"
     added=$((added + 1))
   done < "$mpat"
-  rm -f "$mpat" "$active_t" "$strip_t"
   # MUTATION PHASE — atomic, reached only with every check green. The ENTIRE
   # new policy (original bytes + newline-termination fix + missing patterns)
   # is composed in a SAME-DIRECTORY temp whose mode is copied from the

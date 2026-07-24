@@ -46,9 +46,12 @@
   A bare-^ rule (e.g. `^\.plinth/session/`) likewise cannot match those absolute paths, so it
   is no longer stripped or counted as covering — canonical protection is appended alongside it.
   Signal handling stops the run: INT/TERM traps clean up and exit 130/143 — a cancelled
-  init/update can no longer resume past cleanup and mutate the policy. Every
-  temp the function creates is registered and removed on ANY exit (abort, interrupt, success) —
-  no leaks under the system temp dir, no stray `.protected-paths.tmp.*` dirtying the tree.
+  init/update can no longer resume past cleanup and mutate the policy. All
+  system scratch files live inside ONE private `mktemp -d` directory, registered the command
+  after creation and removed recursively on any exit — aborts, signals, and success alike — so
+  nothing leaks under the system temp dir and no stray `.protected-paths.tmp.*` dirties the
+  tree; the only leak windows are the two single-command create-to-register gaps (scratch dir,
+  same-dir replace temp), each bounded to one path (shell has no atomic create+register).
   Because the policy is replaced via rename(2) and never written through, a read-only 0444
   policy in a writable directory is backfilled successfully with its mode preserved. The
   canary suite pins convention backfill, canonical-line preservation, no-duplicate-suffix,
@@ -63,17 +66,16 @@
   parse scans, shape check, membership (incl. a no-newline seed that kills an
   early-normalization mutant), all three size-producer reads — and the atomic writer's
   external producers (binary scan tr+cmp, same-dir temp creation, compose copy, mode
-  preserve, rename), the policy `dirname`, and all four system-temp creations (the strip-temp
-  case proves the active temp was registered at creation — each temp registers immediately
-  after its own mktemp returns, so a later creation failing cannot leak an earlier temp; an
-  interrupt inside the single-command create-to-register window can still leak at most that
-  one temp, shell having no atomic create+register). NOT shim-injected, by declared
-  limitation: `stat` (its GNU/BSD `||` fallback pair absorbs any single injected failure by
-  design, so a portable deterministic injection does not exist) and the `printf` builtin (not
-  interceptable via PATH) — both are status-checked in code. Every injection asserts a
-  non-zero exit, a byte-identical policy, no stray same-dir temp, AND a private TMPDIR left
-  EMPTY (registered system temps removed by the trap on every injected failure); the
-  expect-failure design makes a stale shim signature fail loudly instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
+  preserve, rename), the policy `dirname`, the scratch-dir creation, the managed-list heredoc
+  write, a portable ALL-HITS `stat` injection (its GNU/BSD `||` fallback pair absorbs any
+  single injected failure, so the shim fails every matching hit and the first policy-path
+  consumer must fail closed on either platform), and a TRUNCATING-compose injection (cat
+  emits 3 bytes then claims success) proving the byte-length check stops a short write before
+  rename — the behavioral guarantee behind the non-interceptable `printf` builtin appends.
+  Every injection asserts a non-zero exit, a byte-identical policy, no stray same-dir temp,
+  AND a private TMPDIR left EMPTY (registered scratch state removed by the trap on every
+  injected failure); the expect-failure design makes a stale shim signature fail loudly
+  instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
   exits (TERM=143, INT=130), synchronized on the paused stage via the shim counter — each
   asserts the exact exit, a byte-identical policy, and no strays. Exact-mode preservation
   (0664 stays 0664) is asserted on the success path (`.github/workflows/plinth-canary.yml`).
