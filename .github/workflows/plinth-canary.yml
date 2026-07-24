@@ -212,6 +212,26 @@ jobs:
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPN/.github/workflows/ci.yml"
           ( cd "$RPN" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPN" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a name: \"uses: …\" STRING before the real uses: was captured as the ref (uses match not a line-start key)"; exit 1; }
+          # awk robustness (f): a same-named MATRIX key at a deeper indent must NOT divert discovery —
+          # only a DIRECT-child job of jobs: and a DIRECT-child uses: count. A `setup` job with
+          # `strategy.matrix.floor` before the real floor gate must still find the real stale gate:
+          RPMX="$(mktemp -d)"; ( cd "$RPMX"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPMX" >/dev/null 2>&1 )
+          python3 -c '
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          inject="  setup:\n    strategy:\n      matrix:\n        floor: [a, b]\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"
+          open(p,"w").write(s.replace("jobs:\n","jobs:\n"+inject,1))' "$RPMX/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPMX/.github/workflows/ci.yml" || { echo "::error::[test-setup] matrix-decoy fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPMX/.github/workflows/ci.yml"
+          ( cd "$RPMX" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPMX" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a strategy.matrix.floor key diverted discovery from the real jobs.floor gate (awk not direct-child scoped)"; exit 1; }
+          # awk robustness (g): a QUOTED top-level `\"jobs\":` mapping must still be recognized:
+          RPQJ="$(mktemp -d)"; ( cd "$RPQJ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPQJ" >/dev/null 2>&1 )
+          sed -i 's|^jobs:|"jobs":|' "$RPQJ/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPQJ/.github/workflows/ci.yml" || { echo "::error::[test-setup] quoted-jobs fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPQJ/.github/workflows/ci.yml"
+          ( cd "$RPQJ" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPQJ" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a quoted top-level \"jobs\": mapping was not recognized (stale gate missed)"; exit 1; }
           # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
           # gate must still be discovered (the parser must not assume exactly two-space indentation):
           RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )

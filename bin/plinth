@@ -508,12 +508,18 @@ warn_stale_reusable_refs() {
   # `env: { floor: … }` or `on:` inputs) is not mistaken for the gating job. The `uses:` match is a
   # line-start KEY at a child indent (`^[[:space:]]*uses:`), so `name: "uses: …"` text inside a string
   # or a commented `# uses: …` line does NOT satisfy it. Block ends at a sibling-or-shallower line.
+  # Require a DIRECT-CHILD job of the top-level `jobs:` mapping (ind == the first job-child indent)
+  # and a DIRECT-CHILD `uses:` of that job (ind == the job's first-child indent) — so a same-named
+  # MATRIX/nested key (`jobs.setup.strategy.matrix.floor`, `jobs.floor.strategy.matrix.uses`) at a
+  # deeper indent does NOT divert discovery. Top-level `jobs:` may itself be quoted.
   jobawk='
     { match($0, /^[[:space:]]*/); ind0=RLENGTH }
-    /^[[:space:]]*jobs[[:space:]]*:[[:space:]]*$/ && ind0==0 { injobs=1; jbind=ind0; next }
-    injobs && !f && ind0<=jbind && $0 ~ /[^[:space:]]/ { injobs=0 }
-    injobs && !f && ind0>jbind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*$") { f=1; jind=ind0; next }
-    f && ind0>jind && $0 ~ /^[[:space:]]*uses[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
+    ind0==0 && $0 ~ /^['\''\"]?jobs['\''\"]?[[:space:]]*:[[:space:]]*$/ { injobs=1; next }
+    injobs && !f && ind0==0 && $0 ~ /[^[:space:]]/ { injobs=0 }
+    injobs && !f && jobcind==0 && ind0>0 && $0 ~ /[^[:space:]]/ { jobcind=ind0 }
+    injobs && !f && ind0==jobcind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*$") { f=1; jind=ind0; next }
+    f && usescind==0 && ind0>jind && $0 ~ /[^[:space:]]/ { usescind=ind0 }
+    f && ind0==usescind && $0 ~ /^[[:space:]]*uses[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
     f && ind0<=jind && $0 ~ /[^[:space:]]/ { exit }'
   fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
   cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"
