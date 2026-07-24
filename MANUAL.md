@@ -626,6 +626,15 @@ installed copies.
   If status enumeration fails, the loop sees no records, `dirty=0`, and review
   proceeds as if clean. Capture and validate the producer status; add
   failure-injection coverage. (Round 1, same review.)
+- **review.sh: ratified-base probes conflate producer errors with absence**
+  (`shared/.plinth/review.sh` — `git cat-file -e` probes for base config
+  (~line 114), base project rules (~line 231), and the reviewer contract
+  (~line 386); `git diff --name-only` for tooling-path detection (~line 351)).
+  A probe ERROR currently reads as "absent", enabling working-tree fallback for
+  config/rules/contract, and a diff error reads as "no tooling paths", which can
+  leave a forged Tier-0 classification in force. Distinguish absence (rc 1)
+  from failure (rc >= 2 / 128) and fail closed; existing tests cover absence
+  only. (v4.5.0 refresh review, round 3 sweep.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

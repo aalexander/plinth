@@ -1020,17 +1020,19 @@ jobs:
           grep -qF '(^|/)\.plinth/reviewer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::protected-paths missing reviewer.md"; exit 1; }
           grep -qF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::protected-paths missing CLAUDE.md"; exit 1; }
           # Convention-anchored file (the Plinth-on-plinth (^|plinth/) scheme), seeded with one
-          # BAD canonical managed line — v4.5.0's backfill appended canonical (^|/) forms into
-          # such files, freezing the editable shared/ product sources; v4.5.1 must (a) never
-          # append canonical forms there, (b) backfill missing patterns IN the file's convention,
-          # and (c) REPAIR its own past canonical appends (the seeded CLAUDE.md line). The bad
-          # canonical seed also exercises detection: managed lines must not veto the convention.
+          # canonical managed line — v4.5.0's backfill appended canonical (^|/) forms into such
+          # files, freezing the editable shared/ product sources; v4.5.1 must (a) never append
+          # canonical forms there, (b) backfill missing patterns IN the file's convention, and
+          # (c) PRESERVE the seeded canonical line byte-for-byte: it has no provenance (past
+          # backfill or a user rule deliberately anchored broader), so rewriting it could weaken
+          # user policy — it must instead count as covering its suffix (no duplicate append).
+          # The canonical seed also exercises detection: managed lines must not veto the convention.
           printf '(^|plinth/)\\.plinth/review\\.sh$\n(^|plinth/)\\.claude/hooks/\n(^|/)CLAUDE\\.md$\n' > "$C4/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qxF '(^|plinth/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a missing pattern in the file's own anchor convention"; exit 1; }
-          grep -qxF '(^|plinth/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not REPAIR a past canonical append to the file's convention"; exit 1; }
-          grep -qF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" && { echo "::error::the bad canonical CLAUDE.md line survived the repair"; exit 1; } || true
+          grep -qxF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::a pre-existing canonical managed line was rewritten or dropped — existing policy lines must be PRESERVED byte-for-byte"; exit 1; }
+          grep -qxF '(^|plinth/)CLAUDE\.md$' "$C4/.plinth/protected-paths" && { echo "::error::a suffix already covered by an existing line was appended again (duplicate CLAUDE.md)"; exit 1; } || true
           # the UPDATE backfill must add the EXACT two lane agents, never the broad dir (bin/plinth:281):
           grep -qxF '(^|plinth/)\.claude/agents/grok-implementer\.md$'  "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing grok-implementer (convention-anchored)"; exit 1; }
           grep -qxF '(^|plinth/)\.claude/agents/codex-implementer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing codex-implementer (convention-anchored)"; exit 1; }

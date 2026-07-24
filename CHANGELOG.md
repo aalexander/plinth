@@ -1,18 +1,26 @@
 # Plinth changelog
 
-## v4.5.1 — protected-paths backfill honors the file's anchor convention — July 24, 2026
-- **`ensure_protected_paths` backfills and repairs in the file's own anchor convention.** The
-  v4.5.0 backfill appended genuinely-missing managed patterns in the canonical `(^|/)` form even
-  into a file anchored differently — in the Plinth-on-plinth repo (convention `(^|plinth/)`, so
+## v4.5.1 — protected-paths backfill honors the file's anchor convention, fails closed — July 24, 2026
+- **`ensure_protected_paths` backfills in the file's own anchor convention.** The v4.5.0
+  backfill appended genuinely-missing managed patterns in the canonical `(^|/)` form even into
+  a file anchored differently — in the Plinth-on-plinth repo (convention `(^|plinth/)`, so
   patterns match the INSTALLED copies but never the editable `shared/` sources) that froze four
-  shared product sources (found by the v4.5.0 instrument-refresh review, round 1). Now: the
-  convention is detected as the single `(^|X)` prefix among the file's active lines (lines
-  byte-equal to a canonical managed pattern — our own past appends — are excluded from detection
-  and cannot veto it); missing patterns backfill WITH that prefix; and past canonical appends are
-  REPAIRED to it (only byte-equal managed lines are rewritten — user lines and comments are never
-  touched). Mixed, absent, or canonical prefixes keep the old behavior exactly. Idempotent; the
-  canary suite pins backfill-in-convention, repair, bad-line removal, exact lane-agent lines, and
-  a second-run `cmp` (`.github/workflows/plinth-canary.yml`).
+  shared product sources (found by the v4.5.0 instrument-refresh review, round 1; that repo's
+  file was repaired in-branch with the refresh). Now the convention is detected as the single
+  `(^|X)` prefix among the file's active lines (lines byte-equal to a canonical managed pattern
+  are excluded from detection and cannot veto it) and missing patterns backfill WITH that
+  prefix. **Append-only:** existing lines are never rewritten — a canonical managed line in a
+  convention-anchored file has no provenance (past backfill, or a user rule deliberately
+  anchored broader), so it is preserved byte-for-byte and counts as covering its suffix. Mixed,
+  absent, or canonical prefixes keep the old behavior exactly.
+- **Policy processing fails CLOSED.** Every stage of the backfill (trailing-byte read, active-line
+  read, managed exclusion, anchor extraction, prefix sort, dedup membership, append) runs unpiped
+  with its status checked: grep rc 1 (no match) is a normal answer, rc >= 2 (unreadable input,
+  bad pattern) aborts the update loudly instead of degrading into "no convention" / "not
+  covered" and appending blind. The canary suite pins convention backfill, canonical-line
+  preservation, no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, and a
+  failure injection (unreadable policy ⇒ non-zero exit, fail-closed message, file byte-identical)
+  (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).

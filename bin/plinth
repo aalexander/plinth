@@ -411,14 +411,26 @@ ensure_protected_paths() {
   reject_nonregular_file "$f"
   [ -f "$f" ] || return 0
   local added=0 line
+  # FAIL CLOSED: a security-policy processing ERROR must abort the update, never
+  # degrade into a wrong-but-successful answer. grep rc 1 (no match) is a normal
+  # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
+  # runs UNPIPED with its status checked; ppfail is the one exit path.
+  ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
   # If the file doesn't end in a newline, appending would concatenate the first
-  # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
-  [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
+  # managed pattern onto the user's last line, corrupting BOTH. Fix it first —
+  # and a FAILED trailing-byte read must abort, not read as "newline present"
+  # (a silent tail failure here would corrupt the user's last rule on append).
+  local lastc rc
+  if [ -s "$f" ]; then
+    rc=0; lastc="$(tail -c1 "$f")" || rc=$?
+    [ "$rc" -eq 0 ] || ppfail "trailing-byte read of $f, tail rc=$rc"
+    if [ -n "$lastc" ]; then printf '\n' >> "$f" || ppfail "newline termination append"; fi
+  fi
   # The plinth-managed pattern list (canonical (^|/) anchoring), in a temp file
-  # so the convention detection, the repair pass, and the append loop below all
-  # read one source of truth.
+  # so the convention detection and the append loop below read one source of
+  # truth.
   local mpat
-  mpat="$(mktemp)"
+  mpat="$(mktemp)" || ppfail "mktemp managed-list"
   cat > "$mpat" <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
@@ -441,19 +453,19 @@ PATTERNS
   # in a repo whose file anchors differently: the Plinth-on-plinth repo uses
   # (^|plinth/) so patterns match the INSTALLED copies but never the editable
   # shared/ sources — a canonical append there freezes the PRODUCT (the v4.5.0
-  # backfill did exactly that). Convention = the single (^|X) prefix among the
-  # file's active lines, ignoring lines byte-equal to a canonical managed
-  # pattern (our own past backfills must not veto detection). Mixed, absent, or
-  # canonical prefixes = canonical behavior, unchanged.
+  # backfill did exactly that; that repo's file was repaired in-branch with the
+  # refresh). Convention = the single (^|X) prefix among the file's active
+  # lines, ignoring lines byte-equal to a canonical managed pattern (past
+  # canonical backfills must not veto detection). Mixed, absent, or canonical
+  # prefixes = canonical behavior, unchanged.
   #
-  # FAIL CLOSED (round 2): a security-policy processing ERROR must abort the
-  # update, never degrade into "no convention" / "not covered" — that would
-  # recreate the overbroad canonical append (or append blind). grep rc 1 (no
-  # match) is a normal answer; rc >= 2 (unreadable input, bad pattern) aborts.
-  # Every stage below runs UNPIPED with its status checked; ppfail is the one
-  # exit path so no stage can be added later without a status.
-  ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
-  local anchor='(^|/)' prefixes repaired=0 rc active_t strip_t NL='
+  # APPEND-ONLY by design: existing lines are NEVER rewritten. A line byte-equal
+  # to a canonical managed pattern in a convention-anchored file MIGHT be a
+  # v4.5.0 backfill — but it might be a user rule deliberately anchored broader,
+  # and the file records no provenance, so rewriting it could silently WEAKEN
+  # user policy. It stays; suffix-dedup below treats it as covering its path, so
+  # nothing is duplicated and every append uses the file's own convention.
+  local anchor='(^|/)' prefixes rc active_t strip_t NL='
 '
   active_t="$(mktemp)" || ppfail "mktemp active"
   strip_t="$(mktemp)" || ppfail "mktemp strip"
@@ -467,33 +479,12 @@ PATTERNS
   rc=0; grep -oE '^\(\^\|[^)]*\)' "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
-  # Single non-canonical prefix? (pure-bash count: empty or multiline = no)
+  # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
+  # count: empty or multiline = no single convention).
   case "$prefixes" in
-    ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical behavior
-    '(^|/)') : ;;     # canonical convention: keep canonical behavior
-    *)
-      anchor="$prefixes"
-      # REPAIR past canonical backfills to the file's convention: only active
-      # lines byte-equal to a managed pattern are rewritten; user lines and
-      # comments are untouched. Every managed line starts with the literal
-      # 5-char '(^|/)', so substr(...,6) is the suffix. ANCHOR travels via the
-      # environment because `awk -v` mangles backslashes.
-      rc=0; repaired="$(grep -cxF -f "$mpat" "$f")" || rc=$?
-      [ "$rc" -le 1 ] || ppfail "repair count, grep rc=$rc"
-      if [ "${repaired:-0}" -gt 0 ]; then
-        local rtmp
-        rtmp="$(mktemp)" || ppfail "mktemp repair"
-        ANCHOR="$anchor" awk -v mpat="$mpat" '
-          BEGIN { a=ENVIRON["ANCHOR"]; while ((getline l < mpat) > 0) if (l != "") is[l]=1; close(mpat) }
-          { if ($0 in is) print a substr($0, 6); else print }' "$f" > "$rtmp" || ppfail "repair rewrite (awk)"
-        # Refuse a short write-back: the rewrite is line-for-line, so a smaller
-        # output means a truncated policy.
-        [ "$(wc -l < "$rtmp")" -eq "$(wc -l < "$f")" ] || ppfail "repair rewrite changed the line count"
-        cat "$rtmp" > "$f" || ppfail "repair write-back"
-        rm -f "$rtmp"
-        echo "  protected-paths: re-anchored $repaired canonical plinth-managed pattern(s) to this file's $anchor convention"
-      fi
-      ;;
+    ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical appends
+    '(^|/)') : ;;     # canonical convention: keep canonical appends
+    *) anchor="$prefixes" ;;
   esac
   # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
   # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
