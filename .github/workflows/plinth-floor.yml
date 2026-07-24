@@ -84,6 +84,13 @@ jobs:
             # nothing to compare. If the release ships the file but the project
             # deleted it, cmp still fails below (that IS tampering).
             [ -f "/tmp/plinth/$1" ] || return 0
+            # cmp/-f follow symlinks: a pinned path committed as a SYMLINK (e.g. into the
+            # /tmp/plinth clone this job just made) could pass the byte check while the
+            # repo actually ships a link under external control. Reject the node type.
+            if [ -L "$2" ]; then
+              echo "::error file=$2::version-pinned path is a SYMLINK — must be a regular committed file"
+              fail=1; return 0
+            fi
             if ! cmp -s "/tmp/plinth/$1" "$2"; then
               echo "::error file=$2::differs from plinth v${ver} ($1) — version-pinned tooling was modified"
               fail=1
@@ -111,9 +118,34 @@ jobs:
           check shared/driver-shell.md            CLAUDE.md
           check shared/.plinth/review.sh          .plinth/review.sh
           check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
+          check shared/.plinth/lane-guard.sh       .plinth/lane-guard.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
           check shared/.claude/hooks/guard.sh         .claude/hooks/guard.sh
           check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
           check shared/.claude/hooks/review-gate.sh   .claude/hooks/review-gate.sh
           check shared/.claude/hooks/pulse.sh         .claude/hooks/pulse.sh
+          check shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
+          check shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
+          # Pinned EXECUTABLES are executed directly (./.plinth/review.sh, the lane agents'
+          # .plinth/lane-guard.sh calls, the .claude hooks). cmp verifies bytes but not MODE:
+          # committing the pinned bytes at 0644 would pass the byte check while every exec
+          # fails. Absence is already caught by check() above, so only mode is tested here.
+          checkx() {  # checkx <project-path>
+            [ -f "$1" ] || return 0
+            if [ -L "$1" ]; then
+              echo "::error file=$1::version-pinned executable is a SYMLINK — must be a regular committed file"
+              fail=1; return 0
+            fi
+            if [ ! -x "$1" ]; then
+              echo "::error file=$1::version-pinned executable is not executable (mode) — direct exec (lanes/review/hooks) would fail"
+              fail=1
+            fi
+          }
+          checkx .plinth/review.sh
+          checkx .plinth/risk-classify.sh
+          checkx .plinth/lane-guard.sh
+          checkx .claude/hooks/guard.sh
+          checkx .claude/hooks/session-start.sh
+          checkx .claude/hooks/review-gate.sh
+          checkx .claude/hooks/pulse.sh
           exit "$fail"

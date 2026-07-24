@@ -1,4 +1,4 @@
-# Plinth — User Manual (v3)
+# Plinth — User Manual (v4)
 
 ## What Plinth is
 A subscription-funded, multi-model dev environment: a frontier model drives (any
@@ -14,25 +14,55 @@ deterministic CI floor (tests + scanners) becomes a required status check that g
 merge ONCE you enable branch protection (a one-time operator step after the first PR —
 `plinth init` only reports branch-protection state, it cannot set it; until then CI is
 advisory). A Codex cloud review, once connected, additionally posts adversarial findings on
-each PR (security-briefed via the reviewer contract .plinth/reviewer.md) as a backstop,
-though it is advisory unless you make it a required gate. The name is the design:
+each PR (security-briefed via the reviewer contract .plinth/reviewer.md). It is ADVISORY by
+mechanism, not just by choice: it posts as PR comments and exposes no status-check context
+that branch protection could require. Under the architect-resident DEFAULT the local
+Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop is
+contract-bound until the APPROVED-at-HEAD receipt check ships (auto mode — the
+designated server-side review gate). The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
 
-## Current models (July 2026 — see .plinth/MODELS.md, updated via `plinth update`)
-- **Driver: Opus 4.8** default, routed to the work for speed and efficiency —
-  **Sonnet 5** for mechanical/doc changes (they land Tier 0–1), Opus at high effort
-  for high-consequence work (Tier 2), **Fable 5 by exception** on usage credits for
-  the heaviest long-context tasks (no automatic fallback — enable credits with a
-  monthly cap first). This is the driver's own speed/cost call: GUIDANCE, not a gate.
-- **Reviewer: `reviewer_vendor`** — codex / GPT-5.5 by default (one line in
-  `~/.codex/config.toml`), or `claude` / `grok`, each its own CLI (no codex config
-  needed). Risk-tiered, with a Tier-2 cross-vendor second opinion (`audit_vendor`,
-  default grok). Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a
-  match disables the cross-vendor audit (review.sh notes it on Tier 2), so if you
-  make grok the primary, switch `audit_vendor` to codex or agy. The resume threshold
-  scales per vendor automatically. GPT-5.6 is gov-only for now; evaluate at Codex GA.
+## Current models (July 12 2026 — see .plinth/MODELS.md, updated via `plinth update`)
+- **Seats are assigned per model, across vendors (v4)** — three models work
+  together. **DEFAULT topology (architect-resident):** the top model (Fable 5 by
+  exception on credits, Opus 4.8 otherwise) sits in Claude Code as the ARCHITECT
+  — judgment, specs, routing, and a final read-only audit; no routine typing —
+  and **Grok 4.5 does most of the coding as the WORKER** (`grok-implementer`
+  lane; the worker escalates open questions back to the architect). The local
+  guard and Stop gate stay ENFORCED because the resident harness is Claude.
+  **Alternative (grok-resident):** the grok CLI as the harness for
+  wall-clock-critical sessions — it carries the KNOWN LIMITATION below, and its
+  judgment channel is **Fable 5 advising** (`plinth advise`; peer tier Opus 4.8,
+  `--impactful` → Fable — scaffolded live, since advise is non-blocking).
+  Either way, **GPT-5.6** reviews
+  (`reviewer_vendor = codex` + `reviewer_model_tier1/tier2 = gpt-5.6`, shipped
+  COMMENTED in fresh scaffolds — GPT-5.6 GA'd July 9 2026 but access is
+  per-account and needs Codex CLI >= 0.144.0: uncomment once `codex -m gpt-5.6`
+  works for you; an ineligible account stays on the GPT-5.5 vendor default, and
+  an active 5.6 knob there would fail loud, not fall back), and **Claude
+  (Opus 4.8)** audits (`audit_vendor = claude` — a different family than both
+  the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
+  (export-control risk — it was suspended once already), the advisor seat moves to
+  GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
+  **KNOWN LIMITATION (until the receipt check ships with auto mode):** under the
+  grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
+  gate fires (grok 0.2.93 executes no `.claude/` hooks) and no required status
+  check verifies APPROVED-at-HEAD. The ENFORCED-gate path today is a Claude
+  driver; choose per task, and treat non-Claude-driven PRs accordingly (the PR
+  body's review audit is the evidence trail).
+- **Under the architect-resident default** the in-family routing still applies —
+  Sonnet 5 for mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by
+  exception on usage credits — and the implementer lanes carry the typing
+  (grok default, codex cross-vendor). Under the grok-RESIDENT alternative the
+  lanes are dormant (they are Claude-Code subagents) and mostly moot: that
+  driver is already the cheap fast typist and consults judgment UP via
+  `plinth advise` instead. Either way the driver's model is its own speed/cost
+  call: GUIDANCE, not a gate.
+- Keep `audit_vendor` a DIFFERENT vendor than `reviewer_vendor` — a match disables
+  the cross-vendor audit (review.sh notes it on Tier 2). The resume threshold
+  scales per reviewer vendor automatically.
 - The reviewer's risk tier is the immutable adversarial gate; the driver's model is
   not. The driver's only lever over review cost is tier hygiene — keep low-risk work
   in its own change so it takes the cheap path, don't bundle it into a Tier-2 diff.
@@ -57,12 +87,42 @@ Everything between is the model's call.
   hardware; writes a SHA-bound execution receipt that the next review round
   verifies RUNTIME findings against. Failures are data — receipts record them
   identically.
+- `plinth hookprobe <grok|codex>` — which wired `.claude/` hook EVENTS does this
+  vendor CLI execute? Wires a marker for EACH of the four events Plinth
+  enforcement uses (SessionStart = session-start, PreToolUse = guard,
+  PostToolUse = pulse, Stop = review gate), drives the CLI once (one small model
+  call, wall-clock capped: PLINTH_HOOKPROBE_TIMEOUT, default 120s), and reports
+  each event separately, incl. whether JSON arrived on stdin (what the real hooks
+  need). Exit 0 = ALL FOUR invoked; 1 = none or some — a NOT-invoked event is
+  certainly unenforced, and an INVOKED event is necessary-but-not-sufficient
+  (verify end-to-end before relying on it); 3 = CLI missing; 4 =
+  INCONCLUSIVE (timed out, the CLI never executed the probe's sentinel command —
+  unauth/sandbox/model failure — or it exited nonzero after executing it, where a
+  late failure could swallow late hook events such as Stop; an inconclusive run
+  is never hook evidence). Version/environment-dependent — trust the probe over
+  vendor docs and over this manual. Re-run after CLI upgrades.
 - `plinth advise [--impactful] "<question>"` — (run inside the project) the DRIVER
   consults a model as good or BETTER than itself, read-only, for a collaborative,
   NON-BLOCKING second opinion — distinct from the adversarial reviewer (the gate) and
-  the cross-vendor auditor. `--impactful` (architectural / hard-to-reverse decisions)
-  escalates to the stronger model. Vendor-agnostic and cross-family (a Grok driver can
-  consult Fable); see the `advisor_*` knobs below.
+  the cross-vendor auditor. It PROMPTS the advisor with a discipline preamble — give a
+  VERDICT not a survey ("Do X, not Y, because Z" + the single deciding risk), read the
+  code before opining, stay terse — and prints what the advisor returns; the shape is
+  guidance to the model, not an enforced/validated output. `--impactful` (architectural /
+  hard-to-reverse decisions) escalates to the stronger model. Vendor-agnostic and
+  cross-family (a Grok driver can consult Fable); see the `advisor_*` knobs below.
+- **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
+  Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
+  CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
+  interfaces · constraints · verification); it drives grok/codex headlessly and re-runs the
+  verification itself before reporting (a lane's "it works" is not evidence — Rule 10). The
+  economics: spend the frontier model on judgment, the lanes on volume; both are non-Anthropic
+  families, so the DRIVER's judgment of the diff is cross-vendor for free (the PR reviewer adds
+  another family only when `reviewer_vendor` differs from the lane's producer — see
+  `.plinth/MODELS.md`). Race both on one spec for
+  high-stakes work — sequentially, or one worktree per lane; never two lanes
+  concurrently in one checkout (they share the working tree, and scope
+  authorizes by path, not producer). Needs the `grok` / `codex` CLI installed + signed in; a missing CLI reports
+  `unavailable`, never a silent Claude fallback. See `.plinth/MODELS.md`.
 - Per-project knobs live in `.plinth/`: `config` (spec_path, exec_gated paths,
   round_budget, reviewer_vendor, audit_vendor/audit_model, advisor_vendor/advisor_model/
   advisor_model_max, tier2_extra — the config itself is off-limits to the driver, so
@@ -88,9 +148,11 @@ Everything between is the model's call.
   the dashboard shows a red banner while it's non-empty.
 
 ## Quick start (first time on a project — follow exactly)
-0. Once per machine (SETUP.md has details): install Claude Code, Codex CLI
-   (`npm i -g @openai/codex`, sign in with ChatGPT), `brew install jq gh`,
-   `gh auth login`.
+0. Once per machine (SETUP.md has details): install Claude Code (the resident
+   ARCHITECT harness, and the audit seat), the grok CLI
+   ([x.ai/cli](https://x.ai/cli), sign in — the WORKER seat, and the alternative
+   resident driver), Codex CLI (`npm i -g @openai/codex`, sign in
+   with ChatGPT — the reviewer seat), `brew install jq gh`, `gh auth login`.
 1. `plinth init ~/Dev/<repo>`. It scaffolds the project and runs a GitHub
    preflight: creates the git repo if missing, offers to create the GitHub
    remote (answer y; pick **public** unless the account has GitHub Pro —
@@ -109,7 +171,10 @@ Everything between is the model's call.
    it arrives security-briefed; there is no separate "Codex Security" product.
 4. After your FIRST PR (whenever it comes): confirm the `floor` and `checks`
    jobs appeared and that the Codex review commented. Then enable branch
-   protection requiring those checks — exact steps in "Branch protection"
+   protection requiring those checks. (The Codex cloud review posts as PR
+   COMMENTS — it exposes no status-check context, so it cannot be made a
+   required gate; treat it as an advisory second stream of findings.) Exact
+   steps in "Branch protection"
    below. From then on the merge gate is real. Until you've SEEN both fire,
    treat them as absent.
 
@@ -207,8 +272,11 @@ Two operator chores the rules generate:
 1. **You:** plan in Claude.ai (project-scoped), update `SPEC.md`, commit.
 2. **You:** open two terminals.
    - Pane A: `cd ~/Dev/<repo> && claude` — state the task in plain language.
-     (This walkthrough uses the Claude driver; a codex/grok driver runs its own
-     CLI instead — see the note after this list.)
+     (The v4 default is ARCHITECT-RESIDENT: the top model orchestrates here with
+     the full hook machinery enforced, and delegates the coding volume to the
+     grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
+     the enforced Stop gate for wall-clock: review becomes contract discipline
+     until the receipt check ships; see the known limitation.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
@@ -216,17 +284,46 @@ Two operator chores the rules generate:
    `.plinth/session/events.jsonl`. That file is the dashboard's feed. Every
    Bash/Edit the model attempts passes through `guard.sh` first — destructive
    commands and protected paths are blocked at the tool level, including for every
-   Claude subagent. These are `.claude/` hooks: a **codex/grok driver does not run
-   them** (those CLIs do not read `.claude/`), so it gets no local guard, no
+   Claude subagent. These are `.claude/` hooks — and whether a NON-Claude driver
+   executes them is PROBEABLE, not assumed: run `plinth hookprobe <grok|codex>`
+   (shipped tooling; one small capped model call). It wires a marker for EACH of
+   the four hook events Plinth enforcement uses (SessionStart, PreToolUse =
+   guard, PostToolUse = pulse, Stop = review gate), drives the CLI once, and
+   reports each event separately — a NOT-invoked event is certainly unenforced;
+   an INVOKED event means the CLI ran the hook command (necessary, not
+   sufficient — the real hooks also need Claude-shaped stdin JSON and
+   CLAUDE_PROJECT_DIR). At release time grok 0.2.93 reported: NONE executed
+   (receipt: docs/receipts/hookprobe-grok-0.2.93.txt)
+   (its Claude-compat is instruction/flag-level — CLAUDE.md auto-load,
+   `--allowedTools` naming). Vendor compat moves — re-run the probe after CLI
+   upgrades; trust the probe, not vendor docs or this sentence. An all-four
+   result makes local enforcement PLAUSIBLE — verify END-TO-END before relying
+   on it (wire the real hooks, run one session, confirm the pulse feed appears
+   and a guard block fires); a PARTIAL result leaves the missing events
+   certainly unenforced; everything below is the FLOOR unless end-to-end
+   verification passes. Under a non-executing driver you get
+   no local guard, no
    session-start/pulse feed, and no Stop gate — it is bound by the driver rules it
-   is told to follow (trusted to run the review loop) and, server-side, by the required
-   CI status checks that branch protection enforces (the cloud review is an advisory
-   backstop). Wiring the hooks into codex's own hook system is future work.
+   is told to follow (trusted to run the review loop) and, server-side, by branch
+   protection's required checks (floor + checks — CI and tooling integrity; they do
+   not verify the review verdict, and the cloud review is advisory comments). The
+   adversarial loop is contract-bound for a non-Claude driver until the receipt
+   check ships (auto mode). Wiring the hooks into codex's own
+   hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
-   **You:** watch Pane B, not the scrollback. The evidence line shows the last
-   real test run and its exit code; the model line shows who is actually
-   answering; red guard-blocks mean the base deflected something.
+   **You:** watch Pane B, not the scrollback. Under a CLAUDE driver the live feed
+   is full: the evidence line shows the last real test run and its exit code, the
+   model line shows who is actually answering, and red guard-blocks mean the base
+   deflected something. Under the grok-RESIDENT alternative the hook-fed lines are
+   SILENT (its CLI does not execute `.claude/` hooks — per-CLI, probe with `plinth
+   hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) — Pane B still shows review rounds and verdicts
+   (written by `review.sh`), the NEEDS-HUMAN queue, and branch state. Those are
+   local files, and a hookless driver could write them — the dashboard is
+   OBSERVABILITY, not a gate; what actually binds any driver is server-side:
+   branch protection's required checks on the PR. For Rule-10 evidence under
+   grok, read the session scrollback and the review verdicts instead of the
+   evidence line.
 4. **The model:** commits, then runs `./.plinth/review.sh`.
    *Background:* the script refuses to run on uncommitted work (verdicts bind
    to a commit SHA), diffs the branch against main, and classifies the diff into
@@ -250,8 +347,8 @@ Two operator chores the rules generate:
      public API, dependencies, weakened tests): full review, approval binds only
      through a clean-slate full pass (a warm reviewer can't approve its own
      checklist). When a cross-vendor auditor is configured (`audit_vendor` — new
-     projects default to `grok`; on an upgraded project you add the line yourself,
-     and `plinth update` reminds you if it is unset), every Tier-2 approval also
+     projects default to `claude`, the v4 audit seat; on an upgraded project you add
+     the line yourself, and `plinth update` reminds you if it is unset), every Tier-2 approval also
      gets a best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
@@ -263,12 +360,16 @@ Two operator chores the rules generate:
    gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
-   gate (`review-gate.sh`) refuses and sends it back with instructions. A codex/grok
-   driver does not run this hook, so nothing LOCAL forces it to review — it is bound
+   gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
+   whose CLI does not execute the Stop hook (per-CLI — `plinth hookprobe`; grok
+   0.2.93 reported no execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) has nothing LOCAL forcing it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
-   status checks that branch protection enforces. The Codex cloud review posts findings
-   as a backstop but is not a required gate by default, so for a non-Claude driver the
-   review discipline itself is the primary safeguard, not a server-side block.
+   status checks that branch protection enforces. Those required checks verify the
+   floor and tooling integrity, NOT the review verdict — and the Codex cloud review
+   cannot close that gap (it posts comments, not a requirable status check). Under
+   the grok-RESIDENT alternative the review loop is therefore contract-bound driver
+   discipline today; the server-side check of `review.sh`'s own APPROVED-at-HEAD
+   verdict — the receipt check, shipping with auto mode — is what closes it.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -278,7 +379,13 @@ Two operator chores the rules generate:
 ## The dashboard (`plinth watch`)
 Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
-ctrl-c to quit; `--once` prints a single frame). If it says "no event feed", the pulse
+ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
+NORMAL under a driver whose CLI does not execute `.claude/` hooks (per-CLI —
+`plinth hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; if the probe reports PostToolUse INVOKED,
+investigate — the same banner may mean broken wiring instead): the frame reduces to
+branch @ head, review verdict, and the NEEDS-HUMAN queue (observability from
+local files — the binding gate for any driver is branch protection, not this
+dashboard). If you are driving with CLAUDE and still see that banner, the pulse
 hook isn't wired — `plinth update` will say so too.
 
 ```
@@ -361,14 +468,25 @@ UI route, once the first PR shows its checks:
 2. Branch name pattern: `main`.
 3. Tick "Require status checks to pass before merging" (add "Require branches
    to be up to date" if you want rebase-before-merge discipline).
-4. In the search box, pick the floor and checks jobs EXACTLY as they appeared
-   on the PR (e.g. "CI / floor / secrets", "CI / checks / ...").
+4. In the search box, pick EVERY floor context and the checks context. GitHub
+   names a required check by its JOB name, NOT the workflow name — for a
+   reusable-workflow job the context is `<caller-job> / <reusable-job>`. With the
+   scaffold's `floor` and `checks` caller jobs that is:
+   `floor / secrets`, `floor / sast`, `floor / dependencies / osv-scan`,
+   `floor / harness`, and `checks / checks` (or just `checks` if you replaced the
+   reusable checks call with a direct-steps job). There is NO `CI / ` prefix. The
+   floor is FOUR independent required contexts, not one: any you omit stays
+   advisory. The Codex cloud review will NOT appear in this list — it posts PR
+   comments, not a status check, so it cannot be required here.
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same timing; paste the names the PR showed):
+CLI route (same contexts; use `checks` alone if your checks job is direct-steps):
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {"required_status_checks":{"strict":false,"contexts":["CHECK NAME 1","CHECK NAME 2"]},
+    {"required_status_checks":{"strict":false,
+      "contexts":["floor / secrets","floor / sast",
+                  "floor / dependencies / osv-scan","floor / harness",
+                  "checks / checks"]},
      "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
     JSON
 
@@ -412,28 +530,37 @@ it has run green with a real smoke_cmd.
   shell wrapper's quotes such as `bash -c "..."` is NOT — deliberate obfuscation evades
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
-  hook, so it binds Claude drivers/subagents; codex/grok do not read it). The guard is a
+  hook, so it binds Claude drivers/subagents; whether another driver executes it is
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver (codex/grok do not read `.claude/`), so for a codex/grok
-  driver this hook does NOT fire — their merge gate is the required CI status checks that
-  branch protection enforces (the cloud review posts findings but is not required by
-  default). Deliberately-quoted obfuscation is out of scope (see above); the merge gate
-  proper is branch protection's required status checks.
+  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
+  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.93
+  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). Under a non-executing
+  driver this hook does NOT fire — their merge gate is branch protection's required
+  checks (floor + checks — CI and tooling integrity; the review verdict has no
+  server-side verifier until the receipt check ships, and the cloud review is
+  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
+  the merge gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
-  can't trap a session. Codex/grok drivers do not run this hook — for them there is no
-  local hard block; the server-side hard gate is branch protection's required CI status
-  checks (the cloud review is an advisory backstop), and the driver is trusted to run the
-  review loop
-  on a broken pipeline — and every release is logged as a `gate_release` event
-  the dashboard shows in red.
-- Branch protection: `floor` + `checks` required to merge (requires public repo
-  or GitHub Pro; the preflight reports which state you're in).
+  can't trap a session. A driver whose CLI does not execute the Stop hook (per-CLI —
+  `plinth hookprobe`; grok 0.2.93: no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) has no
+  local hard block; the server-side hard gate is branch protection's required checks
+  (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
+  APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
+  shipping with auto mode, closes this). Every gate release (a Claude driver ending
+  its turn without approval, e.g. on a broken review pipeline) is logged as a
+  `gate_release` event the dashboard shows in red.
+- Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
+  harness) + `checks` required to merge (requires public repo or GitHub Pro; the
+  preflight reports which state you're in AND names any missing required
+  context). The cloud review is advisory; the receipt check (auto mode) adds
+  the review-verdict gate.
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —
@@ -451,9 +578,12 @@ it has run green with a real smoke_cmd.
 - **First PR per repo**: confirm the Codex review actually posts (connection
   is per-repo, SETUP step 4) and enable branch protection once the check names
   are visible.
-- **July 7**: last day Fable 5 is plan-included. Decide: Opus 4.8 default (free) vs
-  capped credits for Fable on hard tasks. No automatic fallback exists.
-- **GPT-5.6 GA** (mid-July earliest): evaluate as reviewer; one-line swap.
+- **Fable 5 availability** (standing; export-control volatility, credits-only, no
+  automatic fallback): if access lapses, move the advisor seat to GPT-5.6 per the
+  v4 contingency in `.plinth/MODELS.md`.
+- **GPT-5.6 eligibility**: GA landed July 9, 2026 (per-account; Codex CLI >=
+  0.144.0). When `codex -m gpt-5.6` works on your account, uncomment the two
+  scaffolded reviewer tier lines — the seat activates with that one edit.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.

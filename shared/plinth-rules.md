@@ -62,11 +62,19 @@ diffs, and exit codes are. Default to surfacing uncertainty, not hiding it.
 You decide how to orchestrate — single pass, parallel subagents, or a dynamic
 workflow (ultracode). Choose whatever fits the task. No need to get orchestration
 approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
-`.claude/` guard hooks and gates; a cross-family codex/grok delegate does not (those
-CLIs do not read `.claude/`) — for those, the binding layer is your own discipline
-(run the review loop) plus the required CI status checks that branch protection
-enforces; the Codex cloud review posts findings as an advisory backstop, not a
-required merge gate by default.
+`.claude/` guard hooks and gates; whether a cross-family codex/grok delegate inherits
+them is PER-CLI — treat local enforcement as ABSENT until verified END-TO-END
+(wire the real hooks, observe the pulse feed and a guard block). `plinth hookprobe
+<vendor>` settles the negative direction: a NONE result means certainly unenforced
+(grok 0.2.93 (reproduce: plinth hookprobe grok)); a positive probe
+shows invocation only, never enforcement. For a non-executing
+delegate, the binding layer is your own discipline
+(run the review loop) plus branch protection's required checks (floor + checks — CI
+and tooling integrity; they do NOT verify the review verdict). The Codex cloud
+review is ADVISORY: it posts PR comments and exposes no status-check context that
+branch protection could require. The server-verifiable APPROVED-at-HEAD receipt
+check (auto mode, next release) is the designated adversarial gate for delegated
+and non-Claude work.
 
 ## Subagents and the advisor (speed, and a stronger opinion)
 Fan out independent work to SUBAGENTS for speed and parallelism — the moment a task
@@ -79,11 +87,29 @@ high-consequence pieces. Use your harness's native model selection (Claude: the 
 for parallel fan-out; when one subtask genuinely wants another family's strength, a
 cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
 subagents inherit the `.claude/` guard
-hooks and gates automatically; a cross-family shell-out to a codex/grok delegate does NOT
-(those CLIs do not read `.claude/`), so keep any ship or destructive authority for such
-delegations narrow — what actually binds them is your discipline plus the required CI
-status checks (branch protection); the cloud review is an advisory backstop, not the
-local hook and not a required gate.
+hooks and gates automatically; whether a cross-family codex/grok shell-out does is
+PER-CLI (probe with `plinth hookprobe` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); a
+not-invoked event is certainly unenforced; invoked events need end-to-end
+verification), so keep any ship or destructive authority for such
+delegations narrow — what actually binds them is your discipline plus branch
+protection's required checks (floor + checks; the cloud review is advisory PR
+comments, not a requirable context, and no server-side review gate exists yet).
+
+Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
+specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
+CLAUDE driver, delegate the TYPING to a cheaper cross-family lane rather than typing it
+yourself — two shipped Claude-Code subagents do this, `grok-implementer` (default) and
+`codex-implementer` (cross-vendor), each driving an external CLI from a five-part spec
+(objective · files · interfaces · constraints · verification) and VERIFYING the result
+independently (Rule 10: the lane's report is a claim; your re-run of the verification command
+is the evidence). A NON-Claude driver cannot run those subagents — and doesn't need them when
+it IS the cheap fast model (the grok-RESIDENT alternative topology): type your own volume, consult judgment UP
+via `plinth advise` (`--impactful` for architectural calls), and for a second implementation
+shell out to the other family's CLI with the same five-part spec plus
+`.plinth/lane-guard.sh` (preflight / snapshot / scope — vendor-neutral shell).
+Details + cost discipline: `.plinth/MODELS.md`. When a
+delegated spec turns out to be architecturally wrong, that is YOUR call — do not let the lane
+guess; decide it, or consult the advisor.
 
 Before an IMPACTFUL or architectural decision — one expensive to reverse or that
 shapes the design (a schema, a public interface, a security boundary, a migration
@@ -128,12 +154,15 @@ the turn of a session that created commits until the verdict at HEAD is APPROVED
 gate has two pressure valves — a recent mechanical review failure, and a per-session
 block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
-driver does NOT run `.claude/` hooks, so this Stop gate does not fire for it — nothing
-LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
-the loop) and the required CI status checks that branch protection enforces; the Codex
-cloud review posts findings as a backstop but is not a required merge gate by default.
-Either way: run the loop to APPROVED before you open the PR — that discipline, not a
-hook, is the primary safeguard for a non-Claude driver.
+driver whose CLI does not execute `.claude/` hooks (probe with `plinth hookprobe
+<vendor>` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); re-run after upgrades) has no Stop
+gate — nothing LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
+the loop) and branch protection's required checks (floor + checks). Neither verifies
+the review verdict, and the Codex cloud review is advisory (PR comments — no
+requirable status context), so for a non-Claude driver the adversarial review loop is
+CONTRACT-bound until the APPROVED-at-HEAD receipt check ships (auto mode, next
+release). Either way: run the loop to APPROVED before you open the PR — that is the
+contract, whether or not a server gate enforces it yet.
 
 ## Upstream channel — two-way, with the Plinth maintainer
 Tooling findings and improvement proposals are never fixed in-project (that is

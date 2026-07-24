@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.4.0 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.5.0 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -38,23 +38,35 @@ PLINTH_VERSION="$(cat "$PLINTH_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project-path> [--once]
        plinth smoke <project-path> -- <command...>   (run + write execution receipt)
        plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
-       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)"; exit 1; }
+       plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
+       plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ]; then
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
+     # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
   echo "No such directory: $target"; exit 1
 fi
 
-# Portable in-place edit (macOS + Linux): sed to temp file, then move.
+# Portable in-place edit (macOS + Linux): sed to a temp file in the SAME dir (so mv is atomic), then
+# move. The temp path is created UNPREDICTABLY via mktemp (O_EXCL) — never a predictable sibling like
+# `${f}.plinth-tmp` a repo could precreate as a symlink/hardlink to an external target and be written
+# through before the mv (path-escape / clobber).
 edit_file() {  # edit_file <file> <sed-expr>...
   local f="$1"; shift
-  local tmp="${f}.plinth-tmp"
-  sed "$@" "$f" > "$tmp" && mv "$tmp" "$f"
+  # Read the ORIGINAL mode FIRST and fail closed if it can't be established: mktemp creates 0600,
+  # so a swallowed chmod would move a 0600 (group/other-UNREADABLE) file into place — the exact
+  # regression this preservation exists to prevent (e.g. a generated ci.yml unreadable until git
+  # recreates it). GNU (-c) first; BSD (-f) fallback. Must be octal digits.
+  local mode; mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)"
+  case "$mode" in ''|*[!0-7]*) echo "edit_file: cannot determine the mode of $f (stat failed) — refusing to rewrite it (fail closed)" >&2; exit 1 ;; esac
+  local tmp; tmp="$(mktemp "$(dirname "$f")/.plinth-tmp.XXXXXX")" || { echo "edit_file: mktemp failed for $f" >&2; exit 1; }
+  chmod "$mode" "$tmp" || { rm -f "$tmp"; echo "edit_file: could not apply mode $mode to the temp for $f — refusing (fail closed, would leave it 0600/unreadable)" >&2; exit 1; }
+  sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
 # NEEDS-HUMAN queue path — canonical is .plinth/NEEDS-HUMAN.md; tolerate a legacy
@@ -159,21 +171,119 @@ materialize_driver_shell() {
   fi
 }
 
+# The two lane-agent filenames are RESERVED for version-pinned Plinth tooling (protected-path +
+# HARNESS-classified by path). Refresh the pinned copy freely, but if a NON-Plinth file already
+# occupies that exact path (no pin marker = project-authored), do NOT clobber it and do NOT leave a
+# half-managed state (a preserved file would still get frozen/misclassified) — fail LOUD and abort so
+# the user resolves it. Non-destructive: their file is untouched.
+cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have caught a collision first
+  local src="$1" dst="$2" marker='Plinth implementer lane (version-pinned)'
+  if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
+    echo "ERROR: $dst exists and is NOT a Plinth lane agent. That filename is RESERVED for the Plinth" >&2
+    echo "       implementer lane (version-pinned tooling). Rename or move your file, then re-run —" >&2
+    echo "       refusing to overwrite it or leave it half-managed (protected/frozen but project-owned)." >&2
+    exit 1
+  fi
+  cp "$src" "$dst"
+}
+# Preflight the reserved lane-agent paths BEFORE any file is written, so a collision aborts with the
+# repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
+# installed while the project's colliding agent stays behind, frozen or misclassified).
+# A managed FILE target must be ABSENT or a true regular file — reject a symlink (would clobber its
+# external target), a directory (cp would copy INTO it, partial scaffold), or a FIFO/socket/device
+# (cp would hang/misbehave). Used before any managed-file write.
+reject_nonregular_file() {  # <path>
+  if [ -L "$1" ]; then echo "ERROR: $1 is a symlink — refusing to write through it." >&2; exit 1; fi
+  if [ -e "$1" ] && [ ! -f "$1" ]; then echo "ERROR: $1 is present but not a regular file (a directory or special file) — refusing." >&2; exit 1; fi
+  # A HARDLINK (nlink > 1) shares its inode with a file elsewhere; cp/redirection would truncate that
+  # shared inode and clobber the external target. Refuse rather than write through it.
+  if [ -f "$1" ]; then
+    # GNU (-c) first; BSD stat rejects -c and falls through to -f. Reverse order is WRONG: GNU
+    # `stat -f '%l'` succeeds with filesystem status (not nlink), so the `||` never falls through.
+    local n; n="$(stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null)"
+    # FAIL CLOSED if the link count can't be determined (both stat forms failed / non-numeric):
+    # defaulting to 1 would let a copy proceed and clobber an external hardlink (data loss).
+    case "$n" in ''|*[!0-9]*) echo "ERROR: cannot determine link count of $1 (stat failed) — refusing to touch it (fail closed)." >&2; exit 1 ;; esac
+    if [ "$n" -gt 1 ]; then echo "ERROR: $1 is a hardlink (nlink=$n) — refusing to overwrite a shared inode (would clobber the other link)." >&2; exit 1; fi
+  fi
+}
+preflight_reserved_lanes() {
+  local marker='Plinth implementer lane (version-pinned)' a dst parent="$target/.claude/agents" d f mansym
+  # SYMLINK-ESCAPE CLASS — closed once, up front, before ANY write: init/update write many files and
+  # dirs under the managed trees, and a symlink anywhere in that ancestry (a managed dir, an
+  # intermediate, or a file leaf) would let a write follow it and clobber a target OUTSIDE the
+  # workspace, or make a policy read return the wrong bytes. Refuse rather than write through any.
+  # (1) managed DIRECTORIES + intermediates: never a symlink, never a non-directory.
+  for d in .claude .claude/agents .claude/hooks .plinth .plinth/session .github .github/workflows; do
+    if [ -L "$target/$d" ]; then
+      echo "ERROR: $target/$d is a symlink — refusing to write through it (could escape the workspace)." >&2
+      exit 1
+    fi
+    if [ -e "$target/$d" ] && [ ! -d "$target/$d" ]; then
+      echo "ERROR: $target/$d exists but is not a directory — refusing to touch this repo until it is resolved." >&2
+      exit 1
+    fi
+  done
+  # (2) every managed FILE leaf that is unconditionally (re)written must be ABSENT or a real regular
+  #     file — never a symlink, directory, FIFO, or device (else cp escapes / copies into a dir / hangs).
+  #     Checked per Plinth-OWNED path only (NOT a whole-tree sweep) — a project's own .claude/agents/*
+  #     or unrelated .github/* symlink must NOT block init/update.
+  for f in \
+    .plinth/plinth-rules.md .plinth/MODELS.md .plinth/review.sh .plinth/risk-classify.sh \
+    .plinth/lane-guard.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
+    .plinth/config .plinth/AGENTS-project.md .plinth/DRIVER-project.md \
+    .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
+    .claude/hooks/pulse.sh .claude/settings.json .github/workflows/ci.yml .github/workflows/smoke.yml \
+    SPEC.md .gitignore AGENTS.md CLAUDE.md .plinth-version; do
+    reject_nonregular_file "$target/$f"
+  done
+  # (3) the NEEDS-HUMAN queue MIGRATION targets. update mv's a legacy root NEEDS-HUMAN.md into
+  #     .plinth/NEEDS-HUMAN.md (migrate_needs_human). If the canonical DESTINATION is a directory,
+  #     `mv` nests the queue inside it; if it (or the legacy SOURCE) is a symlink, `mv`/later reads
+  #     follow it and move/expose the queue OUTSIDE the workspace. Reject any non-regular node at
+  #     BOTH before update writes anything (absent is fine — the common case).
+  for f in .plinth/NEEDS-HUMAN.md NEEDS-HUMAN.md; do
+    reject_nonregular_file "$target/$f"
+  done
+  # (4) the two RESERVED lane-agent names.
+  for a in grok-implementer codex-implementer; do
+    dst="$parent/$a.md"
+    # First reject any symlink / directory / FIFO / device / HARDLINK at the reserved path — same
+    # write-through/escape guard as every other managed leaf (cp_lane_agent would otherwise clobber a
+    # hardlink's external inode).
+    reject_nonregular_file "$dst"
+    # Now dst is ABSENT or a true regular file. A regular file WITHOUT the pin marker is project-
+    # authored content occupying the RESERVED lane name — a collision; abort before any write.
+    if [ -f "$dst" ] && ! grep -qF "$marker" "$dst" 2>/dev/null; then
+      echo "ERROR: $dst is present but is not the Plinth lane agent (project-authored content). That" >&2
+      echo "       path is RESERVED for the version-pinned Plinth implementer lane. Remove or rename" >&2
+      echo "       it, then re-run — refusing to touch this repo." >&2
+      exit 1
+    fi
+  done
+}
+
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
-  mkdir -p "$target/.plinth" "$target/.claude/hooks"
+  mkdir -p "$target/.plinth" "$target/.claude/hooks" "$target/.claude/agents"
   cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
   cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
   cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
   cp "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
+  cp "$PLINTH_ROOT/shared/.plinth/lane-guard.sh"  "$target/.plinth/lane-guard.sh"
   cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
+  # Lane agents live in .claude/agents/ — a namespace a project may ALSO use. The two lane filenames
+  # are RESERVED: preflight_reserved_lanes() already aborted (repo untouched) if a non-Plinth file
+  # occupied either path, so here we just refresh the pinned copy (cp_lane_agent re-checks as a belt).
+  cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/grok-implementer.md"  "$target/.claude/agents/grok-implementer.md"
+  cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
   cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
   materialize_driver_shell
-  chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
+  chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" "$target/.plinth/lane-guard.sh" \
            "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
            "$target/.claude/hooks/pulse.sh"
@@ -229,7 +339,53 @@ github_preflight() {
   slug="$(printf '%s' "$url" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')"
   defb="$(gh api "repos/$slug" -q .default_branch 2>/dev/null || echo main)"
   if out="$(gh api "repos/$slug/branches/$defb/protection" 2>&1)"; then
-    echo "  protection:    configured on $defb"
+    # "configured" alone is not the guarantee — verify the required CONTEXTS actually
+    # cover the floor and checks jobs; protection with the wrong (or no) contexts
+    # leaves merges ungated while the preflight reads as healthy.
+    ctxs="$(printf '%s' "$out" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
+    # The floor is FOUR independent jobs (secrets, sast, dependencies/osv-scan, harness) —
+    # each needs its own required context; one present floor job does not gate the others.
+    # Contexts are matched by JOB NAME (grep -xF, exact) — GitHub does not prefix required-check
+    # contexts with the workflow name; the caller jobs are the scaffold's `floor` and `checks`.
+    miss=""
+    # GitHub required-check contexts are JOB names, NOT workflow-name-prefixed labels: a direct job
+    # is "<job>"; a reusable-workflow job is "<caller-job> / <reusable-job>". The scaffold's caller
+    # jobs are `floor` and `checks`, so the expected contexts are "floor / secrets", "floor / sast",
+    # "floor / dependencies / osv-scan", "floor / harness", and "checks / <job>" (or "checks" direct).
+    # Fetch actual check-runs ONCE and validate EVERY configured floor+checks context against them:
+    # a context that is required but names no real job (jobs removed/renamed) is a ghost gate.
+    runs="$(gh api --paginate "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^checks( / checks)?\$" || true)"
+    # required-set membership (grep -xF) first:
+    fmiss=""
+    for want in "floor / secrets" "floor / sast" "floor / dependencies / osv-scan" "floor / harness"; do
+      printf '%s\n' "$ctxs" | grep -qxF "$want" || fmiss="${fmiss:+$fmiss }$want"
+    done
+    [ -z "$fmiss" ] || for w in $fmiss; do case "$w" in *secrets) miss="${miss:+$miss, }floor/secrets";; *sast) miss="${miss:+$miss, }floor/sast";; *harness) miss="${miss:+$miss, }floor/harness";; *osv-scan) miss="${miss:+$miss, }floor/dependencies/osv-scan";; esac; done
+    [ -n "$ckctx" ] || miss="${miss:+$miss, }checks"
+    # then cross-check EVERY present floor/checks context against actual check runs (fail closed on
+    # no data): a required context not among real check runs is a ghost gate that never reports.
+    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / checks)?\$" || true)"
+    if [ -n "$present" ]; then
+      if [ -z "$runs" ]; then
+        miss="${miss:+$miss, }UNVERIFIED: no check-run data on $defb — cannot confirm the required contexts name real jobs; re-run after the first PR"
+      else
+        ghost=""
+        while IFS= read -r c; do [ -n "$c" ] || continue; printf '%s\n' "$runs" | grep -qxF "$c" || ghost="${ghost:+$ghost; }$c"; done <<GHOSTEOF
+$present
+GHOSTEOF
+        [ -z "$ghost" ] || miss="${miss:+$miss, }required context(s) not among actual check runs: $ghost"
+      fi
+    fi
+    if [ -z "$ctxs" ]; then
+      echo "  protection:    configured on $defb — but NO required status checks are set, so"
+      echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
+    elif [ -n "$miss" ]; then
+      echo "  protection:    configured on $defb — but required contexts are MISSING: $miss."
+      echo "                 Present: $(printf '%s' "$ctxs" | tr '\n' ' '). Absent jobs do not gate merges."
+    else
+      echo "  protection:    configured on $defb (required: $(printf '%s' "$ctxs" | tr '\n' ' '))"
+    fi
   elif printf '%s' "$out" | grep -q "Upgrade to GitHub Pro"; then
     echo "  protection:    IMPOSSIBLE on this plan (private repo, GitHub Free) — floor/checks are"
     echo "                 NOT required to merge. Make the repo public or upgrade to Pro."
@@ -248,7 +404,12 @@ github_preflight() {
 # their own. Append any missing plinth-managed patterns (idempotent); user-added
 # lines are left untouched.
 ensure_protected_paths() {
-  local f="$target/.plinth/protected-paths"; [ -f "$f" ] || return 0
+  local f="$target/.plinth/protected-paths"
+  # A symlinked/non-regular policy file must NOT be appended THROUGH — that would rewrite an external
+  # target and, read back via `git show base:`, silently narrow protection. Belt:
+  # preflight_reserved_lanes already refuses it, but ensure runs standalone (init/update both call it).
+  reject_nonregular_file "$f"
+  [ -f "$f" ] || return 0
   local added=0 line
   # If the file doesn't end in a newline, appending would concatenate the first
   # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
@@ -275,9 +436,12 @@ ensure_protected_paths() {
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
 (^|/)\.claude/hooks/
+(^|/)\.claude/agents/grok-implementer\.md$
+(^|/)\.claude/agents/codex-implementer\.md$
 (^|/)\.claude/settings\.json$
 (^|/)\.plinth/review\.sh$
 (^|/)\.plinth/risk-classify\.sh$
+(^|/)\.plinth/lane-guard\.sh$
 (^|/)\.plinth/review-schema\.json$
 (^|/)\.plinth/plinth-rules\.md$
 (^|/)\.plinth/MODELS\.md$
@@ -297,14 +461,137 @@ warn_missing_gate_wiring() {
     echo "SessionStart and Stop hook entries from CHANGELOG v3.7."
   fi
   if ! grep -q 'pulse.sh' "$target/.claude/settings.json" 2>/dev/null; then
-    echo "NOTE: .claude/settings.json lacks pulse.sh wiring — 'plinth watch' will"
-    echo "have no event feed for this project. See CHANGELOG v3.8."
+    echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
+    echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
+    echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
+    echo "(grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok) — feedless is"
+    echo "expected there; a driver the probe shows INVOKING PostToolUse yet feedless needs"
+    echo "investigating: broken wiring, or the hook gets no usable stdin/env — see the probe"
+    echo "json-stdin flag). For Claude, see CHANGELOG v3.8."
   fi
+}
+
+# ci.yml is per-project and NEVER rewritten by Plinth (the operator owns it). But its
+# reusable-workflow refs pin a Plinth release SHA, and an upgrade that bumps
+# .plinth-version WITHOUT repinning leaves the project calling the OLD floor/checks —
+# so new floor checks never run while branch protection stays green. update can't
+# silently rewrite the operator's workflow, so it WARNS loudly with the exact repin
+# command when the pinned SHA is stale (matches the branch-protection warning pattern).
+warn_stale_reusable_refs() {
+  [ -f "$target/.github/workflows/ci.yml" ] || return 0
+  local psha; psha="$(git -C "$PLINTH_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$psha" ]; then
+    # Non-git install (archive): we cannot resolve the release SHA to compare, but update still
+    # advanced .plinth-version and installed new tooling. Warn LOUDLY rather than silently skip —
+    # the old reusable floor/checks may still be active (mirrors the non-git INIT fail-loud path).
+    echo "NOTE: could not resolve the Plinth release commit (non-git install?), so update cannot"
+    echo "verify .github/workflows/ci.yml's reusable floor/checks refs. If a ref pins an older"
+    echo "release, that gate runs older Plinth tooling (and the NEW floor checks run only once the"
+    echo "FLOOR ref is current) — repin the reusable ref(s) present to this release's commit SHA."
+    return 0
+  fi
+  # Warn if EITHER ref is stale — floor and checks are independent gates, either can lag.
+  local ci="$target/.github/workflows/ci.yml"
+  # Tie the check to the GATING jobs (`floor:` / `checks:`), not any uses: line anywhere —
+  # a current ref under a decoy non-gating job must not suppress the warning. Best-effort
+  # (this is an advisory warning, not a gate): read the uses: line within each job block.
+  local fref cref jobawk
+  # Match the gating job key robustly: ANY indentation (not exactly two spaces), optional surrounding
+  # quotes (`"floor":` / `'checks':`), and optional space before the colon (`floor :`). Record the job
+  # key's INDENTATION and end the block only at a SIBLING-or-shallower non-blank line (indent <= the
+  # job's) — a MORE-indented child property (`permissions:`, `needs:`, `if:`, `strategy:` before
+  # `uses:`) must NOT terminate the block and suppress the warning. `uses:` is checked first.
+  # NOTE: the indentation capture MUST be an ACTION block `{ ... }` — a bare `match(...); x=RLENGTH`
+  # would be parsed as two PATTERNS (each with the default {print}), default-printing every line and
+  # corrupting the captured ref. `{ ... }` with no pattern runs for every line.
+  # Discovery is SCOPED to the top-level `jobs:` mapping so a same-named key elsewhere (e.g.
+  # `env: { floor: … }` or `on:` inputs) is not mistaken for the gating job. The `uses:` match is a
+  # line-start KEY at a child indent (`^[[:space:]]*uses:`), so `name: "uses: …"` text inside a string
+  # or a commented `# uses: …` line does NOT satisfy it. Block ends at a sibling-or-shallower line.
+  # Require a DIRECT-CHILD job of the top-level `jobs:` mapping (ind == the first job-child indent)
+  # and a DIRECT-CHILD `uses:` of that job (ind == the job's first-child indent) — so a same-named
+  # MATRIX/nested key (`jobs.setup.strategy.matrix.floor`, `jobs.floor.strategy.matrix.uses`) at a
+  # deeper indent does NOT divert discovery. Top-level `jobs:` may itself be quoted.
+  # `:[[:space:]]*(#.*)?$` tolerates an inline `# comment` on the `jobs:`/gating-job line; comment
+  # lines never establish the inferred child indent (excluded from the jobcind/usescind capture);
+  # `uses:` may itself be quoted (`"uses":`). Full YAML flow-style (`jobs: {floor: {…}}`) is out of
+  # scope for this line-based best-effort advisory.
+  jobawk='
+    { match($0, /^[[:space:]]*/); ind0=RLENGTH }
+    ind0==0 && $0 ~ /^['\''\"]?jobs['\''\"]?[[:space:]]*:[[:space:]]*(#.*)?$/ { injobs=1; next }
+    injobs && !f && ind0==0 && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { injobs=0 }
+    injobs && !f && jobcind==0 && ind0>0 && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { jobcind=ind0 }
+    injobs && !f && ind0==jobcind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*(#.*)?$") { f=1; jind=ind0; next }
+    f && usescind==0 && ind0>jind && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { usescind=ind0 }
+    f && ind0==usescind && $0 ~ /^[[:space:]]*['\''\"]?uses['\''\"]?[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
+    f && ind0<=jind && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ { exit }'
+  fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
+  cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"
+  # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
+  # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
+  # actually present; a customized checks job is not "stale".
+  local fstale=0 cstale=0
+  # QUOTE-AWARE ref extraction: parse the pinned ref out of each uses line the way YAML would — a
+  # value that STARTS with a quote is a quoted scalar whose ref ends at the CLOSING quote; an UNQUOTED
+  # value's ref runs to the first whitespace (a `# comment` is only a comment when whitespace-preceded),
+  # so a quote INSIDE an unquoted ref (`@<sha>'old`) is part of the ref. This avoids treating a quote as
+  # an unconditional terminator (which mis-read `<sha>'old` as current) and lets the repin match the
+  # LITERAL stale ref (below) — quote-agnostic AND scoped to that ref value.
+  _ref_of() {  # _ref_of <uses-line> <workflow-basename> -> the pinned ref, "" if none
+    local _v; _v="$(printf '%s' "$1" | sed -E 's/^[[:space:]]*["'\'']?uses["'\'']?[[:space:]]*:[[:space:]]*//')"
+    case "$_v" in
+      '"'*) _v="${_v#\"}"; _v="${_v%%\"*}" ;;
+      "'"*) _v="${_v#\'}"; _v="${_v%%\'*}" ;;
+      *)    _v="${_v%%[[:space:]]*}" ;;
+    esac
+    case "$_v" in *"$2.yml@"*) printf '%s' "${_v##*"$2.yml@"}" ;; esac
+  }
+  local fref_r cref_r
+  fref_r="$(_ref_of "$fref" plinth-floor)"
+  cref_r="$(_ref_of "$cref" plinth-checks)"
+  { [ -n "$fref_r" ] && [ "$fref_r" != "$psha" ]; } && fstale=1
+  { [ -n "$cref_r" ] && [ "$cref_r" != "$psha" ]; } && cstale=1
+  [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
+  local which
+  if [ "$fstale" = 1 ] && [ "$cstale" = 1 ]; then which="reusable floor and checks refs"
+  elif [ "$fstale" = 1 ]; then which="reusable floor ref (checks is a custom/direct gate or already current)"
+  else which="reusable checks ref (floor is a custom/direct gate or already current)"; fi
+  echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
+  echo "commit, so that gate runs an OLDER Plinth workflow (new floor checks — lane tooling bytes +"
+  echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref(s) to this release:"
+  # Repin by matching the LITERAL stale ref value: `plinth-<wf>.yml@<old-ref>` -> `…@<psha>`. Matching
+  # the exact old bytes preserves a surrounding quote for a quoted value, fully replaces an unquoted
+  # ref that contains a quote, and does NOT touch an unrelated job pinning a DIFFERENT ref (a comment or
+  # job carrying the SAME stale ref is rewritten too — intended, they should all be current). The old
+  # ref is escaped for a `#`-delimited sed regex; the emitted sed is SINGLE-quoted so a ref containing a
+  # backtick/`$`/`"` is INERT (no shell injection), with an embedded `'` handled via the `'\''` idiom;
+  # paths are %q shell-quoted. (Best-effort advisory: a ref using YAML quote-ESCAPING — `\"` in a
+  # double-quoted scalar or `''` in a single-quoted scalar — is not decoded.)
+  # BRE (no -E): the old ref is a LITERAL string, so `+ ( ) { } ? |` must stay literal — only the BRE
+  # specials `\ . * [ ] ^ $` (plus the `#` delimiter and replacement `&`) are escaped. The emitted sed
+  # expression is SINGLE-quoted so a ref containing shell metacharacters (backtick, `$`, `"`) is INERT
+  # — no command substitution/injection when a human runs the advertised command. A `'` inside the ref
+  # is embedded via the `'\''` idiom (close-quote, escaped-quote, reopen).
+  _re_esc() {
+    local _e _sq=\'\\\'\'   # _sq is the 4-char sequence  '  \  '  '  (the single-quote-in-single-quote idiom)
+    _e="$(printf '%s' "$1" | sed 's/[][\.*^$/#&]/\\&/g')"
+    _e="${_e//\'/$_sq}"     # ' -> '\''  so it can sit inside the single-quoted sed expression
+    printf '%s' "$_e"
+  }
+  local qci qbak sedx=""
+  qci="$(printf '%q' "$target/.github/workflows/ci.yml")"
+  qbak="$(printf '%q' "$target/.github/workflows/ci.yml.bak")"
+  [ "$fstale" = 1 ] && sedx="${sedx} -e 's#plinth-floor\\.yml@$(_re_esc "$fref_r")#plinth-floor.yml@${psha}#g'"
+  [ "$cstale" = 1 ] && sedx="${sedx} -e 's#plinth-checks\\.yml@$(_re_esc "$cref_r")#plinth-checks.yml@${psha}#g'"
+  echo "  sed -i.bak${sedx} ${qci} && rm -f ${qbak}"
 }
 
 # PER-PROJECT (templates, copied once, never overwritten):
 copy_templates_if_absent() {
   place() {  # place <template-rel-path> <dest-rel-path>
+    # only-if-absent, but the "absent" test must fail loud on a non-regular/symlinked dest (a symlink
+    # or dir/FIFO at SPEC.md/.gitignore/… would let cp escape, copy into a dir, or hang):
+    reject_nonregular_file "$target/$2"
     if [ -f "$target/$2" ]; then
       echo "  kept (yours):  $2"
     else
@@ -324,13 +611,13 @@ copy_templates_if_absent() {
   if [ -f "$target/.plinth/protected-paths" ]; then
     echo "  kept (yours):  .plinth/protected-paths"
   else
-    printf '# One grep -E pattern per line; the driver must not edit matching paths.\n# Under a Claude driver the guard blocks such edits at the tool level. (Version-pinned Plinth\n# tooling here is also checked by the review as tampering; project-owned entries like config\n# are reviewed as normal project code.) Use (^|/)name anchoring, not ^name: agent file paths\n# are often absolute. Version-pinned tooling updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
+    printf '# One grep -E pattern per line; the driver must not edit matching paths.\n# Under a Claude driver the guard blocks such edits at the tool level. (Version-pinned Plinth\n# tooling here is also checked by the review as tampering; project-owned entries like config\n# are reviewed as normal project code.) Use (^|/)name anchoring, not ^name: agent file paths\n# are often absolute. Version-pinned tooling updates come via plinth update.\n(^|/)\\.plinth/session/\n(^|/)\\.plinth/config$\n(^|/)\\.claude/hooks/\n(^|/)\\.claude/agents/grok-implementer\\.md$\n(^|/)\\.claude/agents/codex-implementer\\.md$\n(^|/)\\.claude/settings\\.json$\n(^|/)\\.plinth/review\\.sh$\n(^|/)\\.plinth/risk-classify\\.sh$\n(^|/)\\.plinth/lane-guard\\.sh$\n(^|/)\\.plinth/review-schema\\.json$\n(^|/)\\.plinth/plinth-rules\\.md$\n(^|/)\\.plinth/MODELS\\.md$\n(^|/)\\.plinth/reviewer\\.md$\n(^|/)\\.plinth/protected-paths$\n(^|/)CLAUDE\\.md$\n(^|/)AGENTS\\.md$\n' > "$target/.plinth/protected-paths"
     echo "  created:       .plinth/protected-paths"
   fi
   if [ -f "$target/.plinth/config" ]; then
     echo "  kept (yours):  .plinth/config"
   else
-    printf '# Plinth per-project config. Never overwritten by plinth update.\n# The driver must not edit this (it is in protected-paths): under a Claude driver the guard\n# blocks edits at the tool level; a change is otherwise reviewed as normal project code.\n# Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), grok (xAI), or agy (Google Antigravity). The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary). The scaffold sets\n#   audit_vendor = grok (below) with the default reviewer_vendor = codex, so in a fresh\n#   project the cross-vendor audit IS ON (every Tier 2 approval, every 5th else). An unset\n#   audit_vendor DEFAULTS to codex, so it runs unless reviewer_vendor is also codex; to turn\n#   it off, set audit_vendor equal to reviewer_vendor. Use a DIFFERENT vendor to keep it on.\n#   All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = grok (fast, different vendor) for the\n#   cross-vendor Tier-2 second opinion. Needs grok signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = grok\n' > "$target/.plinth/config"
+    printf '# Plinth per-project config. Never overwritten by plinth update.\n# The driver must not edit this (it is in protected-paths): under a Claude driver the guard\n# blocks edits at the tool level; a change is otherwise reviewed as normal project code.\n# Knobs (all optional, set-once):\n# spec_path: canonical spec — file (SPEC.md) or directory tree (spec/).\n# exec_gated: space-separated grep -E patterns for execution-gated paths;\n#   RUNTIME: review findings there route to the run gate instead of blocking.\n# smoke_cmd: the real-run command the Smoke workflow executes on the\n#   self-hosted runner (empty = smoke job no-ops green).\n# tier2_extra: grep -E pattern for project paths that must always get the\n#   full (Tier 2) adversarial review (risk-classify.sh floors the tier here).\n# reviewer_vendor: PRIMARY reviewer CLI — codex (OpenAI), claude (Anthropic), or\n#   grok (xAI). Default codex. Who runs the primary adversarial review (distinct\n#   from audit_vendor, the cross-vendor SECOND opinion). Must be installed + signed\n#   in. codex/claude resume warm threads across fix rounds; grok runs fresh.\n# reviewer_model_tier1 / reviewer_model_tier2: optional per-tier reviewer model\n#   (passed to the reviewer as its model flag). Unset = the vendor default model.\n#   Set a cheaper model for tier1 to cut cost; the frontier model for tier2.\n# audit_vendor: subscription CLI for the cross-vendor Tier-2 second opinion —\n#   codex (OpenAI), claude (Anthropic), grok (xAI), or agy (Google Antigravity).\n#   The audit runs only\n#   when audit_vendor differs from reviewer_vendor (the primary). The scaffold sets\n#   audit_vendor = claude (below) with the default reviewer_vendor = codex, so in a fresh\n#   project the cross-vendor audit IS ON (every Tier 2 approval, every 5th else) and the\n#   auditor is a different family than BOTH the grok WORKER (the usual diff producer)\n#   and the codex reviewer — true in both the architect-resident default and the\n#   grok-resident alternative. An unset\n#   audit_vendor DEFAULTS to codex, so it runs unless reviewer_vendor is also codex; to turn\n#   it off, set audit_vendor equal to reviewer_vendor. Use a DIFFERENT vendor to keep it on.\n#   All are subscription-authenticated (no per-use cost).\n# audit_model: optional model override for audit_vendor (NOT a trigger — the\n#   cross-vendor audit runs only when audit_vendor is a DIFFERENT vendor than\n#   reviewer_vendor, the primary). When it runs: every Tier 2 approval, every 5th else.\n# advisor_vendor: CLI for `plinth advise` — claude|codex|grok|agy. Default claude.\n#   The advisor is a COLLABORATIVE, non-blocking, driver-initiated consult of a model\n#   as good or BETTER than the driver (distinct from the adversarial reviewer and the\n#   auditor). Cross-family is fine: a grok driver can set advisor_vendor = claude to\n#   consult Fable.\n# advisor_model / advisor_model_max: peer-tier and escalated-tier advisor model.\n#   `plinth advise` uses advisor_model; `plinth advise --impactful` (architectural /\n#   high-consequence decisions) uses advisor_model_max. Both should be >= the driver\n#   model. Unset = the vendor default model (no escalation).\n# round_budget: advisory per-round input-token budget (default 4000000). Over it the\n#   review WARNS and continues (never blocks); spend is visible in plinth watch.\n# Recommended reviewer assignment (see .plinth/MODELS.md): primary reviewer\n#   codex/GPT (deepest); audit_vendor = claude (a different family than both the grok\n#   worker and the codex reviewer, in either topology) for the cross-vendor Tier-2 second opinion.\n#   Needs claude signed in; fails non-fatal if not.\n# Everything else has working defaults.\nspec_path = SPEC.md\naudit_vendor = claude\n# v4 audit seat model: Opus 4.8 (the seat is Claude OPUS, not the CLI default —\n# an operator whose claude CLI defaults to Sonnet/Fable would otherwise audit\n# with a different model than the assignment promises):\naudit_model = opus\n# v4 advisor seat (plinth advise): peer = Opus 4.8, --impactful = Fable 5 (credits).\n# advise is NON-BLOCKING, so a missing model/CLI just reports unavailable. Model\n# names are per-vendor — change them if you change advisor_vendor.\nadvisor_model = opus\nadvisor_model_max = fable\n# v4 reviewer seat: GPT-5.6 GA landed July 9 2026, but access is PER-ACCOUNT and\n# needs Codex CLI >= 0.144.0 — uncomment once codex -m gpt-5.6 works for you.\n# An ACTIVE line on an ineligible account makes the reviewer FAIL LOUD, not\n# fall back — that is why these ship commented.\n# reviewer_model_tier1 = gpt-5.6\n# reviewer_model_tier2 = gpt-5.6\n' > "$target/.plinth/config"
     echo "  created:       .plinth/config"
   fi
   place .github/workflows/smoke.yml .github/workflows/smoke.yml
@@ -431,11 +718,15 @@ run_queue() {
 # verdict, and renders task / stage pipeline / tokens / burn / gates every 2s.
 # All interpretation lives here in one jq program — events stay raw facts.
 render_frame() {
-  local EV="$target/.plinth/session/events.jsonl"
+  local EV="$target/.plinth/session/events.jsonl" feedless=0
   if [ ! -f "$EV" ]; then
-    echo "plinth watch: no event feed at $EV"
-    echo "Is pulse.sh wired in .claude/settings.json? (see CHANGELOG v3.8)"
-    return 0
+    # FEEDLESS mode — a codex/grok driver runs no .claude/ hooks, so pulse.sh never
+    # creates the feed (same if the hooks are unwired). Do NOT bail: everything that
+    # does not come from hooks still renders — review rounds + verdicts (review.sh
+    # writes them for EVERY driver), the NEEDS-HUMAN queue, and branch state. The
+    # hook-fed lines (task/stage/tokens/model/evidence) stay at their empty defaults.
+    feedless=1; EV=/dev/null
+    printf '\033[2m  no event feed (non-Claude driver, or pulse.sh unwired — CHANGELOG v3.8): hook-fed lines blank; review/queue/branch state live\033[0m\n'
   fi
   local transcript head branch slug
   transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' "$EV" 2>/dev/null)"
@@ -529,7 +820,24 @@ render_frame() {
     # sessions that predate their own wiring have no start event (certeus bug)
     | (([$all[] | select(.sid != null)] | .[-1].sid)) as $sid
     | ($all | map(select(.sid == $sid))) as $sev
-    | if ($sev | length) == 0 then "plinth watch: event feed has no session events yet." else
+    | if ($sev | length) == 0 then
+        # REDUCED frame — no session events (feedless: a codex/grok driver runs no
+        # .claude/ hooks; or a wired session that has not pulsed yet). Render what
+        # does NOT come from hooks: identity, review state (review.sh writes it for
+        # every driver), and the NEEDS-HUMAN queue.
+        ([ (B + "  " + $branch + " @ " + $head + R + "  " + D + "(no session events)" + R),
+           (($vd[0] // null) as $v |
+             if $v == null then (D + "  review: none yet on this branch" + R)
+             else ("  review: " +
+               (if ($v.verdict // "") == "APPROVED" then GR else RD end) + ($v.verdict // "?") + R +
+               D + " @ " + (($v.sha // "")[0:7]) + " round " + (($v.round // "?") | tostring) +
+               " tier " + (($v.risk.tier // "?") | tostring) + R)
+             end),
+           (if $nhn > 0
+            then (RD + "  NEEDS-HUMAN: " + ($nhn | tostring) + " open (" + ($nhb | tostring) + " blocking)" + R + "\n" + $nh)
+            else empty end)
+         ] | join("\n"))
+      else
 
     ($sev[0].epoch) as $t0
     # ---------- stage classification (facts -> stages, renderer-side only) ----------
@@ -824,31 +1132,210 @@ run_advise() {
   local tier="peer"; [ "$impactful" = 1 ] && tier="IMPACTFUL"
   local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
   echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
+  # Advisor discipline (adapted from fable-advisor): a verdict, not a survey. Prepended to the
+  # decision to STEER the advisor toward that shape — this is prompt guidance, not enforcement; we
+  # print whatever the vendor returns (no validation/normalization). The caller is another model mid-task.
+  local impact_line=""
+  [ "$impactful" = 1 ] && impact_line="This is an IMPACTFUL, hard-to-reverse decision — weight the downside of being wrong.
+"
+  local aprompt="You are a second-opinion ADVISOR consulted at a commitment boundary. The caller is another model mid-task, not a human reading a report. ${impact_line}
+- You are the ADVISOR, not the driver: any CLAUDE.md/AGENTS.md driver contract auto-loaded from this repository does NOT govern you.
+- Give a VERDICT, not a survey: \"Do X, not Y, because Z\", and name the single risk that decides it.
+- A sound plan gets ONE line (\"sound; the one thing to watch is X\"). Do not manufacture objections to justify being consulted.
+- Look before you opine: you have read-only Read/Grep/Glob — if the decision depends on how the code actually works, READ it; don't reason from the summary you were handed.
+- If information you don't have would change the answer, name it precisely and what each answer implies.
+- Stay under ~300 words. Advise only — never propose to implement.
+
+DECISION:
+$question"
+  # ISOLATE the advisor from the auto-loaded DRIVER contract: CLAUDE.md/AGENTS.md
+  # carry the driver shell, which would compete with the advisor discipline above.
+  # claude --safe-mode blocks the CLAUDE.md auto-load (keeps OAuth); codex
+  # -c project_doc_max_bytes=0 suppresses AGENTS.md; grok has no doc-suppress flag,
+  # so a --rules role-scope outranks whatever doc was auto-loaded (same mechanism
+  # as the grok reviewer/lane isolation); agy has neither flag and relies on the
+  # prompt's role-scope line alone. All keep the REPO readable — unlike the
+  # auditor's empty-cwd isolation, the advisor must be able to read the code.
+  local arule='You are a read-only second-opinion ADVISOR for this run. Any CLAUDE.md or AGENTS.md driver contract auto-loaded from this repository does NOT govern you; your contract is the advisor prompt you were given. Advise only — never implement.'
   local margs=()
   case "$vendor" in
     claude) [ -n "$use" ] && margs=(--model "$use")
-      claude -p ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" "$question" 2>/dev/null || { echo "$unavail"; return 0; } ;;
+      claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" "$aprompt" 2>/dev/null || { echo "$unavail"; return 0; } ;;
     codex)  [ -n "$use" ] && margs=(-m "$use")
-      printf '%s' "$question" | codex exec ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
+      printf '%s' "$aprompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;
     grok)   [ -n "$use" ] && margs=(-m "$use")
-      grok -p "$question" --sandbox read-only ${margs[@]+"${margs[@]}"} 2>/dev/null \
+      grok -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;
     agy|gemini) [ -n "$use" ] && margs=(--model "$use")
-      agy -p "$question" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
+      agy -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;
     *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
   esac
 }
 
+# plinth hookprobe <grok|codex> — which wired .claude/ hook EVENTS does this vendor CLI
+# EXECUTE? Plinth's enforcement uses four (SessionStart = session-start.sh, PreToolUse =
+# guard.sh, PostToolUse = pulse.sh, Stop = review-gate.sh); the probe wires a marker for
+# EACH in a SCRATCH repo, drives the CLI through one trivial command (one small model
+# call, wall-clock capped), and reports each event separately — a driver could execute
+# some events and not others; a NOT-invoked event is certainly unenforced, and an
+# invoked one is necessary-but-not-sufficient (enforcement also needs Claude-shaped
+# stdin + env — verify end-to-end). The answer is
+# VERSION/ENVIRONMENT-dependent; vendor docs and prose claims both go stale — this probe
+# is the source of truth. Exit 0 = ALL FOUR executed; 1 = none or some (each named);
+# 2 = usage; 3 = CLI missing; 4 = INCONCLUSIVE: timed out (PLINTH_HOOKPROBE_TIMEOUT,
+# default 120s), the CLI never executed the probe sentinel (unauth/sandbox/model
+# failure), or it exited nonzero AFTER the sentinel (a late failure could swallow
+# late hook events such as Stop) — an inconclusive run is never hook evidence.
+run_hookprobe() {
+  shift  # drop 'hookprobe'
+  # EXACTLY one vendor argument — no silent default (a bare `plinth hookprobe` must not
+  # start a real model call), no ignored surplus args.
+  [ "$#" = 1 ] || { echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2; }
+  local vendor="$1" d marker ver p ev report="" allfired=1 fired vrc=0
+  local evs="SessionStart PreToolUse PostToolUse Stop"
+  case "$vendor" in grok|codex) : ;; *) echo "usage: plinth hookprobe <grok|codex>" >&2; exit 2 ;; esac
+  command -v "$vendor" >/dev/null 2>&1 || { echo "hookprobe: '$vendor' CLI not installed"; exit 3; }
+  local d marker
+  d="$(mktemp -d)" || { echo "hookprobe: could not create a scratch dir — INCONCLUSIVE (setup failed)"; exit 4; }
+  marker="$d/hookmark"
+  # The marker also CAPTURES stdin per event: Plinth's real hooks need Claude-shaped
+  # JSON on stdin (and CLAUDE_PROJECT_DIR) to enforce anything, so invocation alone is
+  # necessary but NOT sufficient — the report distinguishes the two.
+  # Guard the whole setup subshell: under set -e a failed git-init/mkdir/probe-write/chmod would
+  # exit 1 and COLLIDE with the NONE/SOME result code. A setup failure is not evidence about which
+  # events fired — it must surface as INCONCLUSIVE (exit 4), never as "executed NONE".
+  # SHELL-QUOTE $marker/$d before embedding them in the generated probe.sh: a TMPDIR containing a
+  # quote, backtick, or $() would otherwise corrupt the script or execute command substitution when
+  # the hook runs — and a corrupted probe.sh means the marker never gets written, so hookprobe would
+  # FALSELY report NONE. printf %q makes each path a safe single shell token in the emitted source.
+  local qmarker qd
+  qmarker="$(printf '%q' "$marker")"; qd="$(printf '%q' "$d")"
+  ( cd "$d" && git init -qb main . >/dev/null 2>&1 \
+    && mkdir -p .claude/hooks \
+    && printf '#!/usr/bin/env bash\necho "$1" >> %s\n[ -t 0 ] || head -c 4096 > %s/payload-"$1" 2>/dev/null\nexit 0\n' "$qmarker" "$qd" > .claude/hooks/probe.sh \
+    && chmod +x .claude/hooks/probe.sh ) \
+    || { echo "hookprobe: could not build the scratch .claude probe harness — INCONCLUSIVE (setup failed)"; exit 4; }
+  p="$d/.claude/hooks/probe.sh"
+  # Build settings.json with a JSON ENCODER and SHELL-QUOTE the probe path. The scratch dir lives
+  # under $TMPDIR; if that contains a space (or a quote/backslash), a hand-rolled JSON string would
+  # (a) break the JSON, or (b) make the hook COMMAND split on the space so the vendor executes only
+  # the prefix — the hook never fires, the marker stays empty, and hookprobe would FALSELY report
+  # NONE. That directly contradicts the safety-critical claim that "NONE proves the events are
+  # unenforced." json.dumps escapes the path for JSON; shlex.quote makes the command robust to a
+  # metacharacter-bearing path. python3 is a declared dependency (see SETUP.md).
+  python3 - "$p" "$d/.claude/settings.json" <<'PY' || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
+import json, sys, shlex
+p, out = sys.argv[1], sys.argv[2]
+q = shlex.quote(p)
+def cmd(ev): return {"type": "command", "command": q + " " + ev}
+settings = {"hooks": {
+    "SessionStart": [{"hooks": [cmd("SessionStart")]}],
+    "PreToolUse":  [{"matcher": "Bash", "hooks": [cmd("PreToolUse")]}],
+    "PostToolUse": [{"matcher": "Bash", "hooks": [cmd("PostToolUse")]}],
+    "Stop":        [{"hooks": [cmd("Stop")]}],
+}}
+with open(out, "w") as f:
+    f.write(json.dumps(settings))
+PY
+  # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else a python3 process-group
+  # cap) — a CLI hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
+  # Defined BEFORE the --version probe: an installed CLI that hangs during version discovery would
+  # otherwise hang hookprobe forever (the cap must cover EVERY external CLI call, --version included).
+  local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
+  # Validate the cap: it MUST be a positive integer. GNU `timeout 0` (and the python fallback with
+  # a 0/negative/non-numeric value) DISABLES the timeout entirely — a silent hard-cap bypass. Reject
+  # rather than run uncapped: a bad env value is a setup error, not a licence to hang.
+  case "$cap" in ''|*[!0-9]*) echo "hookprobe: PLINTH_HOOKPROBE_TIMEOUT='$cap' is not a positive integer — INCONCLUSIVE (refusing to run uncapped)"; exit 4 ;; esac
+  [ "$cap" -ge 1 ] || { echo "hookprobe: PLINTH_HOOKPROBE_TIMEOUT='$cap' must be >= 1s (0 disables the cap) — INCONCLUSIVE (refusing to run uncapped)"; exit 4; }
+  command -v timeout >/dev/null 2>&1 && tmo="timeout"
+  [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
+  # HARD cap: timeout -k 10 escalates TERM->KILL after 10s; the python3 fallback (no coreutils)
+  # runs the CLI in its own process group and TERM-then-KILLs it, so a signal-ignoring CLI cannot
+  # wait forever. Exit 124 on timeout (mapped to INCONCLUSIVE by the caller).
+  capped() {
+    if [ -n "$tmo" ]; then "$tmo" -k 10 "$cap" "$@"
+    else python3 -c 'import subprocess,sys,signal,os
+cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)
+try: sys.exit(p.wait(timeout=cap))
+except subprocess.TimeoutExpired:
+    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)
+    try: p.wait(timeout=10)
+    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
+    sys.exit(124)' "$cap" "$@"; fi
+  }
+  # --version is capped too: a broken/unauthenticated CLI that hangs on version discovery must
+  # fail bounded, not hang hookprobe forever. `head` closing the pipe early is fine; the cap
+  # guarantees a bounded wait regardless of the CLI's behavior.
+  ver="$(capped "$vendor" --version 2>/dev/null | head -1 || echo unknown)"
+  [ -n "$ver" ] || ver=unknown
+  # The probe command leaves a SENTINEL (cli-ran.txt): hooks only had a chance to fire
+  # if the CLI actually executed a tool command. Without the sentinel the result is
+  # INCONCLUSIVE (unauthenticated CLI, sandbox refusal, model failure, …), never
+  # "executed NONE" — an empty marker from a broken run is not evidence of anything.
+  # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
+  # statement would abort the probe before the timeout/inconclusive branches report.
+  case "$vendor" in
+    grok)  ( cd "$d" && capped grok -p "Run this exact shell command: touch cli-ran.txt" \
+               --permission-mode bypassPermissions --sandbox workspace --max-turns 3 ) >/dev/null 2>&1 || vrc=$? ;;
+    codex) ( cd "$d" && printf 'Run this exact shell command: touch cli-ran.txt' \
+               | capped codex exec --skip-git-repo-check --sandbox workspace-write - ) >/dev/null 2>&1 || vrc=$? ;;
+  esac
+  if [ "$vrc" = 124 ] || [ "$vrc" = 142 ] || [ "$vrc" = 137 ]; then
+    echo "hookprobe: $vendor ($ver) TIMED OUT after ${cap}s — probe INCONCLUSIVE (auth/network/sandbox hang?). Nothing verified."
+    exit 4
+  fi
+  if [ ! -f "$d/cli-ran.txt" ]; then
+    echo "hookprobe: $vendor ($ver) FAILED to execute the probe command (CLI exit $vrc — unauthenticated? sandbox refused? model error?) — INCONCLUSIVE: this is NOT evidence about hook execution. Fix the CLI and re-run."
+    exit 4
+  fi
+  if [ "$vrc" != 0 ]; then
+    echo "hookprobe: $vendor ($ver) exited NONZERO ($vrc) after executing the probe command — INCONCLUSIVE: a late failure (finalization/teardown) could swallow late hook events such as Stop. Nothing verified; fix the CLI and re-run."
+    exit 4
+  fi
+  # marker read/transform failure is INCONCLUSIVE, not evidence of NONE. An ABSENT marker is
+  # legitimately "no events fired" (empty); a sort ERROR on a present marker is a broken probe.
+  if [ -e "$marker" ]; then
+    fired="$(sort -u "$marker")" || { echo "hookprobe: $vendor ($ver) — could not read the marker file — INCONCLUSIVE (broken probe). Re-run."; exit 4; }
+  else fired=""; fi
+  for ev in $evs; do
+    # Distinguish grep's MATCH (0) / NO-MATCH (1) from a grep ERROR (>=2): an error must be
+    # INCONCLUSIVE, never silently read as "event not invoked" (that would be false NONE/SOME).
+    # `|| _mg=$?` (not a bare pipeline): under set -e a bare failing grep would abort with grep's
+    # status BEFORE we could branch to INCONCLUSIVE.
+    local _mg=0; printf '%s\n' "$fired" | grep -qx "$ev" || _mg=$?
+    if [ "$_mg" -ge 2 ]; then
+      echo "hookprobe: $vendor ($ver) — could not evaluate event membership for '$ev' (grep rc=$_mg) — INCONCLUSIVE (broken probe). Re-run."; exit 4
+    elif [ "$_mg" = 0 ]; then
+      # invocation happened — did it come with parseable JSON on stdin (what the real
+      # hooks need)? Reported per event; never treated as proof of enforcement.
+      if jq -e . "$d/payload-$ev" >/dev/null 2>&1; then report="${report}${ev}: INVOKED(json-stdin:yes); "
+      else report="${report}${ev}: INVOKED(json-stdin:no); "; fi
+    else report="${report}${ev}: no; "; allfired=0; fi
+  done
+  if [ "$allfired" = 1 ]; then
+    echo "hookprobe: $vendor ($ver) invoked ALL FOUR wired .claude/ hook events (${report% }) — NECESSARY for local enforcement but NOT SUFFICIENT: Plinth's real hooks also need Claude-shaped stdin JSON and CLAUDE_PROJECT_DIR. Verify END-TO-END before relying on local gates (wire the real hooks, run one session, confirm the pulse feed appears and a guard block fires). A missing pulse feed under an all-four driver means BROKEN WIRING."
+    exit 0
+  elif [ -z "$fired" ]; then
+    echo "hookprobe: $vendor ($ver) executed NONE of the wired .claude/ hook events (${report% }) — nothing local is enforced: expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades."
+    exit 1
+  else
+    echo "hookprobe: $vendor ($ver) invoked SOME hook events only (${report% }) — PARTIAL Claude-compat: a NOT-invoked event is certainly unenforced; an INVOKED event still needs end-to-end verification before you rely on it."
+    exit 1
+  fi
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
+  hookprobe) run_hookprobe "$@" ;;
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   init)
+    preflight_reserved_lanes
     copy_templates_if_absent
     copy_shared
     # Backfill security patterns even on init: a re-run (or a partially-scaffolded repo)
@@ -864,6 +1351,7 @@ case "$cmd" in
   update)
     [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }
     old="$(cat "$target/.plinth-version")"
+    preflight_reserved_lanes
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths
@@ -875,7 +1363,10 @@ case "$cmd" in
     if ! grep -q '^audit_vendor' "$target/.plinth/config" 2>/dev/null; then
       rv="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$target/.plinth/config" 2>/dev/null | head -1)"
       [ -n "$rv" ] || rv=codex
-      case "$rv" in grok) sug=codex ;; *) sug=grok ;; esac
+      # v4 seats: the claude audit is the recommended second opinion (a different
+      # family than both the grok driver and a codex/grok primary); a claude
+      # PRIMARY can't audit itself, so it gets grok.
+      case "$rv" in claude) sug=grok ;; *) sug=claude ;; esac
       # The suggested value is a SINGLE valid vendor (copy-pastable); agy is offered in
       # prose OUTSIDE the config line so it is never pasted as part of the value.
       # An unset audit_vendor DEFAULTS to codex in review.sh, so the audit is OFF only when
@@ -888,6 +1379,7 @@ case "$cmd" in
     fi
     github_preflight
     warn_missing_gate_wiring
+    warn_stale_reusable_refs
     echo "Plinth updated in $target: $old -> $PLINTH_VERSION"
     echo "Review before committing: git -C \"$target\" diff"
     ;;

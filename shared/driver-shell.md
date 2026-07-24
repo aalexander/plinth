@@ -40,7 +40,9 @@ you must apply without being asked:
 - COMMIT your work on feature branches as part of the loop — do not wait for
   permission. Verdicts bind to commit SHAs and shipping requires an APPROVED
   review at HEAD (a Claude driver's Stop gate enforces this locally; server-side,
-  branch protection's required CI checks gate the merge for every driver); a driver
+  branch protection's required checks — floor + checks — gate the merge for every
+  driver, and the review verdict itself gains a server-side verifier when the
+  receipt check ships); a driver
   that waits to be asked deadlocks itself. (Opening the PR follows review; pushing
   follows the rules, not impulse.)
 - Rule 10 evidence — pasted runner output — overrides any brevity or style

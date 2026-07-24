@@ -1,5 +1,283 @@
 # Plinth changelog
 
+## v4.5.0 — implementer lanes (architect pattern) + advisor discipline + v4 model seats — July 23, 2026
+- **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
+  version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
+  drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
+  Each takes a five-part spec (objective · files · interfaces · constraints · verification), runs
+  the external CLI headlessly from a UNIQUE `mktemp` prompt file (never inline quoting / fixed
+  paths — parallel lanes on a fixed path corrupt each other), wall-clocks it with a cap that holds
+  even without coreutils (`timeout`/`gtimeout` with `-k` TERM->KILL, else a python3 process-group cap), then VERIFIES
+  independently: it re-runs the verification command itself and reads the diff — "the lane said it
+  works" is forbidden as evidence (Rule 10). The safety-critical parts are a real, testable script,
+  not prompt convention: a new version-pinned `.plinth/lane-guard.sh` gives the lane (a) `preflight
+  <vendor>` — binary present AND authenticated (`grok models` / `codex login status`), else
+  `STATUS: unavailable` with the exact reason (no silent Claude substitution that defeats the
+  lane's cost + cross-vendor profile); (b) `snapshot` — records `<sha> <path>` for every SENSITIVE
+  file (protected-paths patterns OR secrets: `.env`, `secrets/`, `credentials/`, `.ssh/`, `.aws/`,
+  `id_rsa`, …), INCLUDING gitignored ones; the lane captures this before the run; and (c) `scope
+  <baseref> --snapshot <file> <spec-file>...` — a delegated CLI has whole-tree write and does NOT
+  run the `.claude/` guard, so after the run every tracked change + new file must be a spec file
+  and must not match `.plinth/protected-paths`, AND (via the snapshot) no sensitive file may have
+  been added/changed/removed. That catches a whole-tree-write lane planting secrets in
+  `.env`/`secrets/`/keys (`*.pem`/`*.key`/`id_rsa*`, incl. secrets under a secret-named directory)
+  even though those are gitignored — including a secret replaced by or repointed to a symlink
+  (recorded by target, not followed), and failing closed if a sensitive file can't be hashed/statted.
+  `.plinth/session/` verdict/receipt state is ALSO compared (a delegated CLI bypasses the `.claude/`
+  guard, so scope is what stops it forging a fake approval); ONLY the hook-appended
+  `.plinth/session/events.jsonl` is excluded, since pulse.sh appends it on every tool use during the
+  run and comparing it would false-flag every clean lane.
+  The scope is deliberately drawn at ERRORS a fallible lane makes (off-spec tracked edits, protected
+  tooling, secret/session writes), not an adversarial sandbox: non-sensitive gitignored artifacts
+  (`node_modules/`, `dist/`, build output) are NOT rejected — they're legitimate lane output and
+  rejecting them would only break normal work (npm install, builds). They ARE reported: `scope`
+  prints a non-blocking note that the lane's verification is not hermetic (it ran against
+  un-reviewed ignored state), so the driver's independent Rule-10 re-run and CI's fresh install stay
+  the authority rather than the lane's in-session evidence being silently trusted. It fails LOUD
+  (exit 5) if the diff is uncomputable (non-repo / unresolvable base) rather than accepting on an
+  empty change list. This restores the protected-path/secret guarantee across the delegation
+  boundary, in-session. The economic case: implementation mechanics are most of a session's
+  tokens; spend the frontier model on judgment, the lanes on volume. For high-stakes work, race
+  both lanes on the same spec and keep the stronger diff (a third independent perspective for one
+  extra lane's cost) — sequentially or one worktree per lane, never two lanes concurrently in one
+  checkout: they share the working tree and scope authorizes by path, not producer. Pattern
+  adapted, with thanks, from DannyMac180/fable-advisor.
+- **Live-verified the CLI invocations (not just stub-checked).** Driving the real `grok` and `codex`
+  CLIs through each lane's exact sequence surfaced a bug the stub-driven canary could not: under
+  `--permission-mode acceptEdits` a headless grok *announces* an edit and silently drops it (no TUI
+  to confirm against) — the file is never written. The grok lane now uses `--permission-mode
+  bypassPermissions --sandbox workspace --max-turns 20`: bypass applies edits and runs verification
+  headlessly, and `--sandbox workspace` (grok's built-in writable profile, which FAILS CLOSED —
+  refuses to start — if it can't be applied) bounds CASUAL side effects — but be accurate: per
+  xAI's profile table it permits writes to CWD, `~/.grok/`, and temp dirs and ALLOWS child-process
+  network, so it is NOT a tight repo fence and does NOT block network, similar to the codex lane's
+  `--sandbox workspace-write` (which by default permits TEMP-dir writes; network is a separate
+  opt-in there and it does not grant `~/.grok` — the shared caveat is just the non-repo temp writes). (Web search/fetch stays ON — the worker needs it to
+  find coding solutions; the lane is an ERROR-catcher for a TRUSTED-but-fallible model, not an
+  adversarial sandbox against a malicious one, so it does not try to close every side-effect path.
+  `lane-guard scope` checks the REPO tree; writes to `~/.grok`/temp or network are outside its view.)
+  The grant is bounded because the run is boxed by the sandbox + `lane-guard scope` + the driver's independent
+  re-run, on a trusted-but-fallible lane. Verified end-to-end: grok
+  (sandboxed) and codex each create the in-spec file, `scope` returns ok, and the independent
+  verification prints the real output. The canary pins the working flags (incl. the sandbox) so a
+  regression fails CI.
+- **Lane isolation from the driver contract.** A delegated CLI run from the project root auto-loads
+  `CLAUDE.md`/`AGENTS.md` — which under Plinth are the DRIVER contract — and (verified) will act as a
+  driver instead of a narrow typing lane. The codex lane now passes `-c project_doc_max_bytes=0` and
+  the grok lane a `--rules` role-scoping override (grok has no doc-suppress flag — same isolation
+  review.sh uses for grok reviewers), so the delegated CLI is governed only by the five-part spec.
+  Verified end-to-end against a driver-doc trap: the lane implements the spec and ignores the trap.
+- **lane-guard hardening.** Fails LOUD (exit 5) on a malformed OR unreadable `.plinth/protected-paths`
+  rather than letting a `grep` error read as "no patterns"; the sensitive snapshot records each secret
+  FILE's MODE as well as its content hash, so a metadata-only change (e.g. `chmod` widening a secret
+  file such as `.env` or a key under `.ssh/`) is caught — note git tracks file modes, not directory
+  nodes, so a `chmod` on a real secret DIRECTORY itself is outside any git-based tool's view (a tracked
+  SYMLINK named `.ssh`/`secrets`/… IS classified and fails closed as a dir-symlink); the secret matcher
+  is component-boundaried (`.env`/`.env.local` yes, `.envrc` no; `id_rsa`
+  basename not `id_rsa_format.md`) with a template carve-out that an explicit protected-paths entry
+  still overrides. `scope --snapshot` FAILS CLOSED on a missing/empty value (exit 2 — the old parse
+  silently dropped to no-snapshot mode, leaving gitignored sensitive paths unverified) and on an
+  unreadable snapshot file (exit 5 — a failed read must not become an empty baseline); the happy
+  path is canary-pinned so the fail-closed change can't break normal lane use. Template/doc
+  LOOKALIKES (`.env.example`, `id_rsa_notes.txt`) are no longer blind-exempt from the sensitive
+  set: those names are gitignored by the starter policy, so the snapshot is the only check that
+  can see a lane writing real secrets into them — they are now RECORDED in the snapshot and
+  SPEC-GATED at scope time (authorized only when the spec explicitly lists them; a real secret
+  name, a secret-directory path, or a protected path is never authorizable). Canary probes flip
+  accordingly (recorded + in-spec pass + out-of-spec fail + no spec rescue inside secret dirs).
+- **Hard wall-clock caps + Python over Perl; preflight cross-checks every context; hookprobe
+  fails INCONCLUSIVE on internal errors.** The lane and hookprobe timeout caps are no longer
+  cooperative: `timeout`/`gtimeout` run with `-k 10` (TERM then KILL) and the coreutils-free
+  fallback is a **python3** process-group cap (TERM then KILL) — a signal-ignoring CLI can no
+  longer wait forever. Perl was replaced with Python throughout (both lane agents' `cap()`,
+  hookprobe, review.sh's JSON extraction, canary helpers) per project preference; the canary
+  behaviorally proves the cap kills a TERM-ignoring child. `github_preflight` now fetches
+  check-runs once and cross-checks ALL FIVE required contexts (four floor + checks) against the
+  actual runs — a required context naming a removed/renamed job (ghost gate) reads MISSING; no
+  run data is fail-closed (UNVERIFIED); `--paginate` is used so a check beyond the first 30
+  results is still seen (page-aware canary). `plinth hookprobe` internal failures (scratch-dir /
+  settings write / marker read, or a `-k` KILL exit 137) now report INCONCLUSIVE (exit 4), never
+  a false NONE/SOME. `edit_file` preserves the source file mode (canary compares generated ci.yml
+  to the template mode). The hardlink guard fails closed when stat can't yield a numeric count.
+- **Snapshot enumeration fails CLOSED; CI-breaker + overclaim fixed.** `sens_snapshot` now captures
+  each `git ls-files`/`find` producer's status separately — a real git/filesystem error returns
+  exit 5 (fail closed) instead of silently yielding an incomplete baseline that would read as
+  "scope ok" (a fail-open the charter says to block; failure-injection canary added). Also: the
+  round-72 warning-wording change had left the canary probes grepping the OLD phrase (a
+  deterministic CI failure) — fixed to the stable prefix, and the stale-ref warning is now asserted
+  to carry the repin `sed` command AND this release's SHA. `edit_file` preserves the source file's
+  mode (mktemp is 0600 — the generated ci.yml stays 0644). Doc-accuracy: the codex `workspace-write`
+  comparison no longer implies grok's `~/.grok`/network allowances, and the non-git stale-ref
+  warning says it cannot VERIFY the refs rather than asserting floor checks won't run.
+- **In-charter correctness + de-hollowed tests (round 70).** Real fixes the reviewer surfaced
+  once the threat model aligned: the sensitive-symlink snapshot path is extracted format-
+  independently (a 4-field symlink record no longer garbles the reported path, and a legit in-spec
+  symlinked template can be authorized); `github_preflight` accepts a DIRECT `checks` job
+  (`<wf> / checks`, template-supported) in addition to the reusable shape, cross-checked against
+  actual check runs; non-git `plinth update` now warns it cannot verify the reusable refs (was a
+  silent skip); the stale-ref warning distinguishes an intentional custom/direct checks gate from
+  a stale reusable ref; and installed docs cite `plinth hookprobe grok` (reproduce) instead of a
+  `docs/receipts/…` path never materialized downstream. Three hollow canaries were rebuilt to
+  actually exercise what they claim (Rule 7): the ref-file/hidden-bit/staged-index probes moved to
+  hermetic fresh fixtures with a non-hollow clean-run guard, and the secret-directory probes use
+  absent-at-base dirs with an in-spec plain-named descendant (proving the DIRECTORY classification
+  catches it, not a baseline removal or an independently-matching basename).
+- **Reviewer contract encodes the ratified threat model.** `.plinth/AGENTS-project.md` now states,
+  for this repo's reviewer, that the implementer lanes run a TRUSTED-but-fallible worker and
+  `lane-guard.sh` is an ERROR-catcher, not an adversarial sandbox: block on real error-catching
+  gaps / fail-opens / unimplemented enforcement claims / missing tests, but NOT on defeating the
+  trusted worker's deliberate evasion (web-search exfil — web search stays ON, the worker needs it;
+  chmod past a sensitive symlink; decoy CI refs). A general version ships in templates/. Two
+  correctness fixes landed alongside it (in-charter completeness): the sensitive-symlink referent
+  MODE now dereferences the link (a chmod on a secret's referent is caught), and the stale-ref
+  warning is tied to the actual `floor:`/`checks:` gating jobs (a decoy non-gating job can't
+  suppress it). Canary covers both.
+- **lane-guard preflight and the lanes are HARD-CAPPED, and preflight requires the exact `checks`
+  context.** The auth preflights (`grok models` / `codex login status`) now run under a wall-clock cap
+  (`timeout`/`gtimeout`, else a python3 process-group cap) so a stalled auth CLI cannot hang the lane
+  before the capped implementation call; and each lane agent's cap now FAILS UNAVAILABLE (STATUS:
+  unavailable) instead of running the model UNCAPPED when neither a timeout binary nor python3 exists —
+  the hard-cap contract is never silently broken. The branch-protection preflight now accepts only the
+  exact `checks / checks` (reusable) or `checks` (direct) context, not any `checks / <segment>`. Snapshot
+  scope is the SUPERPROJECT: files inside a checked-out submodule are its own repo's concern (the gitlink
+  change itself is caught) — documented as the best-effort boundary.
+- **lane-guard scope checks the INDEX, and `plinth update` warns on stale reusable refs.** scope
+  now unions `git diff $base` with `git diff --cached $base` — a lane that stages an
+  out-of-spec/protected change and reverts the working tree (so `git diff $base` is clean while
+  the index still holds it, and the driver's later commit would ship it) is caught. The same
+  restored-worktree trick is closed for SENSITIVE paths too: the before/after snapshot hashes the
+  WORKING TREE, so an in-spec built-in-sensitive file (e.g. `cert.pem`) whose index holds a staged
+  change but whose worktree was restored to base would leave `before == after`; scope now ALSO
+  flags any staged (`git diff --cached` vs base) change to a sensitive path directly — staged
+  content, exec-mode bit, or deletion — with the same spec-gated SECRET_SAFE carve-out. Separately,
+  `plinth update` now WARNS (loudly, with the exact repin `sed` command) when an existing
+  project's ci.yml pins the reusable floor/checks workflows at an OLDER Plinth commit — else the
+  new floor checks never run while branch protection stays green. update does NOT rewrite the
+  operator-owned ci.yml (the never-rewrites-ci.yml contract is preserved); the operator repins with
+  the emitted command. This warning is a BEST-EFFORT ADVISORY over a line-based read of ci.yml — it
+  covers the block-style layouts operators actually write (any indentation, inline/whole-line
+  comments, quoted keys/values, quoted or embedded-quote ref values, matrix decoys) but not full
+  YAML flow-style (`jobs: {floor: {uses: …}}`) or YAML quote-ESCAPING inside a ref; it is not a gate.
+- **lane-guard scope forces `--no-renames`.** With `diff.renames` enabled, a `git mv` from an
+  out-of-spec path to an in-spec name listed only the NEW path — the old file's disappearance
+  escaped the spec check (rename laundering). Renames now read as delete+add so BOTH paths are
+  checked; canary + probe cover the `git config diff.renames true` case.
+- **Known issue in the PINNED v4.4.0 reviewer (fixed by this release):** v4.4.0's `review.sh`
+  builds its commit list with `git log … | head -50` under `set -o pipefail` — on a branch with
+  MORE than 50 commits, `git log` can take a racy SIGPIPE and the whole round aborts with
+  exit 141 (observed ~1/30 in isolation, reliably in-script; re-running the round can get
+  past it). v4.5.0's commit-list build is pathspec-filtered with no `head` cap, so projects
+  clear the bug by updating their pin.
+- **lane-guard: snapshot diff failure is fail-closed; empty policy set is explicit.** The
+  sensitive-snapshot comparison now gates on diff's OWN exit code — rc=1 (differ) proceeds
+  to the violation report, rc>1 (diff trouble) exits 5 instead of yielding an empty change
+  list that silently passed a lane touching sensitive paths. (The script runs pipefail
+  WITHOUT -e, so the prior code never aborted on rc=1 — the real hole was rc>1 reading as
+  "no changes".) An empty protected-paths pattern set is now an explicit `|| true`, not an
+  ignored pipefail. Gate-contract TRUTH pass: the Codex cloud review posts PR COMMENTS and
+  exposes no status-check context, so it CANNOT be a required branch-protection gate
+  (verified against a live PR — zero check-runs from the app). Every doc now states the
+  real contract: floor + checks are the required contexts; the cloud review is advisory;
+  the server-verifiable APPROVED-at-HEAD receipt check (auto mode, next release) is the
+  designated adversarial gate for non-Claude drivers. `github_preflight` now VERIFIES the
+  required contexts by their EXACT GitHub job-name form — `floor / secrets`, `floor / sast`,
+  `floor / dependencies / osv-scan`, `floor / harness`, and `checks / checks` (or `checks` for a
+  direct checks job); GitHub does NOT prefix required-check contexts with the workflow name, so a
+  `CI / floor / …` decoy reads as MISSING. The checks context is cross-checked against the actual
+  check-run names; missing contexts or an empty list are called out loudly instead of reading as
+  "configured" (canary-probed with a stubbed gh, real + decoy + no-run-data cases).
+- **Floor checks executable MODE, not just bytes.** The pinned executables are executed
+  directly (`./.plinth/review.sh`, the lanes' `.plinth/lane-guard.sh` calls, the `.claude`
+  hooks); `cmp` alone would pass pinned bytes committed at 0644 while every exec fails.
+  `plinth-floor.yml` now fails on a non-executable pinned script (whole set, not just the
+  new lane-guard). GPT-5.6 rollout facts refreshed across MODELS/MANUAL/SETUP/scaffold:
+  GA July 9 2026, per-account eligibility, Codex CLI >= 0.144.0 — the reviewer tier knobs
+  still ship commented (an active knob on an ineligible account fails loud), with the
+  activation probe (`codex -m gpt-5.6`) documented.
+- **`plinth hookprobe <grok|codex>` — vendor hook-execution is PROBED per EVENT, never
+  asserted.** Which wired `.claude/` hook events a non-Claude CLI executes decides the real
+  enforcement semantics, PER EVENT (SessionStart = session-start.sh, PreToolUse = guard.sh,
+  PostToolUse = pulse.sh, Stop = review-gate.sh) — and it is version/environment-dependent;
+  vendor docs and prose claims both go stale. The shipped probe wires a marker for each of
+  the four in a scratch repo, drives the CLI through one trivial command (one small model
+  call, wall-clock capped via PLINTH_HOOKPROBE_TIMEOUT, default 120s — a hung CLI exits 4,
+  bounded, instead of hanging the operator), and reports each event separately: exit 0 =
+  all four executed; 1 = none or some (a not-invoked event is certainly unenforced; invoked = necessary,
+  not sufficient — the report also notes per-event whether JSON arrived on stdin); 3 = CLI missing;
+  4 = INCONCLUSIVE — timeout, the CLI never executed the probe sentinel, OR the CLI exited
+  nonzero after executing it (a late finalization/teardown failure could swallow late hook
+  events such as Stop): a broken/failing CLI is NOT evidence of hook non-execution and
+  never reads as NONE.
+  A release-time local run against `grok 0.2.93` reported NONE executed — checked receipt:
+  docs/receipts/hookprobe-grok-0.2.93.txt; reproduce with `plinth hookprobe grok`; the probe, not this sentence, is the source of truth. Every doc
+  claim about non-Claude
+  hook behavior now cites the probe; the canary verifies the probe's detection five ways
+  with stub drivers — all-four, partial (per-event report), none, missing CLI, hang→timeout
+  (the vendor behavior itself is only testable against the real CLI, locally).
+- **`plinth watch` renders FEEDLESS.** Without `.plinth/session/events.jsonl` (a driver whose
+  CLI does not execute `.claude/` hooks — probe with `plinth hookprobe`; grok 0.2.93 reported
+  no execution (receipt: docs/receipts/hookprobe-grok-0.2.93.txt) — or pulse.sh unwired) the dashboard no longer bails — it
+  renders a reduced frame from the non-hook inputs: branch @ head, the review verdict
+  (vendor-neutral `review.sh` state, incl. round and tier), and the NEEDS-HUMAN queue
+  (viewport-budgeted like the live frame — `plinth queue` prints every item),
+  under a dim banner naming why the hook-fed lines are blank. The same reduced frame now also
+  covers a wired session that has not pulsed yet (previously a bail message). Canary-probed:
+  feedless `--once` exits 0, renders verdict + queue, old bail gone.
+- **Architect / cost discipline doctrine** (MODELS.md, plinth-rules.md): the frontier driver emits
+  judgment (decomposition, interfaces, specs, verdicts) and delegates implementation volume — a
+  code block longer than an interface signature is a spec that hasn't been delegated yet; keep the
+  context lean; reason once, then hand off; fixing a lane's bug by hand is the same failure in
+  disguise (send a corrected spec back). The lanes apply when the driver is Claude/Fable (the
+  architect-delegates-to-a-cheaper-family topology); a non-Claude driver delegates via its own
+  mechanism with the same spec contract + Rule-10 verification.
+- **`plinth advise` discipline.** The advisor now receives a preamble (adapted from fable-advisor)
+  that STEERS every vendor toward the same shape (prompt guidance — the output is printed as-is, not
+  validated/normalized): a VERDICT, not a survey ("Do X, not Y, because Z" + the single deciding
+  risk); a sound plan gets one line (no manufactured objections); look before you opine (read the
+  code, don't reason from the summary); name missing information precisely; under ~300 words; advise
+  only. `--impactful` adds a hard-to-reverse-decision weighting line.
+- **Version-pinned like the hooks:** the lane agents and `.plinth/lane-guard.sh` are floor-checked
+  against the pinned release, in `protected-paths` (Claude guard blocks driver edits) and
+  `HARNESS_RE`/`HARNESS_PATHS` (review treats edits as tooling-tamper / UPSTREAM). `plinth
+  init`/`update` materialize them; `copy_shared` gains `.claude/agents/` + `lane-guard.sh`.
+- **Model assignments v4 (MODELS.md + MANUAL.md).** Three models work together. DEFAULT
+  topology: ARCHITECT-RESIDENT — the top model (Fable 5 by exception, Opus 4.8 otherwise)
+  orchestrates in Claude Code (judgment, specs, routing, a final read-only audit; no routine
+  typing, no direct edits to the worker's diff) with the guard and Stop gate ENFORCED, and
+  Grok 4.5 does most of the coding as the WORKER lane, escalating open questions back.
+  ALTERNATIVE topology: grok-RESIDENT (the grok CLI is the harness; the lanes go dormant —
+  that driver is already the cheap fast typist and consults judgment UP via `plinth advise`),
+  Fable 5 advises (`advisor_model_max = fable`, peer Opus 4.8), GPT-5.6 reviews
+  (`reviewer_model_tier1/tier2 = gpt-5.6`; ineligible accounts stay on the GPT-5.5 vendor
+  default), Claude audits (`audit_vendor = claude` — a different family than both the
+  WORKER that produced the diff and the reviewer, in either topology). Documents the contingency for a Fable availability lapse (advisor
+  seat → GPT-5.6; audit keeps Anthropic coverage) and the enforcement reality of a
+  non-Claude driver (hook execution is per-CLI — `plinth hookprobe`; grok 0.2.93
+  reported none — receipt: docs/receipts/hookprobe-grok-0.2.93.txt, so no local hooks or Stop gate there — an EXPLICIT,
+  ACKNOWLEDGED limitation of the grok-RESIDENT alternative until the receipt check ships
+  with auto mode: review under a non-Claude driver is contract discipline, not an enforced
+  gate, and the architect-resident default keeps the enforced-gate path; the vendor-neutral
+  binding layer — review.sh, SHA-bound verdicts, branch protection's required checks —
+  is unchanged). The Claude in-family routing table stays for Claude-driver sessions.
+  IMPLEMENTED, not just documented (round-1 findings): `run_auditor` gains a claude
+  adapter (empty-cwd isolation + `--safe-mode` + hard `--json-schema` + read tools
+  disallowed, mirroring the claude primary adapter) so `audit_vendor = claude` actually
+  runs; the scaffold now writes `audit_vendor = claude` and the `plinth update` unset-
+  audit reminder suggests a v4-consistent vendor (claude, or grok for a claude primary);
+  and `plinth advise` is ISOLATED from the auto-loaded DRIVER contract per vendor —
+  claude `--safe-mode`, codex `-c project_doc_max_bytes=0`, grok `--rules` role-scope
+  (agy has neither flag: prompt role-scope line only) — while keeping the repo readable,
+  since the advisor (unlike the auditor) must read code. The scaffold also materializes the
+  v4 advisor seat LIVE (`advisor_model = opus`, `advisor_model_max = fable` — advise is
+  non-blocking, so a missing Fable reports unavailable) and ships the reviewer tier knobs
+  COMMENTED (`# reviewer_model_tier1/tier2 = gpt-5.6`): GPT-5.6 access is per-account
+  (GA July 9 2026; Codex CLI >= 0.144.0) and an active line on an ineligible account
+  would make the reviewer fail loud rather than fall back — uncomment once
+  `codex -m gpt-5.6` works. Canary: scaffold-default asserts (audit vendor, live advisor knobs,
+  commented-not-active reviewer tiers), claude-audit end-to-end + `--safe-mode` argv assert,
+  claude added to the audit-isolation matrix and first-adoption probe, and advise isolation
+  flags asserted on the COMMAND block.
+
 ## v4.4.0 — vendor-agnostic driver + advisor + contract abstraction — July 9, 2026
 - **Vendor-agnostic DRIVER (codex | claude | grok).** The overloaded contract files are
   split so any vendor auto-loads the right role. The reviewer contract moved out of root

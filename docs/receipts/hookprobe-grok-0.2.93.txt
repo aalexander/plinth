@@ -1,0 +1,6 @@
+# hookprobe receipt — grok CLI 0.2.93
+# date: 2026-07-22  host: darwin 25.5.0 (maintainer workstation)
+# command: plinth hookprobe grok  (bin/plinth @ feat/architect-lanes)
+
+hookprobe: grok (grok 0.2.93 (f00f96316d4b) [stable]) executed NONE of the wired .claude/ hook events (SessionStart: no; PreToolUse: no; PostToolUse: no; Stop: no;) — expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades.
+exit: 1

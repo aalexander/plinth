@@ -51,6 +51,312 @@ jobs:
           grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
           grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
+          # v4 model wiring: the scaffold's audit seat is claude — a different family than
+          # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
+          grep -q '^audit_vendor = claude$' .plinth/config || { echo "::error::scaffold did not set audit_vendor = claude (v4 default)"; exit 1; }
+          # generated ci.yml must preserve the template's mode (edit_file's mktemp is 0600) — it must
+          # stay group/other-readable, not 0600:
+          cim="$(stat -c '%a' .github/workflows/ci.yml 2>/dev/null || stat -f '%Lp' .github/workflows/ci.yml 2>/dev/null)"
+          tmpl="$GITHUB_WORKSPACE/templates/.github/workflows/ci.yml"
+          tim="$(stat -c '%a' "$tmpl" 2>/dev/null || stat -f '%Lp' "$tmpl" 2>/dev/null)"
+          [ "$cim" = "$tim" ] || { echo "::error::generated ci.yml mode ($cim) != template mode ($tim) — edit_file did not preserve the source mode"; exit 1; }
+          # edit_file must FAIL CLOSED if it cannot apply the source mode — otherwise the 0600 mktemp
+          # temp is moved into place and the file is silently left group/other-UNREADABLE (the exact
+          # regression mode-preservation exists to prevent). Inject a chmod that fails ONLY for the
+          # .plinth-tmp temp (pass-through otherwise) and assert init aborts non-zero:
+          CHB="$(mktemp -d)"
+          printf '%s\n' '#!/usr/bin/env bash' 'for a in "$@"; do case "$a" in *.plinth-tmp.*) exit 1;; esac; done' 'exec /bin/chmod "$@"' > "$CHB/chmod"
+          chmod +x "$CHB/chmod"
+          EFI="$(mktemp -d)"; ( cd "$EFI"; git init -qb main . >/dev/null
+            r=0; PATH="$CHB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" init "$EFI" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::edit_file did not fail closed when chmod could not set the source mode (would leave a 0600/unreadable file)"; exit 1; } )
+          # v4 advisor seat is scaffolded LIVE (advise is non-blocking; a missing model just
+          # reports unavailable); the reviewer tier knobs ship COMMENTED — GPT-5.6 access is
+          # PER-ACCOUNT (GA July 9 2026; Codex CLI >= 0.144.0) and an ACTIVE line on an
+          # ineligible account would make the reviewer FAIL LOUD, not fall back.
+          grep -q '^advisor_model = opus$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor peer model (advisor_model = opus)"; exit 1; }
+          grep -q '^audit_model = opus$' .plinth/config || { echo "::error::scaffold did not pin the v4 audit seat model (audit_model = opus) — the CLI default could audit with a different model"; exit 1; }
+          # plinth UPDATE must WARN (loudly, with the repin command) when an existing project's
+          # reusable-workflow refs are STALE — without rewriting the operator-owned ci.yml (contract):
+          RPD="$(mktemp -d)"; ( cd "$RPD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD" >/dev/null 2>&1 )
+          PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          # a stale CHECKS ref ALONE (floor current) must still warn — floor and checks are
+          # independent gates (round-65 sibling):
+          sed -i "s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD/.github/workflows/ci.yml"
+          ( cd "$RPD" && git add -A && git commit -qm base >/dev/null )
+          rpout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD" 2>&1)"
+          printf '%s' "$rpout" | grep -q "pins the reusable" || { echo "::error::plinth update did not WARN about a stale reusable CHECKS ref (floor current)"; exit 1; }
+          # the warning MUST carry a usable repin command: the sed one-liner AND this release's SHA:
+          # the repin sed command AND this release's SHA must occur on the SAME line, and for a
+          # checks-ONLY stale it must target plinth-checks only (never rewrite the current floor ref):
+          printf '%s' "$rpout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-checks" || { echo "::error::stale checks-only warning lacks a repin command targeting plinth-checks with this SHA"; exit 1; }
+          printf '%s' "$rpout" | grep -q 'sed -i.bak.*plinth-(floor|checks)' && { echo "::error::checks-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
+          grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
+          RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|; s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD3/.github/workflows/ci.yml"
+          printf '          # decoy plinth-floor.yml@%s plinth-checks.yml@%s\n' "$PSHA" "$PSHA" >> "$RPD3/.github/workflows/ci.yml"
+          ( cd "$RPD3" && git add -A && git commit -qm base >/dev/null )
+          rp3="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD3" 2>&1)"
+          printf '%s' "$rp3" | grep -q "pins the reusable" || { echo "::error::a decoy comment ref suppressed the stale-ref warning (grep not anchored to uses:)"; exit 1; }
+          # a decoy NON-GATING job with a current uses: ref must not suppress the warning either:
+          RPD4="$(mktemp -d)"; ( cd "$RPD4"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD4" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD4/.github/workflows/ci.yml"
+          printf '  decoyjob:\n    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s\n' "$PSHA" >> "$RPD4/.github/workflows/ci.yml"
+          ( cd "$RPD4" && git add -A && git commit -qm base >/dev/null )
+          rp4="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD4" 2>&1)"
+          printf '%s' "$rp4" | grep -q "pins the reusable" || { echo "::error::a decoy non-gating job with a current uses: ref suppressed the stale-ref warning"; exit 1; }
+          # MIXED: stale reusable floor + a CUSTOM checks gate (checks uses: is NOT plinth-checks.yml) —
+          # warn about the floor ref ONLY; the suggested sed must target floor only. Repoint the checks
+          # reusable ref to a non-plinth workflow (that makes checks a custom gate, cstale=0):
+          RPD5="$(mktemp -d)"; ( cd "$RPD5"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD5" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPD5/.github/workflows/ci.yml"
+          sed -i "s|[^ ]*plinth-checks.yml@[^ ]*|./.github/workflows/my-checks.yml|" "$RPD5/.github/workflows/ci.yml"
+          ( cd "$RPD5" && git add -A && git commit -qm base >/dev/null )
+          rp5="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD5" 2>&1)"
+          printf '%s' "$rp5" | grep -q "reusable floor ref" || { echo "::error::mixed stale-floor+custom-checks did not name the floor ref only: $(printf '%s' "$rp5" | grep -i reusable | head -1)"; exit 1; }
+          printf '%s' "$rp5" | grep -q "plinth-checks" && { echo "::error::mixed warning's sed still targets the custom checks ref"; exit 1; } || true
+          # current floor + custom checks must NOT warn (nothing reusable is stale):
+          RPD6="$(mktemp -d)"; ( cd "$RPD6"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD6" >/dev/null 2>&1 )
+          sed -i "s|[^ ]*plinth-checks.yml@[^ ]*|./.github/workflows/my-checks.yml|" "$RPD6/.github/workflows/ci.yml"
+          ( cd "$RPD6" && git add -A && git commit -qm base >/dev/null )
+          rp6="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD6" 2>&1)"
+          printf '%s' "$rp6" | grep -q "pins the reusable" && { echo "::error::current-floor + custom-checks falsely warned"; exit 1; } || true
+          # and a FULLY-current ci.yml must NOT warn:
+          RPD2="$(mktemp -d)"; ( cd "$RPD2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD2" >/dev/null 2>&1; git add -A; git commit -qm base >/dev/null )
+          rp2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPD2" 2>&1)"
+          printf '%s' "$rp2" | grep -q "pins the reusable" && { echo "::error::plinth update FALSE-warned on a current ci.yml"; exit 1; } || true
+          # QUOTED uses: values — a current QUOTED ref must NOT be falsely flagged stale (the char after
+          # the SHA is a quote, not whitespace/EOL), and a stale QUOTED ref's repin sed must keep the
+          # closing quote (a `[^[:space:]]+` SHA match would swallow it and emit invalid YAML):
+          RPDQ="$(mktemp -d)"; ( cd "$RPDQ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPDQ" >/dev/null 2>&1 )
+          # wrap BOTH uses: values in double quotes, keeping the current SHA -> must NOT warn:
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPDQ/.github/workflows/ci.yml"
+          ( cd "$RPDQ" && git add -A && git commit -qm base >/dev/null )
+          rpq="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDQ" 2>&1)"
+          printf '%s' "$rpq" | grep -q "pins the reusable" && { echo "::error::a CURRENT but QUOTED reusable ref was falsely flagged stale"; exit 1; } || true
+          # now make the quoted floor ref STALE -> must warn, and the emitted repin sed must produce valid YAML:
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPDQ/.github/workflows/ci.yml"
+          ( cd "$RPDQ" && git add -A && git commit -qm base >/dev/null )
+          rpq2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDQ" 2>&1)"
+          printf '%s' "$rpq2" | grep -q "pins the reusable" || { echo "::error::a STALE QUOTED reusable floor ref did not warn"; exit 1; }
+          # extract the FULL suggested repin command (it spans two lines: the sed + the target path/rm)
+          # and RUN it; the result must be valid YAML with the closing quote intact:
+          sedcmd="$(printf '%s' "$rpq2" | grep -F 'sed -i.bak')"
+          printf '%s' "$sedcmd" | grep -qF "$PSHA" || { echo "::error::stale quoted-ref warning carried no repin command with this SHA"; exit 1; }
+          ( cd "$RPDQ" && eval "$sedcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPDQ/.github/workflows/ci.yml" || { echo "::error::the repin sed on a QUOTED ref produced INVALID YAML (swallowed the closing quote)"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}\"" "$RPDQ/.github/workflows/ci.yml" || { echo "::error::repin did not restore the current SHA with its closing quote on the quoted floor ref"; exit 1; }
+          # SINGLE-quoted refs (current must not warn; stale must warn and repin to valid YAML), on the
+          # CHECKS gate (the double-quoted case above covered floor):
+          RPS="$(mktemp -d)"; ( cd "$RPS"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPS" >/dev/null 2>&1 )
+          sed -i -E "s#(uses: )(aalexander/plinth[^ ]*)#\1'\2'#" "$RPS/.github/workflows/ci.yml"
+          ( cd "$RPS" && git add -A && git commit -qm base >/dev/null )
+          rps="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPS" 2>&1)"
+          printf '%s' "$rps" | grep -q "pins the reusable" && { echo "::error::a CURRENT single-quoted reusable ref was falsely flagged stale"; exit 1; } || true
+          sed -i "s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPS/.github/workflows/ci.yml"
+          ( cd "$RPS" && git add -A && git commit -qm base >/dev/null )
+          rps2="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPS" 2>&1)"
+          printf '%s' "$rps2" | grep -q "pins the reusable" || { echo "::error::a STALE single-quoted CHECKS ref did not warn"; exit 1; }
+          scmd="$(printf '%s' "$rps2" | grep -F 'sed -i.bak')"; ( cd "$RPS" && eval "$scmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPS/.github/workflows/ci.yml" || { echo "::error::repin on a SINGLE-quoted ref produced invalid YAML"; exit 1; }
+          grep -q "plinth-checks.yml@${PSHA}'" "$RPS/.github/workflows/ci.yml" || { echo "::error::single-quote delimiter not preserved on the checks repin"; exit 1; }
+          # a QUOTED JOB KEY ("floor":) with a stale ref must still be discovered and warned:
+          RPK="$(mktemp -d)"; ( cd "$RPK"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPK" >/dev/null 2>&1 )
+          sed -i 's/^  floor:/  "floor":/' "$RPK/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPK/.github/workflows/ci.yml"
+          ( cd "$RPK" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPK" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale ref under a QUOTED job key was not discovered (awk key match too strict)"; exit 1; }
+          # awk robustness (a): a child PROPERTY before `uses:` (permissions/needs/if/strategy) inside
+          # the floor job is VALID YAML and must NOT terminate the block and suppress a stale warning —
+          # the block-end must compare INDENTATION (a deeper child != a sibling job). Tests the real gap.
+          RPI="$(mktemp -d)"; ( cd "$RPI"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI" >/dev/null 2>&1 )
+          python3 - "$RPI/.github/workflows/ci.yml" <<'PYIND'
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          s=s.replace('\n  floor:\n    uses:', '\n  floor:\n    permissions: read-all\n    uses:')
+          open(p,'w').write(s)
+          PYIND
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPI/.github/workflows/ci.yml" || { echo "::error::[test-setup] property-before-uses fixture is invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI/.github/workflows/ci.yml"
+          ( cd "$RPI" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a child property (permissions:) before uses: suppressed the stale warning — awk terminator not indentation-aware"; exit 1; }
+          # awk robustness (c): a COMMENTED `# uses: …@<current-sha>` before the ACTIVE stale uses must
+          # NOT be captured and suppress the warning (the uses: match must skip comment lines):
+          RPC="$(mktemp -d)"; ( cd "$RPC"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPC" >/dev/null 2>&1 )
+          python3 - "$RPC/.github/workflows/ci.yml" "$PSHA" <<'PYCMT'
+          import sys
+          p, sha = sys.argv[1], sys.argv[2]; s = open(p).read()
+          s = s.replace('\n  floor:\n    uses:', '\n  floor:\n    # uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s\n    uses:' % sha, 1)
+          s = s.replace('    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s' % sha,
+                        '    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@v3.14', 1)  # stale ONLY the active line
+          open(p, 'w').write(s)
+          PYCMT
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPC/.github/workflows/ci.yml" || { echo "::error::[test-setup] commented-uses fixture is invalid YAML"; exit 1; }
+          ( cd "$RPC" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPC" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a COMMENTED current uses line before the active stale uses suppressed the warning — awk did not skip the comment"; exit 1; }
+          # awk robustness (d): discovery is SCOPED to the top-level jobs: mapping — a same-named key
+          # ELSEWHERE (`env:\n  floor: …` before jobs:) must NOT be selected as the floor job and divert
+          # discovery past the real stale gate:
+          RPE="$(mktemp -d)"; ( cd "$RPE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPE" >/dev/null 2>&1 )
+          python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("jobs:","env:\n  floor: not-a-job\n\njobs:",1))' "$RPE/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPE/.github/workflows/ci.yml" || { echo "::error::[test-setup] env-decoy fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPE/.github/workflows/ci.yml"
+          ( cd "$RPE" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPE" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a top-level env: floor key diverted stale-gate discovery from the real jobs.floor gate"; exit 1; }
+          # awk robustness (e): the `uses:` match is a line-start KEY — a `name: \"uses: …\"` string
+          # inside the floor job before its real uses: must NOT be captured as the ref:
+          RPN="$(mktemp -d)"; ( cd "$RPN"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPN" >/dev/null 2>&1 )
+          python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("\n  floor:\n    uses:","\n  floor:\n    name: \"uses: compatibility floor\"\n    uses:"))' "$RPN/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPN/.github/workflows/ci.yml" || { echo "::error::[test-setup] name-uses-string fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPN/.github/workflows/ci.yml"
+          ( cd "$RPN" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPN" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a name: \"uses: …\" STRING before the real uses: was captured as the ref (uses match not a line-start key)"; exit 1; }
+          # awk robustness (f): a same-named MATRIX key at a deeper indent must NOT divert discovery —
+          # only a DIRECT-child job of jobs: and a DIRECT-child uses: count. A `setup` job with
+          # `strategy.matrix.floor` before the real floor gate must still find the real stale gate:
+          RPMX="$(mktemp -d)"; ( cd "$RPMX"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPMX" >/dev/null 2>&1 )
+          python3 -c '
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          inject="  setup:\n    strategy:\n      matrix:\n        floor: [a, b]\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"
+          open(p,"w").write(s.replace("jobs:\n","jobs:\n"+inject,1))' "$RPMX/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPMX/.github/workflows/ci.yml" || { echo "::error::[test-setup] matrix-decoy fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPMX/.github/workflows/ci.yml"
+          ( cd "$RPMX" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPMX" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a strategy.matrix.floor key diverted discovery from the real jobs.floor gate (awk not direct-child scoped)"; exit 1; }
+          # awk robustness (g): a QUOTED top-level `\"jobs\":` mapping must still be recognized:
+          RPQJ="$(mktemp -d)"; ( cd "$RPQJ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPQJ" >/dev/null 2>&1 )
+          sed -i 's|^jobs:|"jobs":|' "$RPQJ/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPQJ/.github/workflows/ci.yml" || { echo "::error::[test-setup] quoted-jobs fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPQJ/.github/workflows/ci.yml"
+          ( cd "$RPQJ" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPQJ" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a quoted top-level \"jobs\": mapping was not recognized (stale gate missed)"; exit 1; }
+          # awk robustness (h): inline `# comment` on the jobs:/floor: line, a quoted `"uses":` key, and a
+          # deep comment decoy (which must not establish the inferred child indent) must all still find
+          # the real stale gate:
+          for tweak in 'inline-jobs-comment' 'inline-floor-comment' 'quoted-uses' 'comment-indent'; do
+            RPT="$(mktemp -d)"; ( cd "$RPT"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPT" >/dev/null 2>&1 )
+            case "$tweak" in
+              inline-jobs-comment)  sed -i 's|^jobs:|jobs: # workflow jobs|' "$RPT/.github/workflows/ci.yml" ;;
+              inline-floor-comment) sed -i 's|^  floor:|  floor: # the gate|' "$RPT/.github/workflows/ci.yml" ;;
+              quoted-uses)          sed -i 's|^    uses:|    "uses":|' "$RPT/.github/workflows/ci.yml" ;;
+              comment-indent)       python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("jobs:\n","jobs:\n      # deep decoy comment\n",1))' "$RPT/.github/workflows/ci.yml" ;;
+            esac
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPT/.github/workflows/ci.yml" || { echo "::error::[test-setup] awk tweak '$tweak' produced invalid YAML"; exit 1; }
+            sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPT/.github/workflows/ci.yml"
+            ( cd "$RPT" && git add -A && git commit -qm base >/dev/null )
+            printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPT" 2>&1)" | grep -q "pins the reusable" || { echo "::error::awk missed the stale gate under layout '$tweak'"; exit 1; }
+          done
+          # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
+          # gate must still be discovered (the parser must not assume exactly two-space indentation):
+          RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )
+          python3 - "$RPI2/.github/workflows/ci.yml" <<'PYIND2'
+          import sys
+          p=sys.argv[1]; lines=open(p).read().split('\n'); out=[]; injobs=False
+          for ln in lines:
+              if ln.startswith('jobs:'): injobs=True; out.append(ln); continue
+              if injobs and ln and not ln[0].isspace(): injobs=False   # a new top-level key ends jobs:
+              out.append(('  '+ln) if (injobs and ln.strip()) else ln)  # +2 spaces to every jobs: body line
+          open(p,'w').write('\n'.join(out))
+          PYIND2
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPI2/.github/workflows/ci.yml" || { echo "::error::[test-setup] 4-space reindent fixture is invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI2/.github/workflows/ci.yml"
+          ( cd "$RPI2" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI2" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale gate in a consistently 4-space-indented jobs tree was missed (awk assumed exact 2-space layout)"; exit 1; }
+          # <current-sha>-old is a DIFFERENT ref -> must be STALE (exact-token boundary, not prefix):
+          RPO="$(mktemp -d)"; ( cd "$RPO"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPO" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}-old|" "$RPO/.github/workflows/ci.yml"
+          ( cd "$RPO" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPO" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>-old (a longer, different ref) was falsely treated as current"; exit 1; }
+          # a SLASH ref (release/v4) must repin fully (no /v4 residue), and a target path with a SPACE
+          # must yield a shell-SAFE advertised command (printf %q), not a broken/injectable one:
+          RSL="$(mktemp -d)/pa th"; mkdir -p "$RSL"; ( cd "$RSL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RSL" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release/v4|" "$RSL/.github/workflows/ci.yml"
+          ( cd "$RSL" && git add -A && git commit -qm base >/dev/null )
+          rsl="$("$GITHUB_WORKSPACE/bin/plinth" update "$RSL" 2>&1)"; rcmd="$(printf '%s' "$rsl" | grep -F 'sed -i.bak')"
+          ( eval "$rcmd" ) || { echo "::error::the advertised repin command broke on a space-containing target path (not shell-quoted)"; exit 1; }
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RSL/.github/workflows/ci.yml" || { echo "::error::slash-ref/space-path repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}" "$RSL/.github/workflows/ci.yml" && ! grep -q "@${PSHA}/v4" "$RSL/.github/workflows/ci.yml" || { echo "::error::slash ref (release/v4) was not fully replaced — left a /v4 residue"; exit 1; }
+          # metacharacter TARGET PATHS (backtick, $(), single quote, double quote): the advertised
+          # %q-quoted repin command must be a safe single token — not broken, and NOT executing
+          # command substitution (matches the production "quote/backtick/$()" claim):
+          for meta in 'ta`x`tick' 'd$(touch OWNED)ollar' "apos'trophe" 'quo"te'; do
+            RMP="$(mktemp -d)/$meta"; mkdir -p "$RMP"; ( cd "$RMP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RMP" >/dev/null 2>&1 )
+            sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RMP/.github/workflows/ci.yml"
+            ( cd "$RMP" && git add -A && git commit -qm base >/dev/null )
+            rmp="$("$GITHUB_WORKSPACE/bin/plinth" update "$RMP" 2>&1)"; mcmd="$(printf '%s' "$rmp" | grep -F 'sed -i.bak')"
+            ( eval "$mcmd" ) || { echo "::error::the advertised repin command broke on a metacharacter target path ('$meta')"; exit 1; }
+            [ -e OWNED ] && { echo "::error::the advertised repin command EXECUTED command substitution from a \$() target path — not shell-safe"; exit 1; } || true
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RMP/.github/workflows/ci.yml" || { echo "::error::metachar-path repin produced invalid YAML ('$meta')"; exit 1; }
+            grep -q "plinth-floor.yml@${PSHA}" "$RMP/.github/workflows/ci.yml" || { echo "::error::metachar-path repin did not land ('$meta')"; exit 1; }
+          done
+          # PLUS/EXOTIC ref chars are valid git-ref characters, NOT token terminators: <current-sha>+old
+          # is a DIFFERENT ref -> STALE, and a stale `release+v4` must be fully repinned (no +v4 residue):
+          RPP="$(mktemp -d)"; ( cd "$RPP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPP" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}+old|" "$RPP/.github/workflows/ci.yml"
+          ( cd "$RPP" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPP" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>+old (a different, longer ref) was falsely treated as current — boundary must stop only at whitespace/quote/EOL"; exit 1; }
+          RPV="$(mktemp -d)"; ( cd "$RPV"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPV" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release+v4|" "$RPV/.github/workflows/ci.yml"
+          ( cd "$RPV" && git add -A && git commit -qm base >/dev/null )
+          rpv="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPV" 2>&1)"; vcmd="$(printf '%s' "$rpv" | grep -F 'sed -i.bak')"; ( cd "$RPV" && eval "$vcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPV/.github/workflows/ci.yml" || { echo "::error::plus-ref repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}" "$RPV/.github/workflows/ci.yml" && ! grep -q "release+v4\|@${PSHA}+v4" "$RPV/.github/workflows/ci.yml" || { echo "::error::a stale release+v4 ref was not fully replaced — left a +v4 residue (repin class too narrow)"; exit 1; }
+          # QUOTE-BEARING PLAIN (unquoted) refs: `<current-sha>'old` is a valid plain YAML scalar and a
+          # DIFFERENT git ref -> STALE (quotes are NOT unconditional terminators); its repin must fully
+          # replace it (no truncation at the quote):
+          RPUQ="$(mktemp -d)"; ( cd "$RPUQ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPUQ" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}'old|" "$RPUQ/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPUQ/.github/workflows/ci.yml" || { echo "::error::[test-setup] <sha>'old plain-scalar fixture invalid YAML"; exit 1; }
+          ( cd "$RPUQ" && git add -A && git commit -qm base >/dev/null )
+          uqout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPUQ" 2>&1)"
+          printf '%s' "$uqout" | grep -q "pins the reusable" || { echo "::error::a quote-bearing PLAIN ref <sha>'old was falsely treated as current (quote wrongly a terminator)"; exit 1; }
+          uqcmd="$(printf '%s' "$uqout" | grep -F 'sed -i.bak')"; ( cd "$RPUQ" && eval "$uqcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPUQ/.github/workflows/ci.yml" || { echo "::error::the <sha>'old repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA} " "$RPUQ/.github/workflows/ci.yml" && ! grep -q "'old" "$RPUQ/.github/workflows/ci.yml" || { echo "::error::the <sha>'old plain ref was not fully repinned (truncated at the quote)"; exit 1; }
+          # SCOPING: the repin matches the LITERAL stale ref, so an UNRELATED job pinning a DIFFERENT
+          # plinth-floor ref must NOT be rewritten (fixes the file-global-substitution concern):
+          RPSC="$(mktemp -d)"; ( cd "$RPSC"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPSC" >/dev/null 2>&1 )
+          python3 -c '
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          s=s.replace("jobs:\n","jobs:\n  decoy:\n    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@differentref00000000000000000000000000000000\n",1)
+          open(p,"w").write(s)' "$RPSC/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPSC/.github/workflows/ci.yml"
+          ( cd "$RPSC" && git add -A && git commit -qm base >/dev/null )
+          scout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPSC" 2>&1)"; sccmd="$(printf '%s' "$scout" | grep -F 'sed -i.bak')"; ( cd "$RPSC" && eval "$sccmd" )
+          grep -q "plinth-floor.yml@differentref00000000000000000000000000000000" "$RPSC/.github/workflows/ci.yml" || { echo "::error::the repin rewrote an UNRELATED job pinning a DIFFERENT ref (not scoped to the stale ref value)"; exit 1; }
+          # SECURITY: a stale ref containing shell metacharacters (backtick / $()) must produce an INERT
+          # advertised command — running it must NOT execute the metacharacters (the emitted sed is
+          # single-quoted). git+YAML accept `release`+backtick+`x`+backtick as a plain scalar:
+          RPMR="$(mktemp -d)"; ( cd "$RPMR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPMR" >/dev/null 2>&1 )
+          sed -i 's|plinth-floor.yml@'"${PSHA}"'|plinth-floor.yml@rel`touch INJECTED`x|' "$RPMR/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPMR/.github/workflows/ci.yml" || { echo "::error::[test-setup] backtick-ref fixture invalid YAML"; exit 1; }
+          ( cd "$RPMR" && git add -A && git commit -qm base >/dev/null )
+          mrout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPMR" 2>&1)"; mrcmd="$(printf '%s' "$mrout" | grep -F 'sed -i.bak')"
+          rm -f "$RPMR/INJECTED" INJECTED
+          ( cd "$RPMR" && eval "$mrcmd" ) >/dev/null 2>&1 || true
+          { [ ! -e "$RPMR/INJECTED" ] && [ ! -e INJECTED ]; } || { echo "::error::the advertised repin command EXECUTED a backtick from a stale REF value — shell-injectable (single-quote the emitted sed)"; exit 1; }
+          rm -f "$RPMR/INJECTED" INJECTED
+          # `#` is NOT an unconditional terminator: a YAML comment needs whitespace before `#`, so
+          # <sha>#old (no space) is a single scalar = a DIFFERENT ref -> STALE, and a stale quoted
+          # `release#v4` must repin fully. A trailing ` # comment` (space before #) is still preserved.
+          RPH="$(mktemp -d)"; ( cd "$RPH"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPH" >/dev/null 2>&1 )
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPH/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}#old|" "$RPH/.github/workflows/ci.yml"
+          ( cd "$RPH" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPH" 2>&1)" | grep -q "pins the reusable" || { echo "::error::<current-sha>#old (a different scalar ref) was falsely treated as current — `#` wrongly used as an unconditional terminator"; exit 1; }
+          RPH2="$(mktemp -d)"; ( cd "$RPH2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPH2" >/dev/null 2>&1 )
+          sed -i -E 's#(uses: )(aalexander/plinth[^ ]*)#\1"\2"#' "$RPH2/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@release#v4|" "$RPH2/.github/workflows/ci.yml"
+          ( cd "$RPH2" && git add -A && git commit -qm base >/dev/null )
+          rph="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPH2" 2>&1)"; hcmd="$(printf '%s' "$rph" | grep -F 'sed -i.bak')"; ( cd "$RPH2" && eval "$hcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPH2/.github/workflows/ci.yml" || { echo "::error::quoted release#v4 repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA}\"" "$RPH2/.github/workflows/ci.yml" && ! grep -q "release#v4" "$RPH2/.github/workflows/ci.yml" || { echo "::error::a quoted release#v4 ref was not fully replaced — repin stopped at #"; exit 1; }
+          grep -q '^advisor_model_max = fable$' .plinth/config || { echo "::error::scaffold did not set the v4 advisor max model (advisor_model_max = fable)"; exit 1; }
+          grep -q '^# reviewer_model_tier1 = gpt-5.6$' .plinth/config && grep -q '^# reviewer_model_tier2 = gpt-5.6$' .plinth/config || { echo "::error::scaffold lost a commented v4 reviewer tier line (need BOTH tier1 and tier2)"; exit 1; }
+          grep -Eq '^reviewer_model_tier[12] =' .plinth/config && { echo "::error::scaffold ACTIVATED the gpt-5.6 reviewer tiers (an ineligible account would fail loud)"; exit 1; } || true
           # Non-git plinth init fallback: with no resolvable Plinth HEAD (a non-git install),
           # init must rewrite the reusable refs to the UNPINNED sentinel, never a stale/mutable
           # ref. Copy the Plinth source WITHOUT .git so `git -C rev-parse HEAD` fails.
@@ -58,6 +364,13 @@ jobs:
           [ -f "$GITHUB_WORKSPACE/.plinth-version" ] && cp "$GITHUB_WORKSPACE/.plinth-version" "$NGP/" || true
           NGPROJ="$(mktemp -d)"; ( cd "$NGPROJ" && git init -qb main . >/dev/null && "$NGP/bin/plinth" init "$NGPROJ" >/dev/null 2>&1 )
           grep -q 'PIN_TO_YOUR_PLINTH_RELEASE_COMMIT' "$NGPROJ/.github/workflows/ci.yml" || { echo "::error::non-git init did not write the UNPINNED sentinel for the reusable refs"; exit 1; }
+          # non-git UPDATE (supported install class): must WARN it cannot resolve the release SHA to
+          # verify the reusable refs (was a silent skip before round 70):
+          NGUP="$(mktemp -d)"; ( cd "$NGUP" && git init -qb main . >/dev/null 2>&1 && "$GITHUB_WORKSPACE/bin/plinth" init "$NGUP" >/dev/null 2>&1 && git add -A && git commit -qm base >/dev/null 2>&1 )
+          ngu="$("$NGP/bin/plinth" update "$NGUP" 2>&1)"
+          printf '%s' "$ngu" | grep -qi "could not resolve the Plinth release commit" || { echo "::error::non-git UPDATE did not warn it cannot verify the reusable refs (silent stale floor)"; exit 1; }
+          printf '%s' "$ngu" | grep -qi "runs older Plinth tooling" || { echo "::error::non-git UPDATE warning lost the accurate 'cannot verify / runs older tooling' wording"; exit 1; }
+          printf '%s' "$ngu" | grep -qi "the NEW floor checks will not run —" && { echo "::error::non-git UPDATE warning reverted to the inaccurate unconditional 'will not run' overclaim"; exit 1; } || true
           grep -Eq 'plinth-(floor|checks)\.yml@[0-9a-f]{7,}' "$NGPROJ/.github/workflows/ci.yml" && { echo "::error::non-git init left a resolved SHA despite no resolvable Plinth HEAD"; exit 1; } || true
           printf 'tier2_extra = (^|/)vault/\n' >> .plinth/config   # for the tier2_extra probe
           git add -A && git commit -qm "plinth canary scaffold"
@@ -268,8 +581,10 @@ jobs:
             rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = "2" ] || { echo "::error::Tier-1 without codex did not fail loud at the deferred check (exit $rc)"; exit 1; }
           fi
-          # Cross-vendor audit path: stub the primary reviewer (codex) and a grok
-          # auditor, run a Tier-2 review, verify the audit verdict is recorded;
+          # Cross-vendor audit path: stub the primary reviewer (codex) and a claude
+          # auditor (the scaffolded v4 default — this also exercises the claude audit
+          # adapter end-to-end), run a Tier-2 review, verify the audit verdict is
+          # recorded AND the claude auditor is ISOLATED (--safe-mode on the argv);
           # then a FAILING auditor is recorded UNAVAILABLE (non-blocking).
           mkdir -p /tmp/asb
           cat > /tmp/asb/codex <<'CX'
@@ -281,27 +596,39 @@ jobs:
           echo '{"type":"thread.started","thread_id":"stub"}'
           echo '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}'
           CX
-          cat > /tmp/asb/grok <<'GK'
+          cat > /tmp/asb/claude <<'CLA'
           #!/usr/bin/env bash
-          echo '{"text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
-          GK
-          chmod +x /tmp/asb/codex /tmp/asb/grok
+          printf '%s\n' "$@" > /tmp/asb/claude-args
+          cat >/dev/null
+          printf '%s' '{"session_id":"ca","structured_output":{"verdict":"APPROVED","summary":"ok","findings":[]}}'
+          CLA
+          chmod +x /tmp/asb/codex /tmp/asb/claude
           git checkout -q main; git checkout -qB aud main >/dev/null 2>&1; echo "new req" >> SPEC.md; git add -A; git commit -qm aud >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           v="$(jq -r '.audit.vendor // "none"' .plinth/session/review/aud/verdict.json 2>/dev/null)"
-          [ "$v" = "grok" ] || { echo "::error::cross-vendor audit not recorded (vendor=$v)"; exit 1; }
-          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/grok; chmod +x /tmp/asb/grok
+          [ "$v" = "claude" ] || { echo "::error::cross-vendor audit (scaffold default claude) not recorded (vendor=$v)"; exit 1; }
+          grep -qx -- '--safe-mode' /tmp/asb/claude-args || { echo "::error::claude auditor not isolated (--safe-mode missing from argv)"; exit 1; }
+          # the audit is structurally constrained: a hard --json-schema (-> .structured_output, no free
+          # narrative to trust) AND --disallowed-tools that deny repo reads/writes. Assert BOTH so
+          # removing either control turns this test red (the stub always returns structured output and
+          # the empty cwd independently blocks reads, so without these argv checks the test is hollow):
+          grep -qx -- '--json-schema' /tmp/asb/claude-args || { echo "::error::claude auditor missing --json-schema (structured-output constraint dropped)"; exit 1; }
+          # require the FLAG immediately followed by its VALUE (a bare positional token would not deny
+          # any tool) — dropping `--disallowed-tools` while leaving the value must turn this red:
+          awk '/^--disallowed-tools$/{getline nx; if(nx=="Bash,Edit,Write,Read,Grep,Glob") ok=1} END{exit ok?0:1}' /tmp/asb/claude-args || { echo "::error::claude auditor missing '--disallowed-tools' flag immediately before its value (tool isolation dropped)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/claude; chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           av="$(jq -r '.audit.verdict // "none"' .plinth/session/review/aud2/verdict.json 2>/dev/null)"
           [ "$av" = "UNAVAILABLE" ] || { echo "::error::failing auditor not recorded UNAVAILABLE (verdict=$av)"; exit 1; }
           # Blocking-disagreement path: auditor returns a real blocker in project
           # code — the blocking count must be >= 1 (guards the jq arithmetic).
-          cat > /tmp/asb/grok <<'GK'
+          cat > /tmp/asb/claude <<'CLA'
           #!/usr/bin/env bash
-          echo '{"text":"{\"verdict\":\"CHANGES_NEEDED\",\"summary\":\"blk\",\"findings\":[{\"file\":\"src/app.py\",\"line\":1,\"severity\":\"blocker\",\"description\":\"real issue\",\"status\":\"open\"}]}"}'
-          GK
-          chmod +x /tmp/asb/grok
+          cat >/dev/null
+          printf '%s' '{"session_id":"ca","structured_output":{"verdict":"CHANGES_NEEDED","summary":"blk","findings":[{"file":"src/app.py","line":1,"severity":"blocker","description":"real issue","status":"open"}]}}'
+          CLA
+          chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud3 main >/dev/null 2>&1; echo "yet more req" >> SPEC.md; git add -A; git commit -qm aud3 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           ab="$(jq -r '.audit.blocking // 0' .plinth/session/review/aud3/verdict.json 2>/dev/null)"
@@ -328,6 +655,11 @@ jobs:
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
           grep -qx -- '-m' /tmp/asb/grok-args && grep -qx 'testmodel-x' /tmp/asb/grok-args \
             || { echo "::error::audit_model not passed as two tokens (args: $(tr '\n' ' ' < /tmp/asb/grok-args 2>/dev/null))"; exit 1; }
+          # the grok auditor's --prompt-file must be ABSOLUTE and readable from the ISOLATED
+          # empty cwd (run_auditor absolutizes out BEFORE pf derives from it — regression guard):
+          pfv="$(awk 'p{print;exit} $0=="--prompt-file"{p=1}' /tmp/asb/grok-args)"
+          case "$pfv" in /*) : ;; *) echo "::error::grok auditor --prompt-file is not absolute ('$pfv') — unreadable from the isolated cwd"; exit 1 ;; esac
+          [ -r "$pfv" ] || { echo "::error::grok auditor --prompt-file not readable: $pfv"; exit 1; }
           # audit_model ALONE with audit_vendor = codex (the primary reviewer's own vendor)
           # must NOT trigger a same-vendor audit falsely recorded as cross-vendor.
           set_base_audit codex some-codex-model
@@ -479,6 +811,9 @@ jobs:
           agd="$(mktemp -d)"
           ( cd "$agd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$agd" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # STRIP the scaffolded audit seat first — config readers are first-match-wins, so an
+            # append alone would leave the scaffold's audit_vendor = claude in force (v4 scaffold):
+            grep -vE '^(reviewer_vendor|audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             printf 'reviewer_vendor = grok\naudit_vendor = grok\n' >> .plinth/config
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
@@ -688,6 +1023,10 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qF '(^|/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a genuinely-missing pattern"; exit 1; }
+          # the UPDATE backfill must add the EXACT two lane agents, never the broad dir (bin/plinth:281):
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$'  "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing grok-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$C4/.plinth/protected-paths" || { echo "::error::update backfill missing codex-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$C4/.plinth/protected-paths" && { echo "::error::update backfill added the BROAD .claude/agents/ pattern — it would freeze a project's own agents"; exit 1; } || true
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.
@@ -696,6 +1035,9 @@ jobs:
             && "$GITHUB_WORKSPACE/bin/plinth" init "$IB" >/dev/null 2>&1 )
           grep -qF '(^|/)CLAUDE\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill CLAUDE.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
           grep -qF '(^|/)\.plinth/reviewer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill reviewer.md into a pre-existing pre-v4.4 protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$'  "$IB/.plinth/protected-paths" || { echo "::error::init backfill missing grok-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$IB/.plinth/protected-paths" || { echo "::error::init backfill missing codex-implementer"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IB/.plinth/protected-paths" && { echo "::error::init backfill added the BROAD .claude/agents/ pattern — freezes a project's own agents"; exit 1; } || true
 
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──
           # The retired pre-v4.4 templates/CLAUDE.md VERBATIM (shallow CI checkouts cannot
@@ -744,7 +1086,7 @@ jobs:
           grep -qF "Postgres 16" "$MK/CLAUDE.md" || { echo "::error::notes inside the placeholder comment were destroyed (treated as stock)"; exit 1; }
           # Custom content ABOVE the notes heading (round-4) -> custom, preserved.
           MA="$(mktemp -d)"; ( cd "$MA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MA" >/dev/null 2>&1 )
-          perl -0777 -pe 's/(## Project-specific notes)/- CUSTOM RULE: always run make lint.\n\n$1/' "$OLDT" > "$MA/CLAUDE.md"
+          python3 -c 'import sys,re; s=open(sys.argv[1]).read(); sys.stdout.write(re.sub(r"(## Project-specific notes)", "- CUSTOM RULE: always run make lint.\n\n\\1", s, count=1))' "$OLDT" > "$MA/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MA" >/dev/null 2>&1
           grep -qF "make lint" "$MA/CLAUDE.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (treated as stock)"; exit 1; }
 
@@ -885,6 +1227,8 @@ jobs:
           GAU="$(mktemp -d)"; : > "$GCAP4"
           ( cd "$GAU"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GAU" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # strip the scaffolded claude audit seat first (first-match-wins; see the grok/grok probe)
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             printf 'audit_vendor = grok\ntier2_extra = (^|/)app\\.py$\n' >> .plinth/config
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo "x=1" > app.py; git add -A; git commit -qm w >/dev/null
@@ -929,8 +1273,9 @@ jobs:
           # ── v4.4.0: guard.sh deny-ship TRIPWIRE — guard LOGIC test (Claude-style PreToolUse JSON) ──
           # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
           # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
-          # that codex or grok invoke `.claude/` hooks: they do not (codex uses its own hook system,
-          # grok has none), so a non-Claude driver's ship gate is SERVER-SIDE, not this hook. Deliberate
+          # that codex or grok invoke `.claude/` hooks: whether they do is PROBEABLE, not assumed
+          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]), so a non-Claude
+          # driver whose CLI does not execute hooks has a SERVER-SIDE ship gate, not this hook. Deliberate
           # obfuscation is out of scope (a client hook cannot win that race).
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
           ( cd "$GD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo a>f; git add -A; git commit -qm b >/dev/null; git checkout -qb feat/x >/dev/null 2>&1; echo c>f; git add -A; git commit -qm w >/dev/null )
@@ -1088,13 +1433,22 @@ jobs:
           # claude peer tier + --impactful model flags (round-1 coverage retained)
           adv claude fable "q";                grep -q -- '--model peermodel' "$ACAP" || { echo "::error::advise: claude peer tier did not pass --model advisor_model"; exit 1; }
           adv claude fable --impactful "q";    grep -q -- '--model fable' "$ACAP" || { echo "::error::advise: claude --impactful did not escalate to advisor_model_max"; exit 1; }
+          # v4: the advisor is ISOLATED from the auto-loaded DRIVER contract — flag assertions
+          # on the COMMAND block (claude --safe-mode; codex doc-suppress; grok --rules role-scope
+          # carrying the does-NOT-govern override; agy has no flag: prompt-rule only).
+          adv claude maxmodel "q";  grep -q '^claude .*--safe-mode' "$ACAP" || { echo "::error::advise: claude advisor not isolated (--safe-mode missing)"; exit 1; }
+          adv codex  maxmodel "q";  grep -q '^codex .*project_doc_max_bytes=0' "$ACAP" || { echo "::error::advise: codex advisor did not suppress project-doc auto-load"; exit 1; }
+          # (grok's prompt argv is multi-line, so match the flag anywhere and the rule by its
+          # distinctive sentence — 'does NOT govern you' also appears in the shared preamble.)
+          adv grok   maxmodel "q";  grep -q -- '--rules' "$ACAP" || { echo "::error::advise: grok advisor missing --rules role-scope"; exit 1; }
+          grep -q 'your contract is the advisor prompt' "$ACAP" || { echo "::error::advise: grok role-scope rule lost the driver-contract override"; exit 1; }
           # Non-blocking when the advisor CLI fails (exit 0, informative).
           FB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 1\n' > "$FB/claude"; chmod +x "$FB/claude"
           AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
 
-          # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy (round-24) ──
+          # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy/claude (round-24) ──
           audit_iso() {  # <primary_reviewer_vendor> <audit_vendor>
             local rv="$1" av="$2" B cap D; B="$(mktemp -d)"; cap="$B/leak"
             case "$rv" in
@@ -1131,6 +1485,13 @@ jobs:
           printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}'
           AAG
               ;;
+              claude) cat > "$B/claude" <<ACL
+          #!/usr/bin/env bash
+          { echo "AUDIT_CWD=\$(pwd)"; echo "AUDIT_READ=\$(cat .plinth/AGENTS-project.md 2>/dev/null)"; } >> "$cap"
+          cat >/dev/null
+          printf '%s' '{"session_id":"c","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          ACL
+              ;;
             esac
             chmod +x "$B"/* 2>/dev/null || true
             D="$(mktemp -d)"; ( cd "$D"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$D" >/dev/null 2>&1
@@ -1148,11 +1509,12 @@ jobs:
           audit_iso codex grok
           audit_iso grok  codex
           audit_iso codex agy
+          audit_iso codex claude
 
           # ── v4.4.0: first-adoption reads the scaffolded audit_vendor (round-55) ──
           # When the BASE has NO .plinth/config, audit_vendor must fall back to the SCAFFOLDED working-tree
-          # value (grok) so a fresh project still gets its cross-vendor Tier-2 audit — not silently default
-          # to codex == the default codex primary and suppress the audit.
+          # value (claude, the v4 default) so a fresh project still gets its cross-vendor Tier-2 audit —
+          # not silently default to codex == the default codex primary and suppress the audit.
           FAB="$(mktemp -d)"; facap="$FAB/audit"
           cat > "$FAB/codex" <<'FRC'
           #!/usr/bin/env bash
@@ -1160,23 +1522,28 @@ jobs:
           [ -n "$out" ] && printf '%s' '{"verdict":"APPROVED","summary":"s","findings":[]}' > "$out"
           echo '{"type":"thread.started","thread_id":"c"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
           FRC
-          cat > "$FAB/grok" <<FAG
+          cat > "$FAB/claude" <<FAC
           #!/usr/bin/env bash
           echo AUDIT_RAN >> "$facap"
-          printf '%s' '{"text":"{\\"verdict\\":\\"APPROVED\\",\\"summary\\":\\"s\\",\\"findings\\":[]}"}'
-          FAG
+          printf '%s\n' "\$@" > "$FAB/claude-args"
+          cat >/dev/null
+          printf '%s' '{"session_id":"c","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]}}'
+          FAC
           chmod +x "$FAB"/*
           FAD="$(mktemp -d)"; ( cd "$FAD"; git init -qb main . >/dev/null
             echo REQ > SPEC.md; echo "y=1" > app.py; git add -A; git commit -qm 'base: pre-plinth (no .plinth/config)' >/dev/null
             git checkout -qb feat >/dev/null 2>&1
             "$GITHUB_WORKSPACE/bin/plinth" init "$FAD" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
-            # scaffold already sets audit_vendor = grok; reviewer_vendor unset -> defaults to codex; force Tier 2 on app.py
+            # scaffold already sets audit_vendor = claude; reviewer_vendor unset -> defaults to codex; force Tier 2 on app.py
             printf 'tier2_extra = (^|/)app\\.py$\n' >> .plinth/config
             # 'plinth' in the subject so the init commit adding tooling is a legit update, not tampering
             echo "x=2" > app.py; git add -A; git commit -qm 'plinth: adopt Plinth + tweak app' >/dev/null
             PATH="$FAB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true )
           grep -q AUDIT_RAN "$facap" 2>/dev/null || { echo "::error::first-adoption: cross-vendor audit did NOT run (audit_vendor lost to codex default when base has no .plinth/config)"; exit 1; }
+          # …and the scaffolded audit MODEL pin must survive first adoption too (round-15):
+          grep -qx -- '--model' "$FAB/claude-args" 2>/dev/null && grep -qx 'opus' "$FAB/claude-args" 2>/dev/null \
+            || { echo "::error::first-adoption audit dropped the scaffolded audit_model = opus (args: $(tr '\n' ' ' < "$FAB/claude-args" 2>/dev/null))"; exit 1; }
 
           # ── v4.4.0: an EXISTING-config project defaulting spec_path can't be repointed by the PR (round-56) ──
           # The working-tree fallback is first-adoption-ONLY: if the base config exists but OMITS spec_path
@@ -1234,9 +1601,10 @@ jobs:
           awgrok="$("$GITHUB_WORKSPACE/bin/plinth" update "$AW" 2>&1)"
           printf '%s' "$awgrok" | grep -q "audit_vendor unset" || { echo "::error::audit_vendor warning missing after removing it"; exit 1; }
           # The suggested config line must be a VALID single vendor (copy-pastable), not
-          # "audit_vendor = codex (or agy)" which review.sh would read as an unknown vendor (round-27).
-          printf '%s' "$awgrok" | grep -qF "'audit_vendor = codex'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = codex'"; exit 1; }
-          printf '%s' "$awgrok" | grep -qE 'audit_vendor = codex[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = codex (...'"; exit 1; } || true
+          # "audit_vendor = claude (or agy)" which review.sh would read as an unknown vendor (round-27).
+          # v4 seats: a grok primary gets the claude audit suggestion (different family than both).
+          printf '%s' "$awgrok" | grep -qF "'audit_vendor = claude'" || { echo "::error::grok-primary audit warning did not suggest the valid line 'audit_vendor = claude'"; exit 1; }
+          printf '%s' "$awgrok" | grep -qE 'audit_vendor = claude[[:space:]]*\(' && { echo "::error::grok-primary audit warning emits an INVALID value 'audit_vendor = claude (...'"; exit 1; } || true
           printf '%s' "$awgrok" | grep -qE "'audit_vendor = grok'" && { echo "::error::grok-primary audit warning suggested grok (== reviewer_vendor)"; exit 1; } || true
           # ACCURACY (round-44): unset audit_vendor DEFAULTS to codex in review.sh, so for a grok/claude
           # primary the codex audit ALREADY runs — the warning must NOT falsely claim "no second opinion".
@@ -1246,9 +1614,338 @@ jobs:
           grep -v '^audit_vendor' "$CW/.plinth/config" > "$CW/.plinth/config.tmp" && mv "$CW/.plinth/config.tmp" "$CW/.plinth/config"
           printf 'reviewer_vendor = codex\n' >> "$CW/.plinth/config"
           awcodex="$("$GITHUB_WORKSPACE/bin/plinth" update "$CW" 2>&1)"
-          printf '%s' "$awcodex" | grep -qF "'audit_vendor = grok'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = grok'"; exit 1; }
+          printf '%s' "$awcodex" | grep -qF "'audit_vendor = claude'" || { echo "::error::codex-primary audit warning did not suggest the valid line 'audit_vendor = claude'"; exit 1; }
           # codex primary: unset audit_vendor defaults to codex == reviewer, so there really is NO audit.
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
+
+          # ── v4.5: plinth watch renders FEEDLESS (a driver whose hooks are not executing — e.g. grok,
+          # probed at 0.2.93: no execution — receipt: docs/receipts/hookprobe-grok-0.2.93.txt; the vendor-behavior verification is
+          # the MANUAL's local marker-hook probe, not this canary, which has no grok CLI) ──
+          FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1
+            git add -A; git commit -qm base >/dev/null; git checkout -qb feat >/dev/null 2>&1
+            mkdir -p .plinth/session/review/feat
+            printf '{"verdict":"APPROVED","sha":"abc1234deadbeef","round":3,"risk":{"tier":1}}\n' > .plinth/session/review/feat/verdict.json
+            printf -- '- [ ] [BLOCKING] need ACME_TOKEN\n' > .plinth/NEEDS-HUMAN.md )
+          fwrc=0; fwout="$(PLINTH_WATCH_ROWS=40 PLINTH_WATCH_COLS=100 "$GITHUB_WORKSPACE/bin/plinth" watch "$FWD" --once 2>&1)" || fwrc=$?
+          [ "$fwrc" = 0 ] || { echo "::error::feedless watch --once exited $fwrc"; exit 1; }
+          printf '%s' "$fwout" | grep -qi 'no event feed' || { echo "::error::feedless watch missing its banner"; exit 1; }
+          printf '%s' "$fwout" | grep -qi 'pulse.sh wired' && { echo "::error::feedless watch still bails with the old no-feed error"; exit 1; } || true
+          printf '%s' "$fwout" | grep -q 'APPROVED' || { echo "::error::feedless watch did not render the review verdict"; exit 1; }
+          printf '%s' "$fwout" | grep -q 'ACME_TOKEN' || { echo "::error::feedless watch did not render the NEEDS-HUMAN queue"; exit 1; }
+
+          # ── v4.5: github_preflight VERIFIES required contexts (not just "configured") ──
+          # protection with wrong/no contexts must not read as healthy: floor/checks absent
+          # or an empty context list is called out loudly (round-26 finding).
+          PFG="$(mktemp -d)"
+          cat > "$PFG/gh" <<'GHS'
+          #!/usr/bin/env bash
+          case "$*" in
+            *"/protection"*) cat "${GHP_JSON:?}" ;;
+            *"/check-runs"*) cat "${GHC_NAMES:-/dev/null}" ;;
+            *default_branch*) echo main ;;
+            *) echo '{}' ;;
+          esac
+          GHS
+          chmod +x "$PFG/gh"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          pf_probe() {  # <protection-json> <expect-grep> <label>
+            local d j="$PFG/p.json"; d="$(mktemp -d)"; printf '%s' "$1" > "$j"
+            ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+              git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+            out="$(GHP_JSON="$j" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
+            printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          }
+          FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]'
+          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
+          # ONE floor job present is NOT a gated floor — each of the four is independent:
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
+          pf_probe '{"required_status_checks":{"contexts":["checks / checks"]}}' 'MISSING: floor/secrets' no-floor
+          # misleading SIBLING names must not satisfy the contexts (loose-substring regression):
+          pf_probe '{"required_status_checks":{"contexts":["floor / not-sast","oldfloor / harness","prechecks","floor / dependencies / npm-audit","old-checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness, checks' misleading-names
+          # SUFFIX siblings share the prefix but are DIFFERENT exact contexts — none matches a required
+          # floor context and `checks / old` is not the exact `checks / checks`/`checks`, so all five are
+          # simply MISSING (not present-but-ghost):
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets / old","floor / sast / old","floor / harness / old","floor / dependencies / osv-scan / old","checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness, checks' suffix-siblings
+          # spacing/leaf variants are DIFFERENT exact contexts — all must read as missing
+          # ("CI/floor/secrets", odd spacing, trailing space, "osv scan" leaf):
+          pf_probe '{"required_status_checks":{"contexts":["floor/secrets","floor/ sast","floor / harness ","floor / dependencies / osv scan","checks / checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness' spacing-variants
+          # NO check-run data must be fail-CLOSED for the checks verification (UNVERIFIED),
+          # never silent health — shape-valid decoys can hide behind an empty API answer:
+          NONAMES="$PFG/nonames"; : > "$NONAMES"
+          d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / old"]}}' > "$PFG/p.json"
+          out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$NONAMES" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
+          printf '%s' "$out" | grep -q "UNVERIFIED: no check-run data" || { echo "::error::preflight[no-run-data]: checks verification fell open without run data: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          # context names are case-EXACT (job names) — a wrong-cased job name must read as missing:
+          pf_probe '{"required_status_checks":{"contexts":["Floor / secrets","floor / Sast","floor / dependencies / OSV-scan","floor / harness","Checks / checks"]}}' 'MISSING: floor/secrets' wrong-case
+          pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
+          # a DIRECT checks job (template-supported: in-line steps) has context exactly "checks" —
+          # must read HEALTHY. Its context is cross-checked against the check-runs:
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks"]}}' 'required: floor / secrets' direct-checks-job
+          # GHOST floor gate: a required floor context whose job is NOT among the actual check-runs
+          # (job removed/renamed) must read MISSING, not healthy:
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          # WORKFLOW-PREFIXED contexts ("CI / floor / secrets") do NOT exist on GitHub — must read MISSING:
+          pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / checks"]}}' 'MISSING: floor/secrets' workflow-prefixed-is-invalid
+          # a QUOTED workflow name (name: "CI") must not break matching (contexts are job-name based,
+          # so this is unaffected — but exercise the quoted path); and the checks cross-check must see
+          # the checks context even when many other check-runs precede it (>30, pagination):
+          # PAGE-AWARE gh stub (echo lines, no embedded newlines): WITHOUT --paginate the check-runs
+          # response is 40 noise names only; the real floor/checks contexts appear only WITH
+          # --paginate. So dropping --paginate turns them into ghosts and the healthy assertion fails.
+          PGB="$(mktemp -d)"
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'case "$*" in'
+            echo '  *"/protection"*) cat "${GHP_JSON:?}" ;;'
+            echo '  *default_branch*) echo main ;;'
+            echo '  *"/check-runs"*)'
+            echo '    for i in $(seq 1 40); do echo "noise-$i"; done'
+            echo '    case "$*" in *--paginate*)'
+            echo '      echo "floor / secrets"; echo "floor / sast"; echo "floor / dependencies / osv-scan"'
+            echo '      echo "floor / harness"; echo "checks / checks" ;; esac ;;'
+            echo '  *) echo "{}" ;;'
+            echo 'esac'
+          } > "$PGB/gh"
+          chmod +x "$PGB/gh"
+          dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
+            sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' > "$pj"
+          out="$(GHP_JSON="$pj" PATH="$PGB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
+          printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy WITHOUT effective pagination (--paginate missing): $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+
+          # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
+          # The vendor behavior itself is only testable against the real CLI (run locally:
+          # plinth hookprobe grok); CI verifies the probe's DETECTION plumbing: all-four,
+          # partial, none, missing CLI, and the wall-clock cap.
+          HPB="$(mktemp -d)"
+          cat > "$HPB/grok" <<'HPX'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo stub-hookful; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPX
+          chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe missed an all-events driver (rc=$rc): $out"; exit 1; }
+          # SAFETY-CRITICAL semantics: a positive result must say necessary-not-sufficient and
+          # must report the missing payload (these stubs feed no stdin -> json-stdin:no):
+          printf '%s' "$out" | grep -q "NOT SUFFICIENT" || { echo "::error::all-four output lost the necessary-not-sufficient warning: $out"; exit 1; }
+          printf '%s' "$out" | grep -q "json-stdin:no" || { echo "::error::all-four output did not report the missing stdin payload (json-stdin:no): $out"; exit 1; }
+          # codex invocation path (stdin form) — same all-events stub shape:
+          cat > "$HPB/codex" <<'HPC'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo stub-codex; exit 0; }
+          cat >/dev/null
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPC
+          chmod +x "$HPB/codex"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe codex 2>&1)" || rc=$?
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe codex path broken (rc=$rc): $out"; exit 1; }
+          cat > "$HPB/grok" <<'HPP'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo stub-partial; exit 0; }
+          touch cli-ran.txt
+          c="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' .claude/settings.json 2>/dev/null)"
+          [ -n "$c" ] && [ "$c" != null ] && sh -c "$c"
+          echo done
+          HPP
+          chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SOME hook events only" && printf '%s' "$out" | grep -q "PreToolUse: INVOKED(json-stdin:no)" && printf '%s' "$out" | grep -q "Stop: no"; } \
+            || { echo "::error::hookprobe mis-reported a PARTIAL-compat driver (rc=$rc): $out"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hookless; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "executed NONE"; } || { echo "::error::hookprobe missed a hook-IGNORING driver (rc=$rc): $out"; exit 1; }
+          # installed-but-BROKEN CLI (unauth/sandbox/model failure — exits without running the
+          # command): must be INCONCLUSIVE (4), never "executed NONE" (the fail-open):
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-broken; exit 0; }\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "INCONCLUSIVE"; } || { echo "::error::hookprobe read a BROKEN CLI as evidence (rc=$rc, want 4/INCONCLUSIVE): $out"; exit 1; }
+          # sibling fail-open: CLI executes the sentinel then exits NONZERO (late finalization/
+          # teardown failure — could swallow late hook events like Stop) -> 4, never NONE:
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-latefail; exit 0; }\ntouch cli-ran.txt\nexit 1\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CLI as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
+          # same late-fail sibling on the SEPARATE codex stdin pipeline:
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-latefail-cx; exit 0; }\ncat >/dev/null\ntouch cli-ran.txt\nexit 1\n' > "$HPB/codex"; chmod +x "$HPB/codex"
+          rc=0; out="$(PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe codex 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "NONZERO"; } || { echo "::error::hookprobe read a sentinel-then-nonzero CODEX as evidence (rc=$rc, want 4/NONZERO-inconclusive): $out"; exit 1; }
+          rc=0; PATH="/usr/bin:/bin" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 3 ] || { echo "::error::hookprobe missing-CLI exit $rc (want 3)"; exit 1; }
+          # arg surface: no vendor / surplus args must be usage (2), never a silent default probe:
+          rc=0; "$GITHUB_WORKSPACE/bin/plinth" hookprobe >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 2 ] || { echo "::error::hookprobe with NO vendor exited $rc (want 2 — a bare invocation must not start a real probe)"; exit 1; }
+          rc=0; "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok extra >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 2 ] || { echo "::error::hookprobe with surplus args exited $rc (want 2)"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo stub-hang; exit 0; }\nsleep 60\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT"; } || { echo "::error::hookprobe hang not bounded (rc=$rc): $out"; exit 1; }
+          # SETUP/INTERNAL-error injection (Rule 7 for the INCONCLUSIVE contract): a failing scratch
+          # setup step must map to exit 4, never collide with NONE/SOME. Fake vendor passes command -v;
+          # a shadowed failing binary breaks a setup step. (a) mktemp fails -> 4:
+          HPS="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPS/grok"; chmod +x "$HPS/grok"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$HPS/mktemp"; chmod +x "$HPS/mktemp"
+          rc=0; out="$(PATH="$HPS:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe mktemp-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          # (b) the setup SUBSHELL (git init/mkdir/probe-write/chmod) fails -> 4, not NONE:
+          HPS2="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPS2/grok"; chmod +x "$HPS2/grok"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$HPS2/git"; chmod +x "$HPS2/git"
+          rc=0; out="$(PATH="$HPS2:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup-subshell-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          # sibling setup failures inside the guarded subshell — mkdir and chmod — must also be
+          # INCONCLUSIVE(4), not NONE. Shadow each to fail (fake vendor passes command -v):
+          for bad in mkdir chmod; do
+            HSB="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HSB/grok"; chmod +x "$HSB/grok"
+            printf '#!/usr/bin/env bash\nexit 1\n' > "$HSB/$bad"; chmod +x "$HSB/$bad"
+            rc=0; out="$(PATH="$HSB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe setup $bad-fail not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          done
+          # PROBE-SCRIPT WRITE/redirection failure inside the guarded subshell (`printf > probe.sh`):
+          # a `mkdir` shim that makes .claude/hooks read-only forces the redirection to fail -> the
+          # setup subshell's `|| exit 4` fires -> INCONCLUSIVE. (Skipped as root, where 0500 is writable.)
+          if [ "$(id -u)" != 0 ]; then
+            MKB="$(mktemp -d)"
+            printf '%s\n' '#!/usr/bin/env bash' '/bin/mkdir "$@"; rc=$?' 'for a in "$@"; do case "$a" in *.claude/hooks) chmod 0500 "$a" 2>/dev/null;; esac; done' 'exit $rc' > "$MKB/mkdir"
+            printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$MKB/grok"
+            chmod +x "$MKB/mkdir" "$MKB/grok"
+            rc=0; out="$(PATH="$MKB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            [ "$rc" = 4 ] || { echo "::error::hookprobe probe-script WRITE failure not INCONCLUSIVE (rc=$rc, want 4) — the redirection failure branch is unguarded"; exit 1; }
+          fi
+          # --version HANG must be BOUNDED (the version probe is now capped): a CLI that hangs on
+          # version discovery must not hang hookprobe. The version stub sleeps 60s; with a 3s cap the
+          # whole probe (version capped -> ver=unknown, then a fast all-events probe) completes in a
+          # few seconds. Assert ALL FOUR *and* wall-clock << 60s — WITHOUT the cap this would take 60s.
+          cat > "$HPB/grok" <<'HPVH'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { sleep 60; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPVH
+          chmod +x "$HPB/grok"
+          vs="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; ve="$(date +%s)"
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( ve - vs ))" -lt 30 ]; } || { echo "::error::hookprobe did not BOUND a CLI that hangs on --version (rc=$rc elapsed=$(( ve - vs ))s; the capped --version path is unverified)"; exit 1; }
+          # TERM-RESISTANT --version (traps TERM, sleeps 60): hookprobe's OWN capped() must escalate to
+          # KILL (timeout -k / python process-group) and finish BOUNDED — a cooperative cap would hang.
+          # This exercises the production capped(), not the extracted lane-agent cap.
+          cat > "$HPB/grok" <<'HPTR'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { trap "" TERM; sleep 60; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPTR
+          chmod +x "$HPB/grok"
+          ts="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; te="$(date +%s)"
+          { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( te - ts ))" -lt 40 ]; } || { echo "::error::hookprobe production capped() did not KILL a TERM-RESISTANT --version (rc=$rc elapsed=$(( te - ts ))s) — cooperative cap would hang"; exit 1; }
+          # vrc==137: the MODEL CALL (not --version) ignores TERM and hangs -> capped() must KILL it and
+          # hookprobe must report TIMED OUT / INCONCLUSIVE(4), never NONE:
+          cat > "$HPB/grok" <<'HPMC'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          trap "" TERM; sleep 60
+          HPMC
+          chmod +x "$HPB/grok"
+          ms="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; me="$(date +%s)"
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT" && [ "$(( me - ms ))" -lt 40 ]; } || { echo "::error::hookprobe did not TIME OUT a TERM-resistant model call via capped() (rc=$rc elapsed=$(( me - ms ))s) — vrc timeout branch unverified"; exit 1; }
+          # event-membership grep ERROR (all-events vendor writes the marker, then a shadowed failing
+          # grep) must be INCONCLUSIVE(4), never silently read as NONE/SOME:
+          SMG="$(mktemp -d)"
+          cat > "$SMG/grok" <<'HPEM'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPEM
+          chmod +x "$SMG/grok"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SMG/grep"; chmod +x "$SMG/grep"
+          rc=0; out="$(PATH="$SMG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe event-membership grep error not INCONCLUSIVE (rc=$rc, want 4) — false NONE/SOME"; exit 1; }
+          # capped() PYTHON fallback: extract hookprobe's OWN capped() and run its python branch (tmo="")
+          # against a TERM-resistant child -> must KILL (124), proving the coreutils-free hookprobe path:
+          CAPX="$(mktemp)"
+          awk '/^  capped\(\) \{/{c=1} c{print} c&&/^  \}$/{exit}' "$GITHUB_WORKSPACE/bin/plinth" | sed 's/^  //' > "$CAPX"
+          grep -q '^capped() {' "$CAPX" || { echo "::error::could not extract hookprobe capped() from bin/plinth"; exit 1; }
+          cs="$(date +%s)"; r=0
+          bash -c 'tmo=""; cap=1; source "$1"; capped bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPX" >/dev/null 2>&1 || r=$?
+          ce="$(date +%s)"
+          { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::hookprobe capped() python fallback did not TERM->KILL a signal-ignoring child (exit=$r elapsed=$(( ce-cs ))s; want 124)"; exit 1; }
+          # a cap of 0 DISABLES GNU `timeout` entirely (and a non-numeric value is meaningless); both
+          # must be rejected as INCONCLUSIVE(4), never run uncapped (a silent hard-cap bypass):
+          printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
+          for badcap in 0 abc -1; do
+            rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT="$badcap" PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            [ "$rc" = 4 ] || { echo "::error::hookprobe ran with an invalid cap '$badcap' (rc=$rc, want 4 — 0 disables the timeout)"; exit 1; }
+          done
+          # SAFETY-CRITICAL: a scratch dir under a TMPDIR CONTAINING A SPACE must not break the hook
+          # command (unquoted path would split, the hook would never fire, and hookprobe would FALSELY
+          # report NONE — contradicting "NONE = unenforced"). Build settings with json/shlex; expect ALL FOUR.
+          cat > "$HPB/grok" <<'HPSP'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPSP
+          chmod +x "$HPB/grok"
+          for meta in 'dir with space' 'ta`x`tick' 'd$(x)ollar'; do
+            SPT="$(mktemp -d)/$meta"; mkdir -p "$SPT"
+            rc=0; out="$(TMPDIR="$SPT" PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+            { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR"; } || { echo "::error::hookprobe under a METACHARACTER TMPDIR ('$meta') mis-fired the hooks / read them as NONE (rc=$rc) — probe.sh or settings.json path is not quoted: $out"; exit 1; }
+          done
+          # settings.json BUILD failure (python3 encoder unavailable/erroring) -> INCONCLUSIVE(4), not NONE:
+          SPB="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$SPB/grok"; chmod +x "$SPB/grok"
+          printf '#!/usr/bin/env bash\nexit 1\n' > "$SPB/python3"; chmod +x "$SPB/python3"
+          rc=0; out="$(PATH="$SPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe settings-build failure not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+          # marker READ/sort failure on a present marker -> INCONCLUSIVE(4), not evidence. All-events
+          # vendor (marker gets written) + a failing `sort`:
+          SMK="$(mktemp -d)"
+          cat > "$SMK/grok" <<'HPMK'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPMK
+          chmod +x "$SMK/grok"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SMK/sort"; chmod +x "$SMK/sort"
+          rc=0; out="$(PATH="$SMK:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe marker-sort failure not INCONCLUSIVE (rc=$rc, want 4): $out"; exit 1; }
+
+          # ── v4.5: floor symlink/mode rejection is TESTED against the REAL harness body ──
+          FHB="$(mktemp)"
+          sed -n '/^          fail=0$/,/^          exit "\$fail"$/p' "$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml" | sed 's/^          //' > "$FHB"
+          { grep -q 'checkx()' "$FHB" && grep -q 'exit "\$fail"' "$FHB"; } || { echo "::error::could not extract the floor harness body"; exit 1; }
+          rm -rf /tmp/plinth; mkdir -p /tmp/plinth; cp -R "$GITHUB_WORKSPACE/shared" /tmp/plinth/
+          FLP="$(mktemp -d)"; ( cd "$FLP"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$FLP" >/dev/null 2>&1 )
+          rc=0; ( cd "$FLP" && ver=test bash "$FHB" ) >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::floor harness body failed a CLEAN scaffold (rc=$rc)"; exit 1; }
+          # SYMLINK guard is the GENERAL check() — exercise it with a NON-executable pinned file
+          # (review-schema.json) so it is not conflated with the checkx executable path:
+          ( cd "$FLP" && rm .plinth/review-schema.json && ln -s /tmp/plinth/shared/.plinth/review-schema.json .plinth/review-schema.json )
+          rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
+          { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "SYMLINK"; } || { echo "::error::floor did not reject a SYMLINKED NON-EXEC pinned path via the general check() guard (rc=$rc)"; exit 1; }
+          ( cd "$FLP" && rm .plinth/review-schema.json && cp /tmp/plinth/shared/.plinth/review-schema.json .plinth/review-schema.json )
+          # the checkx executable-mode guard must cover EVERY pinned script — make EACH one non-exec in
+          # turn (bytes unchanged, so check() passes; only checkx catches it) and confirm it is rejected.
+          # Deleting the checkx call for any of these would then turn this red (Rule 7):
+          for exe in .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh .claude/hooks/pulse.sh; do
+            ( cd "$FLP" && chmod 644 "$exe" )
+            rc=0; out="$( cd "$FLP" && ver=test bash "$FHB" 2>&1 )" || rc=$?
+            { [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "not executable"; } || { echo "::error::floor did not reject a NON-EXECUTABLE pinned script '$exe' (rc=$rc) — checkx does not cover it"; exit 1; }
+            ( cd "$FLP" && chmod 755 "$exe" )
+          done
 
           # ── v4.4.0: NEEDS-HUMAN location tolerance + migration ─────────────────
           NH="$(mktemp -d)"; ( cd "$NH" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NH" >/dev/null 2>&1 )
@@ -1257,4 +1954,854 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$NH" >/dev/null 2>&1
           { [ ! -f "$NH/NEEDS-HUMAN.md" ] && [ -f "$NH/.plinth/NEEDS-HUMAN.md" ]; } || { echo "::error::update did not migrate root NEEDS-HUMAN.md into .plinth/"; exit 1; }
           grep -q ACME_TOKEN "$NH/.plinth/NEEDS-HUMAN.md" || { echo "::error::NEEDS-HUMAN migration lost content"; exit 1; }
+
+          # ── v4.5.0: implementer lanes (architect pattern) + lane-guard + advisor discipline ──
+          IL="$(mktemp -d)"; ( cd "$IL"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$IL" >/dev/null 2>&1 )
+          cmp -s "$IL/.claude/agents/grok-implementer.md"  "$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"  || { echo "::error::grok-implementer not materialized byte-identical"; exit 1; }
+          cmp -s "$IL/.claude/agents/codex-implementer.md" "$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md" || { echo "::error::codex-implementer not materialized"; exit 1; }
+          # BOTH lane names are RESERVED (grok- AND codex-implementer). For each: a project file, a directory,
+          # and a MARKER-BEARING hardlink at the reserved path must make init FAIL LOUD BEFORE any write (repo
+          # untouched — no partial scaffold), never clobbered/half-managed/truncated:
+          for lane in grok-implementer codex-implementer; do
+            ILP="$(mktemp -d)"; ( cd "$ILP"; git init -qb main . >/dev/null; mkdir -p .claude/agents
+              printf 'my own agent, not a plinth lane\n' > ".claude/agents/$lane.md"
+              r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" init "$ILP" 2>&1)" || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not FAIL on a reserved-name collision at $lane (rc=$r)"; exit 1; }
+              grep -q 'my own agent' ".claude/agents/$lane.md" || { echo "::error::init CLOBBERED a project's own $lane.md (data loss)"; exit 1; }
+              printf '%s' "$out" | grep -qi 'RESERVED' || { echo "::error::$lane collision error did not say RESERVED"; exit 1; }
+              [ -e .plinth/protected-paths ] && { echo "::error::$lane collision left a PARTIAL scaffold (protected-paths)"; exit 1; } || true
+              [ -e .claude/settings.json ]   && { echo "::error::$lane collision left a PARTIAL scaffold (settings.json)"; exit 1; } || true )
+            ILD="$(mktemp -d)"; ( cd "$ILD"; git init -qb main . >/dev/null; mkdir -p ".claude/agents/$lane.md"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILD" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies reserved lane $lane (rc=$r)"; exit 1; }
+              [ -e .plinth/protected-paths ] && { echo "::error::$lane directory-collision left a partial scaffold"; exit 1; } || true )
+            # a MARKER-BEARING hardlink: passes the marker check, so ONLY the nlink>1 guard can catch it (the
+            # prior bug). External target carries the pin marker AND a sentinel; it must not be truncated:
+            ILRH="$(mktemp -d)"; ERH="$(mktemp)"; printf '<!-- Plinth implementer lane (version-pinned) -->\nEXTERNAL-LANE\n' > "$ERH"
+            ( cd "$ILRH"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln "$ERH" ".claude/agents/$lane.md"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILRH" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail on a MARKER-BEARING HARDLINK at reserved lane $lane (rc=$r)"; exit 1; } )
+            grep -q EXTERNAL-LANE "$ERH" || { echo "::error::init truncated an EXTERNAL file through a hardlinked $lane"; exit 1; }; rm -f "$ERH"
+          done
+          # a SYMLINK anywhere in the Plinth-managed ancestry must be rejected — else init writes THROUGH it,
+          # outside the workspace ([ -d ] follows symlinks). Cover EVERY guarded managed dir + intermediate —
+          # the SAME set preflight_reserved_lanes checks (a sibling added there must be added here):
+          for lnk in .claude .claude/agents .claude/hooks .plinth .plinth/session .github .github/workflows; do
+            ILS="$(mktemp -d)"; ELS="$(mktemp -d)"; ( cd "$ILS"; git init -qb main . >/dev/null
+              mkdir -p "$(dirname "$lnk")"; ln -sf "$ELS" "$lnk"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILS" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail when $lnk is a SYMLINK-to-dir (path escape) (rc=$r)"; exit 1; }
+              [ -e .plinth/protected-paths ] && { echo "::error::$lnk symlink-collision left a partial scaffold"; exit 1; } || true )
+            [ -z "$(ls -A "$ELS" 2>/dev/null)" ] || { echo "::error::init wrote THROUGH the $lnk symlink, outside the workspace"; exit 1; }
+          done
+          # a managed FILE leaf that is a NON-regular node (directory / FIFO) must also be rejected before any
+          # write — not just symlinks (cp would copy INTO a dir / hang on a FIFO / leave a partial scaffold):
+          for badleaf in .plinth/review.sh .plinth/protected-paths SPEC.md .plinth/config .github/workflows/ci.yml .gitignore .plinth/DRIVER-project.md; do
+            ILN="$(mktemp -d)"; ( cd "$ILN"; git init -qb main . >/dev/null; mkdir -p "$(dirname "$badleaf")"; mkdir -p "$badleaf"
+              r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILN" >/dev/null 2>&1 || r=$?
+              [ "$r" != 0 ] || { echo "::error::init did not fail when a DIRECTORY occupies managed leaf $badleaf (rc=$r)"; exit 1; }
+              [ -e .claude/settings.json ] && { echo "::error::$badleaf non-regular-collision left a partial scaffold"; exit 1; } || true )
+          done
+          # a root-level managed FILE (AGENTS.md) as a symlink must be rejected (cp would overwrite its target):
+          ILR="$(mktemp -d)"; ERF="$(mktemp)"; printf 'EXTERNAL\n' > "$ERF"; ( cd "$ILR"; git init -qb main . >/dev/null; ln -sf "$ERF" AGENTS.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILR" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when root AGENTS.md is a symlink (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL "$ERF" || { echo "::error::init overwrote an EXTERNAL file through a root AGENTS.md symlink"; exit 1; }; rm -f "$ERF"
+          # UPDATE: a managed FILE LEAF (.plinth/review.sh) later replaced by an external symlink must abort
+          # before copy_shared follows it and clobbers the external target:
+          IUL="$(mktemp -d)"; EUL="$(mktemp)"; printf 'EXTERNAL-REVIEW\n' > "$EUL"; ( cd "$IUL"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$IUL" >/dev/null 2>&1
+            rm -f .plinth/review.sh; ln -sf "$EUL" .plinth/review.sh
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IUL" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/review.sh is an external symlink (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-REVIEW "$EUL" || { echo "::error::update overwrote an EXTERNAL file through a .plinth/review.sh symlink leaf"; exit 1; }; rm -f "$EUL"
+          # NEEDS-HUMAN queue MIGRATION preflight (round-24 sibling): update mv's a legacy root queue
+          # into .plinth/NEEDS-HUMAN.md. A DIRECTORY or SYMLINK at the canonical destination (mv would
+          # nest inside it / follow it out of the workspace) or a non-regular legacy SOURCE must abort:
+          NHD="$(mktemp -d)"; ( cd "$NHD"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHD" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; mkdir -p .plinth/NEEDS-HUMAN.md   # a DIRECTORY at the canonical dest
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHD" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/NEEDS-HUMAN.md is a DIRECTORY (mv would nest the queue)"; exit 1; } )
+          NHX="$(mktemp -d)"; NHS="$(mktemp -d)"; ( cd "$NHX"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHX" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; ln -s "$NHS" .plinth/NEEDS-HUMAN.md   # SYMLINK-to-dir at the canonical dest
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHX" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when .plinth/NEEDS-HUMAN.md is a SYMLINK to an external dir (mv/reads escape the workspace)"; exit 1; } )
+          NHR="$(mktemp -d)"; NHE="$(mktemp)"; printf 'x\n' > "$NHE"; ( cd "$NHR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHR" >/dev/null 2>&1
+            ln -s "$NHE" NEEDS-HUMAN.md   # a SYMLINK legacy SOURCE must not be followed by mv
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHR" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::update did not fail when the legacy root NEEDS-HUMAN.md is a SYMLINK (rc=$r)"; exit 1; } ); rm -f "$NHE"
+          # a LEGITIMATE legacy root queue (a regular file) still migrates cleanly to the canonical path:
+          NHM="$(mktemp -d)"; ( cd "$NHM"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$NHM" >/dev/null 2>&1
+            rm -f .plinth/NEEDS-HUMAN.md; printf '%s\n' '- [ ] legacy item' > NEEDS-HUMAN.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$NHM" >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::update failed to migrate a legitimate legacy root NEEDS-HUMAN.md (rc=$r)"; exit 1; }
+            [ -f .plinth/NEEDS-HUMAN.md ] && grep -q 'legacy item' .plinth/NEEDS-HUMAN.md || { echo "::error::legacy NEEDS-HUMAN.md was not migrated to the canonical .plinth/ path"; exit 1; } )
+          # a PROJECT-OWNED .claude/agents/custom.md symlink must NOT block init — the symlink check is per
+          # Plinth-owned path only, not a whole-tree sweep (project agents stay usable):
+          ILC="$(mktemp -d)"; ECF="$(mktemp)"; echo x > "$ECF"; ( cd "$ILC"; git init -qb main . >/dev/null; mkdir -p .claude/agents; ln -sf "$ECF" .claude/agents/custom.md
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILC" >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::init WRONGLY blocked on a project-owned .claude/agents/custom.md symlink (rc=$r)"; exit 1; }
+            [ -L .claude/agents/custom.md ] || { echo "::error::init disturbed the project's own custom.md symlink"; exit 1; } ); rm -f "$ECF"
+          # a HARDLINK at a managed leaf shares an inode with an external file — cp would truncate it. Reject:
+          ILH="$(mktemp -d)"; EHF="$(mktemp)"; printf 'EXTERNAL-HL\n' > "$EHF"; ( cd "$ILH"; git init -qb main . >/dev/null; mkdir -p .plinth; ln "$EHF" .plinth/review.sh
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" init "$ILH" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::init did not fail when a managed leaf (.plinth/review.sh) is a HARDLINK to an external file (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-HL "$EHF" || { echo "::error::init truncated an EXTERNAL file through a hardlinked managed leaf"; exit 1; }; rm -f "$EHF"
+          # hardlink guard FAILS CLOSED when link count can't be determined: shim `stat` to emit
+          # non-numeric output; init must refuse (exit != 0), not proceed and clobber the inode:
+          HSB="$(mktemp -d)"; printf '#!/usr/bin/env bash\necho notanumber\nexit 0\n' > "$HSB/stat"; chmod +x "$HSB/stat"
+          IHS="$(mktemp -d)"; EHS="$(mktemp)"; printf 'EXTERNAL-STAT\n' > "$EHS"; ( cd "$IHS"; git init -qb main . >/dev/null; mkdir -p .plinth; ln "$EHS" .plinth/review.sh
+            r=0; PATH="$HSB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" init "$IHS" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::hardlink guard did not FAIL CLOSED when stat returns non-numeric (rc=$r)"; exit 1; } )
+          grep -q EXTERNAL-STAT "$EHS" || { echo "::error::hardlink guard clobbered an external file when stat was unreliable"; exit 1; }; rm -f "$EHS"
+          # edit_file must use an UNPREDICTABLE mktemp temp — a precreated ci.yml.plinth-tmp symlink to an
+          # external file must NOT be written through (the old predictable sibling temp was a path-escape):
+          IET="$(mktemp -d)"; EET="$(mktemp)"; printf 'EXTERNAL-TMP\n' > "$EET"; ( cd "$IET"; git init -qb main . >/dev/null; mkdir -p .github/workflows; ln -sf "$EET" .github/workflows/ci.yml.plinth-tmp
+            "$GITHUB_WORKSPACE/bin/plinth" init "$IET" >/dev/null 2>&1 || true )
+          grep -q EXTERNAL-TMP "$EET" || { echo "::error::edit_file wrote through a predictable ci.yml.plinth-tmp symlink to an external file"; exit 1; }; rm -f "$EET"
+          # (reserved-lane hardlink is covered per-lane, with a MARKER-bearing target, in the RESERVED loop above)
+          # lane-guard scope: if the BASE commit stored .plinth/protected-paths as a SYMLINK (git mode 120000),
+          # `git show base:` returns the link target text, not the policy. The lane then replaces it with a
+          # REGULAR (narrowed) file so the active-policy validator passes — only the base-object-type check
+          # (git ls-tree) can catch it; scope must fail closed (5). (Not hollow: the working tree is a real file.)
+          LGBM="$(mktemp -d)"; ( cd "$LGBM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; ln -sf /elsewhere/policy .plinth/protected-paths; echo a > app.py; echo s > secret.txt
+            git add -A; git commit -qm base >/dev/null
+            rm -f .plinth/protected-paths; printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a BASE symlink policy object replaced by a regular file (rc=$r) — base-object check missing/hollow"; exit 1; } )
+          # lane-guard scope --snapshot FAILS CLOSED on a missing/empty VALUE (must exit 2 — the old
+          # parse silently dropped to no-snapshot mode, leaving sensitive paths unverified) and on an
+          # UNREADABLE snapshot file (must exit 5 — a failed read must not become an empty baseline):
+          LGS="$(mktemp -d)"; ( cd "$LGS"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 2 ] || { echo "::error::scope --snapshot with NO value exited $r (want 2) — fell open to no-snapshot mode"; exit 1; }
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 2 ] || { echo "::error::scope --snapshot with an EMPTY value exited $r (want 2) — fell open to no-snapshot mode"; exit 1; }
+            SNP="$(mktemp)"; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" snapshot > "$SNP"
+            chmod 000 "$SNP"
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "$SNP" app.py >/dev/null 2>&1 || r=$?
+            chmod 644 "$SNP"
+            [ "$r" = 5 ] || { echo "::error::scope with an UNREADABLE --snapshot file exited $r (want 5) — failed read became an empty baseline"; exit 1; }
+            # happy path unchanged: a fresh snapshot + in-spec change still passes
+            SNP2="$(mktemp)"; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" snapshot > "$SNP2"
+            echo b >> app.py
+            r=0; bash "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" scope HEAD --snapshot "$SNP2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::scope happy path with a valid snapshot exited $r (want 0) — fail-closed change broke normal use"; exit 1; } )
+          # UPDATE collision: a project that later drops a non-Plinth file at a reserved path must ABORT before
+          # copy_shared reinstalls tooling — assert the sentinel review.sh is NOT overwritten (ordering guard):
+          IU="$(mktemp -d)"; ( cd "$IU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$IU" >/dev/null 2>&1                # valid plinth project (marker lane installed)
+            printf 'SENTINEL-REVIEW-SH\n' > .plinth/review.sh                       # detect if update reinstalls it
+            printf 'my own agent\n' > .claude/agents/codex-implementer.md          # drop a non-Plinth file at the reserved CODEX path
+            r=0; "$GITHUB_WORKSPACE/bin/plinth" update "$IU" >/dev/null 2>&1 || r=$?
+            [ "$r" != 0 ] || { echo "::error::plinth UPDATE did not fail on a reserved-name collision at codex-implementer (rc=$r)"; exit 1; }
+            grep -q 'SENTINEL-REVIEW-SH' .plinth/review.sh || { echo "::error::update reinstalled review.sh BEFORE aborting on the collision — ordering bug (tooling changed pre-abort)"; exit 1; }
+            grep -q 'my own agent' .claude/agents/codex-implementer.md || { echo "::error::update clobbered the project agent"; exit 1; } )
+          cmp -s "$IL/.plinth/lane-guard.sh" "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" || { echo "::error::lane-guard.sh not materialized byte-identical"; exit 1; }
+          [ -x "$IL/.plinth/lane-guard.sh" ] || { echo "::error::lane-guard.sh not executable"; exit 1; }
+          # Protect the EXACT two Plinth-owned lane agents, NOT the whole .claude/agents/ dir (that would
+          # freeze a project's own custom subagents and make their findings UPSTREAM):
+          grep -qxF '(^|/)\.claude/agents/grok-implementer\.md$' "$IL/.plinth/protected-paths" || { echo "::error::grok-implementer not in protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/codex-implementer\.md$' "$IL/.plinth/protected-paths" || { echo "::error::codex-implementer not in protected-paths"; exit 1; }
+          grep -qxF '(^|/)\.claude/agents/' "$IL/.plinth/protected-paths" && { echo "::error::protected-paths freezes the WHOLE .claude/agents/ dir — project-owned agents must stay editable"; exit 1; } || true
+          grep -qxF '(^|/)\.plinth/lane-guard\.sh$' "$IL/.plinth/protected-paths" || { echo "::error::lane-guard.sh not in protected-paths"; exit 1; }
+          FLOOR5="$GITHUB_WORKSPACE/.github/workflows/plinth-floor.yml"
+          for c in 'shared/\.claude/agents/grok-implementer\.md' 'shared/\.claude/agents/codex-implementer\.md' 'shared/\.plinth/lane-guard\.sh'; do
+            grep -qE "check +$c" "$FLOOR5" || { echo "::error::floor does not verify $c against the pin"; exit 1; }
+          done
+          # The agents WIRE the enforced lane-guard (preflight + scope), not just prose:
+          for a in grok codex; do
+            A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            grep -q "lane-guard.sh preflight $a" "$A" || { echo "::error::${a}-implementer does not call lane-guard preflight"; exit 1; }
+            grep -q 'lane-guard.sh snapshot' "$A" || { echo "::error::${a}-implementer does not snapshot sensitive paths before the run"; exit 1; }
+            grep -q 'lane-guard.sh scope .* --snapshot' "$A" || { echo "::error::${a}-implementer does not pass --snapshot to lane-guard scope"; exit 1; }
+            grep -q 'mktemp' "$A" || { echo "::error::${a}-implementer lacks the mktemp unique-prompt-file rule"; exit 1; }
+            # failure propagation (round-46): the run block must fail loud on a broken snapshot
+            # and carry the CLI's rc into the echoed state — a timeout/failed run can't read as ok:
+            grep -q 'SNAPSHOT FAILED' "$A" || { echo "::error::${a}-implementer run block does not fail loud on a snapshot failure"; exit 1; }
+            grep -q 'RUN_RC=\$RC' "$A" || { echo "::error::${a}-implementer run block does not propagate the CLI rc (RUN_RC)"; exit 1; }
+            grep -q 'NEVER "complete"' "$A" || { echo "::error::${a}-implementer lost the nonzero-RUN_RC-is-never-complete rule"; exit 1; }
+            grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
+          done
+          # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
+          # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
+          # and drops it silently; bypassPermissions needs a turn budget AND a sandbox. Extract the real command
+          # block (the flag words also appear in the surrounding explanation, so a whole-file grep is hollow):
+          GA="$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"
+          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block in the agent"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'permission-mode bypassPermissions' || { echo "::error::grok COMMAND lacks --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'max-turns'                          || { echo "::error::grok COMMAND lacks --max-turns (a single turn ends before the edit lands)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'permission-mode acceptEdits'        && { echo "::error::grok COMMAND uses acceptEdits — it silently drops edits in headless mode"; exit 1; } || true
+          printf '%s\n' "$GCMD" | grep -q 'cap 600'                            || { echo "::error::grok COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q -- '--rules'                         || { echo "::error::grok COMMAND lacks --rules isolation — grok auto-loads CLAUDE.md/AGENTS.md (driver contract) and acts as a driver, not a lane"; exit 1; }
+          CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
+          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'project_doc_max_bytes=0' || { echo "::error::codex COMMAND lacks -c project_doc_max_bytes=0 — codex auto-loads AGENTS.md (driver contract) instead of acting as a lane"; exit 1; }
+          # the cap must hold WITHOUT coreutils — each lane must carry the python3 process-group
+          # fallback that TERM-then-KILLs (not just an optional ${T:+...} that vanishes on stock macOS):
+          for A in "$GA" "$CA"; do
+            grep -qF "python3 -c 'import subprocess,sys,signal,os" "$A" || { echo "::error::$(basename "$A") lacks the python3 process-group timeout fallback — cap is unenforced without coreutils"; exit 1; }
+            grep -qF 'os.killpg' "$A" || { echo "::error::$(basename "$A") cap does not TERM/KILL the process group — a signal-ignoring CLI could hang"; exit 1; }
+          done
+          # behaviorally confirm the SHIPPED cap() (EXTRACTED from each agent, not a reconstruction)
+          # bounds a TERM-IGNORING child — a cooperative cap would hang here forever. Test BOTH
+          # production paths against a signal-ignoring child: the coreutils `timeout -k 10` path
+          # (TERM ignored -> KILL escalation -> 137) and the python3 process-group fallback (-> 124).
+          for A in "$GA" "$CA"; do
+            CAPF="$(mktemp)"
+            awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^       \}$/{exit}' "$A" | sed 's/^       //' > "$CAPF"
+            grep -q '^cap() {' "$CAPF" || { echo "::error::could not extract the shipped cap() from $(basename "$A")"; exit 1; }
+            # (1) DEFAULT production path (whatever cap selects — `timeout -k` on CI, python3 on a
+            # coreutils-less box): a TERM-ignoring child must be KILLED and BOUNDED. Accept any nonzero
+            # exit (124 python, 137 timeout->KILL) — the point is it does not hang, not the exact code.
+            cs="$(date +%s)"; r=0
+            bash -c 'source "$1"; cap 1 bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPF" >/dev/null 2>&1 || r=$?
+            ce="$(date +%s)"
+            { [ "$r" != 0 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::$(basename "$A") shipped cap (default path) did not KILL a TERM-ignoring child (exit=$r elapsed=$(( ce-cs ))s)"; exit 1; }
+            # (2) python3 fallback: hide timeout/gtimeout by running with a CLEAN PATH that symlinks
+            # only the needed binaries (NOT timeout) so `command -v timeout` fails -> python3 branch -> 124.
+            CLEAN="$(mktemp -d)"; for b in bash sleep python3; do ln -s "$(command -v "$b")" "$CLEAN/$b"; done
+            cs="$(date +%s)"; r=0
+            PATH="$CLEAN" bash -c 'source "$1"; cap 1 bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPF" >/dev/null 2>&1 || r=$?
+            ce="$(date +%s)"
+            { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::$(basename "$A") shipped cap (python3 fallback) did not TERM->KILL a TERM-ignoring child (exit=$r elapsed=$(( ce-cs ))s; want 124)"; exit 1; }
+          done
+          # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
+          # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
+          # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:
+          RV="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+          HRE="$(grep -m1 '^HARNESS_RE=' "$RV" | sed "s/^HARNESS_RE='//; s/'\$//")"
+          printf '%s\n' '.claude/agents/grok-implementer.md'  | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies grok-implementer.md as tooling"; exit 1; }
+          printf '%s\n' '.claude/agents/codex-implementer.md' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies codex-implementer.md as tooling"; exit 1; }
+          printf '%s\n' '.claude/agents/custom.md'            | grep -Eq "$HRE" && { echo "::error::HARNESS_RE wrongly classifies a PROJECT-owned custom agent as tooling/UPSTREAM"; exit 1; } || true
+          grep -m1 '^HARNESS_PATHS=' "$RV" | grep -qE "\.claude/agents([[:space:]']|\$)" && { echo "::error::HARNESS_PATHS still uses a BROAD .claude/agents pathspec (would sweep project agents into tamper arithmetic)"; exit 1; } || true
+          # HARNESS_PATHS (the tooling-commit pathspec used for tamper arithmetic and the "complete
+          # tooling-commit list") must carry the EXACT pinned files — removing any would silently omit
+          # it from tamper detection while HARNESS_RE still matched. Require both lane agents AND
+          # lane-guard.sh, and require lane-guard.sh in HARNESS_RE too (both must agree):
+          HP="$(grep -m1 '^HARNESS_PATHS=' "$RV")"
+          for want in '.claude/agents/grok-implementer.md' '.claude/agents/codex-implementer.md' '.plinth/lane-guard.sh'; do
+            printf '%s' "$HP" | grep -qF "$want" || { echo "::error::HARNESS_PATHS omits the pinned tooling file '$want' (tamper arithmetic / tooling-commit list would miss it)"; exit 1; }
+          done
+          printf '%s\n' '.plinth/lane-guard.sh' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies .plinth/lane-guard.sh as tooling (a lane-guard edit would be treated as project code)"; exit 1; }
+          # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
+          LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
+          r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
+          # UNAUTHENTICATED grok — grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but
+          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1; exit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r)"; exit 1; }
+          # AUTHENTICATED grok — a real model list, no 'not authenticated' marker -> ready:
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && { printf "grok-4.5\\n"; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
+          # codex preflight: same three states — codex auth (login status) is safety-critical and must be tested too
+          r=0; PATH=/usr/bin:/bin bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING codex (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 1; exit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
+          printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
+          # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
+          # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
+          LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
+          as="$(date +%s)"; r=0; PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; ae="$(date +%s)"
+          { [ "$r" = 3 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging grok auth check (rc=$r elapsed=$(( ae - as ))s) — auth preflight uncapped"; exit 1; }
+          # `_cap` itself, not just the agent caps, must bound via its PYTHON fallback (timeout hidden)
+          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep + hanging grok, plus
+          # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps:
+          CPY="$(mktemp -d)"; for b in bash grep sleep python3; do ln -s "$(command -v "$b")" "$CPY/$b"; done
+          printf '#!/usr/bin/env bash\ncase "$1" in models) trap "" TERM; sleep 90;; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
+          ps="$(date +%s)"; r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; pe="$(date +%s)"
+          { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging auth check (rc=$r elapsed=$(( pe - ps ))s; want 3 and a real ~30s bound, not an instant fail)"; exit 1; }
+          # authed via the python path -> ready (0):
+          printf '#!/usr/bin/env bash\ncase "$1" in models) printf "grok-4.5\\n";; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
+          r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::_cap python path rejected an authenticated grok (rc=$r)"; exit 1; }
+          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3:
+          CNO="$(mktemp -d)"; for b in bash grep; do ln -s "$(command -v "$b")" "$CNO/$b"; done
+          printf '#!/usr/bin/env bash\ncase "$1" in models) echo ok;; esac\n' > "$CNO/grok"; chmod +x "$CNO/grok"
+          r=0; PATH="$CNO" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
+          # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), NEVER run UNCAPPED, when
+          # neither timeout/gtimeout nor python3 exists. EXECUTE the shipped cap() (not just grep) with a
+          # CLEAN PATH that has bash + a sentinel-touching model stub but NO timeout/gtimeout/python3, and
+          # assert it returns 3 WITHOUT invoking the model:
+          for A in "$GA" "$CA"; do
+            CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^       \}$/{exit}' "$A" | sed 's/^       //' > "$CAPX"
+            grep -q '^cap() {' "$CAPX" || { echo "::error::could not extract cap() from $(basename "$A")"; exit 1; }
+            CLEAN="$(mktemp -d)"; for b in bash; do ln -s "$(command -v "$b")" "$CLEAN/$b"; done
+            # sentinel via a bash REDIRECTION (builtin) — NOT `touch`, which is absent under CLEAN and
+            # would make the stub unable to create RAN even if launched (a hollow no-launch assertion):
+            printf '#!/usr/bin/env bash\n: > %s/RAN\n' "$CLEAN" > "$CLEAN/model"; chmod +x "$CLEAN/model"
+            r=0; PATH="$CLEAN" "$CLEAN/bash" -c 'source "$1"; cap 60 model' _ "$CAPX" >/dev/null 2>&1 || r=$?
+            [ "$r" = 3 ] || { echo "::error::$(basename "$A") cap did not FAIL UNAVAILABLE (return 3) with no timeout/python3 (rc=$r) — ran UNCAPPED"; exit 1; }
+            [ -e "$CLEAN/RAN" ] && { echo "::error::$(basename "$A") cap INVOKED the model despite no wall-clock cap available (must refuse)"; exit 1; } || true
+          done
+          LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth
+            printf '(^|/)\\.plinth/config$\n(^|/)\\.plinth/session/\n' > .plinth/protected-paths
+            # the STARTER ignore policy (templates/.gitignore) — incl. .env.* and id_rsa*, so the
+            # template lookalikes below are GITIGNORED exactly as in a real project:
+            printf 'node_modules/\n.env\n.env.*\n*.pem\n*.key\nid_rsa*\nid_ed25519*\nsecrets/\ncredentials/\n.ssh/\n.aws/\n.plinth/session/\n' > .gitignore
+            echo a > app.py; echo m > mod.py; echo cfg > .plinth/config    # mod.py = TRACKED out-of-spec; .plinth/config = TRACKED protected
+            printf 'pre\n' > .env; mkdir -p node_modules; echo x > node_modules/lib.js
+            # lookalikes that must NOT be flagged (templates/docs), vs the secret forms from templates/.gitignore
+            # that MUST be (.env* / *.pem / *.key / id_rsa* / id_ed25519*):
+            printf 'K=v\n' > .env.example; printf 'K=v\n' > .envrc; mkdir -p docs
+            printf 'PRIV\n' > id_rsa; printf 'PRIV\n' > id_rsa_backup; printf 'PRIV\n' > id_ed25519
+            printf 'PRIV\n' > id_rsa.txt; printf 'PRIV\n' > id_ed25519.md   # a key dumped to a doc EXT is still a key
+            printf 'C\n' > cert.pem; printf 'K\n' > prod.key
+            printf 'doc\n' > docs/id_rsa_format.md; printf 'doc\n' > id_rsa_notes.txt   # true docs ABOUT a key
+            git add -A; git commit -qm base >/dev/null
+            SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
+            for s in '  \.env$' '  id_rsa$' '  id_rsa_backup$' '  id_ed25519$' '  id_rsa\.txt$' '  id_ed25519\.md$' '  cert\.pem$' '  prod\.key$'; do
+              grep -qE "$s" "$SNAP" || { echo "::error::lane-guard snapshot missed a secret matching /$s/ (denylist narrower than templates/.gitignore)"; exit 1; }
+            done
+            grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
+            # Template lookalikes are RECORDED in the snapshot (they are gitignored — the snapshot is
+            # the ONLY check that sees a lane writing real secrets into them) and SPEC-GATED at scope
+            # time. .envrc is a different NAME entirely and stays out:
+            grep -qE '\.env\.example$' "$SNAP" || { echo "::error::snapshot did not record gitignored .env.example — a lane could hide real secrets in it unseen"; exit 1; }
+            grep -qE 'id_rsa_format'   "$SNAP" || { echo "::error::snapshot did not record docs/id_rsa_format.md (key-doc lookalike)"; exit 1; }
+            grep -qE 'id_rsa_notes'    "$SNAP" || { echo "::error::snapshot did not record id_rsa_notes.txt (key-doc lookalike)"; exit 1; }
+            grep -qE '\.envrc$'        "$SNAP" && { echo "::error::snapshot false-flagged .envrc as sensitive"; exit 1; } || true
+            # a SPEC-LISTED .env.example edit must PASS scope (authorized project work)…
+            echo more >> .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py .env.example >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope rejected an in-spec .env.example edit as if it were a secret (rc=$r)"; exit 1; }
+            # …but the SAME edit WITHOUT a spec listing must FAIL (exit 4) — the carve-out is
+            # spec-gated, not a blind exemption (the gitignored-template bypass):
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope accepted an OUT-OF-SPEC gitignored .env.example write (rc=$r) — template bypass"; exit 1; }
+            printf 'K=v\n' > .env.example   # restore snapshot content (gitignored — checkout can't)
+            # and a spec listing can NOT rescue a template name inside a secret DIRECTORY:
+            mkdir -p secrets; printf 'K=v2\n' > secrets/.env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py secrets/.env.example >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope let a spec listing rescue secrets/.env.example (rc=$r)"; exit 1; }
+            rm -f secrets/.env.example
+            # DELIBERATE SCOPE (bugs over adversarial intent): a clean in-spec edit plus a non-sensitive
+            # gitignored artifact must PASS (rejecting legit build output breaks npm install/builds) — but the
+            # ignored artifact must be REPORTED as a non-hermetic-verification note (not silently accepted).
+            echo b > app.py; echo y > node_modules/artifact.js
+            r=0; err="$(bash "$LG" scope HEAD --snapshot "$SNAP" app.py 2>&1 >/dev/null)" || r=$?
+            [ "$r" = 0 ] || { echo "::error::scope rejected a clean in-spec edit or false-flagged a legit node_modules artifact (rc=$r)"; exit 1; }
+            printf '%s' "$err" | grep -qi 'not hermetic' || { echo "::error::scope did not REPORT the ignored artifact as a non-hermetic-verification note"; exit 1; }
+            printf '%s' "$err" | grep -q 'node_modules' || { echo "::error::the hermeticity note did not name the ignored artifact (node_modules)"; exit 1; }
+            git checkout -q -- app.py
+            # TRACKED out-of-spec edit -> 4 (git-diff path on a committed file, not just a new untracked file)
+            echo z >> mod.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a TRACKED out-of-spec edit (rc=$r)"; exit 1; }
+            git checkout -q -- mod.py
+            # NEW untracked out-of-spec file -> 4
+            echo x > other.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a NEW out-of-spec file (rc=$r)"; exit 1; }
+            rm -f other.py
+            # RENAME LAUNDERING (round-23): with rename detection enabled, `git mv out-of-spec ->
+            # in-spec-name` must still flag the OLD path's disappearance — scope forces --no-renames
+            # so the rename reads as delete+add and BOTH paths are checked against the spec:
+            git config diff.renames true
+            git mv mod.py renamed_in_spec.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py renamed_in_spec.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope authorized a RENAME from out-of-spec mod.py to an in-spec name (rc=$r) — rename laundering"; exit 1; }
+            git mv renamed_in_spec.py mod.py; git config --unset diff.renames
+            # TRACKED PROTECTED edit -> 4, WITHOUT --snapshot, to prove the git-diff protected() path catches it
+            # independently (a regression that stopped diffing tracked protected files must still fail here):
+            echo weak >> .plinth/config
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a TRACKED PROTECTED edit via git diff (no --snapshot) (rc=$r)"; exit 1; }
+            git checkout -q -- .plinth/config
+            # gitignored SECRET write (.env changed) -> 4
+            printf 'STOLEN=1\n' >> .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) CHANGE (rc=$r)"; exit 1; }
+            printf 'pre\n' > .env
+            # gitignored SECRET DELETE (.env removed) -> 4 (the contract claims added/changed/REMOVED)
+            rm -f .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a gitignored SECRET (.env) DELETE (rc=$r)"; exit 1; }
+            printf 'pre\n' > .env
+            # metadata-only change (chmod, no byte change) on a secret -> 4 (the snapshot records mode too, so a
+            # lane can't quietly widen .env/.ssh perms without detection):
+            SNAPM="$(mktemp)"; bash "$LG" snapshot > "$SNAPM"
+            if [ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" = 600 ]; then chmod 644 .env; else chmod 600 .env; fi
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPM" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a metadata-only (chmod) change to a secret (rc=$r)"; exit 1; }
+            chmod 644 .env
+            # an UNREADABLE sensitive file (mode 000) must FAIL CLOSED, not record an empty forgeable hash/mode
+            # (skipped as root, where 000 is still readable):
+            if [ "$(id -u)" != 0 ]; then
+              chmod 000 .env
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { chmod 644 .env; echo "::error::snapshot did not fail closed on an UNREADABLE sensitive file (rc=$r) — empty hash is forgeable"; exit 1; }
+              r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; chmod 644 .env
+              [ "$r" = 5 ] || { echo "::error::scope --snapshot did not fail closed on an UNREADABLE sensitive file (rc=$r)"; exit 1; }
+            fi
+            # ONLY the hook-appended .plinth/session/events.jsonl is excluded (pulse.sh appends it on every tool
+            # use DURING the lane run — else a clean lane in a real hooked project false-flags every run):
+            mkdir -p .plinth/session; printf '{"e":1}\n' >> .plinth/session/events.jsonl
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::scope false-flagged the hook-appended .plinth/session/events.jsonl (rc=$r)"; exit 1; }
+            # but the REST of session/ stays protected: a whole-tree lane forging a verdict/receipt IS caught:
+            mkdir -p .plinth/session/review/br; printf 'FAKE-APPROVED\n' > .plinth/session/review/br/verdict.json
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a lane forging .plinth/session/review/.../verdict.json (rc=$r)"; exit 1; }
+            rm -rf .plinth/session
+            # the carve-out is ROOT-ONLY (round-49): a SUBDIR copy of the event feed matches the
+            # protected policy and must be flagged — the prior */ glob let it escape:
+            mkdir -p subdir/.plinth/session; printf 'FAKE\n' > subdir/.plinth/session/events.jsonl
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a SUBDIR copy of events.jsonl (rc=$r) — carve-out regressed to the */ glob"; exit 1; }
+            rm -rf subdir
+            # a secret REPLACED BY A SYMLINK (recorded by target, not followed) must be caught:
+            rm -f .env; ln -sf /etc/hosts .env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAP" app.py >/dev/null 2>&1 || r=$?; [ "$r" = 4 ] || { echo "::error::scope missed a secret replaced by a SYMLINK (rc=$r)"; exit 1; }
+            rm -f .env; printf 'pre\n' > .env
+            # WRITE-THROUGH a pre-existing sensitive symlink whose target is OUTSIDE any sensitive
+            # dir: target string unchanged, referent content changes — the referent hash catches it.
+            # elsewhere/ is ALREADY gitignored (added to the fixture .gitignore at setup), so the ONLY
+            # change is the referent content — no unrelated out-of-spec tracked edit can satisfy exit 4:
+            grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
+            git add .gitignore; git commit -qm 'ignore elsewhere' >/dev/null
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; ln -s elsewhere/real.env .env
+            SNAPSY="$(mktemp)"; bash "$LG" snapshot > "$SNAPSY"
+            printf 'STOLEN=1\n' >> elsewhere/real.env   # ONLY the referent content changes; tree is otherwise clean
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPSY" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a WRITE-THROUGH a pre-existing sensitive symlink (rc=$r) — referent hash not compared"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            # CHMOD on a pre-existing sensitive symlink's REFERENT (mode must dereference the link):
+            grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
+            git add .gitignore; git commit -qm 'ignore elsewhere (chmod probe)' >/dev/null 2>&1 || true
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; chmod 600 elsewhere/real.env; ln -s elsewhere/real.env .env
+            SNAPCH="$(mktemp)"; bash "$LG" snapshot > "$SNAPCH"
+            chmod 644 elsewhere/real.env   # ONLY the referent mode changes
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPCH" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a CHMOD on a sensitive symlink referent (rc=$r) — mode not dereferenced"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            # a sensitive path that is a symlink to a DIRECTORY (the write-through-a-dir vector)
+            # fails closed at snapshot — a secret is never a dir-symlink (round-67):
+            rm -f .env; mkdir -p extdir; ln -s extdir .env
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
+            rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
+            # SIBLING (round-33): a SYMLINK named exactly `.ssh`/`secrets`/… (the secret-DIR NODE) — only
+            # SECRET_DIR_NODES matches it — must be classified so the dir-symlink guard fires. Uses a
+            # FRESH fixture with NO `.gitignore` per name: a gitignored symlink-to-dir is enumerated
+            # INCONSISTENTLY across platforms (ubuntu git descends the link and lists its contents, not
+            # the node), so the deterministic case is an untracked symlink node (listed as the node).
+            for dn in .ssh secrets credentials .aws; do
+              NF="$(mktemp -d)"; ( cd "$NF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+                echo a > app.py; git add -A; git commit -qm base >/dev/null
+                mkdir -p extdir2; ln -s extdir2 "$dn"
+                r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+                [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a dir-symlink named '$dn' (rc=$r) — secret-dir NODE not classified (SECRET_FILES misses it), write-through vector open"; exit 1; } )
+            done
+            # EXACT reported path for a changed 4-field symlink record (format-independent extraction):
+            grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
+            git add .gitignore; git commit -qm 'ignore elsewhere (path probe)' >/dev/null 2>&1 || true
+            rm -f .env; mkdir -p elsewhere; printf 'K=1\n' > elsewhere/real.env; ln -s elsewhere/real.env .env
+            SNAPPT="$(mktemp)"; bash "$LG" snapshot > "$SNAPPT"; printf 'X=2\n' >> elsewhere/real.env
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNAPPT" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qE '^  \.env — SENSITIVE'; } || { echo "::error::changed symlink record did not report the exact path '.env' (rc=$r): $(printf '%s' "$out" | grep -i sensitive | head -1)"; exit 1; }
+            rm -f .env elsewhere/real.env; rmdir elsewhere 2>/dev/null || true; printf 'pre\n' > .env
+            # an IN-SPEC symlinked SECRET_SAFE template (.env.example -> a real template file) PASSES
+            # (the carve-out authorizes it), proving the parser feeds the carve-out the right path:
+            rm -f .env.example; mkdir -p tpl; printf 'K=v\n' > tpl/example.env; ln -s tpl/example.env .env.example
+            printf 'tpl/\n' >> .gitignore; git add .gitignore; git commit -qm 'ignore tpl' >/dev/null 2>&1 || true
+            SNAPTS="$(mktemp)"; bash "$LG" snapshot > "$SNAPTS"; printf 'K=v2\n' > tpl/example.env
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPTS" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an IN-SPEC symlinked SECRET_SAFE template (.env.example) was rejected (rc=$r) — carve-out fed the wrong path"; exit 1; }
+            rm -f .env.example tpl/example.env; rmdir tpl 2>/dev/null || true; git checkout -q -- .gitignore 2>/dev/null || true
+            # secret under a secret-NAMED directory. The dir is ABSENT at snapshot time (so no baseline
+            # node removal can independently trip exit 4), and the descendant is IN-SPEC (so the
+            # out-of-spec rule cannot be the cause) and uses a PLAIN name matching NO secret-FILE
+            # pattern — proving it is the DIRECTORY classification (SECRET_DIRS) catching it:
+            git checkout -q -- . 2>/dev/null || true; git clean -fdq -e node_modules 2>/dev/null || true
+            rm -f .env   # remove the baseline (ignored) .env FILE so the ".env"-as-DIR sibling below is non-hollow
+            SNAPD="$(mktemp)"; bash "$LG" snapshot > "$SNAPD"
+            for sd in secrets credentials .ssh .aws .env vault.pem vault.key; do
+              rm -rf "$sd"; mkdir -p "$sd"; printf 'K\n' > "$sd/readme.md"
+              r=0; bash "$LG" scope HEAD --snapshot "$SNAPD" app.py "$sd/readme.md" >/dev/null 2>&1 || r=$?
+              [ "$r" = 4 ] || { echo "::error::scope missed an IN-SPEC plain descendant under a secret-named dir ($sd/readme.md) (rc=$r) — SECRET_DIRS descendant match"; exit 1; }
+              rm -rf "$sd"
+            done
+            # SECRET_SAFE (template/doc lookalike) — SPEC-GATED, and NEVER rescued inside a secret dir.
+            # A root .env.example listed IN-SPEC is authorized (exit 0); the SAME safe name IN-SPEC
+            # inside secrets/ is still a violation (SECRET_DIRS wins over the carve-out):
+            SNAPE="$(mktemp)"; bash "$LG" snapshot > "$SNAPE"
+            printf 'x\n' > .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPE" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an in-spec root .env.example (template lookalike) was rejected (rc=$r)"; exit 1; }
+            rm -f .env.example
+            SNAPE2="$(mktemp)"; bash "$LG" snapshot > "$SNAPE2"
+            mkdir -p secrets; printf 'x\n' > secrets/.env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPE2" app.py secrets/.env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::SECRET_SAFE wrongly rescued a lookalike inside secrets/ even in-spec (rc=$r)"; exit 1; }
+            rm -rf secrets; printf 'pre\n' > .env
+            # BASE-UNION snapshot (round-41): a lane that NARROWS the working protected-paths must
+            # not hide a base-pattern-matching GITIGNORED addition from the post-run snapshot.
+            # (protected-paths itself is deliberately unprotected in this fixture, so the tracked
+            # check passes the in-spec policy edit — the catch must come from the snapshot union.)
+            printf '(^|/)vaultsec/\n' >> .plinth/protected-paths; printf 'vaultsec/\n' >> .gitignore
+            git add -A; git commit -qm "base gains vaultsec protection" >/dev/null
+            SNAPU="$(mktemp)"; bash "$LG" snapshot > "$SNAPU"
+            grep -v 'vaultsec' .plinth/protected-paths > .plinth/pp.t && mv .plinth/pp.t .plinth/protected-paths
+            mkdir -p vaultsec; printf 'LEAK\n' > vaultsec/leak
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPU" app.py .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a gitignored addition under a BASE-only protected pattern after the lane narrowed the working policy (rc=$r) — snapshot must use the base union"; exit 1; }
+            rm -rf vaultsec; git checkout -q -- .plinth/protected-paths
+            # GIT CONTROL-PLANE (round-57): a planted hook / config redirect / info-exclude edit
+            # by a whole-tree lane must be flagged; read-side git use (status) must not be.
+            SNAPG="$(mktemp)"; bash "$LG" snapshot > "$SNAPG"
+            echo cpx >> app.py; printf '#!/bin/sh\necho pwned\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a PLANTED .git/hooks/pre-commit (rc=$r)"; exit 1; }
+            rm -f .git/hooks/pre-commit
+            git config core.hooksPath /tmp/evil
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a .git/config hooksPath redirect (rc=$r)"; exit 1; }
+            git config --unset core.hooksPath
+            echo hidden.txt >> .git/info/exclude
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a .git/info/exclude edit (rc=$r)"; exit 1; }
+            git checkout -q -- . 2>/dev/null || true
+            SNAPG2="$(mktemp)"; bash "$LG" snapshot > "$SNAPG2"
+            echo cpy >> app.py; git status >/dev/null 2>&1
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::scope false-flagged read-side git use (rc=$r) — the index must stay out of the snapshot"; exit 1; }
+            # a SYMLINKED hook (find -type f alone would miss it) -> 4:
+            SNAPG3="$(mktemp)"; bash "$LG" snapshot > "$SNAPG3"
+            echo cpz >> app.py; printf '#!/bin/sh\necho pwned\n' > /tmp/eh$$; chmod +x /tmp/eh$$; ln -s /tmp/eh$$ .git/hooks/pre-commit
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPG3" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a SYMLINKED .git/hooks/pre-commit (rc=$r)"; exit 1; }
+            rm -f .git/hooks/pre-commit /tmp/eh$$
+            )
+          # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
+          # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each
+          # asserts the SPECIFIC violation AND that a clean in-spec-only run passes (non-hollow). ──
+          mkfx_i() { local d; d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\.plinth/config$\n' > .plinth/protected-paths; printf 'node_modules/\n.env\n' > .gitignore
+            echo a > app.py; echo m > mod.py; echo cfg > .plinth/config; git add -A; git commit -qm base >/dev/null )
+            printf '%s' "$d"; }
+          # ref-file write (new ref under .git/refs) -> 4, path reported:
+          FI="$(mkfx_i)"; ( cd "$FI"; B0="$(git rev-parse HEAD)"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo cpw >> app.py; git update-ref refs/heads/decoy "$B0"
+            r=0; out="$(bash "$LG" scope "$B0" --snapshot "$SN" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'refs/heads/decoy'; } || { echo "::error::scope missed a ref-file write (rc=$r)"; exit 1; } )
+          # skip-worktree hidden bit -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo EVIL >> mod.py; git update-index --skip-worktree mod.py
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on a skip-worktree bit (rc=$r)"; exit 1; } )
+          # assume-unchanged hidden bit -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            echo EVIL2 >> mod.py; git update-index --assume-unchanged mod.py
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'skip-worktree\|assume-unchanged'; } || { echo "::error::scope did not fail closed on an assume-unchanged bit (rc=$r)"; exit 1; } )
+          # staged-only out-of-spec change (index=EVIL, worktree reverted) -> 4:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            printf 'EVIL\n' > mod.py; git add mod.py; printf 'm\n' > mod.py
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'mod.py'; } || { echo "::error::scope missed a STAGED-ONLY out-of-spec change (rc=$r)"; exit 1; } )
+          # NON-HOLLOW guard: a clean in-spec-only change PASSES (0) in the same fixture shape:
+          FI="$(mkfx_i)"; ( cd "$FI"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"; echo clean >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SN" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::a clean in-spec-only change was flagged (rc=$r) — the index probes above would be hollow"; exit 1; } )
+          # STAGED-ONLY SENSITIVE evasion (round-38): an IN-SPEC built-in-sensitive path (cert.pem) whose
+          # INDEX is changed but WORKTREE is restored to base — the before/after snapshot hashes the
+          # worktree (before==after) so it must be caught by the STAGED-diff sensitive check. All THREE
+          # index-change kinds are covered (content, exec-mode bit, deletion), each in a FRESH fixture so
+          # no leftover index/worktree state contaminates the next. In-spec path so spec is not the cause.
+          mkfx_s() { local d; d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; printf 'BASE\n' > cert.pem; chmod 644 cert.pem; git add -A; git commit -qm base >/dev/null ); echo "$d"; }
+          # (a) staged CONTENT change, worktree restored:
+          FS="$(mkfx_s)"; ( cd "$FS"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            printf 'STAGED-SECRET\n' > cert.pem; git add cert.pem; printf 'BASE\n' > cert.pem
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py cert.pem 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'cert.pem'; } || { echo "::error::scope missed a staged CONTENT change on an in-spec sensitive path (rc=$r)"; exit 1; } )
+          # (b) staged EXEC-MODE change (git tracks only the exec bit), worktree restored:
+          FS="$(mkfx_s)"; ( cd "$FS"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            chmod 755 cert.pem; git add cert.pem; chmod 644 cert.pem
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py cert.pem 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'cert.pem'; } || { echo "::error::scope missed a staged EXEC-MODE change on an in-spec sensitive path (rc=$r)"; exit 1; } )
+          # (c) staged DELETION, worktree file still present:
+          FS="$(mkfx_s)"; ( cd "$FS"; SN="$(mktemp)"; bash "$LG" snapshot > "$SN"
+            git rm --cached -q cert.pem
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SN" app.py cert.pem 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'cert.pem'; } || { echo "::error::scope missed a staged DELETION of an in-spec sensitive path (rc=$r)"; exit 1; } )
+          # NON-HOLLOW: an in-spec staged SECRET_SAFE .env.example is spec-gated and PASSES (fresh fixture):
+          FE="$(mktemp -d)"; ( cd "$FE"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; printf 'v\n' > .env.example; git add -A; git commit -qm base >/dev/null
+            SN="$(mktemp)"; bash "$LG" snapshot > "$SN"; printf 'v2\n' > .env.example; git add .env.example; printf 'v\n' > .env.example
+            r=0; bash "$LG" scope HEAD --snapshot "$SN" app.py .env.example >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::an in-spec staged SECRET_SAFE .env.example was flagged (rc=$r) — carve-out lost on the staged path"; exit 1; } )
+          # ── v4.5: control-plane snapshot works in a LINKED WORKTREE (.git is a FILE) ──
+          WTM="$(mktemp -d)"; ( cd "$WTM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          WTL="$(mktemp -d)/wt"; ( cd "$WTM" && git worktree add -q "$WTL" >/dev/null 2>&1 )
+          [ -f "$WTL/.git" ] || { echo "::error::worktree .git is not a file — setup wrong"; exit 1; }
+          COMMON="$( cd "$WTL" && git rev-parse --git-common-dir )"
+          SNAPW="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW" )
+          printf '#!/bin/sh\necho pwned\n' > "$COMMON/hooks/pre-commit"; chmod +x "$COMMON/hooks/pre-commit"
+          ( cd "$WTL" && echo b >> app.py )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a hook planted via the worktree common-dir (rc=$r) — hardcoded .git/ path"; exit 1; }
+          rm -f "$COMMON/hooks/pre-commit"
+          SNAPW2="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW2" )
+          ( cd "$WTL" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::clean worktree lane run false-flagged (rc=$r)"; exit 1; }
+          # per-worktree config (extensions.worktreeConfig): git config --worktree writes
+          # $GIT_DIR/config.worktree, not the common config — must still be caught (round-60):
+          ( cd "$WTL" && git config extensions.worktreeConfig true )
+          SNAPW3="$(mktemp)"; ( cd "$WTL" && bash "$LG" snapshot > "$SNAPW3" )
+          ( cd "$WTL" && echo d >> app.py && git config --worktree core.hooksPath /tmp/evil )
+          r=0; ( cd "$WTL" && bash "$LG" scope HEAD --snapshot "$SNAPW3" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a config.worktree hooksPath mutation (rc=$r)"; exit 1; }
+          # a DANGLING symlink at a normally-absent control-plane path (config.worktree) must be
+          # caught — [ -e ] is false for dangling links, so enumeration also checks [ -L ]:
+          DLF="$(mktemp -d)"; ( cd "$DLF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SNAPDL="$(mktemp)"; bash "$LG" snapshot > "$SNAPDL"
+            GDx="$(git rev-parse --git-dir)"; ln -s /nonexistent-target "$GDx/config.worktree"; echo z >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNAPDL" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a DANGLING control-plane symlink at config.worktree (rc=$r) — [ -e ] enumeration gap"; exit 1; } )
+          # a legitimate REF whose name ends .sample must be ENUMERATED (the .sample filter is
+          # limited to stock hook templates, hooks/*.sample — not arbitrary refs):
+          SMP="$(mktemp -d)"; ( cd "$SMP"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            git update-ref refs/heads/foo.sample HEAD
+            snp="$(bash "$LG" snapshot)"
+            printf '%s' "$snp" | grep -q 'refs/heads/foo.sample' || { echo "::error::a legit ref ending .sample was stripped by the hooks .sample filter (Rule 7)"; exit 1; }
+            # and a stock sample HOOK is still stripped (not recorded):
+            cp .git/hooks/pre-commit.sample .git/hooks/kept.sample 2>/dev/null || printf '#sample\n' > .git/hooks/kept.sample
+            snp2="$(bash "$LG" snapshot)"
+            printf '%s' "$snp2" | grep -q 'hooks/kept.sample' && { echo "::error::a stock sample hook was wrongly recorded (filter too narrow)"; exit 1; } || true )
+          # CLASS CLOSURE: a SEPARATE-GIT-DIR repo has an arbitrarily-named gitdir (no `.git`
+          # component); control-plane is recorded by resolved path, no name heuristic (round-61):
+          SGW="$(mktemp -d)"; SGC="$(mktemp -d)/control"
+          ( cd "$SGW"; git init -qb main --separate-git-dir "$SGC" . >/dev/null 2>&1; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          [ -f "$SGW/.git" ] || { echo "::error::separate-git-dir .git is not a file — setup wrong"; exit 1; }
+          SNAPS="$(mktemp)"; ( cd "$SGW" && bash "$LG" snapshot > "$SNAPS" )
+          printf '#!/bin/sh\necho pwned\n' > "$SGC/hooks/pre-commit"; chmod +x "$SGC/hooks/pre-commit"
+          ( cd "$SGW" && echo b >> app.py )
+          r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a hook in a SEPARATE-GIT-DIR (rc=$r) — name-heuristic regressed"; exit 1; }
+          rm -f "$SGC/hooks/pre-commit"
+          SNAPS2="$(mktemp)"; ( cd "$SGW" && bash "$LG" snapshot > "$SNAPS2" )
+          ( cd "$SGW" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::separate-git-dir clean run false-flagged (rc=$r)"; exit 1; }
+          # CONTROL-PLANE DIRECTORY metadata (round-35): a `chmod` on `.git/hooks` itself changes no
+          # FILE record, but the snapshot records each control-plane dir's own mode — so it is caught:
+          CPD="$(mktemp -d)"; ( cd "$CPD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SNCP="$(mktemp)"; bash "$LG" snapshot > "$SNCP"
+            grep -q '^cpdir ' "$SNCP" || { echo "::error::snapshot records no control-plane dir modes (cpdir)"; exit 1; }
+            chmod 777 .git/hooks; echo b >> app.py
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNCP" app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -qi 'hooks'; } || { echo "::error::scope missed a chmod on the .git/hooks control-plane DIRECTORY (rc=$r) — dir-mode not recorded"; exit 1; }
+            git checkout -q app.py; chmod 755 .git/hooks
+            r=0; ( bash "$LG" snapshot > /dev/null ) 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::snapshot with cpdir modes false-failed a clean tree (rc=$r)"; exit 1; }
+            # RECURSIVE (round-36): a chmod on a control-plane SUBDIR (.git/refs/heads) is also caught:
+            SNCP2="$(mktemp)"; bash "$LG" snapshot > "$SNCP2"
+            grep -q 'cpdir.*refs/heads' "$SNCP2" || { echo "::error::snapshot does not record control-plane SUBDIR modes (refs/heads)"; exit 1; }
+            chmod 777 .git/refs/heads; echo c >> app.py
+            r=0; bash "$LG" scope HEAD --snapshot "$SNCP2" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope missed a chmod on the .git/refs/heads control-plane SUBDIR (rc=$r) — dir-mode enumeration not recursive"; exit 1; }
+            git checkout -q app.py; chmod 755 .git/refs/heads )
+          # CLASS CLOSURE: a gitdir PATH CONTAINING A SPACE must not word-split the control-plane
+          # enumeration (round-23 regression: `find $_cpdirs` unquoted would enumerate the wrong dirs
+          # and silently OMIT the hook, letting a control-plane write escape). Array + quoted expansion.
+          SPW="$(mktemp -d)/work dir"; SPC="$(mktemp -d)/git dir"; mkdir -p "$SPW"
+          ( cd "$SPW"; git init -qb main --separate-git-dir "$SPC" . >/dev/null 2>&1; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          SNAPSP="$(mktemp)"; ( cd "$SPW" && bash "$LG" snapshot > "$SNAPSP" )
+          printf '#!/bin/sh\necho pwned\n' > "$SPC/hooks/pre-commit"; chmod +x "$SPC/hooks/pre-commit"
+          ( cd "$SPW" && echo b >> app.py )
+          r=0; ( cd "$SPW" && bash "$LG" scope HEAD --snapshot "$SNAPSP" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a control-plane hook write under a SPACE-containing gitdir (rc=$r) — unquoted find word-split regressed"; exit 1; }
+          rm -f "$SPC/hooks/pre-commit"
+          SNAPSP2="$(mktemp)"; ( cd "$SPW" && bash "$LG" snapshot > "$SNAPSP2" )
+          ( cd "$SPW" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$SPW" && bash "$LG" scope HEAD --snapshot "$SNAPSP2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::space-gitdir clean run false-flagged (rc=$r) — space-path enumeration broke a legitimate lane"; exit 1; }
+          # TRANSFORMATION-failure injection (round-25): the sensitive-baseline/scope pipelines run
+          # sed/sort/grep over captured data; a producer error must fail CLOSED, never silently reduce
+          # the protected/changed/sensitive set and print "scope ok". Shadow `sort` to error and assert 5:
+          SRTB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SRTB/sort"; chmod +x "$SRTB/sort"
+          TFI="$(mktemp -d)"; ( cd "$TFI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SRTB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed when a transform (sort) errored (rc=$r) — partial baseline fail-open"; exit 1; }
+            bash "$LG" snapshot > "$TFI/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$SRTB:$PATH" bash "$LG" scope HEAD --snapshot "$TFI/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed when a transform (sort) errored (rc=$r) — would print scope ok for an out-of-spec diff"; exit 1; } )
+          # sibling: a shadowed failing `grep` (the classification/enumeration producer) must ALSO
+          # fail closed — sens_grep + the status-checked transforms convert a grep error into exit 5,
+          # never a silently un-classified sensitive path.
+          GRPB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 2\n' > "$GRPB/grep"; chmod +x "$GRPB/grep"
+          TGI="$(mktemp -d)"; ( cd "$TGI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$GRPB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" -ne 0 ] || { echo "::error::snapshot did not fail closed when grep (classification) errored — un-classified sensitive fail-open"; exit 1; }
+            bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
+          # sibling: a shadowed failing `sed` (the tag/extraction transforms) must ALSO fail closed.
+          # CRITICAL: test sed EXIT 1 too — native BSD/macOS sed returns rc=1 on a real error, which in
+          # a `grep | sed` pipeline is indistinguishable from grep's legitimate empty rc=1 and would be
+          # MASKED by a `<=1` check. ck_sed converts ANY sed error to exit 5 (caught). Both rc verified:
+          for sedrc in 1 2; do
+            SEDB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit %s\n' "$sedrc" > "$SEDB/sed"; chmod +x "$SEDB/sed"
+            TSI="$(mktemp -d)"; ( cd "$TSI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+              mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+              echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+              r=0; PATH="$SEDB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed when sed errored (exit $sedrc, rc=$r) — partial baseline fail-open (BSD sed rc=1 masking)"; exit 1; }
+              bash "$LG" snapshot > "$TSI/sn" 2>/dev/null; echo b >> app.py
+              r=0; PATH="$SEDB:$PATH" bash "$LG" scope HEAD --snapshot "$TSI/sn" app.py >/dev/null 2>&1 || r=$?
+              [ "$r" = 5 ] || { echo "::error::scope did not fail closed when sed errored (exit $sedrc, rc=$r) — BSD sed rc=1 masking in a grep|sed pipeline"; exit 1; } )
+          done
+          # PER-SITE ck_sed coverage: a GLOBAL sed shim fails at the FIRST call site (_gtag/hidden), so it
+          # can't prove the LATER sites (_ctag, touched, ignored-artifact). Use a SELECTIVE shim that
+          # fails ONLY for a specific sed script (real sed otherwise) so each ck_sed site is exercised —
+          # reverting ck_sed->sed at any one site would then turn a specific assertion red (Rule 7).
+          mk_sed_shim() { { printf '#!/usr/bin/env bash\n'; printf 'for a in "$@"; do case "$a" in %s) exit 1;; esac; done\n' "$2"; printf 'exec /usr/bin/sed "$@"\n'; } > "$1/sed"; chmod +x "$1/sed"; }
+          # CONTROL: a no-match shim must let a clean snapshot SUCCEED (proves the shim is selective, not
+          # failing everything — else the per-site assertions below would be hollow):
+          SC="$(mktemp -d)"; mk_sed_shim "$SC" '*NOMATCH_XYZ*'
+          T_C="$(mktemp -d)"; ( cd "$T_C"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SC:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 0 ] || { echo "::error::[test-control] selective sed shim failed a clean snapshot (rc=$r) — per-site sed assertions would be hollow"; exit 1; } )
+          # _ctag site (fail only `s/^/C…`; _gtag `s/^/G…` still succeeds) -> snapshot fails closed:
+          SC1="$(mktemp -d)"; mk_sed_shim "$SC1" '*s/^/C*'
+          T_1="$(mktemp -d)"; ( cd "$T_1"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths; echo r > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SC1:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::_ctag ck_sed site not fail-closed (rc=$r) — a sed error there would mask control-plane classification"; exit 1; } )
+          # hidden-bit site (fail only `s/^..//`) -> scope fails closed:
+          SC2="$(mktemp -d)"; mk_sed_shim "$SC2" '*s/^..*'
+          T_2="$(mktemp -d)"; ( cd "$T_2"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null; echo b >> app.py
+            r=0; PATH="$SC2:$PATH" bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::hidden-bit ck_sed site not fail-closed (rc=$r) — a sed error would skip the skip-worktree refusal"; exit 1; } )
+          # touched site (fail only the `[<>]` extraction; a sensitive file changed so touched is computed):
+          SC3="$(mktemp -d)"; mk_sed_shim "$SC3" '*[<>]*'
+          T_3="$(mktemp -d)"; ( cd "$T_3"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths; echo r > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            SN="$(mktemp)"; bash "$LG" snapshot > "$SN" 2>/dev/null; echo CH > secret.txt; echo b >> app.py
+            r=0; PATH="$SC3:$PATH" bash "$LG" scope HEAD --snapshot "$SN" app.py secret.txt >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::touched-path ck_sed site not fail-closed (rc=$r) — a sed error would drop a changed sensitive path"; exit 1; } )
+          # ignored-artifact site (fail only `s#/…`) -> NON-BLOCKING: scope succeeds but must report UNKNOWN:
+          SC4="$(mktemp -d)"; mk_sed_shim "$SC4" '*s#/*'
+          T_4="$(mktemp -d)"; ( cd "$T_4"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; printf 'node_modules/\n' > .gitignore; git add app.py .gitignore; git commit -qm base >/dev/null
+            mkdir -p node_modules; echo x > node_modules/d.js; echo b >> app.py
+            out="$(PATH="$SC4:$PATH" bash "$LG" scope HEAD app.py 2>&1)"; r=$?
+            { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'hermeticity UNKNOWN'; } || { echo "::error::ignored-artifact ck_sed site: a sed error did not report hermeticity UNKNOWN (rc=$r) — masked producer failure"; exit 1; } )
+          # SUBMODULE visibility (round-34): a `diff.ignoreSubmodules=all` config must NOT hide an
+          # off-spec staged gitlink update — scope forces --ignore-submodules=none. The gitlink is built
+          # WITHOUT a clone (a raw 160000 index entry) so the test is deterministic and never a skip
+          # (Rule 10: a skipped check must not report as passing):
+          SMT="$(mktemp -d)"; ( cd "$SMT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add app.py
+            git update-index --add --cacheinfo 160000,0000000000000000000000000000000000000001,vendor  # a gitlink, no clone
+            git commit -qm base >/dev/null
+            git config diff.ignoreSubmodules all                                                        # the config that would hide it
+            git update-index --cacheinfo 160000,0000000000000000000000000000000000000002,vendor         # off-spec staged gitlink bump
+            r=0; out="$(bash "$LG" scope HEAD app.py 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor'; } || { echo "::error::scope missed an off-spec submodule gitlink update under diff.ignoreSubmodules=all (rc=$r) — --ignore-submodules=none missing"; exit 1; } )
+          # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
+          # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
+          FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf 'GARBAGE\n' > .git/index
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a corrupt index (rc=$r) — enumeration fail-open"; exit 1; } )
+          # scope must FAIL LOUD (exit 5), never accept on an uncomputable diff:
+          r=0; ( cd "$(mktemp -d)" && bash "$LG" scope HEAD app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud OUTSIDE a git repo (rc=$r) — fail-open"; exit 1; }
+          r=0; ( cd "$LGR" && bash "$LG" scope deadbeefbadref app.py ) >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::lane-guard scope did not fail loud on an UNRESOLVABLE base (rc=$r) — fail-open"; exit 1; }
+          # an UNWRITABLE temp dir must fail CLOSED — else the here-doc/here-string violation loops fail silently
+          # and scope prints "scope ok" for an out-of-spec diff (verified fail-open before this guard):
+          LGT="$(mktemp -d)"; RO="$(mktemp -d)"; chmod 555 "$RO"; ( cd "$LGT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; echo b > other.py; git add app.py; git commit -qm base >/dev/null; echo x >> app.py; echo y > other.py
+            r=0; TMPDIR="$RO" bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed with an UNWRITABLE TMPDIR (rc=$r) — here-doc fail-open would accept an out-of-spec diff"; exit 1; }
+            r=0; TMPDIR="$RO" bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed with an UNWRITABLE TMPDIR (rc=$r)"; exit 1; } )
+          chmod 755 "$RO"; rmdir "$RO" 2>/dev/null || true
+          # a MALFORMED protected-paths regex must fail LOUD (exit 5), never silently narrow protection:
+          LGV="$(mktemp -d)"; ( cd "$LGV"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf '(^|/)\\.plinth/config$\n[unclosed(\n' > .plinth/protected-paths   # second line is an invalid ERE
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would omit protected paths)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail loud on an INVALID protected-paths regex (rc=$r) — fail-open (would un-protect a path)"; exit 1; } )
+          # a protected-paths that is PRESENT but not a readable regular file must fail closed (5) for BOTH
+          # snapshot AND scope — never read as "no patterns" (that would silently disable protection):
+          LGU="$(mktemp -d)"; ( cd "$LGU"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; git add app.py; git commit -qm base >/dev/null
+            # a DIRECTORY where the file should be (both subcommands must refuse):
+            mkdir .plinth/protected-paths
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed when protected-paths is a DIRECTORY (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed when protected-paths is a DIRECTORY (rc=$r) — scope validator missing"; exit 1; }
+            rmdir .plinth/protected-paths
+            # a BROKEN SYMLINK:
+            ln -sf /nonexistent-plinth-xyz .plinth/protected-paths
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a BROKEN SYMLINK protected-paths (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a BROKEN SYMLINK protected-paths (rc=$r)"; exit 1; }
+            rm -f .plinth/protected-paths
+            # a symlink to a READABLE regular file: [ -f ]/[ -r ] follow it, but git show base: would read the
+            # link's TARGET TEXT, not the policy — must still fail closed:
+            realpp="$(mktemp)"; printf '(^|/)real\\.txt$\n' > "$realpp"; ln -sf "$realpp" .plinth/protected-paths
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a protected-paths that is a symlink to a READABLE file (rc=$r)"; exit 1; }
+            r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { echo "::error::scope did not fail closed on a protected-paths symlink-to-readable-file (rc=$r)"; exit 1; }
+            rm -f .plinth/protected-paths "$realpp"
+            # an UNREADABLE regular file (skipped as root, where mode 000 is still readable) — scope too:
+            printf '(^|/)\\.plinth/config$\n' > .plinth/protected-paths
+            if [ "$(id -u)" != 0 ]; then
+              chmod 000 .plinth/protected-paths
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?; [ "$r" = 5 ] || { chmod 644 .plinth/protected-paths; echo "::error::snapshot did not fail closed on an UNREADABLE protected-paths (rc=$r)"; exit 1; }
+              r=0; bash "$LG" scope HEAD app.py >/dev/null 2>&1 || r=$?; chmod 644 .plinth/protected-paths
+              [ "$r" = 5 ] || { echo "::error::scope did not fail closed on an UNREADABLE protected-paths (rc=$r)"; exit 1; }
+            fi )
+          # protected-paths ALWAYS wins over the SECRET_SAFE template carve-out: a project that deliberately
+          # protects .env.example must still have it flagged SENSITIVE (the carve-out only exempts from the
+          # builtin secret denylist, never from an explicit protected pattern):
+          LGP="$(mktemp -d)"; ( cd "$LGP"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\\.env\\.example$\n' > .plinth/protected-paths
+            printf 'v\n' > .env.example; git add -A; git commit -qm base >/dev/null
+            bash "$LG" snapshot | grep -q 'env.example' || { echo "::error::an EXPLICITLY protected .env.example was exempted by the SECRET_SAFE carve-out — protected-paths must win"; exit 1; } )
+          # SELF-REFERENTIAL NARROWING: a lane cannot edit .plinth/protected-paths to un-protect a path and then
+          # slip that path through (even in no-snapshot mode) — scope reads the POLICY from the ratified base:
+          LGN="$(mktemp -d)"; ( cd "$LGN"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)\\.plinth/protected-paths$\n(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
+            r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
+            [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
+          # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
+          adv_cap() {  # <vendor> <how: last|afterp|stdin>
+            local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"
+            case "$how" in
+              stdin)  printf '#!/usr/bin/env bash\ncat > "%s"\necho advice\n' "$cap" > "$B/$v" ;;
+              afterp) printf '#!/usr/bin/env bash\nprev=""; for a in "$@"; do [ "$prev" = -p ] && printf "%%s" "$a" > "%s"; prev="$a"; done\necho advice\n' "$cap" > "$B/$v" ;;
+              last)   printf '#!/usr/bin/env bash\nfor a in "$@"; do last="$a"; done; printf "%%s" "$last" > "%s"\necho advice\n' "$cap" > "$B/$v" ;;
+            esac
+            chmod +x "$B/$v"
+            R="$(mktemp -d)"; ( cd "$R"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$R" >/dev/null 2>&1
+              grep -v '^advisor_vendor' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+              printf 'advisor_vendor = %s\n' "$v" >> .plinth/config
+              PATH="$B:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "route the auth module" >/dev/null 2>&1 || true )
+            grep -q "Give a VERDICT, not a survey" "$cap" || { echo "::error::advise: $v did not receive the verdict-not-survey discipline"; exit 1; }
+            grep -q "route the auth module" "$cap" || { echo "::error::advise: $v dropped the question"; exit 1; }
+          }
+          adv_cap claude last
+          adv_cap codex stdin
+          adv_cap grok afterp
+          adv_cap agy afterp
+          # --impactful adds the weighting line, on a NON-claude vendor (grok, arg-passed):
+          GIB="$(mktemp -d)"; gcap="$GIB/p"
+          printf '#!/usr/bin/env bash\nprev=""; for a in "$@"; do [ "$prev" = -p ] && printf "%%s" "$a" > "%s"; prev="$a"; done\necho advice\n' "$gcap" > "$GIB/grok"; chmod +x "$GIB/grok"
+          GIR="$(mktemp -d)"; ( cd "$GIR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$GIR" >/dev/null 2>&1
+            grep -v '^advisor_vendor' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'advisor_vendor = grok\n' >> .plinth/config
+            PATH="$GIB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "migrate the DB" >/dev/null 2>&1 || true )
+          grep -qi "IMPACTFUL, hard-to-reverse" "$gcap" || { echo "::error::advise --impactful (non-claude vendor) lacks the hard-to-reverse weighting"; exit 1; }
           echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths + v4.4.0(contract/isolation/deny-ship/advise/needs-human) OK"

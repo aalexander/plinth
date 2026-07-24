@@ -35,12 +35,15 @@ each_protected() {  # builtin pattern + project patterns, one per line
 }
 
 # Deny-ship TRIPWIRE. This is a CLAUDE `.claude/` PreToolUse hook: it fires for a Claude
-# driver and its Claude subagents ONLY. Codex and grok do not read `.claude/` (codex has
-# its own hook system, which Plinth does not wire; grok has no PreToolUse mechanism at
-# all), so neither this hook NOR the `.claude/` Stop review-gate fires for a non-Claude
-# driver — for them the ship gate is purely SERVER-SIDE: branch protection's required CI
-# status checks (the cloud review posts findings as a backstop but is not a required merge
-# gate by default), plus the trusted driver running the loop. For a Claude driver this hook
+# driver and its Claude subagents ONLY. Whether a non-Claude CLI executes these hooks
+# is PROBEABLE, not assumed — `plinth hookprobe <grok|codex>` (grok 0.2.93 reported no
+# execution (reproduce: plinth hookprobe grok); codex has its own hook system Plinth does not wire; re-run the probe on
+# CLI upgrades). Under a non-executing driver neither this hook NOR the `.claude/`
+# Stop review-gate fires for a non-Claude
+# driver — for them the ship gate is purely SERVER-SIDE: branch protection's required
+# checks (floor + checks; the cloud review is advisory comments, and the review verdict
+# gains a server verifier only with the receipt check), plus the trusted driver running
+# the loop. For a Claude driver this hook
 # complements the Stop review-gate by
 # refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
 # the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
@@ -54,9 +57,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    (an UNQUOTE: quote/backslash chars deleted, token CONTENT kept — not span removal)
 #    so quoted PROSE mentioning the command stays inert; a `bash -c "gh pr create"`
 #    deliberately hidden in quotes is OUT OF SCOPE.
-#  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection
-#    requiring the CI status checks (the Codex cloud review posts findings as a backstop
-#    but is not a required merge gate by default). A client hook can never replace those.
+#  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection's
+#    required checks (floor + checks today; the receipt check adds the review-verdict
+#    gate). A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate

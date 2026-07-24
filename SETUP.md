@@ -1,14 +1,24 @@
 # Plinth — one-time setup
 
-1. Push this repo to GitHub as PUBLIC `OWNER/plinth`; tag it:
-       git tag v3 && git push origin v3
+1. Push this repo to GitHub as PUBLIC `OWNER/plinth`; tag EVERY release with the
+   version in `VERSION` (today:
+       git tag v4.5.0 && git push origin v4.5.0
+   ) — projects write `.plinth-version` at init/update and the CI floor clones
+   `v<version>`, so an unpushed tag breaks every downstream harness job.
    (Public means projects can call plinth-floor.yml with zero access config.)
 2. Put the CLI on PATH:
        sudo ln -s "$(pwd)/bin/plinth" /usr/local/bin/plinth
-3. Per machine: Claude Code (native installer; sign in with Max), Codex CLI
-   (`npm i -g @openai/codex`; sign in with ChatGPT), `brew install jq`,
-   and `~/.codex/config.toml`:
-       model = "gpt-5.5"
+3. Per machine (one CLI per v4 seat — see `.plinth/MODELS.md`): Claude Code
+   (native installer; sign in with Max — the resident ARCHITECT harness, and the
+   audit seat), the grok CLI ([x.ai/cli](https://x.ai/cli); sign in — the WORKER
+   seat, and the alternative resident driver), Codex CLI
+   (`npm i -g @openai/codex`; sign in with ChatGPT — the reviewer seat),
+   `brew install jq`, `python3` (a runtime dependency: the coreutils-free
+   hookprobe/lane wall-clock cap and the Grok/Agy review-JSON parsers all shell
+   out to it — without it hookprobe is always INCONCLUSIVE and those parser
+   paths fail; macOS ships it via the Command Line Tools / `xcode-select
+   --install`), and `~/.codex/config.toml`:
+       model = "gpt-5.5"        # move to "gpt-5.6" once eligible (GA July 9 2026; CLI >= 0.144.0)
        model_reasoning_effort = "high"
 4. Connect Codex cloud code review once (chatgpt.com -> Codex): install the
    GitHub App with repo access and enable review-on-PR-open. Note: this is the
@@ -17,5 +27,14 @@
    no separate "Codex Security" product is assumed to exist.
 5. Per project: `plinth init ~/Dev/<repo>`; edit SPEC.md; commit (ci.yml is
    zero-edit: owner auto-injected, checks auto-detect the stack); protect `main`
-   requiring the `floor` and `checks` status checks.
-6. In Claude Code: `/model` -> Fable 5; `/effort` -> ultracode for big tasks.
+   requiring the FOUR floor contexts (`floor / secrets`, `floor / sast`,
+   `floor / dependencies / osv-scan`, `floor / harness`) plus `checks / checks`
+   (or `checks` for a direct checks job) — GitHub names required checks by JOB
+   name, not the workflow name (no `CI / ` prefix); the preflight names any
+   missing one. (The Codex cloud review
+   posts comments — advisory, not a requirable check; the receipt check shipping
+   with auto mode adds the server-side review gate.)
+6. Daily driving happens in Claude Code (the architect-resident default):
+   `/model` -> Opus 4.8 (Fable 5 by exception, credits); `/effort` -> ultracode
+   for big tasks; the grok worker lane carries the typing. The grok CLI as the
+   RESIDENT driver is the wall-clock alternative (known limitation applies).
