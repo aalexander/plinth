@@ -43,6 +43,8 @@
   sed's ERE parser rejects SHAPE_RE's nesting depth outright while grep parses it identically
   on GNU and BSD. Beyond the parseable grammar (deeper nesting) the update REFUSES, fail
   closed, rather than risk broadening a managed pattern past anchors it cannot reason about.
+  A bare-^ rule (e.g. `^\.plinth/session/`) likewise cannot match those absolute paths, so it
+  is no longer stripped or counted as covering — canonical protection is appended alongside it.
   Signal handling stops the run: INT/TERM traps clean up and exit 130/143 — a cancelled
   init/update can no longer resume past cleanup and mutate the policy. Every
   temp the function creates is registered and removed on ANY exit (abort, interrupt, success) —
@@ -53,17 +55,24 @@
   exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor convention (managed
   suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
   non-path-prefix and mixed-arm canonical fallbacks, read-only-policy rename semantics, and
-  failure injections for every processing stage: unreadable policy, malformed regex (with and
-  without trailing newline), NUL-bearing policy, eighteen argv-signature shim injections
-  (grep/sort/tail/wc/mktemp, Nth-hit selectable — including a no-newline-seed late-stage case
-  that kills an early-normalization mutant, the strip probe, the residual and parse scans, the
-  anchor shape check, all three size-producer reads, and the same-dir temp creation of the
-  atomic replace) covering each producer status check — each asserts a non-zero exit, a
-  byte-identical policy file, and no stray same-dir temp, with the expect-failure design
-  making a stale shim signature fail loudly instead of going vacuous — plus a SIGNAL
-  regression (TERM during a shim-paused mid-stage must exit non-zero with the policy
-  byte-identical and no stray temp). Exact-mode preservation (0664 stays 0664) is asserted on
-  the success path (`.github/workflows/plinth-canary.yml`).
+  failure injections: unreadable policy, malformed regex (with and without trailing newline),
+  NUL-bearing policy, and twenty-three argv-signature shim injections
+  (grep/sort/tail/wc/mktemp/tr/cmp/cat/chmod/mv, Nth-hit selectable, real tool paths resolved
+  at shim creation) covering the status checks of every content-reachable processing stage —
+  active reads, validation, exclusion, extraction, prefix sort, strip probe, residual and
+  parse scans, shape check, membership (incl. a no-newline seed that kills an
+  early-normalization mutant), all three size-producer reads — and the atomic writer's
+  external producers (binary scan tr+cmp, same-dir temp creation, compose copy, mode
+  preserve, rename). NOT shim-injected, by declared limitation: `stat` (its designed
+  cross-platform fallback defeats a portable failure signature), `dirname`, and the `printf`
+  builtin (not interceptable via PATH) — each is status-checked in code. Every injection
+  asserts a non-zero exit, a byte-identical policy, and no stray same-dir temp; one
+  injected-failure run also asserts a private TMPDIR is left EMPTY (registered system temps
+  removed by the trap); the expect-failure design makes a stale shim signature fail loudly
+  instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
+  exits (TERM=143, INT=130), synchronized on the paused stage via the shim counter — each
+  asserts the exact exit, a byte-identical policy, and no strays. Exact-mode preservation
+  (0664 stays 0664) is asserted on the success path (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).

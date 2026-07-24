@@ -1149,6 +1149,14 @@ jobs:
           grep -qxF '(^|/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::a mixed-arm rule SUPPRESSED the canonical managed append — its non-slash arm misses absolute paths"; exit 1; }
           grep -qxF '(^|plinth|vendor/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::user's mixed-arm line was not preserved"; exit 1; }
           grep -qF '(^|plinth|vendor/)\.plinth/config' "$PE/.plinth/protected-paths" && { echo "::error::a mixed-arm anchor was adopted for appends — its non-slash arm would miss absolute paths"; exit 1; } || true
+          # (e) BARE-^ sibling: ^-anchored rules cannot match the absolute paths the hooks
+          # check, so a bare-^ managed suffix must not read as covered either — canonical
+          # protection is appended alongside the preserved user lines.
+          PF="$(mktemp -d)"; ( cd "$PF" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PF" >/dev/null 2>&1 )
+          printf '^custom$\n^\\.plinth/session/\n' > "$PF/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PF" >/dev/null 2>&1 || { echo "::error::update aborted on bare-^ rules"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PF/.plinth/protected-paths" || { echo "::error::a bare-^ rule SUPPRESSED the canonical managed append — it cannot match absolute paths"; exit 1; }
+          grep -qxF '^\.plinth/session/' "$PF/.plinth/protected-paths" || { echo "::error::user bare-^ line was not preserved"; exit 1; }
           # (4) per-stage producer failures: a PATH shim fails ONLY the exact argv signature
           # (Nth matching hit) of one processing stage, else execs the real tool. Every stage's
           # status check must turn that failure into a non-zero exit with the policy file left
@@ -1156,16 +1164,21 @@ jobs:
           # vacuity: if a refactor changes a stage's argv so the shim stops firing, update
           # SUCCEEDS and the case fails loudly — update the signature alongside the stage.
           SHIMD="$(mktemp -d)"
-          for t in grep sort tail wc mktemp; do
+          for t in grep sort tail wc mktemp cat chmod mv tr cmp; do
+            # Absolute path REQUIRED: an alias/function answer (e.g. zsh returning bare
+            # "grep") would make the shim exec ITSELF through PATH forever. A fresh `sh -c`
+            # has no aliases/functions, so its lookup is always the real executable.
+            treal="$(PATH=/usr/bin:/bin sh -c "command -v $t")" || treal=""
+            case "$treal" in /*) : ;; *) echo "::error::cannot resolve an absolute path for $t"; exit 1 ;; esac
             printf '%s\n' \
               '#!/usr/bin/env bash' \
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
               '  case "$*" in *"$INJ_SIG"*)' \
-              '    n="$(cat "$INJ_CNT" 2>/dev/null)"; n=$(( ${n:-0} + 1 )); echo "$n" > "$INJ_CNT"' \
-              '    if [ "$n" -eq "${INJ_HIT:-1}" ]; then if [ "${INJ_MODE:-fail}" = pause ]; then sleep 8; else echo "shim: injected failure ($(basename "$0") hit $n)" >&2; exit 9; fi; fi' \
+              '    n="$(/bin/cat "$INJ_CNT" 2>/dev/null)"; n=$(( ${n:-0} + 1 )); echo "$n" > "$INJ_CNT"' \
+              '    if [ "$n" -eq "${INJ_HIT:-1}" ]; then if [ "${INJ_MODE:-fail}" = pause ]; then sleep 8; srn=$?; if [ "$srn" -gt 128 ]; then sg=$((srn - 128)); trap - "$sg" 2>/dev/null || true; kill "-$sg" $$; fi; else echo "shim: injected failure ($(basename "$0") hit $n)" >&2; exit 9; fi; fi' \
               '  ;; esac' \
               'fi' \
-              'exec "/usr/bin/$(basename "$0")" "$@"' > "$SHIMD/$t"
+              "exec $treal \"\$@\"" > "$SHIMD/$t"
             chmod +x "$SHIMD/$t"
           done
           shimrun() { # shimrun <tool> <sig> <hit> <stage-label> [nonl]
@@ -1206,19 +1219,61 @@ jobs:
           shimrun wc '-c' 2 'atomic replace: payload size read'
           shimrun wc '-c' 3 'atomic replace: composed size read'
           shimrun mktemp '.protected-paths.tmp' 1 'atomic replace: same-dir temp create'
-          # SIGNAL regression: TERM during a paused mid-stage must clean up AND STOP — a
-          # handler that resumes after cleanup would let a cancelled update run on and mutate
-          # the policy. Pause the dedup-membership grep (shim pause mode), TERM the CLI,
-          # expect a signal exit, a byte-identical policy, and no stray temp.
-          SG="$(mktemp -d)"; ( cd "$SG" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SG" >/dev/null 2>&1 )
-          printf '(^|/)my-rule$\n' > "$SG/.plinth/protected-paths"
-          cp "$SG/.plinth/protected-paths" "$SG/pp.snap"
-          INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_MODE=pause INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SG" >/dev/null 2>&1 & upid=$!
-          sleep 3; kill -TERM "$upid" 2>/dev/null || true
-          so=0; wait "$upid" || so=$?
-          [ "$so" -ne 0 ] || { echo "::error::a TERM-cancelled update completed successfully — the signal trap resumed instead of stopping"; exit 1; }
-          cmp -s "$SG/.plinth/protected-paths" "$SG/pp.snap" || { echo "::error::a TERM-cancelled update mutated the policy"; exit 1; }
-          ls "$SG/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::a TERM-cancelled update left a stray temp"; exit 1; } || true
+          shimrun tr '-d' 1 'binary scan (tr)'
+          shimrun cmp '-s' 1 'binary scan (cmp)'
+          shimrun cat '.plinth/protected-paths' 1 'atomic replace: temp compose copy'
+          shimrun chmod '.protected-paths.tmp' 1 'atomic replace: mode preserve'
+          shimrun mv '.protected-paths.tmp' 1 'atomic replace: rename'
+          # Registered SYSTEM temps are removed on an aborted run too: with a private TMPDIR,
+          # a failure injection must leave that TMPDIR empty (the EXIT trap cleans mpat/
+          # active/strip; INJ_CNT is external).
+          TDP="$(mktemp -d)"; TSB="$(mktemp -d)"
+          ( cd "$TSB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$TSB" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n' > "$TSB/.plinth/protected-paths"
+          to=0; TMPDIR="$TDP" INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$TSB" >/dev/null 2>&1 || to=$?
+          [ "$to" -ne 0 ] || { echo "::error::TMPDIR-cleanliness run unexpectedly succeeded (shim vacuous)"; exit 1; }
+          [ -z "$(ls -A "$TDP")" ] || { echo "::error::an aborted update leaked registered system temps: $(ls -A "$TDP" | tr '\n' ' ')"; exit 1; }
+          # SIGNAL regression, BOTH signals with EXACT conventional exits (INT=130, TERM=143):
+          # a cancelled update must clean up AND STOP — a handler that resumes after cleanup
+          # would let it run on and mutate the policy. The kill is synchronized on the shim's
+          # counter file (written when the paused stage begins), not a blind sleep.
+          # The CLI is launched through a python3 relay: a plain background job inherits
+          # SIGINT IGNORED (no job control in CI shells), so the CLI's INT trap could never
+          # install and the kill would be silently dropped. subprocess restores ignored
+          # signals in the child by default; the relay prints the child PID and exits with
+          # its code (signal deaths mapped to 128+N).
+          # preexec resets INT/TERM to SIG_DFL: the backgrounded relay itself inherits
+          # SIGINT IGNORED (POSIX async-job rule) and Python honors inherited SIG_IGN, so
+          # without the reset the whole tree would silently ignore the INT case.
+          printf '%s\n' \
+            'import signal, subprocess, sys' \
+            'def dfl():' \
+            '    signal.signal(signal.SIGINT, signal.SIG_DFL)' \
+            '    signal.signal(signal.SIGTERM, signal.SIG_DFL)' \
+            'p = subprocess.Popen(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, preexec_fn=dfl)' \
+            'print(p.pid, flush=True)' \
+            'rc = p.wait()' \
+            'sys.exit(128 - rc if rc < 0 else rc)' > "$SHIMD/launch.py"
+          sigcase() { # sigcase <SIG> <expected-exit>
+            SG="$(mktemp -d)"; ( cd "$SG" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SG" >/dev/null 2>&1 )
+            printf '(^|/)my-rule$\n' > "$SG/.plinth/protected-paths"
+            cp "$SG/.plinth/protected-paths" "$SG/pp.snap"
+            SCNT="$(mktemp)"
+            INJ_TOOL=grep INJ_SIG='-qxF --' INJ_HIT=1 INJ_MODE=pause INJ_CNT="$SCNT" PATH="$SHIMD:$PATH" python3 "$SHIMD/launch.py" "$GITHUB_WORKSPACE/bin/plinth" update "$SG" > "$SG/child.pid" & upid=$!
+            for i in $(seq 1 100); do [ "$(cat "$SCNT" 2>/dev/null)" = "1" ] && break; sleep 0.1; done
+            [ "$(cat "$SCNT" 2>/dev/null)" = "1" ] || { echo "::error::signal case never reached the paused stage (shim vacuous?)"; exit 1; }
+            # Signal the process GROUP (start_new_session makes the child its leader), as a
+            # real Ctrl-C does: bash DISCARDS a pending SIGINT if its foreground child exits
+            # normally, so signaling only the shell would test nothing for INT. os.killpg
+            # avoids shells that mis-parse a negative pid as options and drop the signal.
+            python3 -c 'import os,signal,sys; os.killpg(int(sys.argv[1]), getattr(signal, "SIG"+sys.argv[2]))' "$(cat "$SG/child.pid")" "$1" 2>/dev/null || true
+            so=0; wait "$upid" || so=$?
+            [ "$so" -eq "$2" ] || { echo "::error::a $1-cancelled update exited $so, expected $2 — the signal trap resumed or mapped the wrong code"; exit 1; }
+            cmp -s "$SG/.plinth/protected-paths" "$SG/pp.snap" || { echo "::error::a $1-cancelled update mutated the policy"; exit 1; }
+            ls "$SG/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::a $1-cancelled update left a stray temp"; exit 1; } || true
+          }
+          sigcase TERM 143
+          sigcase INT 130
           # Mode preservation is EXACT (stat+chmod, not cp-through-umask): a non-default 0664
           # policy must still be 0664 after a successful backfill.
           MP="$(mktemp -d)"; ( cd "$MP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MP" >/dev/null 2>&1 )
