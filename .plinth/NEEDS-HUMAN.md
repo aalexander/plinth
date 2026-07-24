@@ -1,5 +1,22 @@
 # Blocked on you
 
+- [ ] **Ratify review-loop convergence rules** (paste into `.plinth/AGENTS-project.md` — your
+  file; the driver must not edit reviewer instructions mid-loop). This is the structural fix
+  for the 10-round escalation treadmill on `chore/instrument-v4.5.0` (rounds 1–4 found real
+  bugs; 7–10 demanded adversarial-local-attacker hardening on a trusted-env CLI). Draft:
+  ```
+  ## Review-loop convergence (ratified 2026-07-__)
+  - Trust boundary: driver, reviewer, and operator are TRUSTED; local-machine
+    adversaries are OUT OF SCOPE. Flag realistic failure (fail-open logic, wrong
+    behavior, data loss) — not local-attacker hardening (symlink races on repo
+    temps, NUL-injected local policy files, per-stage mutation shims) unless the
+    code crosses a real trust boundary (network input, PR-supplied content).
+  - Round 1 is EXHAUSTIVE: report every finding AND every finding-class you can
+    see, enumerating all siblings of a class in one finding, so fixes batch.
+  - Later rounds verify fixes: review (a) whether prior findings are resolved and
+    (b) defects INTRODUCED by the fix diffs. Do not raise a new finding class
+    against lines unchanged since the round that first reviewed them.
+  ```
 - [ ] **[BLOCKING] Complete this repo's one-time driver-shell migration** (v4.4 design; the
   guard rightly blocks the driver from `rm CLAUDE.md`, so this last step is yours). The
   project notes are already migrated into `.plinth/DRIVER-project.md`; run exactly:

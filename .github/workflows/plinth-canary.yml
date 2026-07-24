@@ -1091,20 +1091,23 @@ jobs:
           [ "$fo" -ne 0 ] || { echo "::error::update accepted an anchor beyond the supported grammar (risk: broadened canonical append)"; exit 1; }
           printf '%s' "$fout" | grep -q "unsupported anchor grammar" || { echo "::error::deep-nesting refusal did not name the grammar limit (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
           cmp -s "$DP/.plinth/protected-paths" "$DP/pp.snap" || { echo "::error::the grammar refusal modified the policy file"; exit 1; }
-          # (3) unwritable policy with a missing managed pattern: every read/derive stage
-          # succeeds, the APPEND fails — update must abort, not report success with the
-          # backfill silently dropped. Seed omits session/ and ends with a newline so the
-          # failing write is the append itself, not the newline guard.
+          # (3) rename-writer failure semantics. The policy is REPLACED via rename(2), never
+          # written through, so the file's own write bit is irrelevant: a read-only 0444 policy
+          # in a writable directory must be backfilled SUCCESSFULLY with its 0444 mode
+          # preserved. The failure case is an UNWRITABLE DIRECTORY — the same-dir temp cannot
+          # be created — which must abort fail-closed, leave the policy byte-identical, and
+          # leave no stray temp.
           WJ="$(mktemp -d)"; ( cd "$WJ" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$WJ" >/dev/null 2>&1 )
           printf '(^|/)my-rule$\n' > "$WJ/.plinth/protected-paths"
-          cp "$WJ/.plinth/protected-paths" "$WJ/pp.snap"
           chmod 444 "$WJ/.plinth/protected-paths"
-          fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$WJ" 2>&1)" || fo=$?
+          "$GITHUB_WORKSPACE/bin/plinth" update "$WJ" >/dev/null 2>&1 || { echo "::error::update failed on a read-only policy in a writable dir (rename needs only directory write)"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$WJ/.plinth/protected-paths" || { echo "::error::read-only policy was not backfilled via rename"; exit 1; }
+          wm="$(stat -c %a "$WJ/.plinth/protected-paths" 2>/dev/null || stat -f %Lp "$WJ/.plinth/protected-paths")"
+          [ "$wm" = "444" ] || { echo "::error::read-only policy mode not preserved (0444 -> 0$wm)"; exit 1; }
           chmod 644 "$WJ/.plinth/protected-paths"
-          [ "$fo" -ne 0 ] || { echo "::error::update reported success while the managed-pattern append silently failed (fail-open regression)"; exit 1; }
-          printf '%s' "$fout" | grep -q "fail closed" || { echo "::error::append-failure abort did not identify itself as the fail-closed path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
-          cmp -s "$WJ/.plinth/protected-paths" "$WJ/pp.snap" || { echo "::error::the aborted append modified the policy file"; exit 1; }
-          ls "$WJ/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::the aborted atomic replace left a stray temp in .plinth/ (would dirty the tree)"; exit 1; } || true
+          # The writer's own failure path (temp creation impossible) is injected via the mktemp
+          # shim in the matrix below — chmod-ing the directory would break earlier update steps
+          # (copy_shared) with an unrelated error and prove nothing about this writer.
           # (3b) NUL/binary policy: grep's "Binary file matches" diagnostic (rc 0) would defeat
           # regex validation, so update must refuse a NUL-bearing policy outright, unmodified.
           BB="$(mktemp -d)"; ( cd "$BB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$BB" >/dev/null 2>&1 )
@@ -1129,6 +1132,21 @@ jobs:
           printf 'unanchored_rule$\n' > "$PC/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PC" >/dev/null 2>&1 || { echo "::error::update aborted on an unanchored policy"; exit 1; }
           grep -qxF '(^|/)\.plinth/session/' "$PC/.plinth/protected-paths" || { echo "::error::no-prefix policy did not fall back to canonical appends"; exit 1; }
+          # (d) X must be a PATH PREFIX: every top-level alternative ends in '/'. A non-path
+          # anchor like (^|foo) would compose (^|foo)\.plinth/session/ — matching
+          # "foo.plinth/…" but NOT the absolute paths the hooks check — so it must NOT be
+          # adopted: canonical fallback, no (^|foo)-anchored managed rules. Same for a
+          # mixed-arm anchor where one alternative lacks the trailing slash.
+          PD="$(mktemp -d)"; ( cd "$PD" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PD" >/dev/null 2>&1 )
+          printf '(^|foo)custom$\n' > "$PD/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PD" >/dev/null 2>&1 || { echo "::error::update aborted on a non-path-prefix anchor"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PD/.plinth/protected-paths" || { echo "::error::non-path-prefix anchor did not fall back to canonical appends"; exit 1; }
+          grep -qF '(^|foo)\.plinth/session/' "$PD/.plinth/protected-paths" && { echo "::error::a non-path-prefix anchor was adopted — managed rules would miss absolute paths"; exit 1; } || true
+          PE="$(mktemp -d)"; ( cd "$PE" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PE" >/dev/null 2>&1 )
+          printf '(^|plinth|vendor/)custom$\n' > "$PE/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PE" >/dev/null 2>&1 || { echo "::error::update aborted on a mixed-arm anchor"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::mixed-arm anchor (one alternative not a path prefix) was not rejected to canonical"; exit 1; }
+          grep -qF '(^|plinth|vendor/)\.plinth/session/' "$PE/.plinth/protected-paths" && { echo "::error::a mixed-arm anchor was adopted — its non-slash arm would miss absolute paths"; exit 1; } || true
           # (4) per-stage producer failures: a PATH shim fails ONLY the exact argv signature
           # (Nth matching hit) of one processing stage, else execs the real tool. Every stage's
           # status check must turn that failure into a non-zero exit with the policy file left
@@ -1136,7 +1154,7 @@ jobs:
           # vacuity: if a refactor changes a stage's argv so the shim stops firing, update
           # SUCCEEDS and the case fails loudly — update the signature alongside the stage.
           SHIMD="$(mktemp -d)"
-          for t in grep sed sort tail wc; do
+          for t in grep sed sort tail wc mktemp; do
             printf '%s\n' \
               '#!/usr/bin/env bash' \
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
@@ -1150,11 +1168,16 @@ jobs:
           done
           shimrun() { # shimrun <tool> <sig> <hit> <stage-label> [nonl]
             SB="$(mktemp -d)"; ( cd "$SB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SB" >/dev/null 2>&1 )
-            if [ "${5:-}" = nonl ]; then printf '(^|/)my-rule$' > "$SB/.plinth/protected-paths"; else printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths"; fi
+            case "${5:-}" in
+              nonl) printf '(^|/)my-rule$' > "$SB/.plinth/protected-paths" ;;
+              conv) printf '(^|plinth/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
+              *)    printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
+            esac
             cp "$SB/.plinth/protected-paths" "$SB/pp.snap"
             so=0; INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
             [ "$so" -ne 0 ] || { echo "::error::update succeeded despite an injected $1 failure at '$4' — a producer status check is missing, or the shim signature went stale after a refactor (update it with the stage)"; exit 1; }
             cmp -s "$SB/.plinth/protected-paths" "$SB/pp.snap" || { echo "::error::injected $1 failure at '$4' left a mutated policy file"; exit 1; }
+            ls "$SB/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::injected $1 failure at '$4' left a stray same-dir temp"; exit 1; } || true
           }
           shimrun grep '-Ev' 1 'stage-1 active-line read'
           shimrun grep '-Ev' 2 'dedup active-line read'
@@ -1165,6 +1188,7 @@ jobs:
           shimrun sed 's/^\(\^\|' 1 'dedup anchor strip'
           shimrun grep '-qxF --' 1 'dedup membership'
           shimrun grep '-qE ^\(\^\|' 1 'residual-anchor scan'
+          shimrun grep '-qE ^\(\^(' 1 'anchor shape check' conv
           shimrun grep '-E --' 1 'stage-1b line validation'
           shimrun grep '-E --' 2 'composed-rule validation'
           # No-newline seed on a LATE stage: mutation is deferred to one final write, so even a
@@ -1177,6 +1201,7 @@ jobs:
           shimrun wc '-c' 1 'atomic replace: policy size read'
           shimrun wc '-c' 2 'atomic replace: payload size read'
           shimrun wc '-c' 3 'atomic replace: composed size read'
+          shimrun mktemp '.protected-paths.tmp' 1 'atomic replace: same-dir temp create'
           # Mode preservation is EXACT (stat+chmod, not cp-through-umask): a non-default 0664
           # policy must still be 0664 after a successful backfill.
           MP="$(mktemp -d)"; ( cd "$MP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MP" >/dev/null 2>&1 )

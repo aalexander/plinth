@@ -34,20 +34,28 @@
   prefix that may alternate at the top level or nest parens ONE level (`plinth/`,
   `plinth/|vendor/`, `(plinth|vendor)/`) — one shared ANCHOR_RE drives extraction AND the dedup
   strip, so a nested-anchor line with a managed suffix is stripped correctly and never
-  re-appended in the broader canonical form. Beyond that grammar (deeper nesting) the update
-  REFUSES, fail closed, rather than risk broadening a managed pattern past what the file's own
-  anchors cover. The canary suite pins convention backfill, canonical-line preservation,
-  no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor
-  convention (managed suffix not broadened; appends in the nested prefix), the deep-nesting
-  refusal, and failure injections for every processing stage: unreadable policy, malformed
-  regex (with and without trailing newline), unwritable append, NUL-bearing policy, and fifteen
-  argv-signature shim injections (grep/sed/sort/tail/wc, Nth-hit selectable, including a
-  no-newline-seed late-stage case that kills an early-normalization mutant and all three
-  size-producer reads of the atomic replace) covering each producer status check — each asserts
-  a non-zero exit and a byte-identical policy file, and the expect-failure design makes a stale
-  shim signature fail loudly instead of going vacuous. Exact-mode preservation (0664 stays
-  0664) and no-stray-temp are asserted on the success and failure paths
-  (`.github/workflows/plinth-canary.yml`).
+  re-appended in the broader canonical form. Every top-level alternative of X must END in `/`
+  (a path prefix): a non-path anchor like `(^|foo)` — whose composed rules would match
+  `foo.plinth/…` but not the absolute paths the hooks check — is NOT adopted and falls back to
+  canonical appends. Beyond the grammar (deeper nesting) the update REFUSES, fail closed,
+  rather than risk broadening a managed pattern past what the file's own anchors cover. Every
+  temp the function creates is registered and removed on ANY exit (abort, interrupt, success) —
+  no leaks under the system temp dir, no stray `.protected-paths.tmp.*` dirtying the tree.
+  Because the policy is replaced via rename(2) and never written through, a read-only 0444
+  policy in a writable directory is backfilled successfully with its mode preserved. The
+  canary suite pins convention backfill, canonical-line preservation, no-duplicate-suffix,
+  exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor convention (managed
+  suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
+  non-path-prefix and mixed-arm canonical fallbacks, read-only-policy rename semantics, and
+  failure injections for every processing stage: unreadable policy, malformed regex (with and
+  without trailing newline), NUL-bearing policy, and seventeen argv-signature shim injections
+  (grep/sed/sort/tail/wc/mktemp, Nth-hit selectable — including a no-newline-seed late-stage
+  case that kills an early-normalization mutant, all three size-producer reads and the
+  same-dir temp creation of the atomic replace, and the anchor shape check) covering each
+  producer status check — each asserts a non-zero exit, a byte-identical policy file, and no
+  stray same-dir temp, and the expect-failure design makes a stale shim signature fail loudly
+  instead of going vacuous. Exact-mode preservation (0664 stays 0664) is asserted on the
+  success path (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).

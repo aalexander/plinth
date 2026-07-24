@@ -416,6 +416,14 @@ ensure_protected_paths() {
   # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
   # runs UNPIPED with its status checked; ppfail is the one exit path.
   ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
+  # Temp hygiene: every temp this function creates is registered and removed on
+  # ANY exit — ppfail aborts, interrupts, and normal completion alike — so a
+  # failed update leaks nothing under the system temp dir and never leaves a
+  # stray .protected-paths.tmp.* dirtying the repository tree. (PP_TMPS is
+  # intentionally not local: the EXIT trap outlives this function's frame.)
+  PP_TMPS=()
+  pp_cleanup() { [ "${#PP_TMPS[@]}" -eq 0 ] || rm -f -- "${PP_TMPS[@]}"; }
+  trap pp_cleanup EXIT INT TERM
   local rc
   # BINARY REJECTION: a NUL byte cannot appear in a valid text policy, and
   # common greps report binary input via a "Binary file matches" DIAGNOSTIC
@@ -430,6 +438,7 @@ ensure_protected_paths() {
   # truth.
   local mpat
   mpat="$(mktemp)" || ppfail "mktemp managed-list"
+  PP_TMPS+=("$mpat")
   cat > "$mpat" <<'PATTERNS'
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
@@ -468,6 +477,7 @@ PATTERNS
 '
   active_t="$(mktemp)" || ppfail "mktemp active"
   strip_t="$(mktemp)" || ppfail "mktemp strip"
+  PP_TMPS+=("$active_t" "$strip_t")
   # Stage 1: the file's ACTIVE (non-comment, non-blank) lines.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "active-line read of $f, grep rc=$rc"
@@ -511,11 +521,20 @@ PATTERNS
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
   # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
-  # count: empty or multiline = no single convention).
+  # count: empty or multiline = no single convention) — but only when every
+  # top-level alternative of X is a PATH PREFIX ending in '/'. Without that,
+  # an anchor like (^|foo) would compose managed rules such as
+  # (^|foo)\.plinth/session/ that match "foo.plinth/…" but NOT the absolute
+  # paths the hooks check ("…/foo/.plinth/…") — silently un-protecting the
+  # managed paths. A non-conforming shape falls back to canonical appends.
   case "$prefixes" in
     ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical appends
     '(^|/)') : ;;     # canonical convention: keep canonical appends
-    *) anchor="$prefixes" ;;
+    *)
+      rc=0; printf '%s' "$prefixes" | grep -qE '^\(\^(\|((\([^()]*\))|[^()|])*/)+\)$' || rc=$?
+      [ "$rc" -le 1 ] || ppfail "anchor shape check, grep rc=$rc"
+      [ "$rc" -ne 0 ] || anchor="$prefixes"
+      ;;
   esac
   # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
   # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
@@ -571,7 +590,7 @@ PATTERNS
     local fdir tmpf osz psz nsz fmode
     fdir="$(dirname "$f")" || ppfail "policy dirname"
     tmpf="$(mktemp "$fdir/.protected-paths.tmp.XXXXXX")" || ppfail "same-dir temp create"
-    pfail_clean() { rm -f "$tmpf"; ppfail "$1"; }
+    PP_TMPS+=("$tmpf")
     # The O_EXCL mktemp file is written THROUGH — never deleted and re-created,
     # which would reopen the pathname and let a concurrent process swap in a
     # symlink/hardlink (the write-through class the CLI prevents elsewhere).
@@ -579,15 +598,15 @@ PATTERNS
     # file is filtered through the umask (0664 would silently become 0644,
     # dropping group write). Every producer here is status-checked, including
     # the final size read: a wc failure must abort, not be compared as text.
-    osz="$(wc -c < "$f")" || pfail_clean "policy size read"
-    psz="$(printf '%s' "$payload" | wc -c)" || pfail_clean "payload size"
-    fmode="$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" || pfail_clean "policy mode read"
-    cat "$f" > "$tmpf" || pfail_clean "temp compose copy"
-    printf '%s' "$payload" >> "$tmpf" || pfail_clean "pattern append (temp)"
-    nsz="$(wc -c < "$tmpf")" || pfail_clean "composed size read"
-    [ "$nsz" -eq $(( osz + psz )) ] || pfail_clean "short write detected composing the new policy"
-    chmod "$fmode" "$tmpf" || pfail_clean "mode preserve (chmod $fmode)"
-    mv -f "$tmpf" "$f" || pfail_clean "atomic replace (rename)"
+    osz="$(wc -c < "$f")" || ppfail "policy size read"
+    psz="$(printf '%s' "$payload" | wc -c)" || ppfail "payload size"
+    fmode="$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" || ppfail "policy mode read"
+    cat "$f" > "$tmpf" || ppfail "temp compose copy"
+    printf '%s' "$payload" >> "$tmpf" || ppfail "pattern append (temp)"
+    nsz="$(wc -c < "$tmpf")" || ppfail "composed size read"
+    [ "$nsz" -eq $(( osz + psz )) ] || ppfail "short write detected composing the new policy"
+    chmod "$fmode" "$tmpf" || ppfail "mode preserve (chmod $fmode)"
+    mv -f "$tmpf" "$f" || ppfail "atomic replace (rename)"
     echo "  protected-paths: added $added plinth-managed security pattern(s)"
   fi
   return 0
