@@ -1123,9 +1123,9 @@ jobs:
               'exec "/usr/bin/$(basename "$0")" "$@"' > "$SHIMD/$t"
             chmod +x "$SHIMD/$t"
           done
-          shimrun() { # shimrun <tool> <sig> <hit> <stage-label>
+          shimrun() { # shimrun <tool> <sig> <hit> <stage-label> [nonl]
             SB="$(mktemp -d)"; ( cd "$SB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$SB" >/dev/null 2>&1 )
-            printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths"
+            if [ "${5:-}" = nonl ]; then printf '(^|/)my-rule$' > "$SB/.plinth/protected-paths"; else printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths"; fi
             cp "$SB/.plinth/protected-paths" "$SB/pp.snap"
             so=0; INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
             [ "$so" -ne 0 ] || { echo "::error::update succeeded despite an injected $1 failure at '$4' — a producer status check is missing, or the shim signature went stale after a refactor (update it with the stage)"; exit 1; }
@@ -1139,8 +1139,13 @@ jobs:
           shimrun sort '-u' 1 'prefix sort'
           shimrun sed 's/^\(\^\|' 1 'dedup anchor strip'
           shimrun grep '-qxF --' 1 'dedup membership'
+          shimrun grep '-qE ^\(\^\|' 1 'residual-anchor scan'
           shimrun grep '-E --' 1 'stage-1b line validation'
           shimrun grep '-E --' 2 'composed-rule validation'
+          # No-newline seed on a LATE stage: mutation is deferred to one final write, so even a
+          # policy missing its trailing newline must be byte-identical after a late failure —
+          # this kills an early-normalization (newline-before-checks) mutant.
+          shimrun grep '-qxF --' 1 'dedup membership (no-newline seed)' nonl
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.

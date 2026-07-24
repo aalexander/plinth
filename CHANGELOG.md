@@ -17,9 +17,11 @@
   backfill (trailing-byte read, active-line read, managed exclusion, anchor extraction, prefix
   sort, dedup membership, append) runs unpiped with its status checked: grep rc 1 (no match) is
   a normal answer, rc >= 2 aborts the update loudly instead of degrading into "no convention" /
-  "not covered" and appending blind. Every active policy line must compile as an ERE — checked
-  BEFORE the file is touched in any way (even newline termination), so a rejected policy is left
-  byte-identical — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
+  "not covered" and appending blind. The whole run is read-only until ONE final write: the
+  newline-termination fix and every missing pattern are composed into a single payload appended
+  only after every check passes, so an abort at any stage leaves the policy byte-identical —
+  never early-normalized or partially backfilled. Every active policy line must compile as an
+  ERE — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
   yielding a malformed anchor that propagates into appended managed rules, and the composed rule
   is re-checked before each append. The convention grammar supports `(^|X)` with X a path
   prefix that may alternate at the top level or nest parens ONE level (`plinth/`,
@@ -31,10 +33,11 @@
   no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor
   convention (managed suffix not broadened; appends in the nested prefix), the deep-nesting
   refusal, and failure injections for every processing stage: unreadable policy, malformed
-  regex (with and without trailing newline), unwritable append, and ten argv-signature shim
-  injections (grep/sed/sort/tail, Nth-hit selectable) covering each producer status check —
-  each asserts a non-zero exit and a byte-identical policy file, and the expect-failure design
-  makes a stale shim signature fail loudly instead of going vacuous
+  regex (with and without trailing newline), unwritable append, and twelve argv-signature shim
+  injections (grep/sed/sort/tail, Nth-hit selectable, including a no-newline-seed late-stage
+  case that kills an early-normalization mutant) covering each producer status check — each
+  asserts a non-zero exit and a byte-identical policy file, and the expect-failure design makes
+  a stale shim signature fail loudly instead of going vacuous
   (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
