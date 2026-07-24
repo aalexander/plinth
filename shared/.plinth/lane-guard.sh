@@ -54,6 +54,11 @@ set -uo pipefail
 # A file INSIDE an inherently-sensitive DIRECTORY is ALWAYS a secret regardless of its basename — no
 # template/doc carve-out applies (secrets/.env.example / .ssh/id_rsa_format.md are still secrets):
 SECRET_DIRS='(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|(^|/)\.env/|\.(pem|key)/'
+# The sensitive-directory NODES THEMSELVES (not just descendants). git ls-files lists files/symlinks,
+# not real directory nodes, so this matters for a tracked SYMLINK named exactly `secrets`/`.ssh`/… : it
+# must be classified so the snapshot records it and the dir-symlink guard fires — otherwise a lane could
+# write THROUGH it to its external directory referent, leaving both snapshots identical and passing scope.
+SECRET_DIR_NODES='(^|/)(secrets|credentials|\.ssh|\.aws|\.env)$'
 # Secret FILES themselves; the SECRET_SAFE carve-out applies ONLY to these (a lookalike not in a dir):
 SECRET_FILES='(^|/)\.env($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
 # Template/doc LOOKALIKES: env templates, and DOCS *about* a key — the key basename plus a
@@ -143,6 +148,7 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
     sens_grep "$pat" "$1" && return 0
   done < <(active_pats)
   sens_grep "$SECRET_DIRS"  "$1" && return 0   # inside secrets/ credentials/ .ssh/ .aws/ .env/ *.pem/ *.key/
+  sens_grep "$SECRET_DIR_NODES" "$1" && return 0   # the secret-DIR node itself (e.g. a tracked symlink named .ssh)
   sens_grep "$SECRET_FILES" "$1" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }

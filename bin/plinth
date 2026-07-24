@@ -504,13 +504,17 @@ warn_stale_reusable_refs() {
   # NOTE: the indentation capture MUST be an ACTION block `{ ... }` — a bare `match(...); x=RLENGTH`
   # would be parsed as two PATTERNS (each with the default {print}), default-printing every line and
   # corrupting the captured ref. `{ ... }` with no pattern runs for every line.
-  # `uses:` match SKIPS a commented line (`# uses: …`) — a stale gate must not be masked by a
-  # commented-out uses line carrying a current-looking ref before the active one.
+  # Discovery is SCOPED to the top-level `jobs:` mapping so a same-named key elsewhere (e.g.
+  # `env: { floor: … }` or `on:` inputs) is not mistaken for the gating job. The `uses:` match is a
+  # line-start KEY at a child indent (`^[[:space:]]*uses:`), so `name: "uses: …"` text inside a string
+  # or a commented `# uses: …` line does NOT satisfy it. Block ends at a sibling-or-shallower line.
   jobawk='
     { match($0, /^[[:space:]]*/); ind0=RLENGTH }
-    !f && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:") { f=1; jind=ind0; next }
-    f && /uses:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
-    f && ind0 <= jind && $0 ~ /[^[:space:]]/ { exit }'
+    /^[[:space:]]*jobs[[:space:]]*:[[:space:]]*$/ && ind0==0 { injobs=1; jbind=ind0; next }
+    injobs && !f && ind0<=jbind && $0 ~ /[^[:space:]]/ { injobs=0 }
+    injobs && !f && ind0>jbind && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:[[:space:]]*$") { f=1; jind=ind0; next }
+    f && ind0>jind && $0 ~ /^[[:space:]]*uses[[:space:]]*:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
+    f && ind0<=jind && $0 ~ /[^[:space:]]/ { exit }'
   fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
   cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"
   # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate

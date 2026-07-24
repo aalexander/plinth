@@ -195,6 +195,23 @@ jobs:
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPC/.github/workflows/ci.yml" || { echo "::error::[test-setup] commented-uses fixture is invalid YAML"; exit 1; }
           ( cd "$RPC" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPC" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a COMMENTED current uses line before the active stale uses suppressed the warning — awk did not skip the comment"; exit 1; }
+          # awk robustness (d): discovery is SCOPED to the top-level jobs: mapping — a same-named key
+          # ELSEWHERE (`env:\n  floor: …` before jobs:) must NOT be selected as the floor job and divert
+          # discovery past the real stale gate:
+          RPE="$(mktemp -d)"; ( cd "$RPE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPE" >/dev/null 2>&1 )
+          python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("jobs:","env:\n  floor: not-a-job\n\njobs:",1))' "$RPE/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPE/.github/workflows/ci.yml" || { echo "::error::[test-setup] env-decoy fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPE/.github/workflows/ci.yml"
+          ( cd "$RPE" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPE" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a top-level env: floor key diverted stale-gate discovery from the real jobs.floor gate"; exit 1; }
+          # awk robustness (e): the `uses:` match is a line-start KEY — a `name: \"uses: …\"` string
+          # inside the floor job before its real uses: must NOT be captured as the ref:
+          RPN="$(mktemp -d)"; ( cd "$RPN"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPN" >/dev/null 2>&1 )
+          python3 -c 'import sys;p=sys.argv[1];s=open(p).read();open(p,"w").write(s.replace("\n  floor:\n    uses:","\n  floor:\n    name: \"uses: compatibility floor\"\n    uses:"))' "$RPN/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPN/.github/workflows/ci.yml" || { echo "::error::[test-setup] name-uses-string fixture invalid YAML"; exit 1; }
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPN/.github/workflows/ci.yml"
+          ( cd "$RPN" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPN" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a name: \"uses: …\" STRING before the real uses: was captured as the ref (uses match not a line-start key)"; exit 1; }
           # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
           # gate must still be discovered (the parser must not assume exactly two-space indentation):
           RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )
@@ -2223,6 +2240,16 @@ jobs:
             r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a sensitive dir-symlink (rc=$r) — write-through-a-symlinked-dir vector"; exit 1; }
             rm -f .env; rmdir extdir 2>/dev/null || true; printf 'pre\n' > .env
+            # SIBLING (round-33): a tracked SYMLINK named exactly `.ssh`/`secrets`/… (the secret-DIR NODE
+            # itself) — NOT matched by SECRET_FILES, only by SECRET_DIR_NODES — must be classified so the
+            # dir-symlink guard fires. Without the node classification the write-through-the-dir vector
+            # (a lane writing `.ssh/authorized_keys` through the link) leaves identical snapshots:
+            for dn in .ssh secrets credentials .aws; do
+              mkdir -p extdir2; ln -s extdir2 "$dn"
+              r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on a dir-symlink named '$dn' (rc=$r) — secret-dir NODE not classified (SECRET_FILES misses it), write-through vector open"; exit 1; }
+              rm -f "$dn"; rmdir extdir2 2>/dev/null || true
+            done
             # EXACT reported path for a changed 4-field symlink record (format-independent extraction):
             grep -q '^elsewhere/$' .gitignore || printf 'elsewhere/\n' >> .gitignore
             git add .gitignore; git commit -qm 'ignore elsewhere (path probe)' >/dev/null 2>&1 || true
