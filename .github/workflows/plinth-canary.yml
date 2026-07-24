@@ -2193,9 +2193,14 @@ jobs:
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
+          # UNAUTHENTICATED grok — grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but
+          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1; exit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
-          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED CLI (rc=$r)"; exit 1; }
-          printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r)"; exit 1; }
+          # AUTHENTICATED grok — a real model list, no 'not authenticated' marker -> ready:
+          printf '#!/usr/bin/env bash\n[ "$1" = models ] && { printf "grok-4.5\\n"; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
           # codex preflight: same three states — codex auth (login status) is safety-critical and must be tested too
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING codex (rc=$r)"; exit 1; }
@@ -2208,11 +2213,18 @@ jobs:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
           as="$(date +%s)"; r=0; PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; ae="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging grok auth check (rc=$r elapsed=$(( ae - as ))s) — auth preflight uncapped"; exit 1; }
-          # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), never run UNCAPPED, when
-          # neither timeout/gtimeout nor python3 exists — assert both agents no longer run '"$@"' bare:
+          # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), NEVER run UNCAPPED, when
+          # neither timeout/gtimeout nor python3 exists. EXECUTE the shipped cap() (not just grep) with a
+          # CLEAN PATH that has bash + a sentinel-touching model stub but NO timeout/gtimeout/python3, and
+          # assert it returns 3 WITHOUT invoking the model:
           for A in "$GA" "$CA"; do
-            grep -q 'runs UNCAPPED' "$A" && { echo "::error::$(basename "$A") still runs the CLI UNCAPPED when no cap tool exists (must fail unavailable)"; exit 1; } || true
-            grep -q 'refusing to run .* UNCAPPED' "$A" || { echo "::error::$(basename "$A") missing the fail-unavailable branch for a missing wall-clock cap"; exit 1; }
+            CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^       \}$/{exit}' "$A" | sed 's/^       //' > "$CAPX"
+            grep -q '^cap() {' "$CAPX" || { echo "::error::could not extract cap() from $(basename "$A")"; exit 1; }
+            CLEAN="$(mktemp -d)"; for b in bash; do ln -s "$(command -v "$b")" "$CLEAN/$b"; done
+            printf '#!/usr/bin/env bash\ntouch %s/RAN\n' "$CLEAN" > "$CLEAN/model"; chmod +x "$CLEAN/model"
+            r=0; PATH="$CLEAN" "$CLEAN/bash" -c 'source "$1"; cap 60 model' _ "$CAPX" >/dev/null 2>&1 || r=$?
+            [ "$r" = 3 ] || { echo "::error::$(basename "$A") cap did not FAIL UNAVAILABLE (return 3) with no timeout/python3 (rc=$r) — ran UNCAPPED"; exit 1; }
+            [ -e "$CLEAN/RAN" ] && { echo "::error::$(basename "$A") cap INVOKED the model despite no wall-clock cap available (must refuse)"; exit 1; } || true
           done
           LGR="$(mktemp -d)"; ( cd "$LGR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth

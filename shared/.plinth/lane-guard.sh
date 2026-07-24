@@ -334,7 +334,12 @@ case "$sub" in
     case "$v" in
       grok)
         command -v grok >/dev/null 2>&1 || { echo "unavailable: grok not on PATH — install https://x.ai/cli"; exit 3; }
-        _cap 30 grok models >/dev/null 2>&1 || { echo "unavailable: grok not signed in (or auth check hung) — run 'grok login'"; exit 3; } ;;
+        # grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
+        # code alone does NOT verify auth — inspect the OUTPUT. A nonzero exit (hung/killed/other) is
+        # also unavailable. Only a zero exit with NO "not authenticated" marker counts as signed in.
+        _go="$(_cap 30 grok models 2>&1)"; _grc=$?
+        { [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; } \
+          || { echo "unavailable: grok not signed in (or auth check failed/hung) — run 'grok login'"; exit 3; } ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
         _cap 30 codex login status >/dev/null 2>&1 || { echo "unavailable: codex not signed in (or auth check hung) — run 'codex login'"; exit 3; } ;;

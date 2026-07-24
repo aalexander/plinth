@@ -67,8 +67,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        SPEC_EOF
 
 2. Invoke grok headlessly, multi-turn, wall-clocked. The cap must hold even without coreutils —
-   `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; it only
-   runs uncapped, with a loud warning, if NEITHER exists:
+   `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; if
+   NEITHER exists it FAILS UNAVAILABLE (return 3) rather than run grok uncapped — the hard-cap
+   contract is never silently broken (python3 is a declared dependency; see SETUP.md):
 
        cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
          # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the

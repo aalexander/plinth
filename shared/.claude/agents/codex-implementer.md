@@ -66,8 +66,9 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
        SPEC_EOF
 
 2. Invoke codex headlessly, high reasoning, workspace-scoped write, wall-clocked. The cap must hold
-   even without coreutils — `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; on macOS
-   + most Linux); uncapped only if NEITHER timeout nor python3 exists, with a loud warning:
+   even without coreutils — `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3
+   process-group cap; if NEITHER timeout nor python3 exists it FAILS UNAVAILABLE (return 3) rather than
+   run codex uncapped — the hard-cap contract is never silently broken (python3 is a declared dep):
 
        cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
          # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
