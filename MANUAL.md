@@ -662,27 +662,13 @@ installed copies.
   `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
   snapshot metadata accumulate under the system temp dir; add a post-report /
   post-audit cleanup step. (Round 11, minors.)
-- **Review-loop cost controls (2026-07-24 credit exhaustion post-mortem).** The codex
-  account ran dry mid-loop; root causes and proposed product fixes, for the next
-  release: (1) verify-mode rounds re-send the FULL diff + ALL prior findings — chunk
-  or scope them to the fix diffs + open findings (upstream issue #20 corroborates);
-  (2) the clean-slate confirmation re-reviews the whole branch fresh — gate it to
-  Tier 2 and run it at most once per loop; (3) promote the ratified phase/convergence
-  charter from this repo's AGENTS-project.md into the SHARED reviewer contract
-  (`shared/reviewer.md`) so every project gets convergence bounds without per-repo
-  pastes; (4) add a round-count circuit breaker (past N rounds, stop and surface
-  rather than keep billing); (5) driver discipline: free self-review pre-flight
-  (/code-review) before round 1, and batch ALL open-finding fixes into one commit per
-  round. Seat economics: subscription seats (claude/grok) for high-frequency loop
-  roles; metered seats only for rare deep passes.
-- **On-the-fly reviewer seat switching (maintainer requirement, 2026-07-24).** The
-  ratified-base config read means a seat change only governs after it lands on main —
-  correct against driver self-serve, but too slow when a vendor's credits run out
-  mid-loop. Proposed: review.sh honors operator ENV overrides
-  (PLINTH_REVIEWER_VENDOR / PLINTH_REVIEWER_MODEL / PLINTH_AUDIT_VENDOR) that take
-  precedence over the base config for THAT run, recorded LOUDLY in verdict.json, the
-  session event feed, and the PR audit summary — auditability over prevention, per the
-  trusted-operator model. Base-ref config stays the governing default.
+- **v4.6 accepted tradeoffs / follow-ups (from the pre-flight self-review).** (a) Findings
+  marked resolved drop from the verify payload — a regression resurfaces only as code in
+  the cumulative diff; consider carrying resolved findings for one extra round. (b) The
+  canary's four v4.6 fixtures repeat a 5-line repo recipe — extract a mk_loop_repo helper
+  on the next canary touch. (c) `.DS_Store` is git-tracked and churns — untrack and
+  gitignore it. (d) The full branch diff is still materialized+hashed even on scoped verify
+  rounds where it is not sent — lazy-materialize if large-repo wall-clock ever matters.
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the

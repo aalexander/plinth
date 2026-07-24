@@ -15,9 +15,16 @@ project-specific planning files. Work as a planning collaborator: interview me
 first, then draft.
 
 ## How Plinth works (context you need)
-- A coding agent (Claude Code) implements against SPEC.md as the single source of
-  truth. A second model (Codex) adversarially reviews every diff before PR, and a
-  deterministic CI floor (tests, security scanners) gates every merge.
+- A DRIVER agent implements against SPEC.md as the single source of truth,
+  delegating typing volume to cheaper cross-family implementer lanes. A
+  configurable reviewer from a DIFFERENT vendor (claude / codex / grok — set per
+  project) adversarially reviews every diff before PR, a cross-vendor audit
+  seconds high-consequence approvals, and a deterministic CI floor (tests,
+  security scanners) gates every merge.
+- Plinth phases the rigor: BUILD fast first (reviews block on correctness,
+  honesty, data loss, and missing tests), then HARDEN deliberately in a declared
+  pass once the version works — adversarial-robustness findings are deferred to
+  the hardening backlog, not paid for on every diff.
 - SPEC.md is the contract (large products may use a spec tree instead — declared
   via spec_path in .plinth/config — in which case produce the tree's entry files). Requirements are written in EARS form ("The system
   shall...", "When <condition>, the system shall <response>") and every acceptance
@@ -72,13 +79,17 @@ Use exactly this structure:
 - ## Noticed (leave empty with this comment: <!-- The driver logs unrelated
   issues here instead of fixing them. Triage yourself. -->)
 
-### 2. CLAUDE.md project-notes section (always)
-Just the section, not a whole file — it gets pasted under "## Project-specific
-notes" in an existing CLAUDE.md. Include: domain constraints, hard "never do"
-rules (e.g., "never add network calls", "never log PII"), stack/version pins, and
-anything an agent would plausibly get wrong without being told. Pin exact
-  toolchain versions (language minor version, package manager) — a mismatched
-  minor version fights hash-pinned dependencies later.
+### 2. .plinth/DRIVER-project.md (always)
+The project-specific driver notes file (the driver contract itself is a pinned
+shell — CLAUDE.md/AGENTS.md — that imports this file; never draft those).
+Include: domain constraints, hard "never do" rules (e.g., "never add network
+calls", "never log PII"), stack/version pins, and anything an agent would
+plausibly get wrong without being told. Pin exact toolchain versions (language
+minor version, package manager) — a mismatched minor version fights hash-pinned
+dependencies later. If the project needs reviewer-specific rules beyond the
+shared contract (domain-specific blocking classes, a ratified threat model),
+also draft `.plinth/AGENTS-project.md` — keep it short; the shared contract
+already carries the phase and convergence rules.
 
 ### 3. GOAL.md (only if step 1 surfaced a genuine scalar metric — otherwise state
 plainly that no GOAL.md is warranted and why)
@@ -106,7 +117,10 @@ The exact lines to append to .plinth/protected-paths.
 ### 5. .plinth/config values to set (report them for me to paste)
 From the spec's Execution-gated and High-consequence sections, give the exact
 `.plinth/config` lines: `exec_gated`, `smoke_cmd`, `tier2_extra` (omit any that
-are "none"). These are agent-immutable; they are mine to set.
+are "none"), plus `round_cap` only if this project warrants a non-default review
+circuit breaker (default 8). Seat knobs (reviewer/audit/advisor vendors and
+models) are chosen per `.plinth/MODELS.md`, not here. These are agent-immutable;
+they are mine to set.
 
 ## Quality bar
 Requirements form a dependency DAG via `prereqs:` — each must be testable using
@@ -115,7 +129,10 @@ at integration, and independent requirements can be built as small parallel
 slices. Prefer many small vertical slices over few large ones. Every requirement
 either names a real validation (including a runtime smoke check where its
 correctness depends on real deps/hardware) or gets cut. Terse and unambiguous
-beats thorough and vague. If I give you a fuzzy goal, push back and make me
+beats thorough and vague. Phase the spec: state build-phase requirements plainly
+and put hardening expectations under an explicit hardening milestone instead of
+lacing every requirement with adversarial robustness — the review charter defers
+those anyway. If I give you a fuzzy goal, push back and make me
 sharpen it before you draft. Do not pad any file with content I didn't ask for —
 these sections are cheap forcing functions, not license to bloat the spec.
 
