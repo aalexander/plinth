@@ -597,3 +597,96 @@ order when anything conflicts: deterministic floor (CI) > cross-model review >
 driver self-report — `verdict.json` and runner output are evidence; the model's
 summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
+
+## Noticed
+Non-blocking findings and drive-by observations — the backlog inbox (see
+"Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
+installed copies.
+
+- **guard.sh: protected-path loops fail open on heredoc temp failure**
+  (`shared/.claude/hooks/guard.sh`, both pattern loops). If Bash cannot create
+  the heredoc temp file, the loop is skipped and the hook still exits 0 —
+  project protections AND the builtin `.plinth/session/` protection silently
+  off. Reproduced under a non-writable TMPDIR (v4.5.0 refresh review, round 1).
+  Fix: temp-create preflight or status-checked input, plus failure-injection
+  coverage.
+- **guard.sh: unreadable/invalid protected-path policy fails open**
+  (`shared/.claude/hooks/guard.sh` policy read). `grep ... || true` discards an
+  unreadable policy; an invalid pattern makes `grep -Eq` return 2 inside `if`,
+  treated as no-match — the protected write is then permitted despite MANUAL's
+  tool-level-blocking claim. Fix: validate readability, node type, and each
+  regex before use (as lane-guard does). (Round 1, same review.)
+- **guard.sh: secret denylist omits `*.pem`/`*.key`**
+  (`shared/.claude/hooks/guard.sh` secret classes vs `templates/.gitignore`).
+  Bash and Edit/Write writes to e.g. `server.pem`/`deploy.key` pass (both
+  reproduced). Align the hook's denylist with the gitignore's declared secret
+  classes. (Round 1, same review.)
+- **review.sh: dirty-tree check loses the `git status` exit status**
+  (`shared/.plinth/review.sh` porcelain enumeration via process substitution).
+  If status enumeration fails, the loop sees no records, `dirty=0`, and review
+  proceeds as if clean. Capture and validate the producer status; add
+  failure-injection coverage. (Round 1, same review.)
+- **review.sh: ratified-base probes conflate producer errors with absence**
+  (`shared/.plinth/review.sh` — `git cat-file -e` probes for base config
+  (~line 114), base project rules (~line 231), and the reviewer contract
+  (~line 386); `git diff --name-only` for tooling-path detection (~line 351)).
+  A probe ERROR currently reads as "absent", enabling working-tree fallback for
+  config/rules/contract, and a diff error reads as "no tooling paths", which can
+  leave a forged Tier-0 classification in force. Distinguish absence (rc 1)
+  from failure (rc >= 2 / 128) and fail closed; existing tests cover absence
+  only. (v4.5.0 refresh review, round 3 sweep.)
+- **review.sh: porcelain `-z` rename records are mis-parsed**
+  (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits
+  its second pathname as a separate NUL record with no `XY ` prefix, but the
+  loop strips three bytes from every record — a staged rename from a short
+  name (e.g. `a` → `.plinth/NEEDS-HUMAN.md`) can exempt the destination and
+  truncate the source record to empty, permitting review of a dirty index.
+  Parse rename/copy continuation records explicitly; add a regression test.
+  (v4.5.0 refresh review, round 6.)
+- **lane-guard: sensitive-directory MODES are not snapshotted**
+  (`shared/.plinth/lane-guard.sh` `sens_snapshot`, ~line 194). The snapshot
+  records sensitive files and symlinks but not the modes of the sensitive
+  DIRECTORIES themselves (`secrets/`, `credentials/`, `.ssh/`, `.aws/`, …), so
+  a fallible lane that widens a directory's permissions without changing any
+  file record passes `scope`. Record directory modes in the snapshot and
+  compare them; extend the canary beyond the regular-file `.env` case.
+  (v4.5.0 refresh review, round 9.)
+- **review.sh: auditor isolation is overclaimed for codex/agy**
+  (`shared/.plinth/review.sh` ~line 252). The comment says an empty cwd means
+  the auditor "CANNOT" read the repository, but codex's `read-only` sandbox
+  prevents writes while permitting filesystem reads — cwd merely hides the
+  path. Either enforce the isolation or reword the claim (overclaiming is this
+  repo's worst defect class). (v4.5.0 refresh review, round 11.)
+- **Lane + auditor temp files are never cleaned up** (both
+  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
+  `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
+  snapshot metadata accumulate under the system temp dir; add a post-report /
+  post-audit cleanup step. (Round 11, minors.)
+- **Review-loop cost controls (2026-07-24 credit exhaustion post-mortem).** The codex
+  account ran dry mid-loop; root causes and proposed product fixes, for the next
+  release: (1) verify-mode rounds re-send the FULL diff + ALL prior findings — chunk
+  or scope them to the fix diffs + open findings (upstream issue #20 corroborates);
+  (2) the clean-slate confirmation re-reviews the whole branch fresh — gate it to
+  Tier 2 and run it at most once per loop; (3) promote the ratified phase/convergence
+  charter from this repo's AGENTS-project.md into the SHARED reviewer contract
+  (`shared/reviewer.md`) so every project gets convergence bounds without per-repo
+  pastes; (4) add a round-count circuit breaker (past N rounds, stop and surface
+  rather than keep billing); (5) driver discipline: free self-review pre-flight
+  (/code-review) before round 1, and batch ALL open-finding fixes into one commit per
+  round. Seat economics: subscription seats (claude/grok) for high-frequency loop
+  roles; metered seats only for rare deep passes.
+- **On-the-fly reviewer seat switching (maintainer requirement, 2026-07-24).** The
+  ratified-base config read means a seat change only governs after it lands on main —
+  correct against driver self-serve, but too slow when a vendor's credits run out
+  mid-loop. Proposed: review.sh honors operator ENV overrides
+  (PLINTH_REVIEWER_VENDOR / PLINTH_REVIEWER_MODEL / PLINTH_AUDIT_VENDOR) that take
+  precedence over the base config for THAT run, recorded LOUDLY in verdict.json, the
+  session event feed, and the PR audit summary — auditability over prevention, per the
+  trusted-operator model. Base-ref config stays the governing default.
+- **`plinth update` cannot complete the driver-shell migration autonomously.**
+  The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
+  delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
+  driver from performing (`rm CLAUDE.md`), so it lands in NEEDS-HUMAN on every
+  affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
+  wave, consider an explicit `plinth update --regen-shell` that completes the
+  migration under a byte-honest no-content-loss check.

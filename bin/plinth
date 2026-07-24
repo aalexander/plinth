@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.5.0 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.5.1 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
@@ -411,28 +411,51 @@ ensure_protected_paths() {
   reject_nonregular_file "$f"
   [ -f "$f" ] || return 0
   local added=0 line
-  # If the file doesn't end in a newline, appending would concatenate the first
-  # managed pattern onto the user's last line, corrupting BOTH. Fix it first.
-  [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ] && printf '\n' >> "$f"
-  local sfx
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
-    # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
-    # patterns match the INSTALLED copies but NOT the editable shared/ sources.
-    # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
-    # wrongly freezing the PRODUCT. "Covered" therefore means: some ACTIVE
-    # (non-comment, non-blank) line, after stripping its leading anchor — a
-    # (^|...) group or a bare ^ — EQUALS the suffix exactly. Equality, not
-    # substring: an active-but-different pattern like (^|/)old-CLAUDE\.md$
-    # CONTAINS the suffix CLAUDE\.md$ yet protects a different path, and must
-    # not suppress backfilling the real protection. Comments are excluded too.
-    sfx="${line#'(^|/)'}"
-    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
-      | sed -E -e 's/^\(\^\|[^)]*\)//' -e 's/^\^//' \
-      | grep -qxF -- "$sfx" \
-      || { printf '%s\n' "$line" >> "$f"; added=$((added + 1)); }
-  done <<'PATTERNS'
+  # FAIL CLOSED: a security-policy processing ERROR must abort the update, never
+  # degrade into a wrong-but-successful answer. grep rc 1 (no match) is a normal
+  # answer; rc >= 2 (unreadable input, bad pattern) aborts. Every stage below
+  # runs UNPIPED with its status checked; ppfail is the one exit path.
+  ppfail() { echo "ERROR: protected-paths processing failed ($1) — aborting rather than degrading the security policy (fail closed)." >&2; exit 1; }
+  # Temp hygiene: ALL system scratch files live inside ONE private mktemp -d
+  # directory, registered the command after it is created and removed
+  # recursively on any exit — ppfail aborts, signals, and normal completion
+  # alike — so a failed update leaks nothing under the system temp dir and
+  # never leaves a stray .protected-paths.tmp.* dirtying the repository tree.
+  # One directory means ONE create-to-register window (an interrupt inside it
+  # can leak at most a single empty directory; shell has no atomic
+  # create+register). The same-dir atomic-replace temp is the only other
+  # registered path (rename(2) requires the policy's own filesystem).
+  # (PP_TMPS/PPD are intentionally not local: the EXIT trap outlives this
+  # function's frame.)
+  PP_TMPS=()
+  pp_cleanup() { [ "${#PP_TMPS[@]}" -eq 0 ] || rm -rf -- "${PP_TMPS[@]}"; }
+  # Signals must CLEAN UP AND STOP: a bare handler would resume after cleanup
+  # and let a cancelled init/update run on and mutate the policy. Conventional
+  # 128+SIG exits; `exit` re-fires the EXIT trap (pp_cleanup is idempotent).
+  trap pp_cleanup EXIT
+  trap 'pp_cleanup; exit 130' INT
+  trap 'pp_cleanup; exit 143' TERM
+  local rc
+  PPD="$(mktemp -d)" || ppfail "scratch dir create"
+  PP_TMPS+=("$PPD")
+  # BINARY REJECTION: a NUL byte cannot appear in a valid text policy, and
+  # common greps report binary input via a "Binary file matches" DIAGNOSTIC
+  # with rc 0 — the regex validation below would then be judging the
+  # diagnostic, not the policy bytes (and bash cannot even carry a NUL in a
+  # variable). UNPIPED, two checked producers: piped, pipefail reports the
+  # RIGHTMOST nonzero status, so cmp's rc 1 (EOF vs file) would mask a tr
+  # CRASH and misreport a broken scan as "the file contains NULs".
+  local bscan="$PPD/bscan"
+  rc=0; LC_ALL=C tr -d '\000' < "$f" > "$bscan" || rc=$?
+  [ "$rc" -eq 0 ] || ppfail "binary scan of $f (tr rc=$rc)"
+  rc=0; cmp -s "$bscan" "$f" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "binary scan of $f (cmp rc=$rc)"
+  [ "$rc" -eq 0 ] || ppfail "policy file $f contains NUL/binary bytes — refusing to process"
+  # The plinth-managed pattern list (canonical (^|/) anchoring), in a scratch
+  # file so the convention detection and the append loop below read one source
+  # of truth. The heredoc write is status-checked like every other producer.
+  local mpat="$PPD/mpat"
+  cat > "$mpat" <<'PATTERNS' || ppfail "managed-list write"
 (^|/)\.plinth/session/
 (^|/)\.plinth/config$
 (^|/)\.claude/hooks/
@@ -450,7 +473,204 @@ ensure_protected_paths() {
 (^|/)CLAUDE\.md$
 (^|/)AGENTS\.md$
 PATTERNS
-  [ "$added" -gt 0 ] && echo "  protected-paths: added $added plinth-managed security pattern(s)"
+  # Anchor CONVENTION (v4.5.1). Backfilling in the canonical (^|/) form is wrong
+  # in a repo whose file anchors differently: the Plinth-on-plinth repo uses
+  # (^|plinth/) so patterns match the INSTALLED copies but never the editable
+  # shared/ sources — a canonical append there freezes the PRODUCT (the v4.5.0
+  # backfill did exactly that; that repo's file was repaired in-branch with the
+  # refresh). Convention = the single (^|X) prefix among the file's active
+  # lines, ignoring lines byte-equal to a canonical managed pattern (past
+  # canonical backfills must not veto detection). Mixed, absent, or canonical
+  # prefixes = canonical behavior, unchanged.
+  #
+  # APPEND-ONLY by design: existing lines are NEVER rewritten. A line byte-equal
+  # to a canonical managed pattern in a convention-anchored file MIGHT be a
+  # v4.5.0 backfill — but it might be a user rule deliberately anchored broader,
+  # and the file records no provenance, so rewriting it could silently WEAKEN
+  # user policy. It stays; suffix-dedup below treats it as covering its path, so
+  # nothing is duplicated and every append uses the file's own convention.
+  local anchor='(^|/)' prefixes active_t strip_t NL='
+'
+  active_t="$PPD/active"
+  strip_t="$PPD/strip"
+  # Stage 1: the file's ACTIVE (non-comment, non-blank) lines.
+  rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "active-line read of $f, grep rc=$rc"
+  # Stage 1b: every active line must COMPILE as an ERE before anything is
+  # derived from it. A malformed rule (e.g. '(^|[)custom$') would otherwise
+  # yield a malformed extracted anchor and propagate into every appended
+  # managed rule — and the guard consuming the file would then error on it at
+  # enforcement time. rc 1 (valid, no match on empty input) is the normal
+  # answer; rc >= 2 = the regex does not compile: abort naming the line.
+  while IFS= read -r line; do
+    rc=0; printf '' | grep -E -- "$line" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -le 1 ] || ppfail "malformed policy regex in $f: '$line' does not compile (grep rc=$rc)"
+  done < "$active_t"
+  # READ-ONLY PHASE from here to the single write at the end: NOTHING touches
+  # the file until every check has passed, so any abort leaves it byte-identical
+  # — no early newline normalization, no partial backfill. If the file doesn't
+  # end in a newline, a straight append would concatenate the first managed
+  # pattern onto the user's last line, corrupting BOTH — note that here; the
+  # payload below carries the fix. A FAILED trailing-byte read must abort, not
+  # read as "newline present".
+  local lastc=''
+  if [ -s "$f" ]; then
+    rc=0; lastc="$(tail -c1 "$f")" || rc=$?
+    [ "$rc" -eq 0 ] || ppfail "trailing-byte read of $f, tail rc=$rc"
+  fi
+  # Stage 2: drop lines byte-equal to a managed pattern; stage 3: keep only
+  # leading (^|X) anchor groups; stage 4: unique prefixes.
+  # SUPPORTED convention grammar (constrained by design), two regexes:
+  # - ANCHOR_RE parses any leading (^|X) group with at most ONE level of paren
+  #   nesting (what the grammar can REASON about);
+  # - SHAPE_RE additionally requires every top-level alternative of X to be a
+  #   PATH PREFIX ending in '/' — e.g. plinth/, plinth/|vendor/,
+  #   (plinth|vendor)/ — the only anchors whose composed managed rules match
+  #   the absolute paths the hooks check. Only SHAPE-conforming anchors are
+  #   adopted for appends and stripped in dedup.
+  local ANCHOR_RE='^\(\^\|((\([^()]*\))|[^()])*\)'
+  # The literal pipe after the group-open is written [|]: BSD sed's ERE parser
+  # rejects the escaped form '(\|' ("parentheses not balanced") while [|] is
+  # unambiguous everywhere (grep and sed, GNU and BSD).
+  local SHAPE_RE='^\(\^([|]((\([^()]*\))|[^()|])*/)+\)'
+  rc=0; grep -vxF -f "$mpat" "$active_t" > "$strip_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "managed-line exclusion, grep rc=$rc"
+  rc=0; grep -oE "$ANCHOR_RE" "$strip_t" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
+  prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
+  # EFFECTIVENESS PROBE: a shape-valid anchor can still be PATH-IRRELEVANT —
+  # (^|vendor/) in a project whose absolute path has no vendor/ segment
+  # composes managed rules that match NOTHING the hooks ever check, silently
+  # installing dead protection. The probe is the policy file's own canonical
+  # absolute path: an anchor is adopted for appends — or an anchored line's
+  # suffix counted as covered in dedup — only if the composed managed rule
+  # actually matches that real path.
+  local tprobe
+  tprobe="$(cd -P "$target" && pwd)/.plinth/protected-paths" || ppfail "probe path resolve"
+  anchor_effective() { # <anchor> -> rc 0 effective / rc 1 not; rc>1 aborts
+    local arc=0
+    printf '%s\n' "$tprobe" | grep -qE "${1}\\.plinth/protected-paths\$" || arc=$?
+    [ "$arc" -le 1 ] || ppfail "anchor effectiveness probe, grep rc=$arc"
+    return "$arc"
+  }
+  # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
+  # count: empty or multiline = no single convention) — but only when it is
+  # SHAPE-conforming (an anchor like (^|foo) would compose managed rules
+  # matching "foo.plinth/…", not absolute paths) AND EFFECTIVE against this
+  # project's real path. Otherwise: canonical appends.
+  case "$prefixes" in
+    ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical appends
+    '(^|/)') : ;;     # canonical convention: keep canonical appends
+    *)
+      rc=0; printf '%s' "$prefixes" | grep -qE "${SHAPE_RE}\$" || rc=$?
+      [ "$rc" -le 1 ] || ppfail "anchor shape check, grep rc=$rc"
+      if [ "$rc" -eq 0 ] && anchor_effective "$prefixes"; then anchor="$prefixes"; fi
+      ;;
+  esac
+  # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
+  # with DIFFERENT anchoring — the Plinth-on-plinth repo uses (^|plinth/) so its
+  # patterns match the INSTALLED copies but NOT the editable shared/ sources.
+  # Appending our canonical (^|/) form there would ALSO match shared/.plinth/*,
+  # wrongly freezing the PRODUCT (hence $anchor on the append below). "Covered"
+  # therefore means: some ACTIVE (non-comment, non-blank) line, after stripping
+  # a SHAPE-conforming leading (^|...) group, EQUALS the suffix exactly.
+  # Equality, not substring: an active-but-different pattern like
+  # (^|/)old-CLAUDE\.md$ CONTAINS the suffix CLAUDE\.md$ yet protects a
+  # different path, and must not suppress backfilling the real protection.
+  # Comments are excluded too. The suffix set is computed ONCE, status-checked
+  # (managed suffixes are pairwise distinct, so an append never changes a later
+  # pattern's answer); a membership ERROR aborts — it must not read as "missing"
+  # and trigger a blind append.
+  rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "dedup active-line read, grep rc=$rc"
+  # The strip removes only SHAPE-CONFORMING anchors (every arm a path prefix
+  # ending in '/'). A parseable-but-NON-conforming anchor like (^|foo) — and
+  # likewise a BARE-^ rule like ^\.plinth/session/ — is left in place ON
+  # PURPOSE: such rules cannot match the absolute paths the hooks check, so
+  # their managed suffixes must read as UNCOVERED and receive the canonical
+  # append — stripping them would let a broken rule suppress real protection.
+  # Per-line grep probe + bash prefix removal, not sed: BSD sed's ERE parser
+  # rejects SHAPE_RE's nesting depth outright ("parentheses not balanced")
+  # while grep parses it identically on GNU and BSD. SHAPE_RE is ^-anchored so
+  # -o yields at most one match per line.
+  : > "$strip_t" || ppfail "dedup strip init"
+  local pfx
+  while IFS= read -r line; do
+    rc=0; pfx="$(printf '%s\n' "$line" | grep -oE "$SHAPE_RE")" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "dedup anchor strip probe, grep rc=$rc"
+    # An INEFFECTIVE anchor (shape-valid but path-irrelevant) must not be
+    # stripped either — its suffix would read as covered while its rule
+    # matches nothing on this project's real paths.
+    if [ -n "$pfx" ] && ! anchor_effective "$pfx"; then pfx=""; fi
+    line="${line#"$pfx"}"
+    printf '%s\n' "$line" >> "$strip_t" || ppfail "dedup strip write"
+  done < "$active_t"
+  # REFUSE-TO-BROADEN: a residual leading '(^|' the grammar can PARSE is the
+  # non-conforming case above (safe: canonical append restores protection). One
+  # it CANNOT parse (nesting deeper than one level) might legitimately cover
+  # its suffix — appending canonical over it would broaden past the file's
+  # intent, so that aborts.
+  rc=0; grep -E '^\(\^\|' "$strip_t" > "$active_t" || rc=$?
+  [ "$rc" -le 1 ] || ppfail "residual-anchor scan, grep rc=$rc"
+  if [ "$rc" -eq 0 ]; then
+    rc=0; grep -Evq "$ANCHOR_RE" "$active_t" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "residual-anchor parse scan, grep rc=$rc"
+    [ "$rc" -eq 1 ] || ppfail "unsupported anchor grammar in $f (a leading (^|...) group the grammar cannot parse — nesting deeper than one level) — normalize that line; refusing to append a broader canonical pattern over it"
+  fi
+  local sfx payload=''
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    sfx="${line#'(^|/)'}"
+    rc=0; grep -qxF -- "$sfx" "$strip_t" || rc=$?
+    [ "$rc" -le 1 ] || ppfail "dedup membership check, grep rc=$rc"
+    [ "$rc" -eq 0 ] && continue
+    # Belt: the COMPOSED rule must itself compile before it is collected — the
+    # anchor was extracted from a validated line, but never append a rule the
+    # guard could later error on.
+    rc=0; printf '' | grep -E -- "${anchor}${sfx}" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -le 1 ] || ppfail "composed pattern '${anchor}${sfx}' does not compile (grep rc=$rc)"
+    payload="${payload}${anchor}${sfx}${NL}"
+    added=$((added + 1))
+  done < "$mpat"
+  # MUTATION PHASE — atomic, reached only with every check green. The ENTIRE
+  # new policy (original bytes + newline-termination fix + missing patterns)
+  # is composed in a SAME-DIRECTORY temp whose mode is copied from the
+  # original, its byte length is verified, and it is rename(2)d over the
+  # original. A short write (ENOSPC, quota, I/O) can only truncate the TEMP —
+  # the size check catches it and the abort removes it — so the live policy is
+  # either the old bytes or the complete new bytes, never a partial. (rename
+  # needs only directory write; the policy file is replaced, never written
+  # through.)
+  if [ "$added" -gt 0 ]; then
+    [ -z "$lastc" ] || payload="${NL}${payload}"
+    local fdir tmpf osz psz nsz fmode
+    fdir="$(dirname "$f")" || ppfail "policy dirname"
+    tmpf="$(mktemp "$fdir/.protected-paths.tmp.XXXXXX")" || ppfail "same-dir temp create"
+    PP_TMPS+=("$tmpf")
+    # The O_EXCL mktemp file is written THROUGH — never deleted and re-created,
+    # which would reopen the pathname and let a concurrent process swap in a
+    # symlink/hardlink (the write-through class the CLI prevents elsewhere).
+    # Its mode is set EXACTLY from the original via stat+chmod — a cp-created
+    # file is filtered through the umask (0664 would silently become 0644,
+    # dropping group write). Every producer here is status-checked, including
+    # the final size read: a wc failure must abort, not be compared as text.
+    osz="$(wc -c < "$f")" || ppfail "policy size read"
+    psz="$(printf '%s' "$payload" | wc -c)" || ppfail "payload size"
+    # GNU (-c) FIRST; BSD stat rejects -c and falls through to -f. Reverse
+    # order is WRONG (the same trap the hardlink check documents): GNU
+    # `stat -f %Lp f` treats %Lp as a file operand, can emit filesystem data
+    # for f with a nonzero status, and the || then APPENDS the fallback —
+    # yielding a non-octal fmode that would abort every Linux backfill.
+    fmode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)" || ppfail "policy mode read"
+    case "$fmode" in ''|*[!0-7]*) ppfail "policy mode read (non-octal '$fmode')" ;; esac
+    cat "$f" > "$tmpf" || ppfail "temp compose copy"
+    printf '%s' "$payload" >> "$tmpf" || ppfail "pattern append (temp)"
+    nsz="$(wc -c < "$tmpf")" || ppfail "composed size read"
+    [ "$nsz" -eq $(( osz + psz )) ] || ppfail "short write detected composing the new policy"
+    chmod "$fmode" "$tmpf" || ppfail "mode preserve (chmod $fmode)"
+    mv -f "$tmpf" "$f" || ppfail "atomic replace (rename)"
+    echo "  protected-paths: added $added plinth-managed security pattern(s)"
+  fi
   return 0
 }
 

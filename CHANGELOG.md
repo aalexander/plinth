@@ -1,6 +1,89 @@
 # Plinth changelog
 
-## v4.5.0 — implementer lanes (architect pattern) + advisor discipline + v4 model seats — July 23, 2026
+## v4.5.1 — protected-paths backfill honors the file's anchor convention, fails closed — July 24, 2026
+- **`ensure_protected_paths` backfills in the file's own anchor convention.** The v4.5.0
+  backfill appended genuinely-missing managed patterns in the canonical `(^|/)` form even into
+  a file anchored differently — in the Plinth-on-plinth repo (convention `(^|plinth/)`, so
+  patterns match the INSTALLED copies but never the editable `shared/` sources) that froze four
+  shared product sources (found by the v4.5.0 instrument-refresh review, round 1; that repo's
+  file was repaired in-branch with the refresh). Now the convention is detected as the single
+  `(^|X)` prefix among the file's active lines (lines byte-equal to a canonical managed pattern
+  are excluded from detection and cannot veto it) and missing patterns backfill WITH that
+  prefix. **Append-only:** existing lines are never rewritten — a canonical managed line in a
+  convention-anchored file has no provenance (past backfill, or a user rule deliberately
+  anchored broader), so it is preserved byte-for-byte and counts as covering its suffix. Mixed,
+  absent, or canonical prefixes keep the old behavior exactly.
+- **Policy processing fails CLOSED, and every policy regex must compile.** Every stage of the
+  backfill (trailing-byte read, active-line read, managed exclusion, anchor extraction, prefix
+  sort, dedup membership, append) runs unpiped with its status checked: grep rc 1 (no match) is
+  a normal answer, rc >= 2 aborts the update loudly instead of degrading into "no convention" /
+  "not covered" and appending blind. The whole run is read-only until ONE atomic replace: the
+  original bytes, the newline-termination fix, and every missing pattern are composed into a
+  same-directory O_EXCL temp that is written THROUGH (never deleted and re-created — that would
+  reopen the pathname to a symlink/hardlink swap), given the original's EXACT mode via
+  stat+chmod (cp would filter 0664 through the umask to 0644), byte-length-verified with every
+  size producer status-checked, and rename(2)d over the policy only after every check passes —
+  a short write (ENOSPC/quota/I/O) can only truncate the temp, which the size check catches and
+  removes, so the live policy is either the old bytes or the complete new bytes, never a
+  partial. A NUL-bearing (binary) policy is
+  refused outright — grep's "Binary file matches" diagnostic (rc 0) would otherwise defeat the
+  regex validation. Every active policy line must compile as an
+  ERE — a malformed rule (e.g. `(^|[)custom$`) is rejected by name rather than
+  yielding a malformed anchor that propagates into appended managed rules, and the composed rule
+  is re-checked before each append. The convention grammar supports `(^|X)` with X a path
+  prefix that may alternate at the top level or nest parens ONE level (`plinth/`,
+  `plinth/|vendor/`, `(plinth|vendor)/`). Two regexes drive it: ANCHOR_RE parses any
+  one-level-nested leading group; SHAPE_RE additionally requires every top-level alternative
+  of X to END in `/` (a path prefix). Only SHAPE-conforming anchors are adopted for appends
+  AND stripped in dedup — a non-path anchor like `(^|foo)`, whose composed rules would match
+  `foo.plinth/…` but not the absolute paths the hooks check, is neither adopted nor allowed to
+  make its managed suffix read as covered: `(^|foo)\.plinth/session/` no longer suppresses
+  the canonical managed append (the line itself is preserved; canonical protection is added
+  alongside). The dedup strip is a per-line grep probe + bash prefix removal, not sed — BSD
+  sed's ERE parser rejects SHAPE_RE's nesting depth outright while grep parses it identically
+  on GNU and BSD. Beyond the parseable grammar (deeper nesting) the update REFUSES, fail
+  closed, rather than risk broadening a managed pattern past anchors it cannot reason about.
+  A bare-^ rule (e.g. `^\.plinth/session/`) likewise cannot match those absolute paths, so it
+  is no longer stripped or counted as covering — canonical protection is appended alongside it.
+  Shape alone is not enough: an EFFECTIVENESS probe composes a managed rule with the candidate
+  anchor and requires it to match the policy file's own canonical absolute path — a shape-valid
+  but path-irrelevant anchor (e.g. `(^|vendor/)` in a repo whose path has no vendor/ segment)
+  would otherwise install rules that match nothing; such anchors are neither adopted for
+  appends nor allowed to mark suffixes covered in dedup (canonical fallback both times).
+  Signal handling stops the run: INT/TERM traps clean up and exit 130/143 — a cancelled
+  init/update can no longer resume past cleanup and mutate the policy. All
+  system scratch files live inside ONE private `mktemp -d` directory, registered the command
+  after creation and removed recursively on any exit — aborts, signals, and success alike — so
+  nothing leaks under the system temp dir and no stray `.protected-paths.tmp.*` dirties the
+  tree; the only leak windows are the two single-command create-to-register gaps (scratch dir,
+  same-dir replace temp), each bounded to one path (shell has no atomic create+register).
+  Because the policy is replaced via rename(2) and never written through, a read-only 0444
+  policy in a writable directory is backfilled successfully with its mode preserved. The
+  canary suite pins convention backfill, canonical-line preservation, no-duplicate-suffix,
+  exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor convention (managed
+  suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
+  non-path-prefix, mixed-arm, and path-irrelevant canonical fallbacks, end-to-end assertions that adopted-convention (and fallback) rules MATCH the fixture's real absolute paths, read-only-policy rename semantics, and
+  failure injections: unreadable policy, malformed regex (with and without trailing newline),
+  NUL-bearing policy, and twenty-eight argv-signature shim injections
+  (grep/sort/tail/wc/mktemp/tr/cmp/cat/chmod/mv/dirname, Nth-hit selectable, real tool paths resolved
+  at shim creation) covering the status checks of every content-reachable processing stage —
+  active reads, validation, exclusion, extraction, prefix sort, strip probe, residual and
+  parse scans, shape check, membership (incl. a no-newline seed that kills an
+  early-normalization mutant), all three size-producer reads — and the atomic writer's
+  external producers (binary scan tr+cmp, same-dir temp creation, compose copy, mode
+  preserve, rename), the policy `dirname`, the scratch-dir creation, the managed-list heredoc
+  write, a portable ALL-HITS `stat` injection (its GNU/BSD `||` fallback pair absorbs any
+  single injected failure, so the shim fails every matching hit and the first policy-path
+  consumer must fail closed on either platform), and a TRUNCATING-compose injection (cat
+  emits 3 bytes then claims success) proving the byte-length check stops a short write before
+  rename — the behavioral guarantee behind the non-interceptable `printf` builtin appends.
+  Every injection asserts a non-zero exit, a byte-identical policy, no stray same-dir temp,
+  AND a private TMPDIR left EMPTY (registered scratch state removed by the trap on every
+  injected failure); the expect-failure design makes a stale shim signature fail loudly
+  instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
+  exits (TERM=143, INT=130), synchronized on the paused stage via the shim counter — each
+  asserts the exact exit, a byte-identical policy, and no strays. Exact-mode preservation
+  (0664 stays 0664) is asserted on the success path (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).

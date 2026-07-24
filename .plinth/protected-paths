@@ -14,3 +14,10 @@
 (^|plinth/)\.plinth/protected-paths$
 (^|plinth/)\.plinth/config$
 (^|plinth/)AGENTS\.md$
+(^|plinth/)\.plinth/session/
+(^|plinth/)\.claude/agents/grok-implementer\.md$
+(^|plinth/)\.claude/agents/codex-implementer\.md$
+(^|plinth/)\.plinth/risk-classify\.sh$
+(^|plinth/)\.plinth/lane-guard\.sh$
+(^|plinth/)\.plinth/reviewer\.md$
+(^|plinth/)CLAUDE\.md$
