@@ -193,8 +193,13 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
     _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$')"; local _cprc=$?
     [ "$_cprc" -le 1 ] || { echo "lane-guard: control-plane sample-hook filter failed (grep rc=$_cprc) — refusing (fail closed)" >&2; return 5; }
   fi
-  { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } \
-    | sort -u | while IFS="$(printf '\t')" read -r tag f; do
+  # Build the tagged, de-duplicated baseline; status-check the sort/sed transform so a producer
+  # error fails CLOSED with a clean 5 (not a partial baseline). The record loop still runs in a
+  # pipeline subshell (after `printf |`), so its own `exit 5` fail-closed paths still propagate.
+  local _tagged _snrc
+  _tagged="$( { printf '%s\n' "$_gv" | sed 's/^/G\t/'; printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/'; } | sort -u )"; _snrc=$?
+  [ "$_snrc" -le 1 ] || { echo "lane-guard: could not build the sensitive baseline (sort/sed rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
+  printf '%s\n' "$_tagged" | while IFS="$(printf '\t')" read -r tag f; do
     [ -n "$f" ] || continue
     if [ "$tag" = G ]; then
       # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
@@ -288,7 +293,8 @@ case "$sub" in
     # so a failed FIRST diff would be masked. Both must succeed (fail closed).
     difw="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
     difc="$(git diff --cached --name-only --no-renames "$base")" || { echo "scope: 'git diff --cached' against '${base}' failed — refusing to accept the lane"; exit 5; }
-    dif="$(printf '%s\n%s\n' "$difw" "$difc" | sort -u)"
+    dif="$(printf '%s\n%s\n' "$difw" "$difc" | sort -u)"; drc=$?
+    [ "$drc" -eq 0 ] || { echo "scope: could not union the working-tree/staged diffs (sort rc=$drc) — refusing (fail closed)" >&2; exit 5; }
     # HIDDEN INDEX BITS: assume-unchanged (lowercase status letter) / skip-worktree (S) make
     # git diff/ls-files SKIP a modified tracked file — a lane could set them to sneak an
     # out-of-spec edit past the enumeration above. They are never normal lane state; fail closed.

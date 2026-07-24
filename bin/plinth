@@ -58,10 +58,14 @@ fi
 # through before the mv (path-escape / clobber).
 edit_file() {  # edit_file <file> <sed-expr>...
   local f="$1"; shift
+  # Read the ORIGINAL mode FIRST and fail closed if it can't be established: mktemp creates 0600,
+  # so a swallowed chmod would move a 0600 (group/other-UNREADABLE) file into place — the exact
+  # regression this preservation exists to prevent (e.g. a generated ci.yml unreadable until git
+  # recreates it). GNU (-c) first; BSD (-f) fallback. Must be octal digits.
+  local mode; mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)"
+  case "$mode" in ''|*[!0-7]*) echo "edit_file: cannot determine the mode of $f (stat failed) — refusing to rewrite it (fail closed)" >&2; exit 1 ;; esac
   local tmp; tmp="$(mktemp "$(dirname "$f")/.plinth-tmp.XXXXXX")" || { echo "edit_file: mktemp failed for $f" >&2; exit 1; }
-  # mktemp creates 0600; preserve the ORIGINAL file's mode so the rewritten file stays
-  # group/other-readable (else the generated ci.yml becomes 0600 until git recreates it).
-  chmod "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo 644)" "$tmp" 2>/dev/null || true
+  chmod "$mode" "$tmp" || { rm -f "$tmp"; echo "edit_file: could not apply mode $mode to the temp for $f — refusing (fail closed, would leave it 0600/unreadable)" >&2; exit 1; }
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
@@ -492,17 +496,21 @@ warn_stale_reusable_refs() {
   # a current ref under a decoy non-gating job must not suppress the warning. Best-effort
   # (this is an advisory warning, not a gate): read the uses: line within each job block.
   local fref cref
-  fref="$(awk '/^  floor:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
-  cref="$(awk '/^  checks:/{f=1;next} f&&/uses:/{print;exit} f&&/^  [a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
+  # Match the gating job key with OR without surrounding quotes (YAML permits `"floor":`/`'checks':`),
+  # and end the block at the NEXT top-level key whether quoted or not (a quoted key starts with a
+  # quote, not a letter — the old `[a-zA-Z]`-only terminator would read past it).
+  fref="$(awk '/^  ['\''"]?floor['\''"]?:/{f=1;next} f&&/uses:/{print;exit} f&&/^  ['\''"a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
+  cref="$(awk '/^  ['\''"]?checks['\''"]?:/{f=1;next} f&&/uses:/{print;exit} f&&/^  ['\''"a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
   # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
   # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
   # actually present; a customized checks job is not "stale".
   local fstale=0 cstale=0
-  # The char after the SHA may be whitespace (before a `# comment`), a closing quote (a QUOTED
-  # `uses: "…@sha"` value), or end-of-line — never another hex digit. Anchor on "not a hex digit
-  # or EOL" so a CURRENT but QUOTED ref is not falsely flagged stale.
-  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([^0-9a-fA-F]|\$)" && fstale=1
-  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([^0-9a-fA-F]|\$)" && cstale=1
+  # EXACT-TOKEN boundary: the char after the current SHA must TERMINATE the ref token — whitespace
+  # (before a `# comment`), a quote (a QUOTED value), or EOL — never another ref-token char
+  # (`[[:alnum:]._/-]`). Anchoring on "not a ref char" so `<current-sha>-old` (a DIFFERENT, longer
+  # ref) is correctly seen as STALE, and a quoted current ref is NOT falsely flagged.
+  printf '%s' "$fref" | grep -q 'plinth-floor\.yml@' && ! printf '%s' "$fref" | grep -qE "plinth-floor\.yml@${psha}([^[:alnum:]._/-]|\$)" && fstale=1
+  printf '%s' "$cref" | grep -q 'plinth-checks\.yml@' && ! printf '%s' "$cref" | grep -qE "plinth-checks\.yml@${psha}([^[:alnum:]._/-]|\$)" && cstale=1
   [ "$fstale" = 0 ] && [ "$cstale" = 0 ] && return 0
   # Name exactly which REUSABLE ref is stale (a custom/direct job is not stale), and emit a sed
   # that only touches the stale one(s) — never instruct repinning a job that has no reusable ref.
@@ -513,13 +521,18 @@ warn_stale_reusable_refs() {
   echo "NOTE: .github/workflows/ci.yml (yours, never rewritten) pins the $which at an OLDER Plinth"
   echo "commit, so that gate runs an OLDER Plinth workflow (new floor checks — lane tooling bytes +"
   echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref to this release:"
-  # Match the ref token as valid SHA/tag characters only (`[[:alnum:]._-]+`): it stops at the
-  # closing quote of a QUOTED `uses: "…@sha"` value, at whitespace before a `# comment`, and at
-  # end-of-line — so the repin preserves the quote and stays valid YAML. (`[^[:space:]]+` would
-  # swallow a closing quote; a class excluding quotes cannot contain a literal `'` without breaking
-  # the single-quoted sed expression this line emits.)
-  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[[:alnum:]._-]+#\1${psha}#g' \\"
-  echo "    \"$target/.github/workflows/ci.yml\" && rm -f \"$target/.github/workflows/ci.yml.bak\""
+  # Match the ref token as the full set of valid git-ref characters (`[[:alnum:]._/-]+` — includes
+  # `/` for refs like `release/v4`): it stops at the closing quote of a QUOTED `uses: "…@sha"` value,
+  # at whitespace before a `# comment`, and at end-of-line — so the repin preserves the quote/comment
+  # and stays valid YAML. (`[^[:space:]]+` would swallow a closing quote; a class EXCLUDING quotes
+  # cannot contain a literal `'` without breaking the single-quoted sed expression this line emits.)
+  # Shell-quote the paths with `printf %q` so a target path containing a space, quote, backtick, or
+  # $() is a safe single shell token in the advertised command (not broken or injectable).
+  local qci qbak
+  qci="$(printf '%q' "$target/.github/workflows/ci.yml")"
+  qbak="$(printf '%q' "$target/.github/workflows/ci.yml.bak")"
+  echo "  sed -i.bak -E 's#(${sedpat}\.yml@)[[:alnum:]._/-]+#\1${psha}#g' \\"
+  echo "    $qci && rm -f $qbak"
 }
 
 # PER-PROJECT (templates, copied once, never overwritten):
@@ -1149,9 +1162,27 @@ run_hookprobe() {
     && chmod +x .claude/hooks/probe.sh ) \
     || { echo "hookprobe: could not build the scratch .claude probe harness — INCONCLUSIVE (setup failed)"; exit 4; }
   p="$d/.claude/hooks/probe.sh"
-  printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
-    "$p" "$p" "$p" "$p" > "$d/.claude/settings.json" \
-    || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
+  # Build settings.json with a JSON ENCODER and SHELL-QUOTE the probe path. The scratch dir lives
+  # under $TMPDIR; if that contains a space (or a quote/backslash), a hand-rolled JSON string would
+  # (a) break the JSON, or (b) make the hook COMMAND split on the space so the vendor executes only
+  # the prefix — the hook never fires, the marker stays empty, and hookprobe would FALSELY report
+  # NONE. That directly contradicts the safety-critical claim that "NONE proves the events are
+  # unenforced." json.dumps escapes the path for JSON; shlex.quote makes the command robust to a
+  # metacharacter-bearing path. python3 is a declared dependency (see SETUP.md).
+  python3 - "$p" "$d/.claude/settings.json" <<'PY' || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
+import json, sys, shlex
+p, out = sys.argv[1], sys.argv[2]
+q = shlex.quote(p)
+def cmd(ev): return {"type": "command", "command": q + " " + ev}
+settings = {"hooks": {
+    "SessionStart": [{"hooks": [cmd("SessionStart")]}],
+    "PreToolUse":  [{"matcher": "Bash", "hooks": [cmd("PreToolUse")]}],
+    "PostToolUse": [{"matcher": "Bash", "hooks": [cmd("PostToolUse")]}],
+    "Stop":        [{"hooks": [cmd("Stop")]}],
+}}
+with open(out, "w") as f:
+    f.write(json.dumps(settings))
+PY
   # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else a python3 process-group
   # cap) — a CLI hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
   # Defined BEFORE the --version probe: an installed CLI that hangs during version discovery would
