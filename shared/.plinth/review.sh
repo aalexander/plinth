@@ -490,6 +490,49 @@ resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <base
   case "${5:-}" in fresh|resume) return 0 ;; *) return 1 ;; esac
 }
 
+# Whether a completed round's APPROVED binds on its own, or a clean-slate
+# confirmation must run first. A fresh full review binds. A warm RESUME holds the
+# full round-1 read in its thread, and a VERIFY is a fresh session anchored on the
+# prior open findings — both trust the round-1 full read for branch coverage, so
+# BOTH bind directly on Tier 1 (ordinary code; an anchored-fresh verify is no less
+# independent than a warm resume). Tier 2 (high-consequence) still requires a
+# clean-slate confirmation (full diff, NO prior findings — an unbiased read) —
+# but at most ONCE per loop: after one clean-slate pass has run on this branch
+# (the $SDIR/confirmed marker), later non-binding approvals bind with the skip
+# recorded in verdict.json. Single source of truth for both the post-round gate
+# and the reviewer-facing note. Pure fn -> testable.
+binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
+  case "${1:-}" in
+    fresh)         return 0 ;;
+    resume|verify) [ "${2:-}" != "2" ] ;;
+    *)             return 1 ;;
+  esac
+}
+# The ONE effective-binding predicate: mode/tier says it binds, OR the
+# once-per-loop clean-slate has already run (the confirmed marker). Both the
+# post-round gate and the reviewer-facing note MUST call this — hand-expanding
+# the disjunction at either site is how the two drift and the note starts
+# lying to the reviewer about its stakes.
+effective_binds() {  # effective_binds <mode> <risk-tier>
+  binds_directly "${1:-}" "${2:-}" && return 0
+  [ -f "${SDIR:-/nonexistent}/confirmed" ]
+}
+
+# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
+# expecting a later pass that won't come, nor treats a non-binding round as final.
+# The once-per-loop confirmation marker changes the truth: after a clean-slate
+# pass has run, a later non-binding approval binds, and the note must say so.
+bind_note() {  # bind_note <mode> <risk-tier>
+  if effective_binds "${1:-}" "${2:-}"; then
+    case "${1:-}" in
+      verify) printf '%s' "The round-1 fresh pass already read the full branch (and any required clean-slate confirmation has run): your verdict on these fixes BINDS DIRECTLY — no further pass follows, so verify each fix and its blast radius with full rigor now." ;;
+      *)      printf '%s' "You hold the full diff from your first pass in this thread and no further confirmation follows: your verdict BINDS DIRECTLY — apply full first-pass rigor now." ;;
+    esac
+  else
+    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
+  fi
+}
+
 # Round bookkeeping. A CHANGES_NEEDED verdict with a live (resumable) session
 # continues the thread (fix-verification round); anything else starts a fresh task.
 mode="fresh"; round=1; sid=""
@@ -563,48 +606,6 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
 fi
 
-# Whether a completed round's APPROVED binds on its own, or a clean-slate
-# confirmation must run first. A fresh full review binds. A warm RESUME holds the
-# full round-1 read in its thread, and a VERIFY is a fresh session anchored on the
-# prior open findings — both trust the round-1 full read for branch coverage, so
-# BOTH bind directly on Tier 1 (ordinary code; an anchored-fresh verify is no less
-# independent than a warm resume). Tier 2 (high-consequence) still requires a
-# clean-slate confirmation (full diff, NO prior findings — an unbiased read) —
-# but at most ONCE per loop: after one clean-slate pass has run on this branch
-# (the $SDIR/confirmed marker), later non-binding approvals bind with the skip
-# recorded in verdict.json. Single source of truth for both the post-round gate
-# and the reviewer-facing note. Pure fn -> testable.
-binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
-  case "${1:-}" in
-    fresh)         return 0 ;;
-    resume|verify) [ "${2:-}" != "2" ] ;;
-    *)             return 1 ;;
-  esac
-}
-# The ONE effective-binding predicate: mode/tier says it binds, OR the
-# once-per-loop clean-slate has already run (the confirmed marker). Both the
-# post-round gate and the reviewer-facing note MUST call this — hand-expanding
-# the disjunction at either site is how the two drift and the note starts
-# lying to the reviewer about its stakes.
-effective_binds() {  # effective_binds <mode> <risk-tier>
-  binds_directly "${1:-}" "${2:-}" && return 0
-  [ -f "${SDIR:-/nonexistent}/confirmed" ]
-}
-
-# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
-# expecting a later pass that won't come, nor treats a non-binding round as final.
-# The once-per-loop confirmation marker changes the truth: after a clean-slate
-# pass has run, a later non-binding approval binds, and the note must say so.
-bind_note() {  # bind_note <mode> <risk-tier>
-  if effective_binds "${1:-}" "${2:-}"; then
-    case "${1:-}" in
-      verify) printf '%s' "The round-1 fresh pass already read the full branch (and any required clean-slate confirmation has run): your verdict on these fixes BINDS DIRECTLY — no further pass follows, so verify each fix and its blast radius with full rigor now." ;;
-      *)      printf '%s' "You hold the full diff from your first pass in this thread and no further confirmation follows: your verdict BINDS DIRECTLY — apply full first-pass rigor now." ;;
-    esac
-  else
-    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
-  fi
-}
 
 # Runs one review round. Sets RVERDICT/RSID; writes the round's protocol files.
 # ── Reviewer vendor adapters ────────────────────────────────────────────────

@@ -662,10 +662,16 @@ installed copies.
   `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
   snapshot metadata accumulate under the system temp dir; add a post-report /
   post-audit cleanup step. (Round 11, minors.)
+- **review.sh: verify/resume anchors are existence-checked, not ancestry-checked**
+  (`lastfullread` and `prev_sha`: `git cat-file -e` only). After a rebase the anchor
+  commit can still exist while no longer being an ancestor of HEAD, so the
+  "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
+  --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
+  pre-existing pattern, hardening backlog per the phase charter.)
 - **v4.6 accepted tradeoffs / follow-ups (from the pre-flight self-review).** (a) Findings
   marked resolved drop from the verify payload — a regression resurfaces only as code in
   the cumulative diff; consider carrying resolved findings for one extra round. (b) The
-  canary's four v4.6 fixtures repeat a 5-line repo recipe — extract a mk_loop_repo helper
+  canary's six v4.6 fixtures repeat a 5-line repo recipe — extract a mk_loop_repo helper
   on the next canary touch. (c) `.DS_Store` is git-tracked and churns — untrack and
   gitignore it. (d) The full branch diff is still materialized+hashed even on scoped verify
   rounds where it is not sent — lazy-materialize if large-repo wall-clock ever matters.
