@@ -325,8 +325,12 @@ case "$sub" in
     # the change (the driver's later `git commit` would ship it) — union catches that.
     # Run each diff SEPARATELY and check its status — a group `{ a; b; }` exits with b's status,
     # so a failed FIRST diff would be masked. Both must succeed (fail closed).
-    difw="$(git diff --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
-    difc="$(git diff --cached --name-only --no-renames "$base")" || { echo "scope: 'git diff --cached' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    # --ignore-submodules=none: a repo-level `submodule.<name>.ignore=all|dirty` or
+    # `diff.ignoreSubmodules=all` would otherwise hide an off-spec dirty submodule or a staged gitlink
+    # update from these diffs, letting scope print "scope ok" for a change it never saw. Force full
+    # submodule visibility (the every-tracked-change guarantee covers gitlinks too).
+    difw="$(git diff --ignore-submodules=none --name-only --no-renames "$base")" || { echo "scope: 'git diff' against '${base}' failed — refusing to accept the lane"; exit 5; }
+    difc="$(git diff --ignore-submodules=none --cached --name-only --no-renames "$base")" || { echo "scope: 'git diff --cached' against '${base}' failed — refusing to accept the lane"; exit 5; }
     dif="$(printf '%s\n%s\n' "$difw" "$difc" | sort -u)"; drc=$?
     [ "$drc" -eq 0 ] || { echo "scope: could not union the working-tree/staged diffs (sort rc=$drc) — refusing (fail closed)" >&2; exit 5; }
     # HIDDEN INDEX BITS: assume-unchanged (lowercase status letter) / skip-worktree (S) make

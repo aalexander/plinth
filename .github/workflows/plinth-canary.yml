@@ -536,6 +536,12 @@ jobs:
           v="$(jq -r '.audit.vendor // "none"' .plinth/session/review/aud/verdict.json 2>/dev/null)"
           [ "$v" = "claude" ] || { echo "::error::cross-vendor audit (scaffold default claude) not recorded (vendor=$v)"; exit 1; }
           grep -qx -- '--safe-mode' /tmp/asb/claude-args || { echo "::error::claude auditor not isolated (--safe-mode missing from argv)"; exit 1; }
+          # the audit is structurally constrained: a hard --json-schema (-> .structured_output, no free
+          # narrative to trust) AND --disallowed-tools that deny repo reads/writes. Assert BOTH so
+          # removing either control turns this test red (the stub always returns structured output and
+          # the empty cwd independently blocks reads, so without these argv checks the test is hollow):
+          grep -qx -- '--json-schema' /tmp/asb/claude-args || { echo "::error::claude auditor missing --json-schema (structured-output constraint dropped)"; exit 1; }
+          grep -qx -- 'Bash,Edit,Write,Read,Grep,Glob' /tmp/asb/claude-args || { echo "::error::claude auditor missing --disallowed-tools Bash,Edit,Write,Read,Grep,Glob (tool isolation dropped)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/asb/claude; chmod +x /tmp/asb/claude
           git checkout -q main; git checkout -qB aud2 main >/dev/null 2>&1; echo "more req" >> SPEC.md; git add -A; git commit -qm aud2 >/dev/null
           PATH="/tmp/asb:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
@@ -1582,13 +1588,13 @@ jobs:
           pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
           pf_probe '{"required_status_checks":{"contexts":["checks / checks"]}}' 'MISSING: floor/secrets' no-floor
           # misleading SIBLING names must not satisfy the contexts (loose-substring regression):
-          pf_probe '{"required_status_checks":{"contexts":["floor / not-sast","oldfloor / harness","prechecks","floor / dependencies / npm-audit","old-checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks' misleading-names
+          pf_probe '{"required_status_checks":{"contexts":["floor / not-sast","oldfloor / harness","prechecks","floor / dependencies / npm-audit","old-checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness, checks' misleading-names
           # SUFFIX siblings share the prefix but are different exact contexts — all five must
           # read as missing ("CI / checks / old" has valid shape but is not a real check run):
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets / old","floor / sast / old","floor / harness / old","floor / dependencies / osv-scan / old","checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan, checks (required context not among actual check runs' suffix-siblings
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets / old","floor / sast / old","floor / harness / old","floor / dependencies / osv-scan / old","checks / old"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness, required context(s) not among actual check runs: checks / old' suffix-siblings
           # spacing/leaf variants are DIFFERENT exact contexts — all must read as missing
           # ("CI/floor/secrets", odd spacing, trailing space, "osv scan" leaf):
-          pf_probe '{"required_status_checks":{"contexts":["floor/secrets","floor/ sast","floor / harness ","floor / dependencies / osv scan","checks / checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/harness, floor/dependencies/osv-scan' spacing-variants
+          pf_probe '{"required_status_checks":{"contexts":["floor/secrets","floor/ sast","floor / harness ","floor / dependencies / osv scan","checks / checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness' spacing-variants
           # NO check-run data must be fail-CLOSED for the checks verification (UNVERIFIED),
           # never silent health — shape-valid decoys can hide behind an empty API answer:
           NONAMES="$PFG/nonames"; : > "$NONAMES"
@@ -2092,6 +2098,15 @@ jobs:
           printf '%s\n' '.claude/agents/codex-implementer.md' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies codex-implementer.md as tooling"; exit 1; }
           printf '%s\n' '.claude/agents/custom.md'            | grep -Eq "$HRE" && { echo "::error::HARNESS_RE wrongly classifies a PROJECT-owned custom agent as tooling/UPSTREAM"; exit 1; } || true
           grep -m1 '^HARNESS_PATHS=' "$RV" | grep -qE "\.claude/agents([[:space:]']|\$)" && { echo "::error::HARNESS_PATHS still uses a BROAD .claude/agents pathspec (would sweep project agents into tamper arithmetic)"; exit 1; } || true
+          # HARNESS_PATHS (the tooling-commit pathspec used for tamper arithmetic and the "complete
+          # tooling-commit list") must carry the EXACT pinned files — removing any would silently omit
+          # it from tamper detection while HARNESS_RE still matched. Require both lane agents AND
+          # lane-guard.sh, and require lane-guard.sh in HARNESS_RE too (both must agree):
+          HP="$(grep -m1 '^HARNESS_PATHS=' "$RV")"
+          for want in '.claude/agents/grok-implementer.md' '.claude/agents/codex-implementer.md' '.plinth/lane-guard.sh'; do
+            printf '%s' "$HP" | grep -qF "$want" || { echo "::error::HARNESS_PATHS omits the pinned tooling file '$want' (tamper arithmetic / tooling-commit list would miss it)"; exit 1; }
+          done
+          printf '%s\n' '.plinth/lane-guard.sh' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies .plinth/lane-guard.sh as tooling (a lane-guard edit would be treated as project code)"; exit 1; }
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
@@ -2512,6 +2527,18 @@ jobs:
             mkdir -p node_modules; echo x > node_modules/d.js; echo b >> app.py
             out="$(PATH="$SC4:$PATH" bash "$LG" scope HEAD app.py 2>&1)"; r=$?
             { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'hermeticity UNKNOWN'; } || { echo "::error::ignored-artifact ck_sed site: a sed error did not report hermeticity UNKNOWN (rc=$r) — masked producer failure"; exit 1; } )
+          # SUBMODULE visibility (round-34): a `diff.ignoreSubmodules=all` config must NOT hide an
+          # off-spec staged gitlink update — scope forces --ignore-submodules=none. (Needs file-protocol
+          # submodules; skip if the runner forbids them.)
+          SUBM="$(mktemp -d)"; ( cd "$SUBM"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x; echo v1 > lib.txt; git add -A; git commit -qm s1 >/dev/null )
+          SMT="$(mktemp -d)"; if ( cd "$SMT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > app.py; git -c protocol.file.allow=always submodule add -q "$SUBM" vendor >/dev/null 2>&1 ); then
+            ( cd "$SMT"; git add -A; git commit -qm base >/dev/null
+              git config diff.ignoreSubmodules all                         # the config that would hide it
+              ( cd vendor && echo v2 > lib.txt && git add -A && git commit -qm s2 >/dev/null ); git add vendor  # off-spec gitlink bump
+              r=0; out="$(bash "$LG" scope HEAD app.py 2>&1)" || r=$?
+              { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor'; } || { echo "::error::scope missed an off-spec submodule gitlink update under diff.ignoreSubmodules=all (rc=$r) — --ignore-submodules=none missing"; exit 1; } )
+          else echo "note: submodule test skipped — runner forbids file-protocol submodules"; fi
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

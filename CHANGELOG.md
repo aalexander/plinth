@@ -68,9 +68,12 @@
   review.sh uses for grok reviewers), so the delegated CLI is governed only by the five-part spec.
   Verified end-to-end against a driver-doc trap: the lane implements the spec and ignores the trap.
 - **lane-guard hardening.** Fails LOUD (exit 5) on a malformed OR unreadable `.plinth/protected-paths`
-  rather than letting a `grep` error read as "no patterns"; the sensitive snapshot records file MODE
-  as well as content hash, so a metadata-only change (e.g. `chmod` widening `.env`/`.ssh` perms) is
-  caught; the secret matcher is component-boundaried (`.env`/`.env.local` yes, `.envrc` no; `id_rsa`
+  rather than letting a `grep` error read as "no patterns"; the sensitive snapshot records each secret
+  FILE's MODE as well as its content hash, so a metadata-only change (e.g. `chmod` widening a secret
+  file such as `.env` or a key under `.ssh/`) is caught — note git tracks file modes, not directory
+  nodes, so a `chmod` on a real secret DIRECTORY itself is outside any git-based tool's view (a tracked
+  SYMLINK named `.ssh`/`secrets`/… IS classified and fails closed as a dir-symlink); the secret matcher
+  is component-boundaried (`.env`/`.env.local` yes, `.envrc` no; `id_rsa`
   basename not `id_rsa_format.md`) with a template carve-out that an explicit protected-paths entry
   still overrides. `scope --snapshot` FAILS CLOSED on a missing/empty value (exit 2 — the old parse
   silently dropped to no-snapshot mode, leaving gitignored sensitive paths unverified) and on an
