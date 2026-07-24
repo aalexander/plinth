@@ -561,9 +561,12 @@ warn_stale_reusable_refs() {
   echo "executable mode — only run once the FLOOR ref is current). Repin the stale ref(s) to this release:"
   # Repin by matching the LITERAL stale ref value: `plinth-<wf>.yml@<old-ref>` -> `…@<psha>`. Matching
   # the exact old bytes preserves a surrounding quote for a quoted value, fully replaces an unquoted
-  # ref that contains a quote, and does NOT touch an unrelated job pinning a DIFFERENT ref. The old ref
-  # is escaped for a `#`-delimited sed regex and for the DOUBLE-quoted emitted expression (so an
-  # embedded `'` does not break it); paths are %q shell-quoted.
+  # ref that contains a quote, and does NOT touch an unrelated job pinning a DIFFERENT ref (a comment or
+  # job carrying the SAME stale ref is rewritten too — intended, they should all be current). The old
+  # ref is escaped for a `#`-delimited sed regex; the emitted sed is SINGLE-quoted so a ref containing a
+  # backtick/`$`/`"` is INERT (no shell injection), with an embedded `'` handled via the `'\''` idiom;
+  # paths are %q shell-quoted. (Best-effort advisory: a ref using YAML quote-ESCAPING — `\"` in a
+  # double-quoted scalar or `''` in a single-quoted scalar — is not decoded.)
   # BRE (no -E): the old ref is a LITERAL string, so `+ ( ) { } ? |` must stay literal — only the BRE
   # specials `\ . * [ ] ^ $` (plus the `#` delimiter and replacement `&`) are escaped. The emitted sed
   # expression is SINGLE-quoted so a ref containing shell metacharacters (backtick, `$`, `"`) is INERT

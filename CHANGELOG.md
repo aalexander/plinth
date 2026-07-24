@@ -139,7 +139,11 @@
   `plinth update` now WARNS (loudly, with the exact repin `sed` command) when an existing
   project's ci.yml pins the reusable floor/checks workflows at an OLDER Plinth commit — else the
   new floor checks never run while branch protection stays green. update does NOT rewrite the
-  operator-owned ci.yml (the never-rewrites-ci.yml contract is preserved); the operator repins.
+  operator-owned ci.yml (the never-rewrites-ci.yml contract is preserved); the operator repins with
+  the emitted command. This warning is a BEST-EFFORT ADVISORY over a line-based read of ci.yml — it
+  covers the block-style layouts operators actually write (any indentation, inline/whole-line
+  comments, quoted keys/values, quoted or embedded-quote ref values, matrix decoys) but not full
+  YAML flow-style (`jobs: {floor: {uses: …}}`) or YAML quote-ESCAPING inside a ref; it is not a gate.
 - **lane-guard scope forces `--no-renames`.** With `diff.renames` enabled, a `git mv` from an
   out-of-spec path to an in-spec name listed only the NEW path — the old file's disappearance
   escaped the spec check (rename laundering). Renames now read as delete+add so BOTH paths are
