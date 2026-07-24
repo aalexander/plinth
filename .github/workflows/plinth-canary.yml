@@ -287,6 +287,30 @@ jobs:
           rpv="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPV" 2>&1)"; vcmd="$(printf '%s' "$rpv" | grep -F 'sed -i.bak')"; ( cd "$RPV" && eval "$vcmd" )
           ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPV/.github/workflows/ci.yml" || { echo "::error::plus-ref repin produced invalid YAML"; exit 1; }
           grep -q "plinth-floor.yml@${PSHA}" "$RPV/.github/workflows/ci.yml" && ! grep -q "release+v4\|@${PSHA}+v4" "$RPV/.github/workflows/ci.yml" || { echo "::error::a stale release+v4 ref was not fully replaced — left a +v4 residue (repin class too narrow)"; exit 1; }
+          # QUOTE-BEARING PLAIN (unquoted) refs: `<current-sha>'old` is a valid plain YAML scalar and a
+          # DIFFERENT git ref -> STALE (quotes are NOT unconditional terminators); its repin must fully
+          # replace it (no truncation at the quote):
+          RPUQ="$(mktemp -d)"; ( cd "$RPUQ"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPUQ" >/dev/null 2>&1 )
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}'old|" "$RPUQ/.github/workflows/ci.yml"
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPUQ/.github/workflows/ci.yml" || { echo "::error::[test-setup] <sha>'old plain-scalar fixture invalid YAML"; exit 1; }
+          ( cd "$RPUQ" && git add -A && git commit -qm base >/dev/null )
+          uqout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPUQ" 2>&1)"
+          printf '%s' "$uqout" | grep -q "pins the reusable" || { echo "::error::a quote-bearing PLAIN ref <sha>'old was falsely treated as current (quote wrongly a terminator)"; exit 1; }
+          uqcmd="$(printf '%s' "$uqout" | grep -F 'sed -i.bak')"; ( cd "$RPUQ" && eval "$uqcmd" )
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPUQ/.github/workflows/ci.yml" || { echo "::error::the <sha>'old repin produced invalid YAML"; exit 1; }
+          grep -q "plinth-floor.yml@${PSHA} " "$RPUQ/.github/workflows/ci.yml" && ! grep -q "'old" "$RPUQ/.github/workflows/ci.yml" || { echo "::error::the <sha>'old plain ref was not fully repinned (truncated at the quote)"; exit 1; }
+          # SCOPING: the repin matches the LITERAL stale ref, so an UNRELATED job pinning a DIFFERENT
+          # plinth-floor ref must NOT be rewritten (fixes the file-global-substitution concern):
+          RPSC="$(mktemp -d)"; ( cd "$RPSC"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPSC" >/dev/null 2>&1 )
+          python3 -c '
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          s=s.replace("jobs:\n","jobs:\n  decoy:\n    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@differentref00000000000000000000000000000000\n",1)
+          open(p,"w").write(s)' "$RPSC/.github/workflows/ci.yml"
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPSC/.github/workflows/ci.yml"
+          ( cd "$RPSC" && git add -A && git commit -qm base >/dev/null )
+          scout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPSC" 2>&1)"; sccmd="$(printf '%s' "$scout" | grep -F 'sed -i.bak')"; ( cd "$RPSC" && eval "$sccmd" )
+          grep -q "plinth-floor.yml@differentref00000000000000000000000000000000" "$RPSC/.github/workflows/ci.yml" || { echo "::error::the repin rewrote an UNRELATED job pinning a DIFFERENT ref (not scoped to the stale ref value)"; exit 1; }
           # `#` is NOT an unconditional terminator: a YAML comment needs whitespace before `#`, so
           # <sha>#old (no space) is a single scalar = a DIFFERENT ref -> STALE, and a stale quoted
           # `release#v4` must repin fully. A trailing ` # comment` (space before #) is still preserved.
