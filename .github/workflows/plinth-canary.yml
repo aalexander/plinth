@@ -1042,15 +1042,40 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           cmp -s "$C4/.plinth/protected-paths" "$C4/pp.snap" || { echo "::error::ensure_protected_paths is not idempotent on a convention-anchored file"; exit 1; }
           # FAILURE INJECTION: a policy-processing ERROR must abort the update (fail closed),
-          # never degrade into "no convention"/"not covered" and rewrite or append blind. An
-          # unreadable policy file makes every read stage rc=2 — update must exit non-zero,
-          # say so, and leave the file byte-identical.
+          # never degrade into "no convention"/"not covered" and rewrite or append blind. Three
+          # content/permission-reachable error paths are injected, hitting the FIRST stage, a
+          # MIDDLE stage, and the LAST stage. (With every line validated up front, later grep
+          # stages cannot error via content — only via environment failures like ENOSPC, which
+          # the per-stage status checks guard; these injections mutant-test the pattern.)
+          # (1) unreadable policy: the first read (tail) fails rc!=0.
           chmod 000 "$C4/.plinth/protected-paths"
           fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$C4" 2>&1)" || fo=$?
           chmod 644 "$C4/.plinth/protected-paths"
           [ "$fo" -ne 0 ] || { echo "::error::update succeeded despite an unreadable protected-paths policy (fail-open regression)"; exit 1; }
           printf '%s' "$fout" | grep -q "fail closed" || { echo "::error::unreadable-policy abort did not identify itself as the fail-closed path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
           cmp -s "$C4/.plinth/protected-paths" "$C4/pp.snap" || { echo "::error::the aborted update modified the policy file"; exit 1; }
+          # (2) malformed policy regex: tail + active-line read succeed; stage-1b validation must
+          # reject a non-compiling ERE by name, before any derivation or append.
+          MJ="$(mktemp -d)"; ( cd "$MJ" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MJ" >/dev/null 2>&1 )
+          printf '(^|[)custom$\n' > "$MJ/.plinth/protected-paths"
+          cp "$MJ/.plinth/protected-paths" "$MJ/pp.snap"
+          fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$MJ" 2>&1)" || fo=$?
+          [ "$fo" -ne 0 ] || { echo "::error::update accepted a malformed policy regex (fail-open: a broken rule would propagate into appended managed rules)"; exit 1; }
+          printf '%s' "$fout" | grep -q "malformed policy regex" || { echo "::error::malformed-regex abort did not name the validation path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
+          cmp -s "$MJ/.plinth/protected-paths" "$MJ/pp.snap" || { echo "::error::the malformed-regex abort modified the policy file"; exit 1; }
+          # (3) unwritable policy with a missing managed pattern: every read/derive stage
+          # succeeds, the APPEND fails — update must abort, not report success with the
+          # backfill silently dropped. Seed omits session/ and ends with a newline so the
+          # failing write is the append itself, not the newline guard.
+          WJ="$(mktemp -d)"; ( cd "$WJ" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$WJ" >/dev/null 2>&1 )
+          printf '(^|/)my-rule$\n' > "$WJ/.plinth/protected-paths"
+          cp "$WJ/.plinth/protected-paths" "$WJ/pp.snap"
+          chmod 444 "$WJ/.plinth/protected-paths"
+          fo=0; fout="$("$GITHUB_WORKSPACE/bin/plinth" update "$WJ" 2>&1)" || fo=$?
+          chmod 644 "$WJ/.plinth/protected-paths"
+          [ "$fo" -ne 0 ] || { echo "::error::update reported success while the managed-pattern append silently failed (fail-open regression)"; exit 1; }
+          printf '%s' "$fout" | grep -q "fail closed" || { echo "::error::append-failure abort did not identify itself as the fail-closed path (out: $(printf '%s' "$fout" | tail -c 200))"; exit 1; }
+          cmp -s "$WJ/.plinth/protected-paths" "$WJ/pp.snap" || { echo "::error::the aborted append modified the policy file"; exit 1; }
           # init (not just update) must backfill protected-paths (round-44): a re-run / partially-scaffolded
           # repo with an OLD pre-v4.4 protected-paths that copy_templates_if_absent keeps as-is must still
           # gain the new contract-file patterns — else a Claude guard won't protect the newly pinned files.

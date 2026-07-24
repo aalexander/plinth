@@ -13,14 +13,18 @@
   convention-anchored file has no provenance (past backfill, or a user rule deliberately
   anchored broader), so it is preserved byte-for-byte and counts as covering its suffix. Mixed,
   absent, or canonical prefixes keep the old behavior exactly.
-- **Policy processing fails CLOSED.** Every stage of the backfill (trailing-byte read, active-line
-  read, managed exclusion, anchor extraction, prefix sort, dedup membership, append) runs unpiped
-  with its status checked: grep rc 1 (no match) is a normal answer, rc >= 2 (unreadable input,
-  bad pattern) aborts the update loudly instead of degrading into "no convention" / "not
-  covered" and appending blind. The canary suite pins convention backfill, canonical-line
-  preservation, no-duplicate-suffix, exact lane-agent lines, second-run `cmp` idempotence, and a
-  failure injection (unreadable policy ⇒ non-zero exit, fail-closed message, file byte-identical)
-  (`.github/workflows/plinth-canary.yml`).
+- **Policy processing fails CLOSED, and every policy regex must compile.** Every stage of the
+  backfill (trailing-byte read, active-line read, managed exclusion, anchor extraction, prefix
+  sort, dedup membership, append) runs unpiped with its status checked: grep rc 1 (no match) is
+  a normal answer, rc >= 2 aborts the update loudly instead of degrading into "no convention" /
+  "not covered" and appending blind. Every active policy line must compile as an ERE before
+  anything is derived from it — a malformed rule (e.g. `(^|[)custom$`) is rejected by name
+  rather than yielding a malformed anchor that propagates into appended managed rules — and the
+  composed rule is re-checked before each append. The canary suite pins convention backfill,
+  canonical-line preservation, no-duplicate-suffix, exact lane-agent lines, second-run `cmp`
+  idempotence, and three failure injections spanning first/middle/last stages (unreadable
+  policy, malformed regex, unwritable append — each ⇒ non-zero exit, fail-closed message, file
+  byte-identical) (`.github/workflows/plinth-canary.yml`).
 - **Implementer lanes — the driver delegates the typing to a cheaper cross-family CLI.** Two
   version-pinned Claude-Code subagents ship in `.claude/agents/`: `grok-implementer` (default,
   drives the `grok` CLI) and `codex-implementer` (cross-vendor, drives `codex` at high reasoning).
