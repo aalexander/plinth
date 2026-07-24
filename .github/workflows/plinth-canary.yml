@@ -1011,7 +1011,7 @@ jobs:
           # match a corrupted "(^|/)my-custom-secret(^|/)\.plinth/session/" line.
           grep -qxF '(^|/)my-custom-secret' "$PPFX/.plinth/protected-paths" || { echo "::error::update corrupted a no-trailing-newline user protected-paths line (newline guard regressed)"; exit 1; }
           # ── v4.4.0: contract abstraction (driver shells + reviewer.md) ──────────
-          C4="$(mktemp -d)"; ( cd "$C4" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$C4" >/dev/null 2>&1 )
+          C4="$(mktemp -d)/plinth"; mkdir "$C4"; ( cd "$C4" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$C4" >/dev/null 2>&1 )
           cmp -s "$C4/CLAUDE.md" "$C4/AGENTS.md" || { echo "::error::CLAUDE.md and AGENTS.md are not byte-identical driver shells"; exit 1; }
           grep -qF "Plinth driver shell (version-pinned)" "$C4/CLAUDE.md" || { echo "::error::driver shell marker missing"; exit 1; }
           grep -qF "NOW and follow every rule in it" "$C4/CLAUDE.md" || { echo "::error::shell lacks the non-Claude read-now imperative"; exit 1; }
@@ -1031,6 +1031,7 @@ jobs:
           "$GITHUB_WORKSPACE/bin/plinth" update "$C4" >/dev/null 2>&1
           grep -qF '(^|/)\.plinth/review\.sh$' "$C4/.plinth/protected-paths" && { echo "::error::ensure_protected_paths over-appended a canonical (^|/) form onto custom anchoring"; exit 1; } || true
           grep -qxF '(^|plinth/)\.plinth/session/' "$C4/.plinth/protected-paths" || { echo "::error::ensure_protected_paths did not backfill a missing pattern in the file's own anchor convention"; exit 1; }
+          printf '%s\n' "$C4/.plinth/session/events.jsonl" | grep -qE '(^|plinth/)\.plinth/session/' || { echo "::error::the adopted convention rule does not MATCH the fixture's real absolute path (dead protection)"; exit 1; }
           grep -qxF '(^|/)CLAUDE\.md$' "$C4/.plinth/protected-paths" || { echo "::error::a pre-existing canonical managed line was rewritten or dropped — existing policy lines must be PRESERVED byte-for-byte"; exit 1; }
           grep -qxF '(^|plinth/)CLAUDE\.md$' "$C4/.plinth/protected-paths" && { echo "::error::a suffix already covered by an existing line was appended again (duplicate CLAUDE.md)"; exit 1; } || true
           # the UPDATE backfill must add the EXACT two lane agents, never the broad dir (bin/plinth:281):
@@ -1076,12 +1077,13 @@ jobs:
           # suffix is stripped correctly in dedup, so its suffix must NOT re-append in the
           # broader canonical form (that broadening is the freeze defect this machinery
           # prevents).
-          NP="$(mktemp -d)"; ( cd "$NP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NP" >/dev/null 2>&1 )
+          NP="$(mktemp -d)/plinth"; mkdir "$NP"; ( cd "$NP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$NP" >/dev/null 2>&1 )
           printf '(^|(plinth|vendor)/)\\.plinth/review\\.sh$\n(^|(plinth|vendor)/)custom$\n' > "$NP/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$NP" >/dev/null 2>&1 || { echo "::error::update aborted on a valid one-level-nested anchor convention"; exit 1; }
           grep -qxF '(^|(plinth|vendor)/)\.plinth/review\.sh$' "$NP/.plinth/protected-paths" || { echo "::error::nested-anchor managed-suffix line not preserved"; exit 1; }
           grep -qF '(^|/)\.plinth/review\.sh$' "$NP/.plinth/protected-paths" && { echo "::error::a nested-anchor-covered managed suffix was re-appended in the BROADER canonical form (freeze defect)"; exit 1; } || true
           grep -qxF '(^|(plinth|vendor)/)\.plinth/session/' "$NP/.plinth/protected-paths" || { echo "::error::missing pattern was not backfilled in the nested anchor convention"; exit 1; }
+          printf '%s\n' "$NP/.plinth/session/events.jsonl" | grep -qE '(^|(plinth|vendor)/)\.plinth/session/' || { echo "::error::the nested convention rule does not MATCH the fixture's real absolute path (dead protection)"; exit 1; }
           # BEYOND the grammar (nesting deeper than one level): the strip cannot prove coverage,
           # so update must REFUSE (fail closed, file untouched) rather than broaden.
           DP="$(mktemp -d)"; ( cd "$DP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$DP" >/dev/null 2>&1 )
@@ -1120,10 +1122,11 @@ jobs:
           # Parser branch coverage: (a) top-level alternation IS a supported convention;
           # (b) two distinct prefixes fall back to canonical; (c) no recognized (^|X) prefix
           # falls back to canonical.
-          PA="$(mktemp -d)"; ( cd "$PA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PA" >/dev/null 2>&1 )
+          PA="$(mktemp -d)/plinth"; mkdir "$PA"; ( cd "$PA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PA" >/dev/null 2>&1 )
           printf '(^|plinth/|vendor/)custom$\n' > "$PA/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PA" >/dev/null 2>&1 || { echo "::error::update aborted on a top-level-alternation convention"; exit 1; }
           grep -qxF '(^|plinth/|vendor/)\.plinth/session/' "$PA/.plinth/protected-paths" || { echo "::error::alternation convention was not adopted for backfill"; exit 1; }
+          printf '%s\n' "$PA/.plinth/session/events.jsonl" | grep -qE '(^|plinth/|vendor/)\.plinth/session/' || { echo "::error::the alternation convention rule does not MATCH the fixture's real absolute path (dead protection)"; exit 1; }
           PB="$(mktemp -d)"; ( cd "$PB" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PB" >/dev/null 2>&1 )
           printf '(^|plinth/)a$\n(^|vendor/)b$\n' > "$PB/.plinth/protected-paths"
           "$GITHUB_WORKSPACE/bin/plinth" update "$PB" >/dev/null 2>&1 || { echo "::error::update aborted on mixed prefixes"; exit 1; }
@@ -1149,6 +1152,16 @@ jobs:
           grep -qxF '(^|/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::a mixed-arm rule SUPPRESSED the canonical managed append — its non-slash arm misses absolute paths"; exit 1; }
           grep -qxF '(^|plinth|vendor/)\.plinth/session/' "$PE/.plinth/protected-paths" || { echo "::error::user's mixed-arm line was not preserved"; exit 1; }
           grep -qF '(^|plinth|vendor/)\.plinth/config' "$PE/.plinth/protected-paths" && { echo "::error::a mixed-arm anchor was adopted for appends — its non-slash arm would miss absolute paths"; exit 1; } || true
+          # (d2) SHAPE-VALID but PATH-IRRELEVANT prefix: (^|vendor/) in a random-rooted
+          # fixture composes rules matching nothing this project's hooks check — it must
+          # NOT be adopted (canonical fallback, which DOES match) and must not suppress
+          # coverage in dedup.
+          PV="$(mktemp -d)"; ( cd "$PV" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$PV" >/dev/null 2>&1 )
+          printf '(^|vendor/)custom$\n(^|vendor/)\\.plinth/session/\n' > "$PV/.plinth/protected-paths"
+          "$GITHUB_WORKSPACE/bin/plinth" update "$PV" >/dev/null 2>&1 || { echo "::error::update aborted on a path-irrelevant anchor"; exit 1; }
+          grep -qxF '(^|/)\.plinth/session/' "$PV/.plinth/protected-paths" || { echo "::error::a path-irrelevant (^|vendor/) rule suppressed or replaced the canonical managed append"; exit 1; }
+          grep -qF '(^|vendor/)\.plinth/config' "$PV/.plinth/protected-paths" && { echo "::error::a path-irrelevant anchor was adopted — its rules match nothing here"; exit 1; } || true
+          printf '%s\n' "$PV/.plinth/session/events.jsonl" | grep -qE '(^|/)\.plinth/session/' || { echo "::error::the canonical fallback rule does not match the fixture path"; exit 1; }
           # (e) BARE-^ sibling: ^-anchored rules cannot match the absolute paths the hooks
           # check, so a bare-^ managed suffix must not read as covered either — canonical
           # protection is appended alongside the preserved user lines.

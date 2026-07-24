@@ -45,6 +45,11 @@
   closed, rather than risk broadening a managed pattern past anchors it cannot reason about.
   A bare-^ rule (e.g. `^\.plinth/session/`) likewise cannot match those absolute paths, so it
   is no longer stripped or counted as covering — canonical protection is appended alongside it.
+  Shape alone is not enough: an EFFECTIVENESS probe composes a managed rule with the candidate
+  anchor and requires it to match the policy file's own canonical absolute path — a shape-valid
+  but path-irrelevant anchor (e.g. `(^|vendor/)` in a repo whose path has no vendor/ segment)
+  would otherwise install rules that match nothing; such anchors are neither adopted for
+  appends nor allowed to mark suffixes covered in dedup (canonical fallback both times).
   Signal handling stops the run: INT/TERM traps clean up and exit 130/143 — a cancelled
   init/update can no longer resume past cleanup and mutate the policy. All
   system scratch files live inside ONE private `mktemp -d` directory, registered the command
@@ -57,7 +62,7 @@
   canary suite pins convention backfill, canonical-line preservation, no-duplicate-suffix,
   exact lane-agent lines, second-run `cmp` idempotence, the nested-anchor convention (managed
   suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
-  non-path-prefix and mixed-arm canonical fallbacks, read-only-policy rename semantics, and
+  non-path-prefix, mixed-arm, and path-irrelevant canonical fallbacks, end-to-end assertions that adopted-convention (and fallback) rules MATCH the fixture's real absolute paths, read-only-policy rename semantics, and
   failure injections: unreadable policy, malformed regex (with and without trailing newline),
   NUL-bearing policy, and twenty-eight argv-signature shim injections
   (grep/sort/tail/wc/mktemp/tr/cmp/cat/chmod/mv/dirname, Nth-hit selectable, real tool paths resolved

@@ -538,19 +538,33 @@ PATTERNS
   rc=0; grep -oE "$ANCHOR_RE" "$strip_t" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "anchor extraction, grep rc=$rc"
   prefixes="$(sort -u "$active_t")" || ppfail "prefix sort"
+  # EFFECTIVENESS PROBE: a shape-valid anchor can still be PATH-IRRELEVANT —
+  # (^|vendor/) in a project whose absolute path has no vendor/ segment
+  # composes managed rules that match NOTHING the hooks ever check, silently
+  # installing dead protection. The probe is the policy file's own canonical
+  # absolute path: an anchor is adopted for appends — or an anchored line's
+  # suffix counted as covered in dedup — only if the composed managed rule
+  # actually matches that real path.
+  local tprobe
+  tprobe="$(cd -P "$target" && pwd)/.plinth/protected-paths" || ppfail "probe path resolve"
+  anchor_effective() { # <anchor> -> rc 0 effective / rc 1 not; rc>1 aborts
+    local arc=0
+    printf '%s\n' "$tprobe" | grep -qE "${1}\\.plinth/protected-paths\$" || arc=$?
+    [ "$arc" -le 1 ] || ppfail "anchor effectiveness probe, grep rc=$arc"
+    return "$arc"
+  }
   # Single non-canonical prefix adopts the convention for APPENDS (pure-bash
   # count: empty or multiline = no single convention) — but only when it is
-  # SHAPE-conforming. Without that, an anchor like (^|foo) would compose
-  # managed rules such as (^|foo)\.plinth/session/ that match "foo.plinth/…"
-  # but NOT the absolute paths the hooks check ("…/foo/.plinth/…") — silently
-  # un-protecting the managed paths. Non-conforming = canonical appends.
+  # SHAPE-conforming (an anchor like (^|foo) would compose managed rules
+  # matching "foo.plinth/…", not absolute paths) AND EFFECTIVE against this
+  # project's real path. Otherwise: canonical appends.
   case "$prefixes" in
     ''|*"$NL"*) : ;;  # zero or several conventions: keep canonical appends
     '(^|/)') : ;;     # canonical convention: keep canonical appends
     *)
       rc=0; printf '%s' "$prefixes" | grep -qE "${SHAPE_RE}\$" || rc=$?
       [ "$rc" -le 1 ] || ppfail "anchor shape check, grep rc=$rc"
-      [ "$rc" -ne 0 ] || anchor="$prefixes"
+      if [ "$rc" -eq 0 ] && anchor_effective "$prefixes"; then anchor="$prefixes"; fi
       ;;
   esac
   # Dedup by PATH SUFFIX, not whole line. A project may protect the same path
@@ -584,6 +598,10 @@ PATTERNS
   while IFS= read -r line; do
     rc=0; pfx="$(printf '%s\n' "$line" | grep -oE "$SHAPE_RE")" || rc=$?
     [ "$rc" -le 1 ] || ppfail "dedup anchor strip probe, grep rc=$rc"
+    # An INEFFECTIVE anchor (shape-valid but path-irrelevant) must not be
+    # stripped either — its suffix would read as covered while its rule
+    # matches nothing on this project's real paths.
+    if [ -n "$pfx" ] && ! anchor_effective "$pfx"; then pfx=""; fi
     line="${line#"$pfx"}"
     printf '%s\n' "$line" >> "$strip_t" || ppfail "dedup strip write"
   done < "$active_t"
