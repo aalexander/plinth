@@ -181,6 +181,20 @@ jobs:
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI/.github/workflows/ci.yml"
           ( cd "$RPI" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a child property (permissions:) before uses: suppressed the stale warning — awk terminator not indentation-aware"; exit 1; }
+          # awk robustness (c): a COMMENTED `# uses: …@<current-sha>` before the ACTIVE stale uses must
+          # NOT be captured and suppress the warning (the uses: match must skip comment lines):
+          RPC="$(mktemp -d)"; ( cd "$RPC"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPC" >/dev/null 2>&1 )
+          python3 - "$RPC/.github/workflows/ci.yml" "$PSHA" <<'PYCMT'
+          import sys
+          p, sha = sys.argv[1], sys.argv[2]; s = open(p).read()
+          s = s.replace('\n  floor:\n    uses:', '\n  floor:\n    # uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s\n    uses:' % sha, 1)
+          s = s.replace('    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@%s' % sha,
+                        '    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@v3.14', 1)  # stale ONLY the active line
+          open(p, 'w').write(s)
+          PYCMT
+          ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$RPC/.github/workflows/ci.yml" || { echo "::error::[test-setup] commented-uses fixture is invalid YAML"; exit 1; }
+          ( cd "$RPC" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPC" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a COMMENTED current uses line before the active stale uses suppressed the warning — awk did not skip the comment"; exit 1; }
           # awk robustness (b): a CONSISTENTLY 4-space-indented jobs tree (a valid deeper layout) — the
           # gate must still be discovered (the parser must not assume exactly two-space indentation):
           RPI2="$(mktemp -d)"; ( cd "$RPI2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI2" >/dev/null 2>&1 )
@@ -2418,17 +2432,21 @@ jobs:
             bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
-          # sibling: a shadowed failing `sed` (the tag/extraction transform) must ALSO fail closed —
-          # _gtag now requires exactly 0 and the other transforms allow only <=1 (a sed error is >=2):
-          SEDB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SEDB/sed"; chmod +x "$SEDB/sed"
-          TSI="$(mktemp -d)"; ( cd "$TSI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
-            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
-            r=0; PATH="$SEDB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
-            [ "$r" -ne 0 ] || { echo "::error::snapshot did not fail closed when sed (tag transform) errored — partial baseline fail-open"; exit 1; }
-            bash "$LG" snapshot > "$TSI/sn" 2>/dev/null; echo b >> app.py
-            r=0; PATH="$SEDB:$PATH" bash "$LG" scope HEAD --snapshot "$TSI/sn" app.py >/dev/null 2>&1 || r=$?
-            [ "$r" = 5 ] || { echo "::error::scope did not fail closed when sed (extraction transform) errored (rc=$r)"; exit 1; } )
+          # sibling: a shadowed failing `sed` (the tag/extraction transforms) must ALSO fail closed.
+          # CRITICAL: test sed EXIT 1 too — native BSD/macOS sed returns rc=1 on a real error, which in
+          # a `grep | sed` pipeline is indistinguishable from grep's legitimate empty rc=1 and would be
+          # MASKED by a `<=1` check. ck_sed converts ANY sed error to exit 5 (caught). Both rc verified:
+          for sedrc in 1 2; do
+            SEDB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit %s\n' "$sedrc" > "$SEDB/sed"; chmod +x "$SEDB/sed"
+            TSI="$(mktemp -d)"; ( cd "$TSI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+              mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+              echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+              r=0; PATH="$SEDB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+              [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed when sed errored (exit $sedrc, rc=$r) — partial baseline fail-open (BSD sed rc=1 masking)"; exit 1; }
+              bash "$LG" snapshot > "$TSI/sn" 2>/dev/null; echo b >> app.py
+              r=0; PATH="$SEDB:$PATH" bash "$LG" scope HEAD --snapshot "$TSI/sn" app.py >/dev/null 2>&1 || r=$?
+              [ "$r" = 5 ] || { echo "::error::scope did not fail closed when sed errored (exit $sedrc, rc=$r) — BSD sed rc=1 masking in a grep|sed pipeline"; exit 1; } )
+          done
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

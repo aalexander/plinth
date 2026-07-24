@@ -504,10 +504,12 @@ warn_stale_reusable_refs() {
   # NOTE: the indentation capture MUST be an ACTION block `{ ... }` — a bare `match(...); x=RLENGTH`
   # would be parsed as two PATTERNS (each with the default {print}), default-printing every line and
   # corrupting the captured ref. `{ ... }` with no pattern runs for every line.
+  # `uses:` match SKIPS a commented line (`# uses: …`) — a stale gate must not be masked by a
+  # commented-out uses line carrying a current-looking ref before the active one.
   jobawk='
     { match($0, /^[[:space:]]*/); ind0=RLENGTH }
     !f && $0 ~ ("^[[:space:]]*['\''\"]?" JOB "['\''\"]?[[:space:]]*:") { f=1; jind=ind0; next }
-    f && /uses:/ { print; exit }
+    f && /uses:/ && $0 !~ /^[[:space:]]*#/ { print; exit }
     f && ind0 <= jind && $0 ~ /[^[:space:]]/ { exit }'
   fref="$(awk -v JOB=floor  "$jobawk" "$ci" 2>/dev/null)"
   cref="$(awk -v JOB=checks "$jobawk" "$ci" 2>/dev/null)"

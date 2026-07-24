@@ -146,6 +146,13 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
   sens_grep "$SECRET_FILES" "$1" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }
+ck_sed() {  # sed on stdin, but EXIT 5 (fail closed) on ANY sed error. BSD/macOS sed returns rc=1 on a
+  # real error (bad script/input) — indistinguishable from grep's legitimate "no match" rc=1 in a
+  # `grep | sed` pipeline, so a sed failure would otherwise be MASKED by a downstream `<=1` check.
+  # Its exit 5 runs in the pipeline subshell -> pipefail makes the whole pipeline rc=5 -> caught.
+  local _r; sed "$@"; _r=$?
+  [ "$_r" -eq 0 ] || { echo "lane-guard: sed transform failed (rc=$_r) — refusing (fail closed)" >&2; exit 5; }
+}
 hashof() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 || sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 modeof() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }  # perm bits — GNU (-c) first;
 modeof_deref() { stat -L -c '%a' "$1" 2>/dev/null || stat -Lf '%p' "$1" 2>/dev/null | sed 's/.*\(...\)$/\1/'; }  # FOLLOW the link:
@@ -214,9 +221,9 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # require EXACTLY 0 and fail closed otherwise. _ctag has a grep that legitimately exits 1 on an empty
   # control-plane set, so it allows <=1 (a sed error there is >=2 -> caught). sort exits 0 or >=2.
   local _gtrc
-  _gtag="$(printf '%s\n' "$_gv" | sed 's/^/G\t/')"; _gtrc=$?
+  _gtag="$(printf '%s\n' "$_gv" | ck_sed 's/^/G\t/')"; _gtrc=$?
   [ "$_gtrc" -eq 0 ] || { echo "lane-guard: git-visible tag transform failed (sed rc=$_gtrc) — refusing (fail closed)" >&2; return 5; }
-  _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/')"; _ctrc=$?
+  _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | ck_sed 's/^/C\t/')"; _ctrc=$?
   [ "$_ctrc" -le 1 ] || { echo "lane-guard: control-plane tag transform failed (rc=$_ctrc) — refusing (fail closed)" >&2; return 5; }
   _tagged="$(printf '%s\n%s\n' "$_gtag" "$_ctag" | sort -u)"; _snrc=$?
   [ "$_snrc" -eq 0 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
@@ -322,7 +329,7 @@ case "$sub" in
     lsv="$(git ls-files -v)" || { echo "scope: 'git ls-files -v' failed — refusing (fail closed)" >&2; exit 5; }
     # Status-checked: grep 1 = no hidden bits (the common case), >=2 = a real error that must not
     # silently empty `hidden` and SKIP the skip-worktree/assume-unchanged refusal below (fail open).
-    hidden="$(printf '%s\n' "$lsv" | grep -E '^([a-z]|S)' | sed 's/^..//')"; hrc=$?
+    hidden="$(printf '%s\n' "$lsv" | grep -E '^([a-z]|S)' | ck_sed 's/^..//')"; hrc=$?
     [ "$hrc" -le 1 ] || { echo "scope: could not scan for hidden index bits (grep rc=$hrc) — refusing (fail closed)" >&2; exit 5; }
     if [ -n "$hidden" ]; then
       echo "scope: tracked paths carry assume-unchanged/skip-worktree bits (git diff would skip them) — refusing (fail closed):" >&2
@@ -415,7 +422,7 @@ CHANGED
         # Status-checked: a masked error here would empty `touched` and skip the sensitive-path
         # violations below (fail open). dout is already status-checked (drc<=1); we are inside
         # before!=after, so grep WILL match diff lines (0). pipefail -> $?; 0/1 fine, >=2 fails closed.
-        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | sed -E 's/^[<>] //; s/^.*  //' | sort -u)"; trc=$?
+        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | ck_sed -E 's/^[<>] //; s/^.*  //' | sort -u)"; trc=$?
         [ "$trc" -le 1 ] || { echo "scope: could not extract the touched sensitive paths (rc=$trc) — refusing (fail closed)" >&2; exit 5; }
         while IFS= read -r f; do
           [ -n "$f" ] || continue
@@ -454,7 +461,7 @@ TOUCHED
     # sort (0 or >=2 — a grep -Ev rc=1 means "all excluded", legit), so allow <=1; the blank-strip grep
     # separately allows <=1 (empty). Any real producer/transform error -> report hermeticity UNKNOWN.
     _iraw="$(git ls-files -o -i --exclude-standard 2>/dev/null)"; _irc=$?
-    _ifilt="$(printf '%s\n' "$_iraw" | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u)"; igrc=$?
+    _ifilt="$(printf '%s\n' "$_iraw" | grep -Ev '^\.plinth/session(/|$)' | ck_sed 's#/.*##' | sort -u)"; igrc=$?
     iga="$(printf '%s\n' "$_ifilt" | grep -v '^$')"; ig2rc=$?
     if [ "$_irc" -ne 0 ] || [ "$igrc" -gt 1 ] || [ "$ig2rc" -gt 1 ]; then
       echo "scope note: could not enumerate ignored artifacts (git rc=$_irc, filter rc=$igrc/$ig2rc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
