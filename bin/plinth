@@ -487,9 +487,15 @@ PATTERNS
   # nothing is duplicated and every append uses the file's own convention.
   local anchor='(^|/)' prefixes rc active_t strip_t NL='
 '
+  # Each temp registers IMMEDIATELY after its own creation — batching the
+  # registrations would deterministically leak the first temp when creating a
+  # later one fails. (An interrupt in the single-command window between a
+  # mktemp returning and its += line can still leak at most that one temp;
+  # shell offers no atomic create+register.)
   active_t="$(mktemp)" || ppfail "mktemp active"
+  PP_TMPS+=("$active_t")
   strip_t="$(mktemp)" || ppfail "mktemp strip"
-  PP_TMPS+=("$active_t" "$strip_t")
+  PP_TMPS+=("$strip_t")
   # Stage 1: the file's ACTIVE (non-comment, non-blank) lines.
   rc=0; grep -Ev '^[[:space:]]*(#|$)' "$f" > "$active_t" || rc=$?
   [ "$rc" -le 1 ] || ppfail "active-line read of $f, grep rc=$rc"

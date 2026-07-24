@@ -1164,7 +1164,7 @@ jobs:
           # vacuity: if a refactor changes a stage's argv so the shim stops firing, update
           # SUCCEEDS and the case fails loudly — update the signature alongside the stage.
           SHIMD="$(mktemp -d)"
-          for t in grep sort tail wc mktemp cat chmod mv tr cmp; do
+          for t in grep sort tail wc mktemp cat chmod mv tr cmp dirname; do
             # Absolute path REQUIRED: an alias/function answer (e.g. zsh returning bare
             # "grep") would make the shim exec ITSELF through PATH forever. A fresh `sh -c`
             # has no aliases/functions, so its lookup is always the real executable.
@@ -1173,10 +1173,13 @@ jobs:
             printf '%s\n' \
               '#!/usr/bin/env bash' \
               'if [ "${INJ_TOOL:-}" = "$(basename "$0")" ] && [ -n "${INJ_SIG:-}" ]; then' \
-              '  case "$*" in *"$INJ_SIG"*)' \
+              '  hit=""' \
+              '  if [ "$INJ_SIG" = "@none" ]; then [ $# -eq 0 ] && hit=1' \
+              '  else case "$*" in *"$INJ_SIG"*) hit=1 ;; esac; fi' \
+              '  if [ -n "$hit" ]; then' \
               '    n="$(/bin/cat "$INJ_CNT" 2>/dev/null)"; n=$(( ${n:-0} + 1 )); echo "$n" > "$INJ_CNT"' \
               '    if [ "$n" -eq "${INJ_HIT:-1}" ]; then if [ "${INJ_MODE:-fail}" = pause ]; then sleep 8; srn=$?; if [ "$srn" -gt 128 ]; then sg=$((srn - 128)); trap - "$sg" 2>/dev/null || true; kill "-$sg" $$; fi; else echo "shim: injected failure ($(basename "$0") hit $n)" >&2; exit 9; fi; fi' \
-              '  ;; esac' \
+              '  fi' \
               'fi' \
               "exec $treal \"\$@\"" > "$SHIMD/$t"
             chmod +x "$SHIMD/$t"
@@ -1190,10 +1193,12 @@ jobs:
               *)         printf '(^|/)my-rule$\n' > "$SB/.plinth/protected-paths" ;;
             esac
             cp "$SB/.plinth/protected-paths" "$SB/pp.snap"
-            so=0; INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
+            SPTD="$(mktemp -d)"
+            so=0; TMPDIR="$SPTD" INJ_TOOL="$1" INJ_SIG="$2" INJ_HIT="$3" INJ_CNT="$(mktemp)" PATH="$SHIMD:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$SB" >/dev/null 2>&1 || so=$?
             [ "$so" -ne 0 ] || { echo "::error::update succeeded despite an injected $1 failure at '$4' — a producer status check is missing, or the shim signature went stale after a refactor (update it with the stage)"; exit 1; }
             cmp -s "$SB/.plinth/protected-paths" "$SB/pp.snap" || { echo "::error::injected $1 failure at '$4' left a mutated policy file"; exit 1; }
             ls "$SB/.plinth"/.protected-paths.tmp.* >/dev/null 2>&1 && { echo "::error::injected $1 failure at '$4' left a stray same-dir temp"; exit 1; } || true
+            [ -z "$(ls -A "$SPTD")" ] || { echo "::error::injected $1 failure at '$4' leaked registered system temps: $(ls -A "$SPTD" | tr '\n' ' ')"; exit 1; }
           }
           shimrun grep '-Ev' 1 'stage-1 active-line read'
           shimrun grep '-Ev' 2 'dedup active-line read'
@@ -1219,6 +1224,11 @@ jobs:
           shimrun wc '-c' 2 'atomic replace: payload size read'
           shimrun wc '-c' 3 'atomic replace: composed size read'
           shimrun mktemp '.protected-paths.tmp' 1 'atomic replace: same-dir temp create'
+          shimrun mktemp '@none' 1 'binary-scan temp create'
+          shimrun mktemp '@none' 2 'managed-list temp create'
+          shimrun mktemp '@none' 3 'active temp create'
+          shimrun mktemp '@none' 4 'strip temp create (active must already be registered+cleaned)'
+          shimrun dirname '.plinth/protected-paths' 1 'atomic replace: policy dirname'
           shimrun tr '-d' 1 'binary scan (tr)'
           shimrun cmp '-s' 1 'binary scan (cmp)'
           shimrun cat '.plinth/protected-paths' 1 'atomic replace: temp compose copy'

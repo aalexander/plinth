@@ -56,20 +56,24 @@
   suffix not broadened; appends in the nested prefix), the deep-nesting refusal, the
   non-path-prefix and mixed-arm canonical fallbacks, read-only-policy rename semantics, and
   failure injections: unreadable policy, malformed regex (with and without trailing newline),
-  NUL-bearing policy, and twenty-three argv-signature shim injections
-  (grep/sort/tail/wc/mktemp/tr/cmp/cat/chmod/mv, Nth-hit selectable, real tool paths resolved
+  NUL-bearing policy, and twenty-eight argv-signature shim injections
+  (grep/sort/tail/wc/mktemp/tr/cmp/cat/chmod/mv/dirname, Nth-hit selectable, real tool paths resolved
   at shim creation) covering the status checks of every content-reachable processing stage —
   active reads, validation, exclusion, extraction, prefix sort, strip probe, residual and
   parse scans, shape check, membership (incl. a no-newline seed that kills an
   early-normalization mutant), all three size-producer reads — and the atomic writer's
   external producers (binary scan tr+cmp, same-dir temp creation, compose copy, mode
-  preserve, rename). NOT shim-injected, by declared limitation: `stat` (its designed
-  cross-platform fallback defeats a portable failure signature), `dirname`, and the `printf`
-  builtin (not interceptable via PATH) — each is status-checked in code. Every injection
-  asserts a non-zero exit, a byte-identical policy, and no stray same-dir temp; one
-  injected-failure run also asserts a private TMPDIR is left EMPTY (registered system temps
-  removed by the trap); the expect-failure design makes a stale shim signature fail loudly
-  instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
+  preserve, rename), the policy `dirname`, and all four system-temp creations (the strip-temp
+  case proves the active temp was registered at creation — each temp registers immediately
+  after its own mktemp returns, so a later creation failing cannot leak an earlier temp; an
+  interrupt inside the single-command create-to-register window can still leak at most that
+  one temp, shell having no atomic create+register). NOT shim-injected, by declared
+  limitation: `stat` (its GNU/BSD `||` fallback pair absorbs any single injected failure by
+  design, so a portable deterministic injection does not exist) and the `printf` builtin (not
+  interceptable via PATH) — both are status-checked in code. Every injection asserts a
+  non-zero exit, a byte-identical policy, no stray same-dir temp, AND a private TMPDIR left
+  EMPTY (registered system temps removed by the trap on every injected failure); the
+  expect-failure design makes a stale shim signature fail loudly instead of going vacuous. SIGNAL regressions cover BOTH signals with exact conventional
   exits (TERM=143, INT=130), synchronized on the paused stage via the shim counter — each
   asserts the exact exit, a byte-identical policy, and no strays. Exact-mode preservation
   (0664 stays 0664) is asserted on the success path (`.github/workflows/plinth-canary.yml`).
