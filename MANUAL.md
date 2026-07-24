@@ -678,6 +678,11 @@ installed copies.
   "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
   --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
   pre-existing pattern, hardening backlog per the phase charter.)
+- **v4.6 canary gap: explicit PLINTH_AUDIT_MODEL pass-through untested.** Fixture 4d
+  covers drop-model-on-audit-vendor-swap, but no test asserts an explicit
+  PLINTH_AUDIT_MODEL survives and reaches the auditor CLI (structurally identical to
+  the tested reviewer case — low risk). Add alongside the next canary touch.
+  (v4.6 round 4, minor.)
 - **v4.6 accepted tradeoffs / follow-ups (from the pre-flight self-review).** (a) Findings
   marked resolved drop from the verify payload — a regression resurfaces only as code in
   the cumulative diff; consider carrying resolved findings for one extra round. (b) The

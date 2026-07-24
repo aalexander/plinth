@@ -711,8 +711,10 @@ jobs:
           # whole diff for every sibling of a defect class (prompt-only change → content assert).
           grep -q 'SWEEP the entire diff for EVERY sibling' "$RS" || { echo "::error::fresh prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
           grep -q 'SWEEP the whole diff for EVERY sibling' "$RS" || { echo "::error::verify prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
-          # Efficiency #3b: the verify fallback must send the FULL diff, not a thin incremental slice.
-          grep -q 'Re-review the FULL diff with first-pass rigor' "$RS" || { echo "::error::verify prompt no longer sends the FULL diff (#3b)"; exit 1; }
+          # (The pre-v4.6 'Re-review the FULL diff' assertion is gone: v4.6 verify rounds are
+          # SCOPED by design; the full-diff FALLBACK behavior is covered end-to-end by the
+          # 'FALLBACK verify' fixture below, which asserts the anchor announcement and the
+          # full-diff payload.)
 
           # Stub each vendor CLI; assert review.sh drives a Tier-1 review to APPROVED via the
           # REAL dispatch, recording the right session id + usage handling (grok: null).
