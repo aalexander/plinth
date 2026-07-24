@@ -840,7 +840,7 @@ jobs:
           grep -qF "Postgres 16" "$MK/CLAUDE.md" || { echo "::error::notes inside the placeholder comment were destroyed (treated as stock)"; exit 1; }
           # Custom content ABOVE the notes heading (round-4) -> custom, preserved.
           MA="$(mktemp -d)"; ( cd "$MA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MA" >/dev/null 2>&1 )
-          perl -0777 -pe 's/(## Project-specific notes)/- CUSTOM RULE: always run make lint.\n\n$1/' "$OLDT" > "$MA/CLAUDE.md"
+          python3 -c 'import sys,re; s=open(sys.argv[1]).read(); sys.stdout.write(re.sub(r"(## Project-specific notes)", "- CUSTOM RULE: always run make lint.\n\n\\1", s, count=1))' "$OLDT" > "$MA/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MA" >/dev/null 2>&1
           grep -qF "make lint" "$MA/CLAUDE.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (treated as stock)"; exit 1; }
 
@@ -1736,14 +1736,27 @@ jobs:
           printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'project_doc_max_bytes=0' || { echo "::error::codex COMMAND lacks -c project_doc_max_bytes=0 — codex auto-loads AGENTS.md (driver contract) instead of acting as a lane"; exit 1; }
-          # the cap must hold WITHOUT coreutils — each lane must carry the perl-alarm fallback, not just an
-          # optional ${T:+...} that expands to nothing on a stock macOS box (this environment):
+          # the cap must hold WITHOUT coreutils — each lane must carry the python3 process-group
+          # fallback that TERM-then-KILLs (not just an optional ${T:+...} that vanishes on stock macOS):
           for A in "$GA" "$CA"; do
-            grep -qF "perl -e 'alarm shift; exec @ARGV'" "$A" || { echo "::error::$(basename "$A") lacks the portable perl-alarm timeout fallback — cap is unenforced without coreutils"; exit 1; }
+            grep -qF "python3 -c 'import subprocess,sys,signal,os" "$A" || { echo "::error::$(basename "$A") lacks the python3 process-group timeout fallback — cap is unenforced without coreutils"; exit 1; }
+            grep -qF 'os.killpg' "$A" || { echo "::error::$(basename "$A") cap does not TERM/KILL the process group — a signal-ignoring CLI could hang"; exit 1; }
           done
-          # and behaviorally confirm that portable fallback actually caps a runaway (no coreutils needed):
-          cs="$(date +%s)"; r=0; PATH=/usr/bin:/bin perl -e 'alarm shift; exec @ARGV' 1 sleep 20 >/dev/null 2>&1 || r=$?; ce="$(date +%s)"
-          { [ "$r" != 0 ] && [ "$(( ce - cs ))" -lt 10 ]; } || { echo "::error::perl-alarm fallback did not cap a runaway (exit=$r elapsed=$(( ce - cs ))s)"; exit 1; }
+          # behaviorally confirm the python3 fallback KILLS a TERM-IGNORING child (a cooperative cap
+          # would hang forever here). Write the cap to a file to keep this YAML block scalar valid:
+          PYCAPF="$(mktemp)"
+          {
+            echo 'import subprocess,sys,signal,os'
+            echo 'cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)'
+            echo 'try: sys.exit(p.wait(timeout=cap))'
+            echo 'except subprocess.TimeoutExpired:'
+            echo '    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)'
+            echo '    try: p.wait(timeout=3)'
+            echo '    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)'
+            echo '    sys.exit(124)'
+          } > "$PYCAPF"
+          cs="$(date +%s)"; r=0; python3 "$PYCAPF" 1 bash -c 'trap "" TERM; sleep 30' >/dev/null 2>&1 || r=$?; ce="$(date +%s)"
+          { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 12 ]; } || { echo "::error::python3 cap did not TERM->KILL a signal-ignoring runaway (exit=$r elapsed=$(( ce - cs ))s)"; exit 1; }
           # HARNESS classification BEHAVIOR: the two Plinth-owned lane agents are version-pinned tooling, but a
           # project's OWN .claude/agents/*.md must stay project-scope (reviewed as normal code, NOT downgraded
           # to UPSTREAM/non-blocking). Test the ACTUAL HARNESS_RE from review.sh, not the source text:
@@ -2070,6 +2083,22 @@ jobs:
           ( cd "$SGW" && echo c >> app.py && git status >/dev/null 2>&1 )
           r=0; ( cd "$SGW" && bash "$LG" scope HEAD --snapshot "$SNAPS2" app.py ) >/dev/null 2>&1 || r=$?
           [ "$r" = 0 ] || { echo "::error::separate-git-dir clean run false-flagged (rc=$r)"; exit 1; }
+          # CLASS CLOSURE: a gitdir PATH CONTAINING A SPACE must not word-split the control-plane
+          # enumeration (round-23 regression: `find $_cpdirs` unquoted would enumerate the wrong dirs
+          # and silently OMIT the hook, letting a control-plane write escape). Array + quoted expansion.
+          SPW="$(mktemp -d)/work dir"; SPC="$(mktemp -d)/git dir"; mkdir -p "$SPW"
+          ( cd "$SPW"; git init -qb main --separate-git-dir "$SPC" . >/dev/null 2>&1; git config user.email x@x; git config user.name x
+            echo a > app.py; git add -A; git commit -qm base >/dev/null )
+          SNAPSP="$(mktemp)"; ( cd "$SPW" && bash "$LG" snapshot > "$SNAPSP" )
+          printf '#!/bin/sh\necho pwned\n' > "$SPC/hooks/pre-commit"; chmod +x "$SPC/hooks/pre-commit"
+          ( cd "$SPW" && echo b >> app.py )
+          r=0; ( cd "$SPW" && bash "$LG" scope HEAD --snapshot "$SNAPSP" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 4 ] || { echo "::error::scope missed a control-plane hook write under a SPACE-containing gitdir (rc=$r) — unquoted find word-split regressed"; exit 1; }
+          rm -f "$SPC/hooks/pre-commit"
+          SNAPSP2="$(mktemp)"; ( cd "$SPW" && bash "$LG" snapshot > "$SNAPSP2" )
+          ( cd "$SPW" && echo c >> app.py && git status >/dev/null 2>&1 )
+          r=0; ( cd "$SPW" && bash "$LG" scope HEAD --snapshot "$SNAPSP2" app.py ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 0 ] || { echo "::error::space-gitdir clean run false-flagged (rc=$r) — space-path enumeration broke a legitimate lane"; exit 1; }
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x

@@ -110,8 +110,8 @@ except subprocess.TimeoutExpired:
        .plinth/lane-guard.sh scope <BEFORE sha> --snapshot <SNAP path> <the spec's exact file paths>
 
    Use the LITERAL values echoed by the run block — this is a NEW shell and $BEFORE/$SNAP
-   are empty here. RUN_RC decides the STATUS you report: nonzero (124/142 = wall-clock
-   TIMEOUT; anything else = CLI failure) is NEVER "complete" — report STATUS: timeout or
+   are empty here. RUN_RC decides the STATUS you report: nonzero (124/142, and 137 from the
+   `-k 10` TERM->KILL escalation = wall-clock TIMEOUT; anything else = CLI failure) is NEVER "complete" — report STATUS: timeout or
    partial, and STILL run this scope check (the CLI may have written files before dying).
 
    Exit 4 = SCOPE VIOLATION: return STATUS: partial with lane-guard's output and do NOT accept the

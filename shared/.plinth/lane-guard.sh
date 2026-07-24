@@ -62,7 +62,24 @@ SECRET_FILES='(^|/)\.env($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key)$'
 # These are a SUBSET of SECRET_FILES (recorded in the snapshot like any secret name); at scope
 # time a snapshot-diff on one is AUTHORIZED only when the spec explicitly lists it:
 SECRET_SAFE='(^|/)\.env\.(example|sample|template|dist|defaults?)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)_[a-z0-9_]+\.(md|markdown|txt|rst)$'
-prot_pats() { [ -f .plinth/protected-paths ] && grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null || true; }
+prot_pats() {
+  # The working-tree protected-paths patterns, comments/blank lines stripped. FAIL CLOSED on a
+  # producer error: grep exits 0 (matched) or 1 (no matches — a legitimately empty policy), but
+  # >=2 is a real READ error (I/O, unreadable) that must NOT masquerade as "no patterns" and
+  # silently un-protect a path downstream (active_pats/sens_match and the base-union all read here).
+  # validate_prot_pats runs FIRST (both subcommands) and caches the status-checked set, so every
+  # later read is a cache echo that cannot fail inside a process substitution where exit is lost.
+  if [ "${LG_PROT_CACHED_SET:-}" = 1 ]; then
+    [ -n "$LG_PROT_CACHED" ] && printf '%s\n' "$LG_PROT_CACHED"   # trailing newline: `while read` must not drop the last pattern
+    return 0
+  fi
+  [ -f .plinth/protected-paths ] || return 0
+  local _o _s
+  _o="$(grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null)"; _s=$?
+  [ "$_s" -le 1 ] || { echo "lane-guard: cannot read .plinth/protected-paths (grep rc=$_s) — refusing (fail closed)" >&2; exit 5; }
+  [ -n "$_o" ] && printf '%s\n' "$_o"
+  return 0
+}
 # The ACTIVE pattern set for sensitivity checks. scope sets LG_PROT_UNION to the
 # BASE-unioned policy before re-snapshotting, so a lane that NARROWS the working-tree
 # .plinth/protected-paths cannot hide a base-pattern-matching gitignored addition from
@@ -88,6 +105,16 @@ validate_prot_pats() {  # fail LOUD (exit 5) on an INVALID active protected-path
   if [ -e .plinth/protected-paths ] && { [ ! -f .plinth/protected-paths ] || [ ! -r .plinth/protected-paths ]; }; then
     echo "lane-guard: .plinth/protected-paths is present but not a readable regular file — refusing to run (fail closed)" >&2; exit 5
   fi
+  # Read the policy ONCE here, with the producer status checked, and CACHE it. Every later reader
+  # (the regex loop below, active_pats, the base-union) then reads the cache — no status-blind `grep`
+  # survives in a process substitution (where a failing prot_pats' exit would be lost). grep exits 0
+  # (matched) or 1 (no matches — legitimately empty); >=2 is a real read error -> fail closed.
+  local _cached="" _crc=0
+  if [ -f .plinth/protected-paths ]; then
+    _cached="$(grep -Ev '^[[:space:]]*(#|$)' .plinth/protected-paths 2>/dev/null)"; _crc=$?
+    [ "$_crc" -le 1 ] || { echo "lane-guard: cannot read .plinth/protected-paths (grep rc=$_crc) — refusing (fail closed)" >&2; exit 5; }
+  fi
+  LG_PROT_CACHED="$_cached"; LG_PROT_CACHED_SET=1
   local pat
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
@@ -147,15 +174,17 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # FAIL-CLOSED enumeration: capture each producer separately and check its status — a real
   # git/find failure must NOT be conflated with a legitimately-empty result (which would yield a
   # partial baseline that later reads as "scope ok"). ls-files exits 0 on empty, non-zero on error.
-  local _gv _cp _cpdirs="" _d
+  local _gv _cp _d; local -a _cpdirs=()
   _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
     || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
   # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
-  # so a non-zero find is a REAL error (permission, etc.) -> fail closed.
-  for _d in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs"; do [ -d "$_d" ] && _cpdirs="$_cpdirs $_d"; done
+  # so a non-zero find is a REAL error (permission, etc.) -> fail closed. Collect into an ARRAY and
+  # expand quoted — a gitdir/worktree path containing spaces or glob chars must not word-split (that
+  # would enumerate the wrong dirs and silently omit hooks/refs, defeating the control-plane guard).
+  for _d in "$GITCOMMON/hooks" "$GITDIR/refs" "$GITCOMMON/refs"; do [ -d "$_d" ] && _cpdirs+=("$_d"); done
   _cp="$(for cp in "$GITCOMMON/config" "$GITDIR/config.worktree" "$GITCOMMON/info/exclude" "$GITCOMMON/packed-refs" "$GITDIR/HEAD"; do [ -n "${cp#/}" ] && { [ -e "$cp" ] || [ -L "$cp" ]; } && printf '%s\n' "$cp"; done)"
-  if [ -n "$_cpdirs" ]; then
-    _cpf="$(find $_cpdirs \( -type f -o -type l \) 2>/dev/null)" \
+  if [ "${#_cpdirs[@]}" -gt 0 ]; then
+    _cpf="$(find "${_cpdirs[@]}" \( -type f -o -type l \) 2>/dev/null)" \
       || { echo "lane-guard: control-plane 'find' failed — refusing (fail closed)" >&2; return 5; }
     # strip ONLY stock sample hooks (hooks/<name>.sample), not a legitimate ref that ends .sample:
     _cp="$(printf '%s\n%s\n' "$_cp" "$_cpf" | grep -vE '/hooks/[^/]*\.sample$' || true)"
@@ -287,10 +316,16 @@ case "$sub" in
     if [ -n "$bmode" ]; then
       # object exists (bmode set) -> a git show failure here is a REAL error, not absence: fail closed.
       bshow="$(git show "${base}:.plinth/protected-paths")" || { echo "scope: 'git show' of base protected-paths failed — refusing (fail closed)" >&2; exit 5; }
-      base_prot="$(printf '%s' "$bshow" | grep -Ev '^[[:space:]]*(#|$)' || true)"
+      # Strip comments/blanks and check the producer status explicitly (pipefail makes $? the grep
+      # status; printf can't fail): 0/1 are fine (1 = a policy of only comments/blanks), >=2 is a real
+      # error and must fail closed, never silently drop the BASE patterns and narrow protection.
+      base_prot="$(printf '%s' "$bshow" | grep -Ev '^[[:space:]]*(#|$)')"; brc=$?
+      [ "$brc" -le 1 ] || { echo "scope: could not parse base protected-paths (grep rc=$brc) — refusing (fail closed)" >&2; exit 5; }
     else base_prot=""; fi
-    # `|| true`: an EMPTY pattern set (no protected-paths anywhere) is legitimate — grep -v
-    # then exits 1 under pipefail, which must read as "no patterns", not as a failure.
+    # Union base + working-tree (now cached, status-checked) patterns. This is a pure in-memory
+    # transform on two already-status-checked captures: grep -v exits 1 when the union is empty
+    # (legitimate — no protected-paths anywhere) and sort cannot fail on valid input, so `|| true`
+    # here means "empty union", not a masked producer error.
     all_prot="$(printf '%s\n%s\n' "$base_prot" "$(prot_pats)" | grep -vE '^[[:space:]]*$' | sort -u || true)"
     while IFS= read -r p; do [ -n "$p" ] || continue; grep -E "$p" </dev/null 2>/dev/null; [ "$?" -le 1 ] || { echo "scope: .plinth/protected-paths (base or tree) has an INVALID regex ($p) — refusing to run (fail closed)" >&2; exit 5; }; done <<< "$all_prot"
     protected() { local p; while IFS= read -r p; do [ -n "$p" ] || continue; printf '%s' "$1" | grep -Eq "$p" && return 0; done <<< "$all_prot"; return 1; }

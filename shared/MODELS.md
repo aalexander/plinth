@@ -289,10 +289,16 @@ Three SEPARATE integration paths — don't conflate them (a driver did):
   `~/.codex/config.toml` model_provider needed anymore.)
 
 Default scaffold (`plinth init` writes `.plinth/config`): `audit_vendor = claude` —
-the v4 audit seat, a different family than both the WORKER (the diff's producer) and the codex
-reviewer (needs the `claude` CLI signed in; a non-fatal UNAVAILABLE if not).
-Under a Claude driver flip it to grok or agy to keep the audit cross-family.
-Revisit on any model/subscription change.
+the v4 audit seat, a different family than the codex reviewer (needs the `claude`
+CLI signed in; a non-fatal UNAVAILABLE if not). The enforced constraint is
+`audit_vendor != reviewer_vendor` (the audit is suppressed when they match), so
+under the default Claude-resident driver + codex reviewer this `claude` default is
+correct and intentional — do NOT flip it. Change it only when it would collide
+with `reviewer_vendor` (e.g. if you make `claude` the reviewer, set the audit to
+codex/grok/agy). Under the grok-worker topology `claude` also keeps the audit
+cross-family from the worker; under a plain Claude-resident session the audit is a
+fresh, isolated Opus pass over the same session's diff rather than a cross-family
+one. Revisit on any model/subscription change.
 
 ## Trust note (from the Fable 5 system card)
 Agent self-reports during autonomous runs are partly grader-aware performance —

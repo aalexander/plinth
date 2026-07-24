@@ -13,7 +13,11 @@
    audit seat), the grok CLI ([x.ai/cli](https://x.ai/cli); sign in — the WORKER
    seat, and the alternative resident driver), Codex CLI
    (`npm i -g @openai/codex`; sign in with ChatGPT — the reviewer seat),
-   `brew install jq`, and `~/.codex/config.toml`:
+   `brew install jq`, `python3` (a runtime dependency: the coreutils-free
+   hookprobe/lane wall-clock cap and the Grok/Agy review-JSON parsers all shell
+   out to it — without it hookprobe is always INCONCLUSIVE and those parser
+   paths fail; macOS ships it via the Command Line Tools / `xcode-select
+   --install`), and `~/.codex/config.toml`:
        model = "gpt-5.5"        # move to "gpt-5.6" once eligible (GA July 9 2026; CLI >= 0.144.0)
        model_reasoning_effort = "high"
 4. Connect Codex cloud code review once (chatgpt.com -> Codex): install the

@@ -1124,22 +1124,24 @@ run_hookprobe() {
   # The marker also CAPTURES stdin per event: Plinth's real hooks need Claude-shaped
   # JSON on stdin (and CLAUDE_PROJECT_DIR) to enforce anything, so invocation alone is
   # necessary but NOT sufficient — the report distinguishes the two.
-  ( cd "$d" && git init -qb main . >/dev/null 2>&1
-    mkdir -p .claude/hooks
-    printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ -t 0 ] || head -c 4096 > "%s/payload-$1" 2>/dev/null\nexit 0\n' "$marker" "$d" > .claude/hooks/probe.sh
-    chmod +x .claude/hooks/probe.sh )
+  # Guard the whole setup subshell: under set -e a failed git-init/mkdir/probe-write/chmod would
+  # exit 1 and COLLIDE with the NONE/SOME result code. A setup failure is not evidence about which
+  # events fired — it must surface as INCONCLUSIVE (exit 4), never as "executed NONE".
+  ( cd "$d" && git init -qb main . >/dev/null 2>&1 \
+    && mkdir -p .claude/hooks \
+    && printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ -t 0 ] || head -c 4096 > "%s/payload-$1" 2>/dev/null\nexit 0\n' "$marker" "$d" > .claude/hooks/probe.sh \
+    && chmod +x .claude/hooks/probe.sh ) \
+    || { echo "hookprobe: could not build the scratch .claude probe harness — INCONCLUSIVE (setup failed)"; exit 4; }
   p="$d/.claude/hooks/probe.sh"
   printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s SessionStart"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s PostToolUse"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s Stop"}]}]}}\n' \
     "$p" "$p" "$p" "$p" > "$d/.claude/settings.json" \
     || { echo "hookprobe: could not write the scratch .claude/settings.json — INCONCLUSIVE (setup failed)"; exit 4; }
   ver="$("$vendor" --version 2>/dev/null | head -1 || echo unknown)"
-  # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else perl alarm) — a CLI
-  # hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
+  # Wall-clock cap (same pattern as the lanes: timeout/gtimeout, else a python3 process-group
+  # cap) — a CLI hung on auth/network/sandbox must fail loud and bounded, not hang the verification.
   local cap="${PLINTH_HOOKPROBE_TIMEOUT:-120}" tmo=""
   command -v timeout >/dev/null 2>&1 && tmo="timeout"
   [ -z "$tmo" ] && command -v gtimeout >/dev/null 2>&1 && tmo="gtimeout"
-  # HARD cap: -k 10 escalates TERM->KILL after 10s so a CLI that ignores TERM cannot wait forever;
-  # the perl fallback SIGKILLs (9) its own process group rather than SIGALRM (catchable).
   # HARD cap: timeout -k 10 escalates TERM->KILL after 10s; the python3 fallback (no coreutils)
   # runs the CLI in its own process group and TERM-then-KILLs it, so a signal-ignoring CLI cannot
   # wait forever. Exit 124 on timeout (mapped to INCONCLUSIVE by the caller).
@@ -1154,8 +1156,6 @@ except subprocess.TimeoutExpired:
     except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
     sys.exit(124)' "$cap" "$@"; fi
   }
-  # `|| vrc=$?`, not `; vrc=$?`: this script runs set -e, and a bare failing subshell
-  # statement would abort the probe before the timeout/none branches can report.
   # The probe command leaves a SENTINEL (cli-ran.txt): hooks only had a chance to fire
   # if the CLI actually executed a tool command. Without the sentinel the result is
   # INCONCLUSIVE (unauthenticated CLI, sandbox refusal, model failure, …), never
