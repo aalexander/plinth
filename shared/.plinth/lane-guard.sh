@@ -210,11 +210,16 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # masked. Then sort. Any producer error fails CLOSED with a clean 5 (not a partial baseline). The
   # record loop still runs in a pipeline subshell (after `printf |`), so its `exit 5` paths propagate.
   local _tagged _snrc _gtag _ctag _ctrc
-  _gtag="$(printf '%s\n' "$_gv" | sed 's/^/G\t/')"   # a fixed-prefix sed on captured input cannot fail
+  # _gtag is a fixed-prefix sed on captured input: it exits 0 (success) or >=2 (error) — never 1 — so
+  # require EXACTLY 0 and fail closed otherwise. _ctag has a grep that legitimately exits 1 on an empty
+  # control-plane set, so it allows <=1 (a sed error there is >=2 -> caught). sort exits 0 or >=2.
+  local _gtrc
+  _gtag="$(printf '%s\n' "$_gv" | sed 's/^/G\t/')"; _gtrc=$?
+  [ "$_gtrc" -eq 0 ] || { echo "lane-guard: git-visible tag transform failed (sed rc=$_gtrc) — refusing (fail closed)" >&2; return 5; }
   _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | sed 's/^/C\t/')"; _ctrc=$?
   [ "$_ctrc" -le 1 ] || { echo "lane-guard: control-plane tag transform failed (rc=$_ctrc) — refusing (fail closed)" >&2; return 5; }
   _tagged="$(printf '%s\n%s\n' "$_gtag" "$_ctag" | sort -u)"; _snrc=$?
-  [ "$_snrc" -le 1 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
+  [ "$_snrc" -eq 0 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
   printf '%s\n' "$_tagged" | while IFS="$(printf '\t')" read -r tag f; do
     [ -n "$f" ] || continue
     if [ "$tag" = G ]; then
@@ -437,11 +442,13 @@ TOUCHED
     # (verdicts/receipts are sensitive-COMPARED above; the event feed is hook-appended), and
     # naming `.plinth` here would false-fire the warning on every hooked Claude lane run.
     # This is a NON-BLOCKING report — a producer error must NOT reject the lane (that would
-    # over-reject on a cosmetic note). But it must not SILENTLY claim hermeticity either: on a real
-    # enumeration error (rc>1; rc=1 = legitimately no ignored artifacts) say hermeticity is UNKNOWN.
-    iga="$(git ls-files -o -i --exclude-standard 2>/dev/null | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$')"; igrc=$?
-    if [ "$igrc" -gt 1 ]; then
-      echo "scope note: could not enumerate ignored artifacts (rc=$igrc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
+    # over-reject on a cosmetic note). But it must not SILENTLY claim hermeticity either. Capture the
+    # git PRODUCER status SEPARATELY: in the full pipeline a trailing `grep -v '^$'` rc=1 (empty) would
+    # otherwise mask an upstream `git ls-files` failure under pipefail. Then the pure filter chain.
+    _iraw="$(git ls-files -o -i --exclude-standard 2>/dev/null)"; _irc=$?
+    iga="$(printf '%s\n' "$_iraw" | grep -Ev '^\.plinth/session(/|$)' | sed 's#/.*##' | sort -u | grep -v '^$')"; igrc=$?
+    if [ "$_irc" -ne 0 ] || [ "$igrc" -gt 1 ]; then
+      echo "scope note: could not enumerate ignored artifacts (git rc=$_irc, filter rc=$igrc) — hermeticity UNKNOWN; treat CI's fresh install as the authority." >&2
     elif [ -n "$iga" ]; then
       echo "scope note: verification is NOT hermetic — ignored artifacts in the tree (not in the reviewed diff): $(printf '%s' "$iga" | tr '\n' ' ')" >&2
       echo "  -> your independent Rule-10 re-run may depend on this un-reviewed state; treat CI's fresh install as the authority." >&2

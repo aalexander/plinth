@@ -496,11 +496,13 @@ warn_stale_reusable_refs() {
   # a current ref under a decoy non-gating job must not suppress the warning. Best-effort
   # (this is an advisory warning, not a gate): read the uses: line within each job block.
   local fref cref
-  # Match the gating job key with OR without surrounding quotes (YAML permits `"floor":`/`'checks':`),
-  # and end the block at the NEXT top-level key whether quoted or not (a quoted key starts with a
-  # quote, not a letter — the old `[a-zA-Z]`-only terminator would read past it).
-  fref="$(awk '/^  ['\''"]?floor['\''"]?:/{f=1;next} f&&/uses:/{print;exit} f&&/^  ['\''"a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
-  cref="$(awk '/^  ['\''"]?checks['\''"]?:/{f=1;next} f&&/uses:/{print;exit} f&&/^  ['\''"a-zA-Z]/{exit}' "$ci" 2>/dev/null)"
+  # Match the gating job key robustly: ANY indentation (`[[:space:]]+`, not exactly two spaces),
+  # optional surrounding quotes (`"floor":` / `'checks':`), and optional space before the colon
+  # (`floor :`). End the block at the NEXT key-like line at any indent, whose identifier may start
+  # with a quote, letter, digit, or underscore (`_job` IDs are valid). The `uses:` check runs first,
+  # so it wins over the terminator on the block's own uses line.
+  fref="$(awk '/^[[:space:]]+['\''"]?floor['\''"]?[[:space:]]*:/{f=1;next} f&&/uses:/{print;exit} f&&/^[[:space:]]+['\''"A-Za-z0-9_]/{exit}' "$ci" 2>/dev/null)"
+  cref="$(awk '/^[[:space:]]+['\''"]?checks['\''"]?[[:space:]]*:/{f=1;next} f&&/uses:/{print;exit} f&&/^[[:space:]]+['\''"A-Za-z0-9_]/{exit}' "$ci" 2>/dev/null)"
   # A `checks:` job with NO plinth-checks.yml reusable ref is an intentional custom/direct gate
   # (template-supported) — not a stale Plinth ref. Only judge staleness of the REUSABLE refs
   # actually present; a customized checks job is not "stale".
@@ -1255,7 +1257,9 @@ except subprocess.TimeoutExpired:
   for ev in $evs; do
     # Distinguish grep's MATCH (0) / NO-MATCH (1) from a grep ERROR (>=2): an error must be
     # INCONCLUSIVE, never silently read as "event not invoked" (that would be false NONE/SOME).
-    printf '%s\n' "$fired" | grep -qx "$ev"; local _mg=$?
+    # `|| _mg=$?` (not a bare pipeline): under set -e a bare failing grep would abort with grep's
+    # status BEFORE we could branch to INCONCLUSIVE.
+    local _mg=0; printf '%s\n' "$fired" | grep -qx "$ev" || _mg=$?
     if [ "$_mg" -ge 2 ]; then
       echo "hookprobe: $vendor ($ver) — could not evaluate event membership for '$ev' (grep rc=$_mg) — INCONCLUSIVE (broken probe). Re-run."; exit 4
     elif [ "$_mg" = 0 ]; then

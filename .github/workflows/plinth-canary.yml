@@ -167,6 +167,19 @@ jobs:
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPK/.github/workflows/ci.yml"
           ( cd "$RPK" && git add -A && git commit -qm base >/dev/null )
           printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPK" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale ref under a QUOTED job key was not discovered (awk key match too strict)"; exit 1; }
+          # awk robustness: a 4-space-indented gate WITH a space before the colon (`    floor :`) is
+          # valid YAML — a stale ref there must still be discovered (the parser must not assume exactly
+          # two-space indent / no space before `:`):
+          RPI="$(mktemp -d)"; ( cd "$RPI"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPI" >/dev/null 2>&1 )
+          python3 - "$RPI/.github/workflows/ci.yml" <<'PYIND'
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          s=s.replace('\n  floor:\n', '\n    floor :\n')   # reindent to 4 spaces + space before colon
+          open(p,'w').write(s)
+          PYIND
+          sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|" "$RPI/.github/workflows/ci.yml"
+          ( cd "$RPI" && git add -A && git commit -qm base >/dev/null )
+          printf '%s' "$("$GITHUB_WORKSPACE/bin/plinth" update "$RPI" 2>&1)" | grep -q "pins the reusable" || { echo "::error::a stale gate at 4-space indent / space-before-colon was missed (awk assumed exact 2-space layout)"; exit 1; }
           # <current-sha>-old is a DIFFERENT ref -> must be STALE (exact-token boundary, not prefix):
           RPO="$(mktemp -d)"; ( cd "$RPO"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPO" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@${PSHA}-old|" "$RPO/.github/workflows/ci.yml"
@@ -1695,6 +1708,38 @@ jobs:
           chmod +x "$HPB/grok"
           ts="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; te="$(date +%s)"
           { [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "ALL FOUR" && [ "$(( te - ts ))" -lt 40 ]; } || { echo "::error::hookprobe production capped() did not KILL a TERM-RESISTANT --version (rc=$rc elapsed=$(( te - ts ))s) — cooperative cap would hang"; exit 1; }
+          # vrc==137: the MODEL CALL (not --version) ignores TERM and hangs -> capped() must KILL it and
+          # hookprobe must report TIMED OUT / INCONCLUSIVE(4), never NONE:
+          cat > "$HPB/grok" <<'HPMC'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          trap "" TERM; sleep 60
+          HPMC
+          chmod +x "$HPB/grok"
+          ms="$(date +%s)"; rc=0; out="$(PLINTH_HOOKPROBE_TIMEOUT=3 PATH="$HPB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?; me="$(date +%s)"
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -q "TIMED OUT" && [ "$(( me - ms ))" -lt 40 ]; } || { echo "::error::hookprobe did not TIME OUT a TERM-resistant model call via capped() (rc=$rc elapsed=$(( me - ms ))s) — vrc timeout branch unverified"; exit 1; }
+          # event-membership grep ERROR (all-events vendor writes the marker, then a shadowed failing
+          # grep) must be INCONCLUSIVE(4), never silently read as NONE/SOME:
+          SMG="$(mktemp -d)"
+          cat > "$SMG/grok" <<'HPEM'
+          #!/usr/bin/env bash
+          [ "${1:-}" = --version ] && { echo v; exit 0; }
+          touch cli-ran.txt
+          jq -r '.hooks[][]?.hooks[]?.command' .claude/settings.json 2>/dev/null | while IFS= read -r c; do sh -c "$c" </dev/null; done
+          echo done
+          HPEM
+          chmod +x "$SMG/grok"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SMG/grep"; chmod +x "$SMG/grep"
+          rc=0; out="$(PATH="$SMG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" hookprobe grok 2>&1)" || rc=$?
+          { [ "$rc" = 4 ] && printf '%s' "$out" | grep -qi "INCONCLUSIVE"; } || { echo "::error::hookprobe event-membership grep error not INCONCLUSIVE (rc=$rc, want 4) — false NONE/SOME"; exit 1; }
+          # capped() PYTHON fallback: extract hookprobe's OWN capped() and run its python branch (tmo="")
+          # against a TERM-resistant child -> must KILL (124), proving the coreutils-free hookprobe path:
+          CAPX="$(mktemp)"
+          awk '/^  capped\(\) \{/{c=1} c{print} c&&/^  \}$/{exit}' "$GITHUB_WORKSPACE/bin/plinth" | sed 's/^  //' > "$CAPX"
+          grep -q '^capped() {' "$CAPX" || { echo "::error::could not extract hookprobe capped() from bin/plinth"; exit 1; }
+          cs="$(date +%s)"; r=0
+          bash -c 'tmo=""; cap=1; source "$1"; capped bash -c '"'"'trap "" TERM; sleep 30'"'"'' _ "$CAPX" >/dev/null 2>&1 || r=$?
+          ce="$(date +%s)"
+          { [ "$r" = 124 ] && [ "$(( ce - cs ))" -lt 15 ]; } || { echo "::error::hookprobe capped() python fallback did not TERM->KILL a signal-ignoring child (exit=$r elapsed=$(( ce-cs ))s; want 124)"; exit 1; }
           # a cap of 0 DISABLES GNU `timeout` entirely (and a non-numeric value is meaningless); both
           # must be rejected as INCONCLUSIVE(4), never run uncapped (a silent hard-cap bypass):
           printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && { echo v; exit 0; }\ntouch cli-ran.txt\necho done\n' > "$HPB/grok"; chmod +x "$HPB/grok"
@@ -2344,6 +2389,17 @@ jobs:
             bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
+          # sibling: a shadowed failing `sed` (the tag/extraction transform) must ALSO fail closed —
+          # _gtag now requires exactly 0 and the other transforms allow only <=1 (a sed error is >=2):
+          SEDB="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 2\n' > "$SEDB/sed"; chmod +x "$SEDB/sed"
+          TSI="$(mktemp -d)"; ( cd "$TSI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; PATH="$SEDB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" -ne 0 ] || { echo "::error::snapshot did not fail closed when sed (tag transform) errored — partial baseline fail-open"; exit 1; }
+            bash "$LG" snapshot > "$TSI/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$SEDB:$PATH" bash "$LG" scope HEAD --snapshot "$TSI/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::scope did not fail closed when sed (extraction transform) errored (rc=$r)"; exit 1; } )
           # snapshot FAILS CLOSED (exit 5) when a git enumeration producer errors — a corrupt index
           # makes `git ls-files` fail; snapshot must NOT return an incomplete baseline as success:
           FCI="$(mktemp -d)"; ( cd "$FCI"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
