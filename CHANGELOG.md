@@ -135,7 +135,12 @@
 - **lane-guard scope checks the INDEX, and `plinth update` warns on stale reusable refs.** scope
   now unions `git diff $base` with `git diff --cached $base` — a lane that stages an
   out-of-spec/protected change and reverts the working tree (so `git diff $base` is clean while
-  the index still holds it, and the driver's later commit would ship it) is caught. Separately,
+  the index still holds it, and the driver's later commit would ship it) is caught. The same
+  restored-worktree trick is closed for SENSITIVE paths too: the before/after snapshot hashes the
+  WORKING TREE, so an in-spec built-in-sensitive file (e.g. `cert.pem`) whose index holds a staged
+  change but whose worktree was restored to base would leave `before == after`; scope now ALSO
+  flags any staged (`git diff --cached` vs base) change to a sensitive path directly — staged
+  content, exec-mode bit, or deletion — with the same spec-gated SECRET_SAFE carve-out. Separately,
   `plinth update` now WARNS (loudly, with the exact repin `sed` command) when an existing
   project's ci.yml pins the reusable floor/checks workflows at an OLDER Plinth commit — else the
   new floor checks never run while branch protection stays green. update does NOT rewrite the
