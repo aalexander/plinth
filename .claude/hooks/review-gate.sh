@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Plinth review gate v1 (shared, version-pinned). Stop hook: a session that
 # created commits may not end its turn until ./.plinth/review.sh has recorded
-# an APPROVED verdict at HEAD (.plinth/session/review/verdict.json).
+# an APPROVED verdict at HEAD (.plinth/session/review/<slug>/verdict.json,
+# branch-keyed by the slugified branch name).
 # Receives Claude Code Stop JSON on stdin. Exit 2 = block (stderr shown to the
 # model). Exit 0 = allow.
 #
