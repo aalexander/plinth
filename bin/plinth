@@ -355,7 +355,7 @@ github_preflight() {
     # Fetch actual check-runs ONCE and validate EVERY configured floor+checks context against them:
     # a context that is required but names no real job (jobs removed/renamed) is a ghost gate.
     runs="$(gh api --paginate "repos/$slug/commits/$defb/check-runs" -q '.check_runs[].name' 2>/dev/null || true)"
-    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^checks( / [^/]+)?\$" || true)"
+    ckctx="$(printf '%s\n' "$ctxs" | grep -E "^checks( / checks)?\$" || true)"
     # required-set membership (grep -xF) first:
     fmiss=""
     for want in "floor / secrets" "floor / sast" "floor / dependencies / osv-scan" "floor / harness"; do
@@ -365,7 +365,7 @@ github_preflight() {
     [ -n "$ckctx" ] || miss="${miss:+$miss, }checks"
     # then cross-check EVERY present floor/checks context against actual check runs (fail closed on
     # no data): a required context not among real check runs is a ghost gate that never reports.
-    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / [^/]+)?\$" || true)"
+    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / checks)?\$" || true)"
     if [ -n "$present" ]; then
       if [ -z "$runs" ]; then
         miss="${miss:+$miss, }UNVERIFIED: no check-run data on $defb — cannot confirm the required contexts name real jobs; re-run after the first PR"

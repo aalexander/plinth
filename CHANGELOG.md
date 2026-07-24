@@ -132,6 +132,15 @@
   MODE now dereferences the link (a chmod on a secret's referent is caught), and the stale-ref
   warning is tied to the actual `floor:`/`checks:` gating jobs (a decoy non-gating job can't
   suppress it). Canary covers both.
+- **lane-guard preflight and the lanes are HARD-CAPPED, and preflight requires the exact `checks`
+  context.** The auth preflights (`grok models` / `codex login status`) now run under a wall-clock cap
+  (`timeout`/`gtimeout`, else a python3 process-group cap) so a stalled auth CLI cannot hang the lane
+  before the capped implementation call; and each lane agent's cap now FAILS UNAVAILABLE (STATUS:
+  unavailable) instead of running the model UNCAPPED when neither a timeout binary nor python3 exists —
+  the hard-cap contract is never silently broken. The branch-protection preflight now accepts only the
+  exact `checks / checks` (reusable) or `checks` (direct) context, not any `checks / <segment>`. Snapshot
+  scope is the SUPERPROJECT: files inside a checked-out submodule are its own repo's concern (the gitlink
+  change itself is caught) — documented as the best-effort boundary.
 - **lane-guard scope checks the INDEX, and `plinth update` warns on stale reusable refs.** scope
   now unions `git diff $base` with `git diff --cached $base` — a lane that stages an
   out-of-spec/protected change and reverts the working tree (so `git diff $base` is clean while

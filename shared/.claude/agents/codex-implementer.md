@@ -82,7 +82,7 @@ except subprocess.TimeoutExpired:
     try: p.wait(timeout=10)
     except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
     sys.exit(124)' "$n" "$@"
-         else echo "WARN: no timeout binary or python3 — codex runs UNCAPPED" >&2; "$@"; fi
+         else echo "STATUS: unavailable — no timeout/gtimeout AND no python3 for the wall-clock cap; refusing to run codex UNCAPPED (the hard-cap contract cannot be honored). Install python3 (see SETUP.md) or coreutils." >&2; return 3; fi
        }
        RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \

@@ -30,9 +30,13 @@
 #       not — the lane must return STATUS: unavailable, never silently implement the task itself.
 #
 #   lane-guard.sh snapshot
-#       Print `<sha256>  <path>` for every existing SENSITIVE file — protected paths
-#       (.plinth/protected-paths) OR secret paths (.env, secrets/, credentials/, .ssh/, .aws/,
+#       Print `<sha256>  <path>` for every existing SENSITIVE file in the SUPERPROJECT — protected
+#       paths (.plinth/protected-paths) OR secret paths (.env, secrets/, credentials/, .ssh/, .aws/,
 #       id_rsa, id_ed25519), INCLUDING gitignored ones. The lane captures this BEFORE the run.
+#       NOT covered (best-effort boundary): files INSIDE a checked-out submodule — `git ls-files` does
+#       not descend into submodules, so a sensitive change within an authorized submodule appears only
+#       as the gitlink change. A submodule is a separate repo with its own review; treat its contents
+#       as out-of-scope for the superproject lane (the gitlink change itself IS caught).
 #
 #   lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>...
 #       After the run: every TRACKED change + NEW (non-ignored) file (vs baseref) must be a spec
@@ -43,6 +47,25 @@
 #       partial, does NOT accept). Exits 5 (fail LOUD) if the diff is uncomputable (non-repo /
 #       unresolvable base) — never accepts on an empty change list.
 set -uo pipefail
+
+_cap() {  # _cap <secs> <cmd...> — hard wall-clock cap for an external CLI call (auth preflight), so a
+  # stalled CLI cannot hang the lane. timeout/gtimeout (-k 5 TERM->KILL) if present, else a python3
+  # process-group cap; only uncapped (returns the command's own status) if NEITHER exists.
+  local _n="$1"; shift
+  local _T
+  if _T="$(command -v gtimeout || command -v timeout)"; then "$_T" -k 5 "$_n" "$@"; return; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import subprocess,sys,signal,os
+cap=float(sys.argv[1]); p=subprocess.Popen(sys.argv[2:], preexec_fn=os.setsid)
+try: sys.exit(p.wait(timeout=cap))
+except subprocess.TimeoutExpired:
+    g=os.getpgid(p.pid); os.killpg(g, signal.SIGTERM)
+    try: p.wait(timeout=5)
+    except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
+    sys.exit(124)' "$_n" "$@"; return
+  fi
+  "$@"
+}
 
 # ── shared: the SENSITIVE set = protected-paths patterns + a builtin secret denylist ──
 # Aligned with Plinth's own starter secret policy (templates/.gitignore: .env / .env.* / *.pem /
@@ -311,10 +334,10 @@ case "$sub" in
     case "$v" in
       grok)
         command -v grok >/dev/null 2>&1 || { echo "unavailable: grok not on PATH — install https://x.ai/cli"; exit 3; }
-        grok models >/dev/null 2>&1     || { echo "unavailable: grok not signed in — run 'grok login'"; exit 3; } ;;
+        _cap 30 grok models >/dev/null 2>&1 || { echo "unavailable: grok not signed in (or auth check hung) — run 'grok login'"; exit 3; } ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
-        codex login status >/dev/null 2>&1 || { echo "unavailable: codex not signed in — run 'codex login'"; exit 3; } ;;
+        _cap 30 codex login status >/dev/null 2>&1 || { echo "unavailable: codex not signed in (or auth check hung) — run 'codex login'"; exit 3; } ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
     echo "ready: $v" ;;

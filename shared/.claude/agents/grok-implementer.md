@@ -83,7 +83,7 @@ except subprocess.TimeoutExpired:
     try: p.wait(timeout=10)
     except subprocess.TimeoutExpired: os.killpg(g, signal.SIGKILL)
     sys.exit(124)' "$n" "$@"
-         else echo "WARN: no timeout binary or python3 — grok runs UNCAPPED" >&2; "$@"; fi
+         else echo "STATUS: unavailable — no timeout/gtimeout AND no python3 for the wall-clock cap; refusing to run grok UNCAPPED (the hard-cap contract cannot be honored). Install python3 (see SETUP.md) or coreutils." >&2; return 3; fi
        }
        # ISOLATION: grok auto-loads the repo's CLAUDE.md / AGENTS.md — which under Plinth are the
        # DRIVER contract. It has no doc-suppress flag, so scope it to the lane with an override rule
