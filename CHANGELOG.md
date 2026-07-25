@@ -18,7 +18,13 @@
   runs the SAME pattern set — `active_pats` plus the three builtin secret constants — as one
   `grep -E -f`, which ORs the patterns exactly as `sens_match`'s loop does, and the per-path
   record loop then runs over the handful of survivors. Same tree, same 25,006 ignored files:
-  **232.26 s → 0.43 s**, with the two snapshots byte-identical after sorting. `sens_match` still
+  **232.26 s → 0.43 s**, with the two snapshots byte-identical after sorting — measured on
+  one developer machine and NOT committed as a receipt, so treat the exact figures as
+  indicative. What the canary ENFORCES on every run is narrower and is the part to rely on:
+  a wall-clock bound on a >=5,000-file ignored tree, that gitignored secrets and a
+  policy-regex-only protected path are still enumerated, that `node_modules` is not
+  swept in, and — the security property itself — that the prefiltered snapshot is
+  byte-identical to an unfiltered reference run. `sens_match` still
   runs on every survivor and remains the sole classification authority, so the prefilter can only
   ever skip paths no pattern can match — it cannot widen or narrow policy. Fails closed on a grep
   error (rc ≥ 2), like every other producer in the script.

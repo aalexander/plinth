@@ -194,7 +194,14 @@ sens_prefilter() {  # stdin: candidate paths -> stdout: the sensitivity CANDIDAT
   # time either caller reaches here (validate_prot_pats runs first in both subcommands), so its
   # use inside a process substitution cannot swallow a producer error — same argument as the
   # existing `< <(prot_pats)` readers.
-  grep -E -f <(active_pats; printf '%s\n%s\n%s\n' "$SECRET_DIRS" "$SECRET_DIR_NODES" "$SECRET_FILES")
+  # -a is REQUIRED: without it GNU grep applies its binary-input heuristic to stdin, and a
+  # path list containing bytes it reads as an encoding error makes it print
+  # "Binary file (standard input) matches" and exit 0 INSTEAD of emitting the matching lines.
+  # The candidate list then collapses to one bogus record, the sensitive baseline empties, and
+  # a later `scope` reads clean — the same fail-open the rc>=2 gate exists to stop, but arriving
+  # with rc=0 where no status check can see it. Needs core.quotePath=false plus a non-UTF-8
+  # filename to trigger, which is exactly the kind of input an attacker chooses.
+  grep -a -E -f <(active_pats; printf '%s\n%s\n%s\n' "$SECRET_DIRS" "$SECRET_DIR_NODES" "$SECRET_FILES")
 }
 ck_sed() {  # sed on stdin, but EXIT 5 (fail closed) on ANY sed error. BSD/macOS sed returns rc=1 on a
   # real error (bad script/input) — indistinguishable from grep's legitimate "no match" rc=1 in a
