@@ -402,12 +402,27 @@ GHOSTEOF
         [ -z "$ghost" ] || miss="${miss:+$miss, }required context(s) not among actual check runs: $ghost"
       fi
     fi
+    # When 'receipt / verify' is among the required contexts, strict MUST be true.
+    # That check verifies the subject as of job execution; after it goes green the
+    # base can advance while the PR head and the successful status stay unchanged.
+    # Absent is treated exactly like false — do not assume a GitHub default.
+    # Only required when the receipt context is present; floor/checks-only configs
+    # are unaffected.
+    have_receipt=0
+    strict_ok=""
+    if printf '%s\n' "$ctxs" | grep -qxF "receipt / verify"; then
+      have_receipt=1
+      # jq `// empty`: null AND false both become empty; only JSON true stays "true".
+      strict_ok="$(printf '%s' "$out" | jq -r '.required_status_checks.strict // empty' 2>/dev/null || true)"
+    fi
     if [ -z "$ctxs" ]; then
       echo "  protection:    configured on $defb — but NO required status checks are set, so"
       echo "                 floor/checks do NOT gate merges. Add them (Settings -> Branches)."
     elif [ -n "$miss" ]; then
       echo "  protection:    configured on $defb — but required contexts are MISSING: $miss."
       echo "                 Present: $(printf '%s' "$ctxs" | tr '\n' ' '). Absent jobs do not gate merges."
+    elif [ "$have_receipt" = 1 ] && [ "$strict_ok" != "true" ]; then
+      echo "  protection:    configured on $defb — incomplete: set required_status_checks.strict=true while 'receipt / verify' is required (a green receipt check can describe a base that has since moved)."
     else
       echo "  protection:    configured on $defb (required: $(printf '%s' "$ctxs" | tr '\n' ' '))"
     fi

@@ -97,11 +97,15 @@ if git rev-parse --verify --quiet "origin/${base}" >/dev/null; then baseref="ori
 elif git rev-parse --verify --quiet "${base}" >/dev/null; then baseref="${base}"
 else die_infra "base ref '${base}' not found (tried origin/${base} and ${base})"
 fi
-# Pin the base to ONE immutable tip SHA before any subject-defining work. A ref
+# Pin the BASE to ONE immutable tip SHA before any subject-defining work. A ref
 # name is a moving label: if main advances mid-round, the reviewer, the classifier
 # and mint_receipt must not each re-resolve it independently (that minting a
 # subject the reviewer never saw). base_tip is that pin; baseref stays the
 # operator's spelling for display and for the receipt's base_ref field.
+# HEAD is captured once as `sha` below but is NOT re-bound everywhere: some later
+# ops still use symbolic HEAD. Residual (BUILD hardening backlog): a concurrent
+# local ref rewind/restore could make reviewed content differ from the commit
+# that receives the verdict — see MANUAL ## Noticed.
 base_tip="$(git rev-parse --verify "$baseref")" \
   || die_infra "cannot resolve tip of base ref '${baseref}'"
 

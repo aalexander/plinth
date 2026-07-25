@@ -4122,8 +4122,51 @@ jobs:
             out="$(GHP_JSON="$j" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
             printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           }
+          # Healthy configs that require receipt / verify MUST set strict:true. Omitting
+          # strict (or setting false) leaves a green receipt describing a base that may
+          # have moved — preflight must NOT report those as healthy (v4.7.2).
           FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]'
-          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
+          pf_probe "{\"required_status_checks\":{\"strict\":true,\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
+          # strict true / false / ABSENT must report DIFFERENT health when receipt is required:
+          # true → healthy; false → incomplete; absent (key missing) → incomplete (same class
+          # as false — do not assume a default). A fixture that cannot tell true from absent
+          # is not done.
+          pf_probe "{\"required_status_checks\":{\"strict\":true,\"contexts\":$FULLCTX}}" 'required: floor / secrets' strict-true
+          pf_probe "{\"required_status_checks\":{\"strict\":false,\"contexts\":$FULLCTX}}" 'incomplete: set required_status_checks.strict=true' strict-false
+          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'incomplete: set required_status_checks.strict=true' strict-absent
+          # Without the receipt context, strict is NOT required — floor/checks-only stays
+          # healthy even when strict is absent (discipline, not the receipt bound).
+          # Strip the scaffold's receipt job first: init wires plinth-receipt.yml, which
+          # would otherwise demand the receipt context and mask this case as MISSING.
+          FLOORONLY='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]'
+          dnr="$(mktemp -d)"; jnr="$PFG/floor-only.json"
+          printf '{"required_status_checks":{"contexts":%s}}' "$FLOORONLY" > "$jnr"
+          ( cd "$dnr"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dnr" >/dev/null 2>&1
+            # Drop the receipt job so the preflight does not require that context.
+            awk 'BEGIN{skip=0} /^  receipt:/{skip=1; next} skip && /^  [a-zA-Z]/{skip=0} skip{next} {print}' \
+              .github/workflows/ci.yml > .github/workflows/ci.yml.tmp \
+              && mv .github/workflows/ci.yml.tmp .github/workflows/ci.yml
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          out_nr="$(GHP_JSON="$jnr" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dnr" 2>&1)"
+          printf '%s' "$out_nr" | grep -q 'required: floor / secrets' || { echo "::error::preflight[no-receipt-strict-absent]: floor-only without strict should be healthy: $(printf '%s' "$out_nr" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          printf '%s' "$out_nr" | grep -q 'incomplete: set required_status_checks.strict=true' && { echo "::error::preflight[no-receipt-strict-absent]: strict wrongly required without receipt context"; exit 1; } || true
+          # Differentiating assertion: strict-true must NOT match the incomplete marker, and
+          # strict-absent must NOT match the healthy "required:" line that strict-true uses.
+          # (pf_probe already asserts the positive; these negative greps keep true≠absent.)
+          jtrue="$PFG/strict-true.json"; jabs="$PFG/strict-absent.json"
+          printf '{"required_status_checks":{"strict":true,"contexts":%s}}' "$FULLCTX" > "$jtrue"
+          printf '{"required_status_checks":{"contexts":%s}}' "$FULLCTX" > "$jabs"
+          dtrue="$(mktemp -d)"; dabs="$(mktemp -d)"
+          ( cd "$dtrue"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dtrue" >/dev/null 2>&1
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          ( cd "$dabs"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dabs" >/dev/null 2>&1
+            git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
+          out_true="$(GHP_JSON="$jtrue" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dtrue" 2>&1)"
+          out_abs="$(GHP_JSON="$jabs" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dabs" 2>&1)"
+          printf '%s' "$out_true" | grep -q 'required: floor / secrets' || { echo "::error::preflight[strict-true-neg]: expected healthy: $(printf '%s' "$out_true" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          printf '%s' "$out_true" | grep -q 'incomplete: set required_status_checks.strict=true' && { echo "::error::preflight[strict-true-neg]: healthy strict:true matched incomplete marker"; exit 1; } || true
+          printf '%s' "$out_abs" | grep -q 'incomplete: set required_status_checks.strict=true' || { echo "::error::preflight[strict-absent-neg]: expected incomplete: $(printf '%s' "$out_abs" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
+          printf '%s' "$out_abs" | grep -q 'required: floor / secrets' && { echo "::error::preflight[strict-absent-neg]: absent strict still reported healthy (required:)"; exit 1; } || true
           # ONE floor job present is NOT a gated floor — each of the four is independent:
           pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
           pf_probe '{"required_status_checks":{"contexts":["checks / checks"]}}' 'MISSING: floor/secrets' no-floor
@@ -4149,8 +4192,9 @@ jobs:
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
           # a DIRECT checks job (template-supported: in-line steps) has context exactly "checks" —
           # must read HEALTHY. Its context is cross-checked against the check-runs:
+          # (includes receipt → strict:true required for health)
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\nreceipt / verify\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks","receipt / verify"]}}' 'required: floor / secrets' direct-checks-job
+          pf_probe '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks","receipt / verify"]}}' 'required: floor / secrets' direct-checks-job
           # GHOST floor gate: a required floor context whose job is NOT among the actual check-runs
           # (job removed/renamed) must read MISSING, not healthy:
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
@@ -4182,7 +4226,7 @@ jobs:
           dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
             sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' > "$pj"
+          pj="$(mktemp)"; printf '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' > "$pj"
           out="$(GHP_JSON="$pj" PATH="$PGB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
           printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy WITHOUT effective pagination (--paginate missing): $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"

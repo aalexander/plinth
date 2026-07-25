@@ -42,7 +42,7 @@ you must apply without being asked:
   review at HEAD (a Claude driver's Stop gate enforces this locally; server-side,
   branch protection's required checks — floor + checks — gate the merge for every
   driver, and the review verdict itself is verified server-side wherever the
-  `receipt / verify` check is required); a driver
+  `receipt / verify` check is required with `strict:true`); a driver
   that waits to be asked deadlocks itself. (Opening the PR follows review; pushing
   follows the rules, not impulse.)
 - Rule 10 evidence — pasted runner output — overrides any brevity or style

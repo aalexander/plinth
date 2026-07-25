@@ -79,8 +79,10 @@ work: on every binding APPROVED the loop mints (or refreshes) a receipt note
 re-running the review at that same approved SHA mints it once the remote exists —
 (refs/notes/plinth-receipts) and the reusable `plinth-receipt.yml` verifies it
 server-side as the requirable `receipt / verify` context. It ENFORCES only where
-that context is wired in ci.yml AND required by branch protection; elsewhere the
-loop remains contract-bound. Honest residual: the check proves a receipt exists
+that context is wired in ci.yml, required by branch protection, AND
+`required_status_checks.strict=true` (the check verifies as of job execution;
+without strict a green status can describe a base that has since moved); elsewhere
+the loop remains contract-bound. Honest residual: the check proves a receipt exists
 for exactly this subject with its overrides disclosed — a fabricated receipt
 defeats it (skipping is DETECTABLE and AUDITABLE, not impossible).
 
@@ -101,8 +103,9 @@ not-invoked event is certainly unenforced; invoked events need end-to-end
 verification), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
 protection's required checks (floor + checks, and `receipt / verify` where it is
-wired and required — that one does gate the review verdict; the cloud review is
-advisory PR comments, not a requirable context).
+wired, required, and protected with `strict:true` — that one does gate the review
+verdict at merge; the cloud review is advisory PR comments, not a requirable
+context).
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
 specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
@@ -236,10 +239,10 @@ gate — nothing LOCAL forces it to review. It is bound instead by these rules (
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no
 requirable status context). The APPROVED-at-HEAD receipt check (v4.7+) closes that
-gap wherever its `receipt / verify` context is wired and required; where it is not,
-the loop stays CONTRACT-bound for a non-Claude driver. Either way: run the loop to
-APPROVED before you open the PR — that is the contract, whether or not a server
-gate enforces it in a given repo.
+gap wherever its `receipt / verify` context is wired, required, and protected with
+`strict:true`; where it is not, the loop stays CONTRACT-bound for a non-Claude
+driver. Either way: run the loop to APPROVED before you open the PR — that is the
+contract, whether or not a server gate enforces it in a given repo.
 
 ## Upstream channel — two-way, with the Plinth maintainer
 Tooling findings and improvement proposals are never fixed in-project (that is

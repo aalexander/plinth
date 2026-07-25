@@ -9,6 +9,14 @@ collected twice.) The convergence lever now lives in `shared/reviewer.md`: the r
 instructed to enumerate every instance of a class it finds, and to say so explicitly when
 it has checked a class and found only one. Recording what actually shipped, including the
 parts that were wrong on the way:
+- **`github_preflight` requires `strict:true` whenever `receipt / verify` is required.**
+  A green receipt check describes the subject as of job execution; without
+  `required_status_checks.strict=true` the base can advance while that status stays green.
+  Preflight no longer reports receipt-required configs as healthy when strict is false or
+  ABSENT (absent is treated like false — no assumed default). Canary covers true / false /
+  absent and asserts health differs; floor/checks-only configs without the receipt context
+  are unaffected. MANUAL's abbreviated enablement summaries now state the bound (wire +
+  require + strict), not wire-and-require alone.
 - **PRE-SDIR class closed for the jq sibling.** `SDIR` is resolved immediately after the
   git-repo check and *before* the `jq` check, so `die_infra "jq not found"` writes
   `last-error` and the Stop gate can take its infra escape. `die_infra` still refuses
@@ -17,7 +25,8 @@ parts that were wrong on the way:
 - **Receipt check post-success bound documented honestly.** A green `receipt / verify`
   describes the subject as of job execution; post-success base movement is outside what
   any status check can detect. `MANUAL.md` and `.plinth/NEEDS-HUMAN.md` now require
-  `"strict":true` wherever that context is required; `plinth-receipt.yml` states the bound.
+  `"strict":true` wherever that context is required; `plinth-receipt.yml` states the bound;
+  `github_preflight` enforces the same shape when reporting protection health.
 - **Three canary greps replaced with behavioural probes.** Notes-ref probe (exit 2 =
   absent vs other nonzero = infrastructure) is driven with a `git` stub; repo-mismatch
   redaction places the marker in both the recorded and expected `$REPO` paths; mid-round
@@ -36,12 +45,14 @@ parts that were wrong on the way:
   (same pattern as the no-mint diagnostic). Credential fixtures cover a secret in the OWNER
   position and the REPO position of an accepted two-segment origin, and match
   case-insensitively (the parser lowercases).
-- **Reviewed subject is pinned for the whole round.** The base ref is resolved to ONE
-  immutable tip SHA before the diff is taken; that SHA drives the diff, risk
-  classification, and minting. Before minting, the named ref is re-resolved and the round
-  ABORTS (`die_infra`, exit 2) if it has moved — naming old and new tips and telling the
-  operator to re-run. No silent continue and no in-place re-review of a subject the
-  reviewer never saw.
+- **Base is pinned for the whole round (not the whole subject).** The base ref is
+  resolved to ONE immutable tip SHA (`base_tip`) before the diff is taken; that SHA
+  drives the diff, risk classification, and minting. Before minting, the named base ref
+  is re-resolved and the round ABORTS (`die_infra`, exit 2) if it has moved — naming
+  old and new tips and telling the operator to re-run. HEAD is captured once as `sha`
+  but some later subject-defining ops still re-resolve symbolic HEAD — a concurrent
+  local ref rewind could make reviewed content differ from the commit receiving the
+  verdict (hardening backlog under MANUAL `## Noticed`; not pinned in this release).
 - **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
   failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
   `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now
