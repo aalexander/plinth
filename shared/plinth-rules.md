@@ -148,7 +148,14 @@ review DID NOT RUN — fix the mechanical problem or surface it; never treat it 
 pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER (default 8 rounds) —
 a loop that has not converged by then is a design problem, not a review problem;
 STOP and surface to the human (never restart the loop or clear session state to
-dodge the cap). Never edit files under `.plinth/session/` or version-pinned Plinth tooling
+dodge the cap). The PLINTH_* review overrides (PLINTH_REVIEWER_VENDOR,
+PLINTH_REVIEWER_MODEL, PLINTH_AUDIT_VENDOR, PLINTH_AUDIT_MODEL, PLINTH_ROUND_CAP)
+are OPERATOR-ONLY: the driver must NEVER set them — using them to change the
+reviewer, drop the cross-vendor audit, or raise the round cap is the same
+tampering class as dodging the cap, whatever the intent. Every override any round
+recorded in verdict.json MUST be listed in the PR body's audit summary (seat,
+value, round); an override present in session state but missing from the PR body
+is a tampering-class omission. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (under a Claude driver the guard blocks both at the tool level; for EVERY driver the
 review and CI reject such edits as tampering — so do not rely on the local hook, just
 don't do it). Verdict policy: blockers/majors in project code block;

@@ -5,10 +5,14 @@
   only the OPEN findings from the prior round plus the CUMULATIVE fix diff since the LAST
   UNANCHORED FULL READ (round 1, or the latest clean-slate confirmation — recorded in the
   per-loop `lastfullread` marker), never the full branch diff + full finding history — the
-  quadratic payload growth that overflowed the reviewer CLI on long loops (upstream issue
-  #20, corroborated on this repo's own 20-round loop). Anchoring at the last full read
-  closes the coverage story for binding verifies: the full pass at the anchor plus this
-  cumulative diff covers the whole branch in one session. The reviewer keeps read-only repo
+  quadratic payload growth (full diff × full finding history × N rounds) that overflowed
+  the reviewer CLI on long loops (upstream issue #20, corroborated on this repo's own
+  20-round loop). Anchoring at the last full read closes the coverage story for binding
+  verifies: the full pass at the anchor plus this cumulative diff covers the whole branch
+  in one session. Honest bound: on a long Tier-1 (or never-resuming grok) loop no new
+  fresh round re-anchors, so the cumulative diff grows toward the branch diff — the
+  GUARANTEED savings there are the dropped finding-history payload and the eliminated
+  repeat clean-slate confirmations (roughly halving rounds), not a bounded diff size. The reviewer keeps read-only repo
   access for context; one composed prompt serves both the scoped and the full-diff-fallback
   form (no valid anchor: rebase/legacy state). ACCEPTED TRADEOFF: findings marked resolved
   drop out of the tracked list — a later regression re-appears only as code in the
@@ -33,11 +37,13 @@
   loop that must legitimately continue.
 - **On-the-fly seat overrides (operator escape hatch).** Env `PLINTH_REVIEWER_VENDOR` /
   `PLINTH_REVIEWER_MODEL` / `PLINTH_AUDIT_VENDOR` / `PLINTH_AUDIT_MODEL` /
-  `PLINTH_ROUND_CAP` beat the ratified-base config for ONE run — announced on stdout and
-  recorded in `verdict.json` (a single `overrides` object built once from the env; `vendor`
-  is now always recorded too), so the PR audit shows exactly which seat produced each
-  verdict. Auditability over prevention, per the trusted-operator model; the base config
-  stays the governing default. On an ACTUAL vendor change without a model override the base
+  `PLINTH_ROUND_CAP` beat the ratified-base config for ONE run — OPERATOR-ONLY by rule
+  (the driver setting them is tampering-class), announced on stdout and recorded in
+  `verdict.json` (a single `overrides` object built once from the env; `vendor` is now
+  always recorded too). verdict.json is local session state, so the durable disclosure is
+  the driver-rules requirement that the PR body's audit summary list every recorded
+  override. Auditability over prevention, per the trusted-but-fallible model; the base
+  config stays the governing default. On an ACTUAL vendor change without a model override the base
   per-tier (and audit) models are dropped — they are per-vendor names and would fail loud
   on a different CLI — while a SAME-vendor override keeps the ratified seat model. A
   mid-loop vendor swap never resumes the previous vendor's thread: `resumable_prev` now

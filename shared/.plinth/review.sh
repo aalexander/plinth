@@ -167,18 +167,23 @@ AUDIT_VENDOR="$(bcfg audit_vendor)"
 # dashboard) is the codex config model for codex, else the vendor name; a per-tier
 # reviewer model (RV_MODEL, set below) overrides it.
 REVIEWER_VENDOR="$(bcfg reviewer_vendor)"; [ -n "$REVIEWER_VENDOR" ] || REVIEWER_VENDOR="codex"
-# ON-THE-FLY SEAT OVERRIDES (operator escape hatch — e.g. a vendor's credits run
-# out mid-loop). Env beats the ratified-base config for THIS RUN ONLY; every
-# active override is announced here AND recorded in verdict.json (a single
-# `overrides` object, built once below from the env) so the PR audit shows
-# exactly which seat produced each verdict — auditability over prevention, per
-# the trusted-operator model. The base config stays the governing default;
-# making a seat change stick still means a main commit. The reviewer vendor is
-# validated by the enum below (it is a hard requirement); the AUDIT vendor is
-# deliberately NOT pre-validated — the audit seat is best-effort by design, and
-# run_auditor's own dispatch records an unknown/failed vendor as UNAVAILABLE
-# without blocking the loop (it also accepts aliases, e.g. gemini, that a
-# pre-check here would wrongly reject).
+# ON-THE-FLY SEAT OVERRIDES — OPERATOR-ONLY escape hatch (e.g. a vendor's
+# credits run out mid-loop). Env beats the ratified-base config for THIS RUN
+# ONLY. The driver rules forbid the DRIVER from ever setting these (tampering
+# class: it could swap in an easier reviewer, drop the cross-vendor audit, or
+# raise the cap); mechanically this script cannot tell who exported an env var,
+# so the teeth are (a) that rule, (b) every override being announced here and
+# recorded in verdict.json (LOCAL session state — .plinth/session/ is
+# gitignored), and (c) the driver-rules requirement that the PR body's audit
+# summary list every recorded override, where the human and the cloud review
+# can see it. Auditability over prevention, per the trusted-but-fallible
+# model; the base config stays the governing default and a seat change sticks
+# only via a main commit. The reviewer vendor is validated by the enum below
+# (a hard requirement); the AUDIT vendor is deliberately NOT pre-validated —
+# the audit seat is best-effort by design, and run_auditor's own dispatch
+# records an unknown/failed vendor as UNAVAILABLE without blocking the loop
+# (it also accepts aliases, e.g. gemini, that a pre-check would wrongly
+# reject).
 BASE_REVIEWER_VENDOR="$REVIEWER_VENDOR"
 BASE_AUDIT_VENDOR="$AUDIT_VENDOR"
 OVERRIDES="$(jq -cn --arg rv "${PLINTH_REVIEWER_VENDOR:-}" --arg rm "${PLINTH_REVIEWER_MODEL:-}" \

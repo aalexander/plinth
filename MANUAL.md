@@ -366,8 +366,10 @@ Two operator chores the rules generate:
    surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
    `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
-   credits run out mid-loop); every override is announced and recorded in
-   `verdict.json`, and a vendor swap never resumes the previous vendor's thread.
+   credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
+   tampering-class), every override is announced and recorded in `verdict.json`
+   and must be listed in the PR body's audit summary, and a vendor swap never
+   resumes the previous vendor's thread.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
@@ -678,6 +680,11 @@ installed copies.
   "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
   --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
   pre-existing pattern, hardening backlog per the phase charter.)
+- **v4.6 canary gaps (round 6 minors):** no fixture for a NON-NUMERIC
+  PLINTH_ROUND_CAP (must die_infra); no end-to-end two-round fixture proving a
+  mid-loop PLINTH_REVIEWER_VENDOR swap falls back to a scoped verify rather than
+  ever reaching a foreign --resume (covered today only by the extracted
+  resumable_prev unit calls). Add with the next canary touch.
 - **v4.6 canary gap: explicit PLINTH_AUDIT_MODEL pass-through untested.** Fixture 4d
   covers drop-model-on-audit-vendor-swap, but no test asserts an explicit
   PLINTH_AUDIT_MODEL survives and reaches the auditor CLI (structurally identical to
