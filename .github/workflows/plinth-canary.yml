@@ -1982,6 +1982,63 @@ jobs:
             printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k) MOVED: an approval was REUSED after the merge base moved under a fixed HEAD — the reviewed diff shrank, so this mints a receipt for a diff nobody reviewed and the server check verifies it as sound"; exit 1; } || true
             [ "$(cat "$R9K/state")" != "$b2" ] || { echo "::error::(9k) MOVED: no real round ran after the base moved"; exit 1; }
             printf '%s' "$out2" | grep -qE 'BASE HAS|has MOVED' || { echo "::error::(9k) MOVED: the base movement was not announced — an operator sees an unexplained paid round: $(printf '%s' "$out2" | tail -c 200)"; exit 1; } )
+          # (9k2) The same binding rules on the CHANGES_NEEDED side, plus legacy fail-closed
+          # and fully-qualified ref spellings. (9k) covers only the APPROVED path, and the
+          # "fails closed on a pre-v4.7.1 verdict" claim was asserted in prose before it was
+          # implemented — so it gets a test, not a sentence.
+          R9L="$(mktemp -d)"; mkstate "$R9L"; mk_cap_codex "$R9L"
+          r9ld="$(mktemp -d)"
+          ( cd "$r9ld"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9ld" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; L1="$(git rev-parse HEAD)"
+            echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
+            # EVERY round must return CHANGES_NEEDED: mk_cap_codex defaults to APPROVED for
+            # any round with no verdict file, which would silently move the loop onto the
+            # APPROVED fast path and make the guard assertions below test the wrong branch.
+            for r9ln in 1 2 3 4; do printf '%s' "$CNF" > "$R9L/verdict-$r9ln"; done
+            PATH="$R9L:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            # CHANGES_NEEDED + base MOVED at a fixed HEAD: must RESET, not refuse. Refusing
+            # strands the operator — the loop neither continues nor restarts, and the only
+            # escape is faking a commit.
+            git branch -f main "$L1"
+            b="$(cat "$R9L/state")"
+            out="$(PATH="$R9L:$PATH" ./.plinth/review.sh main 2>&1)" || true
+            printf '%s' "$out" | grep -q 'HEAD unchanged since round' && { echo "::error::(9k2) CHANGES_NEEDED + moved base refused with 'HEAD unchanged' — the prior round read a diff that no longer exists, so this must start a new loop, not strand the operator"; exit 1; } || true
+            [ "$(cat "$R9L/state")" != "$b" ] || { echo "::error::(9k2) CHANGES_NEEDED + moved base ran no round at all"; exit 1; }
+            # ...but with NOTHING moved the guard must STILL fire, or it has been neutered.
+            b2="$(cat "$R9L/state")"
+            out2="$(PATH="$R9L:$PATH" ./.plinth/review.sh main 2>&1)" || true
+            printf '%s' "$out2" | grep -q 'HEAD unchanged since round' || { echo "::error::(9k2) the unchanged-HEAD guard no longer fires when the context really IS unchanged — the loop would re-review an identical diff on every invocation"; exit 1; }
+            [ "$(cat "$R9L/state")" = "$b2" ] || { echo "::error::(9k2) a round was billed despite an unchanged HEAD and context"; exit 1; } )
+          # (9k3) LEGACY verdict fail-closed + fully-qualified base spellings.
+          R9M="$(mktemp -d)"; mkstate "$R9M"; mk_cap_codex "$R9M"
+          r9md="$(mktemp -d)"
+          ( cd "$r9md"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9md" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            PATH="$R9M:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            # A v4.7.0 verdict carries diff_digest but NO merge_base. The anchor is unknown,
+            # so reuse must be refused — asserting the digest alone would let it through.
+            jq 'del(.merge_base)' .plinth/session/review/feat/verdict.json > "$r9md/v.tmp" && mv "$r9md/v.tmp" .plinth/session/review/feat/verdict.json
+            b="$(cat "$R9M/state")"
+            out="$(PATH="$R9M:$PATH" ./.plinth/review.sh main 2>&1)" || true
+            printf '%s' "$out" | grep -q 'Nothing new to review' && { echo "::error::(9k3) a LEGACY verdict with no merge_base was reused and reminted — the documented fail-closed behaviour was prose only"; exit 1; } || true
+            [ "$(cat "$R9M/state")" != "$b" ] || { echo "::error::(9k3) the legacy-verdict path ran no round"; exit 1; }
+            # Fully-qualified spellings must canonicalize into the RECEIPT, or receipt-verify
+            # (which normalizes the PR base to a bare name) rejects a legitimate review.
+            r9mnote="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
+            [ "$r9mnote" = "main" ] || { echo "::error::(9k3) the receipt recorded base_ref '$r9mnote', expected the canonical 'main'"; exit 1; }
+            b3="$(cat "$R9M/state")"
+            out3="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/heads/main 2>&1)" || true
+            printf '%s' "$out3" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/heads/main' was not recognised as the same base as 'main' — a fully-qualified spelling buys a spurious paid round and hashes a non-canonical base into the receipt subject: $(printf '%s' "$out3" | tail -c 200)"; exit 1; }
+            [ "$(cat "$R9M/state")" = "$b3" ] || { echo "::error::(9k3) a fully-qualified base spelling billed a round"; exit 1; } )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes

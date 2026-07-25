@@ -41,6 +41,40 @@ parts that were wrong on the way:
   matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
   to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
   stale the moment the fixture grew, and were wrong twice.)
+- **Base spellings are CANONICALIZED before they are stored or hashed.** `main`,
+  `origin/main`, `refs/heads/main` and `refs/remotes/origin/main` all name one base, but
+  only the `origin/` prefix was stripped — so the fully-qualified forms were written to the
+  verdict and hashed into the RECEIPT SUBJECT verbatim, while `receipt-verify.sh`
+  normalizes the PR's base to a bare name. A legitimately reviewed PR then failed
+  `base_ref` or subject-digest verification. `canon_base()` strips `refs/heads/`,
+  `refs/remotes/` and `origin/` in that order (the order matters:
+  `refs/remotes/origin/main` keeps its `origin/` otherwise).
+- **"HEAD unchanged" no longer strands a loop whose BASE moved.** After CHANGES_NEEDED the
+  refusal fired on HEAD alone, so a moved or reselected base left the loop unable to
+  continue OR restart — the only escape was faking a commit. It now fires only when the
+  base identity and merge base are also unchanged; otherwise the run falls through to the
+  new-loop reset. The guard still fires when the context genuinely is unchanged, which is
+  asserted alongside, because relaxing a guard without testing that it still fires is how
+  you delete it by accident.
+- **Tier 0 now performs the new-loop reset it was skipping.** A Tier-0 grant is round 0 —
+  by definition a new loop — but it exits before the round bookkeeping, so a branch whose
+  base advanced into Tier-0 territory kept the previous loop's findings, coverage anchor
+  and override ledger. The receipt was already correct (round 0 refuses to read a ledger),
+  but the leftover `usage.jsonl` described overrides that never applied to this subject,
+  leaving the audit trail contradicting the disclosure either way it was resolved.
+- **The legacy fail-closed behaviour is now implemented, not just claimed.** A v4.7.0
+  verdict carries `diff_digest` but no `merge_base`; the remint checked only the digest, so
+  such a verdict could be reused despite an unknown anchor — contradicting both the comment
+  above it and this changelog. Reuse now requires the recorded merge base to be present and
+  unmoved. Fixtures (9k2)/(9k3) cover the CHANGES_NEEDED side, the legacy verdict, and
+  fully-qualified spellings.
+- `round_cap` now rejects absurdly large digit-only values instead of letting them WRAP
+  negative past the arithmetic range and silently disable the breaker an operator was
+  trying to raise. Same guard on the `PLINTH_ROUND_CAP` override.
+- Stale sibling claims corrected: the scaffolded `.plinth/config` and `PLANNING-PROMPT.md`
+  both still told new projects that `round_cap` defaults to 8, and `MANUAL.md` described a
+  reviewer-vendor swap as falling back to a scoped verify (it forces a fresh FULL round
+  since upstream #26) while carrying a duplicated `## Noticed` entry.
 - **Approval and coverage reuse now key on IMMUTABLE state, not on a base ref's spelling.**
   The first fix compared `prev_base = baseref` literally, which is wrong in both
   directions because a ref is a moving label. If `main` advances ONTO an ancestor of the

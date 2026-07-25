@@ -342,8 +342,9 @@ Two operator chores the rules generate:
      (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
      reviewer rules in `.plinth/reviewer.md`. Approvals bind directly in every
      mode: a resumed approval carries its warm first-pass full read, and a
-     SCOPED verify (a fresh session used when the prior thread is too large,
-     dead, or from a different vendor) reads the open findings plus the
+     SCOPED verify (a fresh session used when the prior thread is too large or
+     dead — NOT for a vendor swap, which forces a fresh FULL round because
+     coverage credit does not transfer between vendors) reads the open findings plus the
      CUMULATIVE fix diff since the last full read — across the loop's sessions
      the branch is fully covered (the anchor round read everything up to the
      anchor; this session reads everything after it, with repo read access for
@@ -814,11 +815,16 @@ installed copies.
   ROUND_BUDGET, RESUME_MAX use digit-only case checks; a value like `08` then
   crashes bash arithmetic as invalid octal). round_cap now normalizes with
   `$((10#...))`; apply the same to the sibling knobs. (v4.6 round 10, minor.)
-- **v4.6 canary gaps (round 6 minors):** no fixture for a NON-NUMERIC
-  PLINTH_ROUND_CAP (must die_infra); no end-to-end two-round fixture proving a
-  mid-loop PLINTH_REVIEWER_VENDOR swap falls back to a scoped verify rather than
-  ever reaching a foreign --resume (covered today only by the extracted
-  resumable_prev unit calls). Add with the next canary touch.
+- **Canary gap: a non-numeric `PLINTH_ROUND_CAP` env override has no fixture.**
+  The config-file path is covered by (3c), which proves a malformed `round_cap`
+  aborts before a round is spent; the equivalent env-override validation
+  (`die_infra` on a non-integer `PLINTH_ROUND_CAP`) is asserted nowhere. Same
+  class as the config gap (3c) closed. Add with the next canary touch.
+  <!-- RESOLVED: the sibling half of this entry claimed no end-to-end fixture for a
+       mid-loop reviewer-vendor swap, and described the swap as falling back to a
+       SCOPED VERIFY. Both were stale: fixture 4h covers it end to end, and since
+       upstream #26 a vendor swap forces a fresh FULL round, because coverage credit
+       does not transfer between vendors. -->
 - **v4.6 canary gap: explicit PLINTH_AUDIT_MODEL pass-through untested.** Fixture 4d
   covers drop-model-on-audit-vendor-swap, but no test asserts an explicit
   PLINTH_AUDIT_MODEL survives and reaches the auditor CLI (structurally identical to
@@ -845,11 +851,6 @@ installed copies.
      the ABSENT knob and (3c) for a malformed value. Kept visible briefly because a first
      attempt claimed (3b) closed this on its own — it cannot, since (3b) asserts the knob
      is missing, and unset vs explicit zero are separate documented inputs. -->
-- **Canary gap: a non-numeric `PLINTH_ROUND_CAP` env override has no fixture.**
-  The config-file path is covered by (3c), which proves a malformed `round_cap`
-  aborts before a round is spent; the equivalent env-override validation
-  (`die_infra` on a non-integer `PLINTH_ROUND_CAP`) is asserted nowhere. Same
-  class as the config gap that (3c) closed. Add with the next canary touch.
 - **Canary seat-override fixtures use fixed /tmp capture paths**
   (`/tmp/ov-claude-args`, `/tmp/ov-grok-args`). Sequential today, race-prone if
   the canary job is ever split or parallelized; prefer mktemp per fixture.
