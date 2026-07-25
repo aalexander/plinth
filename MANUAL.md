@@ -705,6 +705,13 @@ installed copies.
   on the next canary touch. (c) `.DS_Store` is git-tracked and churns — untrack and
   gitignore it. (d) The full branch diff is still materialized+hashed even on scoped verify
   rounds where it is not sent — lazy-materialize if large-repo wall-clock ever matters.
+- **Chain-of-sessions binding: the binding APPROVED session never held pre-anchor
+  code.** The session that produces a binding APPROVED sees only the open findings
+  plus the cumulative diff since `lastfullread`; pre-anchor code is reachable only
+  via optional read tools, so a fix diff can break a pre-anchor invariant that no
+  binding session is structurally guaranteed to re-read. Distinct from the
+  resolved-findings-drop tradeoff above (that is about dropped FINDINGS; this is
+  about never-re-read CODE). (v4.6 round 12, minor.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
