@@ -1630,25 +1630,50 @@ run_changelog_collate() {
   # Collect fragment paths (sorted for a deterministic summary + body order).
   # README.md is documentation, never a fragment. An empty or absent dir is a
   # no-op (exit 0), not an error — nothing to collate is a successful release step.
-  local frags="" f base slug
+  local frags="" f base slug _flist
   if [ -d "$cdir" ]; then
-    # find (not shell glob) so hidden names like .release.md are not silently
-    # skipped — a bad slug must hard-error, never drop release prose.
+    # Enumerate every *.md name (including hidden and non-regular entries).
+    # Do NOT use -type f: that silently omits symlinks the prior glob accepted.
+    # Type validation below accepts regular files and symlinks-to-files, and
+    # hard-errors on directories / broken links so release prose cannot hide.
+    # Capture find status: a failed find must not become a successful no-op.
+    _flist="$(mktemp)" || { echo "changelog-collate: mktemp failed while listing fragments" >&2; exit 1; }
+    if ! find "$cdir" -maxdepth 1 -name '*.md' -print > "$_flist"; then
+      rm -f "$_flist"
+      echo "changelog-collate: failed to list $cdir/*.md" >&2
+      exit 1
+    fi
+    # Sort for deterministic summary/body order.
+    if ! LC_ALL=C sort -o "$_flist" "$_flist"; then
+      rm -f "$_flist"
+      echo "changelog-collate: failed to sort fragment list" >&2
+      exit 1
+    fi
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       base="$(basename "$f")"
       [ "$base" = "README.md" ] && continue
-      # .gitkeep is not .md; any other non-README *.md (including dotfiles) is a
-      # fragment candidate and must pass the slug grammar.
+      if [ -d "$f" ]; then
+        rm -f "$_flist"
+        echo "changelog-collate: $f is a directory (expected a fragment file)" >&2
+        exit 1
+      fi
+      # [ -f ] is true for a regular file or a symlink to one; false for a
+      # broken symlink or special file — both must hard-error, not skip.
+      if [ ! -f "$f" ]; then
+        rm -f "$_flist"
+        echo "changelog-collate: $f is not a readable regular file (broken symlink or special file?)" >&2
+        exit 1
+      fi
       slug="${base%.md}"
       if ! printf '%s' "$slug" | LC_ALL=C grep -Eq '^[a-z0-9][a-z0-9._-]*$'; then
+        rm -f "$_flist"
         echo "changelog-collate: invalid fragment slug in $f (expected changelog.d/<slug>.md where slug matches [a-z0-9][a-z0-9._-]*)" >&2
         exit 1
       fi
       frags="$frags$f"$'\n'
-    done <<EOF
-$(find "$cdir" -maxdepth 1 -type f -name '*.md' | LC_ALL=C sort)
-EOF
+    done < "$_flist"
+    rm -f "$_flist"
   fi
   if [ -z "$frags" ]; then
     echo "plinth changelog-collate: nothing to collate in $cdir"

@@ -4179,6 +4179,25 @@ jobs:
           printf '%s' "$out" | grep -q '\.release\.md' || { echo "::error::hidden-slug error did not name .release.md"; exit 1; }
           cmp -s "$CLChid/VERSION.bak" "$CLChid/VERSION" || { echo "::error::hidden-slug path rewrote VERSION"; exit 1; }
           cmp -s "$CLChid/CHANGELOG.md.bak" "$CLChid/CHANGELOG.md" || { echo "::error::hidden-slug path rewrote CHANGELOG.md"; exit 1; }
+          # Symlink-to-regular-file fragment must collate (find -type f would drop it).
+          # Target lives outside changelog.d so only one fragment path is enumerated.
+          CLCsym="$(mktemp -d)"; printf '7.0.0\n' > "$CLCsym/VERSION"
+          printf '# Plinth changelog\n\n## v7.0.0 — base — January 01, 2020\n- base\n' > "$CLCsym/CHANGELOG.md"
+          mkdir -p "$CLCsym/changelog.d"
+          printf 'bump: patch\n---\n- **via symlink.**\n' > "$CLCsym/real-body.md"
+          ln -s "$CLCsym/real-body.md" "$CLCsym/changelog.d/via-link.md"
+          "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCsym" >/dev/null
+          [ "$(cat "$CLCsym/VERSION")" = "7.0.1" ] || { echo "::error::changelog-collate dropped a symlink fragment (want 7.0.1, got $(cat "$CLCsym/VERSION")) — find -type f regression"; exit 1; }
+          grep -qF 'via symlink' "$CLCsym/CHANGELOG.md" || { echo "::error::symlink fragment body missing from CHANGELOG"; exit 1; }
+          # .md directory must hard-error (not be silently skipped).
+          CLCdir="$(mktemp -d)"; printf '1.0.0\n' > "$CLCdir/VERSION"
+          printf '# Plinth changelog\n\nold\n' > "$CLCdir/CHANGELOG.md"
+          mkdir -p "$CLCdir/changelog.d/not-a-file.md"
+          cp "$CLCdir/VERSION" "$CLCdir/VERSION.bak"
+          r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCdir" 2>&1)" || r=$?
+          [ "$r" != 0 ] || { echo "::error::changelog-collate accepted/skipped a .md directory"; exit 1; }
+          printf '%s' "$out" | grep -q 'not-a-file.md' || { echo "::error::.md-directory error did not name the path"; exit 1; }
+          cmp -s "$CLCdir/VERSION.bak" "$CLCdir/VERSION" || { echo "::error::.md-directory path rewrote VERSION"; exit 1; }
           # Missing trailing newline on a valid VERSION must still succeed (not a hard-error path).
           CLCnl="$(mktemp -d)"; printf '5.0.0' > "$CLCnl/VERSION"   # no trailing newline
           printf '# Plinth changelog\n\n## v5.0.0 — base — January 01, 2020\n- base\n' > "$CLCnl/CHANGELOG.md"
