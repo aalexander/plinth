@@ -617,23 +617,18 @@ it has run green with a real smoke_cmd.
 - **Plinth product changes (`shared/`, `bin/`) — changelog fragments (transition).**
   Parallel branches that each edit `VERSION` and the top of `CHANGELOG.md` collide
   (same next number, same insert point). Fragments fix that: unique files under
-  `changelog.d/`, number computed at release. **Two-step transition (do not mix
-  representations for the same change):**
-  1. **Now (this release):** collate + fragment format land. A product change is
-     recorded **exactly once** — either the legacy dual-write (`CHANGELOG.md` top
-     section + matching `VERSION` bump on that PR) **or** a single
-     `changelog.d/<slug>.md` fragment (consumed later by collate), never both.
-     Dual-write still satisfies the still-ratified project notes rule; fragment-
-     only is valid once a follow-up updates that rule and review/CI. Until then,
-     prefer dual-write for ordinary product PRs, and use fragments only when you
-     are also cutting a release that runs `plinth changelog-collate` in the same
-     ship (so the PR that merges carries the collated VERSION/CHANGELOG).
-  2. **Follow-up (out of scope here):** switch review/CI + project notes to
-     "fragment required; no hand-edit of VERSION/CHANGELOG on feature branches",
-     then feature PRs are fragment-only and the release operator runs collate
-     before tagging `v$(cat VERSION)`.
-  See `changelog.d/README.md`. Never leave both a hand-written CHANGELOG bullet
-  and a pending fragment for the same change — collate would record it twice.
+  `changelog.d/`, number computed at release. **Recording rule (exactly once per
+  change):** either the legacy dual-write (new top `CHANGELOG.md` section + matching
+  `VERSION` bump on that PR) **or** a single `changelog.d/<slug>.md` fragment that
+  the same ship consumes via `plinth changelog-collate` (so the merged PR carries
+  the new VERSION/CHANGELOG), never both. Dual-write still matches the still-ratified
+  project-notes rule; fragment+collate in one ship also produces a matching pair.
+  Fragment-only PRs (no collate, no VERSION bump) wait on the follow-up that switches
+  review/CI + project notes. **Bootstrap exception for landing the mechanism itself:**
+  the collate feature is recorded as a bullet under the existing `v4.7.0` section with
+  `VERSION` left at `4.7.0` and no pending fragment — a deliberate one-time exception
+  so introducing the serial-work fix does not itself race on VERSION. Ordinary product
+  PRs after this land do not inherit that exception. See `changelog.d/README.md`.
 
 ## Watch list
 - **First PR per repo**: confirm the Codex review actually posts (connection

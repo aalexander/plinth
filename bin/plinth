@@ -1658,24 +1658,37 @@ run_changelog_collate() {
   # Entire file is exactly MAJOR.MINOR.PATCH with at most one trailing newline —
   # no whitespace stripping (would turn "1. 2.3" into a false positive), no
   # second line/junk, no empty components ("1..2"). A missing trailing newline is fine.
+  # Preserve trailing newlines: plain $(cat) strips them all, which would accept
+  # "1.2.3\n\n" as a clean single line. Append a sentinel, then strip it.
   local raw oldver
-  raw="$(cat "$vfile")" || { echo "changelog-collate: failed to read $vfile" >&2; exit 1; }
+  raw="$(cat "$vfile"; printf x)" || { echo "changelog-collate: failed to read $vfile" >&2; exit 1; }
+  raw="${raw%x}"
+  # Reject NULs via byte-count compare (grep '\0' is not portable — it can match
+  # every file). tr -d '\0' shortens the stream iff a NUL was present.
+  _vbytes="$(wc -c < "$vfile" | tr -d '[:space:]')"
+  _vnul="$(tr -d '\0' < "$vfile" | wc -c | tr -d '[:space:]')"
+  if [ "$_vbytes" != "$_vnul" ]; then
+    echo "changelog-collate: VERSION contains a NUL byte — refusing" >&2; exit 1
+  fi
   case "$raw" in
     *$'\n'?*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
     *$'\n'*$'\n'*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
     *$'\n') oldver="${raw%$'\n'}" ;;
     *) oldver="$raw" ;;
   esac
+  # After stripping one optional trailing newline, no newline may remain.
+  case "$oldver" in *$'\n'*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;; esac
   local major minor patch
   major="${oldver%%.*}"
   local rest="${oldver#*.}"
   minor="${rest%%.*}"
   patch="${rest#*.}"
-  # Each component: non-empty digits only; reassemble must equal the parsed line
-  # (rejects "1..2", "1.2.", ".1.2", "1.2.3.4", trailing junk on the line).
-  case "$major" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
-  case "$minor" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
-  case "$patch" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  # Each component: non-empty digits only, bounded length (Bash integers are
+  # fixed-width; a 20-digit component overflows into a wrong release number).
+  # Reassemble must equal the parsed line (rejects "1..2", "1.2.", ".1.2", "1.2.3.4").
+  case "$major" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  case "$minor" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  case "$patch" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
   [ "$oldver" = "$major.$minor.$patch" ] || { echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1; }
 
   # Parse every fragment BEFORE any write. Rank: patch=1, minor=2, major=3.
