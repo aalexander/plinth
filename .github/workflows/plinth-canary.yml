@@ -1010,24 +1010,45 @@ jobs:
               n=$((n + 1))
             done
             [ "$(cat "$NC/state")" = 9 ] || { echo "::error::(3b) expected 9 reviewer invocations with no cap, got $(cat "$NC/state")"; exit 1; } )
-          # PADDED-BUT-VALID values, both paths. The bound guard measures MAGNITUDE, not raw
-          # string length — an earlier revision measured the raw string and refused `0000001`,
-          # a perfectly valid 1 that the normalization right below it explicitly supports.
-          # Without these cases that regression is invisible: (3e) only drives unpadded values.
-          for r3p in "0000001" "0000100000"; do
+          # PADDED-BUT-VALID values, both paths, asserted on OUTCOMES. The first version of
+          # this block was hollow: it discarded the exit status and only checked that the
+          # output lacked the phrase "absurdly large", so it passed if the value was ignored
+          # entirely, or if the run aborted for some unrelated reason. It also reused one repo
+          # for both paths, so the env case was answered by the config case's stored approval
+          # and never proved PLINTH_ROUND_CAP was accepted through a real round.
+          # Each case now gets its OWN repo and asserts three things: the round exited 0, the
+          # reviewer was actually invoked, and the value normalized to the magnitude (so a
+          # padded 0000001 is a cap of 1, not a rejected string and not a literal 0000001).
+          r3_padded() {  # r3_padded <label> <value> <expected-normalized> <path: config|env>
+            local lbl="$1" val="$2" want="$3" via="$4" PD pdd rc out
             PD="$(mktemp -d)"; mkstate "$PD"; mk_cap_codex "$PD"
+            printf '%s' "$CNF" > "$PD/verdict-1"
             pdd="$(mktemp -d)"
             ( cd "$pdd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$pdd" >/dev/null 2>&1
               cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
               grep -v '^round_cap' .plinth/config > .plinth/c.t && mv .plinth/c.t .plinth/config
-              printf 'round_cap = %s\n' "$r3p" >> .plinth/config
+              [ "$via" = config ] && printf 'round_cap = %s\n' "$val" >> .plinth/config
               echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
               git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
-              out="$(PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || true
-              printf '%s' "$out" | grep -q 'absurdly large' && { echo "::error::(3e) config round_cap='$r3p' was REFUSED as too large — leading zeros are padding, not magnitude, and the normalization below the guard supports them"; exit 1; } || true
-              out2="$(PLINTH_ROUND_CAP="$r3p" PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || true
-              printf '%s' "$out2" | grep -q 'absurdly large' && { echo "::error::(3e) PLINTH_ROUND_CAP='$r3p' was REFUSED as too large — the env path must bound magnitude exactly as the config path does"; exit 1; } || true )
-          done
+              rc=0
+              if [ "$via" = env ]; then out="$(PLINTH_ROUND_CAP="$val" PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+              else                      out="$(PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?; fi
+              # 1. It must RUN. rc=2 is the refusal path; anything else non-1 is a different failure.
+              [ "$rc" = 1 ] || { echo "::error::(3e/$lbl) round_cap='$val' via $via gave rc=$rc, expected 1 (CHANGES_NEEDED). A padded value is magnitude, not string length — rc=2 means it was refused as malformed or too large: $(printf '%s' "$out" | tail -c 250)"; exit 1; }
+              # 2. The reviewer must actually have been invoked — otherwise rc=1 could come
+              #    from some earlier abort and this case would prove nothing.
+              [ "$(cat "$PD/state")" = 1 ] || { echo "::error::(3e/$lbl) the reviewer was invoked $(cat "$PD/state") times for round_cap='$val' via $via, expected exactly 1 — the round did not really run, so accepting the value is unproven"; exit 1; }
+              # 3. And it must normalize to the MAGNITUDE. The env path announces the value it
+              #    resolved, which is the only place the normalized number is observable.
+              if [ "$via" = env ]; then
+                printf '%s' "$out" | grep -q "round_cap=${want} from PLINTH_ROUND_CAP" || { echo "::error::(3e/$lbl) PLINTH_ROUND_CAP='$val' did not normalize to ${want} — leading zeros are padding; a literal or octal reading would cap the loop at the wrong round: $(printf '%s' "$out" | grep -i override | tail -c 200)"; exit 1; }
+              fi
+              printf '%s' "$out" | grep -q 'absurdly large' && { echo "::error::(3e/$lbl) round_cap='$val' via $via was REFUSED as too large — the guard must bound magnitude, not raw string length"; exit 1; } || true )
+          }
+          r3_padded "padded-1-config"      "0000001"    "1"      config
+          r3_padded "padded-1-env"         "0000001"    "1"      env
+          r3_padded "padded-max-config"    "0000100000" "100000" config
+          r3_padded "padded-max-env"       "0000100000" "100000" env
           # (3d) EXPLICIT `round_cap = 0` also means no cap. This is a DISTINCT input from
           # (3b)'s absent knob — (3b) asserts the knob is missing, so it cannot speak for the
           # zero case, and claiming it closed that gap was wrong. Both are documented inputs
@@ -2222,12 +2243,35 @@ jobs:
             [ "$(cat "$R9M/state")" = "$b3" ] || { echo "::error::(9k3) a fully-qualified base spelling billed a round"; exit 1; }
             r9mnote="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
             [ "$r9mnote" = "main" ] || { echo "::error::(9k3) after 'refs/heads/main' the receipt recorded base_ref '$r9mnote', expected the canonical 'main'"; exit 1; }
+            # The JSON field is NOT the thing the server checks — the SUBJECT DIGEST is, and it
+            # hashes the base separately. Reverting mint_receipt's hash input to the raw baseref
+            # while leaving the JSON field canonical would pass the assertion above and still
+            # produce a receipt receipt-verify.sh rejects. So recompute the digest here from the
+            # canonical base and compare. Both sha256 backends are covered because this uses the
+            # same selection order as mint_receipt.
+            r9m_subj() {  # r9m_subj <repo> <base> <mergebase> <sha> <tree> -> digest
+              if command -v shasum >/dev/null 2>&1; then
+                printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | shasum -a 256 | cut -d' ' -f1
+              else
+                printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | sha256sum | cut -d' ' -f1
+              fi
+            }
+            r9m_check_subject() {  # r9m_check_subject <label>
+              local nj want got hs ht mb
+              nj="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null)"
+              hs="$(git rev-parse HEAD)"; ht="$(git rev-parse HEAD^{tree})"; mb="$(git merge-base main HEAD)"
+              want="sha256:$(r9m_subj "$(printf '%s' "$nj" | jq -r .repo)" main "$mb" "$hs" "$ht")"
+              got="$(printf '%s' "$nj" | jq -r .subject_digest)"
+              [ "$got" = "$want" ] || { echo "::error::(9k3) $1: the receipt's SUBJECT DIGEST does not match one computed over the CANONICAL base 'main' (got $got, expected $want) — the JSON base_ref can look right while the hash input is the raw spelling, and it is the digest the server recomputes, so this receipt would be rejected for a legitimately reviewed PR"; exit 1; }
+            }
+            r9m_check_subject "after refs/heads/main"
             # Order-sensitive form: refs/remotes/origin/main. Stripping origin/ first
             # leaves the string starting with refs/remotes/, then stripping that yields
             # origin/main — the non-canonical form receipt-verify rejects.
             b4="$(cat "$R9M/state")"
             out4="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/remotes/origin/main 2>&1)" || true
             printf '%s' "$out4" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/remotes/origin/main' was not recognised as the same base as 'main': $(printf '%s' "$out4" | tail -c 200)"; exit 1; }
+            r9m_check_subject "after refs/remotes/origin/main"
             [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
             r9mnote2="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
             [ "$r9mnote2" = "main" ] || { echo "::error::(9k3) after 'refs/remotes/origin/main' the receipt recorded base_ref '$r9mnote2', expected the canonical 'main' (order-sensitive strip of refs/remotes/ before origin/)"; exit 1; } )
@@ -2526,8 +2570,12 @@ jobs:
           bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 refs/remotes/origin/main main fresh codex MB1 MB1" || { echo "::error::'refs/remotes/origin/main' must canonicalize to 'main' — stripping origin/ before refs/remotes/ leaves it wrong"; exit 1; }
           # v4.6 vendor guard: a mid-loop seat swap must never hand a foreign session id
           # to a different vendor's --resume; a missing recorded vendor fails CLOSED.
-          bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh ''"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
+          # MATCHING anchors (MB1 MB1) are required here too. Without args 7/8 the function
+          # rejects at the empty-anchor guard BEFORE reaching the vendor comparison, so both
+          # assertions passed whether or not the vendor check existed — deleting it entirely
+          # would still have left them green.
+          bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex MB1 MB1" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh '' MB1 MB1"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
           # The tools-forbidden auditor must inline the WHOLE canonical spec tree
           # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
           # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.
