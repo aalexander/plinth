@@ -8,13 +8,15 @@
 #
 # Fix-verification rounds resume the prior reviewer session with the
 # INCREMENTAL diff only. If the thread is too large to resume safely
-# (PLINTH_RESUME_MAX input tokens; default 650000 ≈ 65% of GPT-5.5's 1,005,000
-# window — revisit on reviewer swap, see MODELS.md), the anchor commit is gone,
-# or the resume itself fails, the round falls back to a VERIFY round (prior findings
-# + the FULL diff — thorough but anchored on those findings, so it does NOT bind on
-# its own) — or a clean-slate full review when there are no prior findings to verify.
-# Either way an approval still gets a clean-slate full confirmation before it binds,
-# so the loop can never deadlock on a dead thread.
+# or the resume itself fails, the round falls back to a VERIFY round — a fresh
+# session SCOPED to the open findings + the incremental fix diff (full-diff
+# fallback only when no incremental anchor exists) — or a clean-slate full
+# review when there are no prior findings to verify. Tier-1 approvals bind in
+# every mode (the round-1 fresh pass read the full branch); a Tier-2 non-fresh
+# approval gets a clean-slate full confirmation before it binds, at most once
+# per loop (the confirmed marker records it; later skips are recorded in
+# verdict.json). round_cap (default 8) is a hard circuit breaker: a loop that
+# has not converged by then stops (exit 2) and surfaces to the human.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -128,6 +130,21 @@ SPEC_PATH="$(bcfg spec_path)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
+# Round CIRCUIT BREAKER (hard, unlike the advisory token budget): a loop that has
+# not converged by round_cap is a design problem — more paid rounds will not fix
+# it. 0 disables. Checked before EVERY round launch, including the
+# post-approval clean-slate confirmation (a capped confirmation dies with the
+# non-binding APPROVED persisted; the unconfirmed-approval recovery runs it on
+# the next invocation once the operator unbricks with PLINTH_ROUND_CAP).
+ROUND_CAP="$(bcfg round_cap)"; case "$ROUND_CAP" in ''|*[!0-9]*) ROUND_CAP=8 ;; esac
+ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal and crash the -gt test
+# PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
+# read from the BASE branch, so raising it on the feature branch does nothing;
+# the env is the unbrick path when a capped loop must legitimately continue.
+if [ -n "${PLINTH_ROUND_CAP:-}" ]; then
+  case "$PLINTH_ROUND_CAP" in *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;; *) ROUND_CAP=$((10#$PLINTH_ROUND_CAP)) ;; esac
+  echo "Plinth review: OVERRIDE — round_cap=${ROUND_CAP} from PLINTH_ROUND_CAP (this run only)."
+fi
 AUDIT_MODEL="$(bcfg audit_model)"
 # Cross-vendor auditor: which subscription-authenticated CLI runs the Tier-2
 # second opinion. codex (OpenAI), claude (Anthropic), grok (xAI), agy (Google
@@ -153,6 +170,45 @@ AUDIT_VENDOR="$(bcfg audit_vendor)"
 # dashboard) is the codex config model for codex, else the vendor name; a per-tier
 # reviewer model (RV_MODEL, set below) overrides it.
 REVIEWER_VENDOR="$(bcfg reviewer_vendor)"; [ -n "$REVIEWER_VENDOR" ] || REVIEWER_VENDOR="codex"
+# ON-THE-FLY SEAT OVERRIDES — OPERATOR-ONLY escape hatch (e.g. a vendor's
+# credits run out mid-loop). Env beats the ratified-base config for THIS RUN
+# ONLY. The driver rules forbid the DRIVER from ever setting these (tampering
+# class: it could swap in an easier reviewer, drop the cross-vendor audit, or
+# raise the cap); mechanically this script cannot tell who exported an env var,
+# so the teeth are (a) that rule, (b) every override being announced here and
+# recorded in verdict.json (LOCAL session state — .plinth/session/ is
+# gitignored), and (c) the driver-rules requirement that the PR body's audit
+# summary list every recorded override, where the human and the cloud review
+# can see it. Auditability over prevention, per the trusted-but-fallible
+# model; the base config stays the governing default and a seat change sticks
+# only via a main commit. The reviewer vendor is validated by the enum below
+# (a hard requirement); the AUDIT vendor is deliberately NOT pre-validated —
+# the audit seat is best-effort by design, and run_auditor's own dispatch
+# records an unknown/failed vendor as UNAVAILABLE without blocking the loop
+# (it also accepts aliases, e.g. gemini, that a pre-check would wrongly
+# reject).
+BASE_REVIEWER_VENDOR="$REVIEWER_VENDOR"
+BASE_AUDIT_VENDOR="$AUDIT_VENDOR"
+OVERRIDES="$(jq -cn --arg rv "${PLINTH_REVIEWER_VENDOR:-}" --arg rm "${PLINTH_REVIEWER_MODEL:-}" \
+                    --arg av "${PLINTH_AUDIT_VENDOR:-}" --arg am "${PLINTH_AUDIT_MODEL:-}" \
+                    --arg rc "${PLINTH_ROUND_CAP:-}" \
+  '{reviewer_vendor:$rv, reviewer_model:$rm, audit_vendor:$av, audit_model:$am, round_cap:$rc} | with_entries(select(.value != ""))')"
+if [ -n "${PLINTH_REVIEWER_VENDOR:-}" ]; then
+  REVIEWER_VENDOR="$PLINTH_REVIEWER_VENDOR"
+  echo "Plinth review: OVERRIDE — reviewer_vendor='${REVIEWER_VENDOR}' from PLINTH_REVIEWER_VENDOR (base config bypassed for this run; recorded in verdict.json)."
+fi
+if [ -n "${PLINTH_AUDIT_VENDOR:-}" ]; then
+  AUDIT_VENDOR="$PLINTH_AUDIT_VENDOR"
+  echo "Plinth review: OVERRIDE — audit_vendor='${AUDIT_VENDOR}' from PLINTH_AUDIT_VENDOR (recorded in verdict.json)."
+  # Model names are per-vendor: on an ACTUAL vendor change without an explicit
+  # model override, drop the base audit model rather than feed it to a CLI that
+  # cannot know it. Same-vendor overrides keep the ratified seat model.
+  if [ "$AUDIT_VENDOR" != "$BASE_AUDIT_VENDOR" ] && [ -z "${PLINTH_AUDIT_MODEL:-}" ]; then AUDIT_MODEL=""; fi
+fi
+if [ -n "${PLINTH_AUDIT_MODEL:-}" ]; then
+  AUDIT_MODEL="$PLINTH_AUDIT_MODEL"
+  echo "Plinth review: OVERRIDE — audit_model='${AUDIT_MODEL}' from PLINTH_AUDIT_MODEL (recorded in verdict.json)."
+fi
 case "$REVIEWER_VENDOR" in
   codex|claude) RV_WARM_RESUME=1 ;;
   grok)         RV_WARM_RESUME=0 ;;
@@ -396,35 +452,96 @@ else
 fi
 
 # ── Tier 1 vs Tier 2 treatment ──────────────────────────────────────────────
-# Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed
-#   APPROVED binds directly (skip the clean-slate confirmation) — faster
-#   iterative convergence, acceptable for ordinary code with a bound digest.
-# Tier 2 (high-consequence): the frontier reviewer, ALWAYS a clean-slate
-#   confirmation, and — when a genuinely cross-vendor auditor is configured
-#   (audit_vendor != reviewer_vendor) — a cross-vendor second opinion on EVERY Tier-2
-#   approval (not just every 5th). Config knobs reviewer_model_tier1/tier2 select
-#   models; unset => whatever ~/.codex/config.toml runs (no behavioral change).
+# Tier 1 (ordinary code): may use a cheaper reviewer model, and a resumed OR
+#   verify APPROVED binds directly (no clean-slate confirmation) — fast iterative
+#   convergence on the strength of the round-1 full read, acceptable for
+#   ordinary code with a bound digest.
+# Tier 2 (high-consequence): the frontier reviewer, a clean-slate confirmation
+#   before a non-fresh approval binds — at most ONCE per loop (later skips are
+#   recorded in verdict.json) — and, when a genuinely cross-vendor auditor is
+#   configured (audit_vendor != reviewer_vendor), a cross-vendor second opinion
+#   on EVERY Tier-2 approval (not just every 5th). Config knobs
+#   reviewer_model_tier1/tier2 select models; unset => the vendor default.
 # Per-tier reviewer model (base config). Each vendor adapter maps RV_MODEL to its own
 # flag (codex/grok -m, claude --model). Unset => the vendor's own default model.
 if [ "$RISK" = "2" ]; then RV_MODEL="$(bcfg reviewer_model_tier2)"
 else RV_MODEL="$(bcfg reviewer_model_tier1)"; fi
+# On-the-fly model override, same contract as the vendor overrides above: this
+# run only, announced, recorded in verdict.json. NOTE: on an ACTUAL vendor
+# change without a model override, the base config's tier models are dropped
+# deliberately — they are per-vendor names and would fail loud passed to a
+# different CLI. A same-vendor override (e.g. a wrapper that always exports the
+# vendor) keeps the ratified tier model.
+if [ -n "${PLINTH_REVIEWER_VENDOR:-}" ] && [ "$REVIEWER_VENDOR" != "$BASE_REVIEWER_VENDOR" ] && [ -z "${PLINTH_REVIEWER_MODEL:-}" ]; then RV_MODEL=""; fi
+if [ -n "${PLINTH_REVIEWER_MODEL:-}" ]; then
+  RV_MODEL="$PLINTH_REVIEWER_MODEL"
+  echo "Plinth review: OVERRIDE — reviewer model '${RV_MODEL}' from PLINTH_REVIEWER_MODEL (recorded in verdict.json)."
+fi
 if [ -n "${RV_MODEL:-}" ]; then REVIEWER_MODEL="$RV_MODEL"; fi
 
 # Only resume a prior session that (a) asked for changes, (b) has a live thread on
-# the SAME base, and (c) is a warm UNANCHORED full-read thread. A VERIFY session is
-# a fresh session seeded with the prior findings (prior findings + full diff) —
-# thorough, but ANCHORED on those findings, not the warm unanchored round-1 thread
-# that binds_directly trusts a resume to carry. So a verify-origin session is NOT
-# resumable — the next round goes fresh (unanchored) before binding. Pure fn -> testable.
-resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode>
+# the SAME base, (c) is a warm UNANCHORED full-read thread, and (d) was produced
+# by the SAME reviewer vendor now running. A VERIFY session is a fresh session
+# anchored on the prior OPEN findings — not the warm unanchored round-1 thread
+# that binds_directly trusts a resume to carry — so a verify-origin session is
+# NOT resumable (its fix rounds continue as scoped verifies). The vendor check
+# matters for the on-the-fly seat override: without it, a mid-loop vendor swap
+# would pass a FOREIGN session id to the new vendor's --resume and safety would
+# rest on that CLI failing cleanly; a missing recorded vendor (pre-v4.6
+# verdict.json) fails CLOSED to a non-resume round. Pure fn -> testable.
+resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode> <prev_vendor>
   [ "$1" = "CHANGES_NEEDED" ] || return 1
   [ -n "$2" ] || return 1
   [ "$3" = "$4" ] || return 1
+  [ "${6:-}" = "${REVIEWER_VENDOR:-}" ] || return 1
   # Only resume a mode that carries a warm UNANCHORED full read: fresh, or a prior
   # resume that continues such a thread. verify is anchored on prior findings; an
   # empty/unknown mode (e.g. a verdict.json written before the `mode` field existed)
   # is treated the same — fail CLOSED, go fresh, re-read the full diff before any bind.
   case "${5:-}" in fresh|resume) return 0 ;; *) return 1 ;; esac
+}
+
+# Whether a completed round's APPROVED binds on its own, or a clean-slate
+# confirmation must run first. A fresh full review binds. A warm RESUME holds the
+# full round-1 read in its thread, and a VERIFY is a fresh session anchored on the
+# prior open findings — both trust the round-1 full read for branch coverage, so
+# BOTH bind directly on Tier 1 (ordinary code; an anchored-fresh verify is no less
+# independent than a warm resume). Tier 2 (high-consequence) still requires a
+# clean-slate confirmation (full diff, NO prior findings — an unbiased read) —
+# but at most ONCE per loop: after one clean-slate pass has run on this branch
+# (the $SDIR/confirmed marker), later non-binding approvals bind with the skip
+# recorded in verdict.json. Single source of truth for both the post-round gate
+# and the reviewer-facing note. Pure fn -> testable.
+binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
+  case "${1:-}" in
+    fresh)         return 0 ;;
+    resume|verify) [ "${2:-}" != "2" ] ;;
+    *)             return 1 ;;
+  esac
+}
+# The ONE effective-binding predicate: mode/tier says it binds, OR the
+# once-per-loop clean-slate has already run (the confirmed marker). Both the
+# post-round gate and the reviewer-facing note MUST call this — hand-expanding
+# the disjunction at either site is how the two drift and the note starts
+# lying to the reviewer about its stakes.
+effective_binds() {  # effective_binds <mode> <risk-tier>
+  binds_directly "${1:-}" "${2:-}" && return 0
+  [ -f "${SDIR:-/nonexistent}/confirmed" ]
+}
+
+# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
+# expecting a later pass that won't come, nor treats a non-binding round as final.
+# The once-per-loop confirmation marker changes the truth: after a clean-slate
+# pass has run, a later non-binding approval binds, and the note must say so.
+bind_note() {  # bind_note <mode> <risk-tier>
+  if effective_binds "${1:-}" "${2:-}"; then
+    case "${1:-}" in
+      verify) printf '%s' "The round-1 fresh pass already read the full branch (and any required clean-slate confirmation has run): your verdict on these fixes BINDS DIRECTLY — no further pass follows, so verify each fix and its blast radius with full rigor now." ;;
+      *)      printf '%s' "You hold the full diff from your first pass in this thread and no further confirmation follows: your verdict BINDS DIRECTLY — apply full first-pass rigor now." ;;
+    esac
+  else
+    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
+  fi
 }
 
 # Round bookkeeping. A CHANGES_NEEDED verdict with a live (resumable) session
@@ -436,6 +553,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   prev_base="$(jq -r '.base_ref // empty'      "$SDIR/verdict.json")"
   prev_sid="$(jq -r '.session_id // empty'     "$SDIR/verdict.json")"
   prev_mode="$(jq -r '.mode // empty'          "$SDIR/verdict.json")"
+  prev_vendor="$(jq -r '.vendor // empty'      "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
@@ -446,17 +564,29 @@ if [ -f "$SDIR/verdict.json" ]; then
     echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
   fi
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
-    echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
-    exit 0
+    if effective_binds "$prev_mode" "$RISK"; then
+      echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
+      exit 0
+    fi
+    # A non-binding APPROVED (e.g. Tier-2 verify) was persisted but its
+    # clean-slate confirmation never completed (crash/kill between the
+    # approval and the confirmation round). Trusting the stored verdict here
+    # would silently convert an unconfirmed approval into a binding one —
+    # run the confirmation now instead.
+    echo "Plinth review: prior APPROVED at ${sha} (round ${prev_round}, mode ${prev_mode}, Tier ${RISK}) is NON-BINDING and unconfirmed — running the clean-slate confirmation now."
+    recovery=1; mode="fresh"; round=$((prev_round + 1)); sid=""
   fi
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
+  if [ "${recovery:-0}" != 1 ] && [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
     die "HEAD unchanged since round ${prev_round} returned CHANGES_NEEDED — commit fixes before re-running"
   fi
-  if [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode"; then
+  if [ "${recovery:-0}" = 1 ]; then
+    :  # confirmation recovery already selected fresh mode — skip the resume logic
+  elif [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode" "$prev_vendor"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
-    # Resume only when it can plausibly work; otherwise a verify round (fresh session,
-    # prior findings + FULL diff — non-binding) instead of a warm re-read. Full reads
-    # happen once per milestone, to bind.
+    # Resume only when it can plausibly work; otherwise a verify round (fresh
+    # session, SCOPED: open prior findings + the cumulative fix diff since the
+    # last full read; Tier-1 verify binds, Tier-2 verify binds after the
+    # once-per-loop clean-slate) instead of a warm re-read.
     fallback="fresh"
     [ -f "$SDIR/findings-${prev_round}.json" ] && fallback="verify"
     if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
@@ -471,40 +601,23 @@ if [ -f "$SDIR/verdict.json" ]; then
       fi
     fi
   elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$prev_base" = "$baseref" ] && [ -f "$SDIR/findings-${prev_round}.json" ]; then
-    # Non-warm-resume reviewer (grok: no headless token usage → no size-gateable warm
-    # thread) can't resume, but prior findings on the SAME base exist → a verify round
-    # continues the fix loop (prior findings + full diff, non-binding).
+    # Non-warm-resume reviewer (grok: no headless token usage → no size-gateable
+    # warm thread) can't resume — and so can a vendor swap mid-loop — but prior
+    # findings on the SAME base exist → a scoped verify round continues the fix
+    # loop (open findings + the cumulative fix diff since the last full read).
     mode="verify"; round=$((prev_round + 1))
   else
-    rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json
+    # A NEW loop starts here: clear the per-loop markers too — a stale
+    # `confirmed` would turn "once per loop" into "once per branch-slug
+    # lifetime" and let a later Tier-2 approval bind with zero clean-slate
+    # reads this loop; a stale `lastfullread` would anchor scoped verifies at
+    # a long-gone milestone; a stale `usage.jsonl` would leak a prior loop's
+    # override rows into the ledger the PR-body disclosure rule reads.
+    rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
   fi
 fi
 
-# Whether a completed round's APPROVED binds on its own, or a clean-slate
-# confirmation must run first. A fresh full review binds. A warm RESUME holds the
-# full round-1 read in its thread, so a Tier-1 resume binds directly (Tier 2 still
-# gets a frontier reconfirm). A fallback VERIFY is a FRESH session seeded with the
-# prior findings + the FULL diff — thorough, but ANCHORED on those findings, so it
-# never binds on its own, at ANY tier: a clean-slate confirmation (full diff, NO
-# prior findings — an unbiased read) is what binds. Single source of truth for both
-# the post-round gate and the reviewer-facing note. Pure fn -> testable.
-binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
-  case "${1:-}" in
-    fresh)  return 0 ;;
-    resume) [ "${2:-}" != "2" ] ;;
-    *)      return 1 ;;
-  esac
-}
-
-# Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
-# expecting a later pass that won't come, nor treats a non-binding round as final.
-bind_note() {  # bind_note <mode> <risk-tier>
-  if binds_directly "${1:-}" "${2:-}"; then
-    printf '%s' "You hold the full diff from your first pass in this thread and this is an ordinary-code (Tier 1) change: your verdict BINDS DIRECTLY — no separate confirmation follows, so apply full first-pass rigor now."
-  else
-    printf '%s' "Your verdict does NOT bind on its own — a separate clean-slate full review still confirms before anything binds. Report findings faithfully; approving to move things along only defers to that pass."
-  fi
-}
 
 # Runs one review round. Sets RVERDICT/RSID; writes the round's protocol files.
 # ── Reviewer vendor adapters ────────────────────────────────────────────────
@@ -677,32 +790,60 @@ round-trip, so within-pass exhaustiveness is far cheaper than another round.${sp
 DIFF:
 ${diff}${evidence}${commits}"
   elif [ "$m" = "verify" ]; then
-    local prior
-    prior="$(cat "$SDIR/findings-$((r - 1)).json")"
-    prompt="Fix-verification round ${r} (fresh session; your prior thread was too large to
-resume). Your CONTRACT is inlined below; apply its Verdict policy. This is a FRESH
-session — assume nothing from prior rounds beyond the findings listed.
+    # SCOPED verify (payload chunking): a verify round exists to check the FIXES,
+    # not to re-read the branch. It anchors at the LAST UNANCHORED FULL READ
+    # (lastfullread — round 1, or the latest clean-slate confirmation), so its
+    # payload is CUMULATIVE: open findings + every fix since a full pass. That
+    # closes the coverage story for binding verifies — full read at the anchor
+    # plus this diff = the whole branch — without re-sending the full branch
+    # diff + finding history that overflowed the CLI on long loops (upstream
+    # issue #20). The reviewer keeps read-only repo access for context.
+    # Fallback to the full diff when no usable anchor exists (anchor object
+    # missing, or legacy state). Existence-checked only: a rebase that keeps
+    # the old anchor object alive is NOT detected — ancestry guard is backlog
+    # (MANUAL ## Noticed).
+    local prior vanchor="" vinc="" vscope vlabel vpayload vrule
+    prior="$(jq -c '{findings: [.findings[] | select(.status == "open")]}' "$SDIR/findings-$((r - 1)).json")"
+    vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
+    if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
+      vinc="$(git diff "${vanchor}..HEAD" 2>/dev/null || true)"
+    fi
+    if [ -n "$vinc" ]; then
+      vscope="SCOPED to the fixes: below is the CUMULATIVE fix diff since the last full
+review pass (${vanchor}) — together with that full pass it covers the whole branch, so
+do NOT re-read the rest of the branch."
+      vrule="evidence in the fix diff, not the driver's claim. You have read-only repo
+   access: read the touched files for surrounding context when the diff alone is
+   not enough"
+      vlabel="CUMULATIVE FIX DIFF (${vanchor}..${sha})"
+      vpayload="$vinc"
+    else
+      vscope="no usable fix-diff anchor exists (anchor object missing or legacy state) — the FULL diff is below."
+      vrule="evidence in the diff, not the driver's claim"
+      vlabel="DIFF (${baseref}...HEAD at ${sha})"
+      vpayload="$diff"
+    fi
+    prompt="Fix-verification round ${r} (fresh session). Your CONTRACT is inlined below;
+apply its Verdict policy. This is a FRESH session — assume nothing from prior rounds
+beyond the open findings listed. ${vscope}
 
 === REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
 $(inline_contract)
 === END REVIEWER CONTRACT ===
 
-Below: (1) the findings from
-the previous round, (2) the FULL diff (${baseref}...HEAD at ${sha}).
-1) For each prior finding, mark status \"resolved\" or \"open\" — resolved requires
-   evidence in the diff, not the driver's claim.
-2) Re-review the FULL diff with first-pass rigor; new findings status \"open\".
-   BE EXHAUSTIVE: when a finding is one instance of a defect class (a bug pattern,
-   a missing/weak-test pattern, a claim-vs-behavior mismatch, an unhandled edge
-   case), SWEEP the whole diff for EVERY sibling and report them all this round,
-   not just the most salient — each missed sibling costs a full extra round-trip.
+Below: (1) the OPEN findings from the previous round, (2) the diff to review.
+1) For each open finding, mark status \"resolved\" or \"open\" — resolved requires
+   ${vrule}.
+2) Review the diff below with first-pass rigor for NEW defects; report them
+   status \"open\". BE EXHAUSTIVE within this pass: SWEEP the whole diff for EVERY sibling
+   of any defect class you find — each missed sibling costs a full extra round-trip.
 $(bind_note "$m" "$RISK")
 
-PRIOR FINDINGS:
+OPEN PRIOR FINDINGS:
 ${prior}
 
-DIFF (${baseref}...HEAD at ${sha}):
-${diff}${evidence}${commits}"
+${vlabel}:
+${vpayload}${evidence}${commits}"
   else
     # Incremental only: the thread already holds the prior full diff. Re-sending
     # everything is what overflowed large threads (the anvil deadlock).
@@ -778,13 +919,31 @@ ${inc}${evidence}${commits}"
   jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
+        --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}' \
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}
+         + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
-  jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
-    '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true
+  # usage.jsonl is the CUMULATIVE per-round ledger (verdict.json is overwritten
+  # each round): any active seat/cap override is appended here per round, so a
+  # mid-loop override used in a NON-final round still leaves a durable trace in
+  # session state for the PR-body disclosure rule to draw on.
+  jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" --argjson overrides "$OVERRIDES" \
+    '{round: $round, mode: $mode, usage: $usage} + (if $overrides == {} then {} else {overrides: $overrides} end)' \
+    >> "$SDIR/usage.jsonl" 2>/dev/null || true
+  # Record the sha of the last UNANCHORED full read: scoped verify rounds diff
+  # from here (cumulatively), so the binding round always covers everything
+  # since a full pass — not just the last fix slice.
+  [ "$m" != "fresh" ] || echo "$sha" > "$SDIR/lastfullread"
   rm -f "$SDIR/last-error"   # pipeline recovered — close the gate's infra escape
 }
+
+# CIRCUIT BREAKER: refuse to launch round N > round_cap. die_infra (exit 2 — the
+# round DID NOT RUN) so the Stop gate's mechanical valve opens and the driver
+# surfaces to the human instead of billing another round.
+if [ "$ROUND_CAP" -gt 0 ] && [ "$round" -gt "$ROUND_CAP" ]; then
+  die_infra "circuit breaker: round ${round} exceeds round_cap (${ROUND_CAP}) without APPROVED — a non-converging loop is a design problem, not a review problem. Surface to the human: rethink the change or the spec. (The knob is read from the BASE branch's .plinth/config; to legitimately continue THIS loop the operator can run with PLINTH_ROUND_CAP=<n>.)"
+fi
 
 RMODE="$mode"
 case "$mode" in
@@ -796,18 +955,41 @@ case "$mode" in
   *)
     run_round "$mode" "$round" "" ;;
 esac
+# A recovery round IS the loop's clean-slate confirmation — mark it so the
+# once-per-loop accounting holds if it returned CHANGES_NEEDED and the loop
+# continues.
+if [ "${recovery:-0}" = 1 ]; then echo "$sha" > "$SDIR/confirmed"; fi
 
-# A warm (resume) or findings-anchored (verify) approval only says "my findings were
-# addressed". Bind it directly only when the round that produced it held a warm
-# UNANCHORED read: a Tier-1 RESUME does (its thread carries the round-1 full read).
-# A Tier-2 approval, and ANY fallback VERIFY (a fresh session anchored on the prior
-# findings + the full diff), get a clean-slate full pass first so neither continuity
-# nor an anchored view can soften the adversarial read.
-# binds_directly() is the single source of truth, shared with the reviewer note.
-if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
+# Confirmation gate. Tier-1 approvals bind directly in every mode (fresh read
+# happened round 1; resume carries it warm, verify anchors on it). A Tier-2
+# non-fresh approval gets a clean-slate full pass (full diff, no prior findings)
+# so neither continuity nor an anchored view can soften the adversarial read —
+# but at most ONCE per loop: the $SDIR/confirmed marker records that this branch
+# already got its unanchored confirmation read, and later non-binding approvals
+# bind with the skip recorded in verdict.json (repeated full re-reads were the
+# main cost driver on long loops). The marker is written when the confirmation
+# RUNS, whatever its verdict — it marks the unanchored read, not the approval.
+# effective_binds() is the single source of truth, shared with the reviewer note.
+if [ "$RVERDICT" = "APPROVED" ] && ! effective_binds "$RMODE" "$RISK"; then
+  # The cap is HARD here too: the confirmation is a fresh full-diff frontier
+  # round — the most expensive kind — and the docs promise round_cap has no
+  # carve-outs. Dying here is safe: the non-binding APPROVED is already
+  # persisted, and the unconfirmed-approval recovery path runs the
+  # confirmation on the next invocation once the operator unbricks with
+  # PLINTH_ROUND_CAP.
+  if [ "$ROUND_CAP" -gt 0 ] && [ $((round + 1)) -gt "$ROUND_CAP" ]; then
+    die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED is recorded but NON-BINDING until the confirmation runs — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
+  fi
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
+  echo "$sha" > "$SDIR/confirmed"
+elif [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
+  # effective_binds passed only via the once-per-loop marker: record the skip.
+  conf_at="$(cat "$SDIR/confirmed" 2>/dev/null || echo unknown)"
+  echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — clean-slate confirmation already ran this loop (at ${conf_at}); binding directly (once-per-loop), recorded in verdict.json."
+  jq --arg at "$conf_at" '. + {confirmation: ("skipped-once-per-loop; clean-slate ran at " + $at)}' \
+    "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
 fi
 
 echo "Plinth review — round ${round}: ${RVERDICT} at ${sha} vs ${baseref}"

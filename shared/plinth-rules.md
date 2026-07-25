@@ -125,6 +125,13 @@ reflexively.
 Work on a feature branch — never commit directly to the base branch. The Stop
 gate deliberately does not guard base branches (it logs and releases), and the
 PR needs a branch to exist. Branch first, then build.
+BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
+loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.
+Before the first paid round, run a FREE self-review pre-flight (your harness's
+built-in review command if it has one, else your own adversarial pass over the
+diff) plus this project's known defect classes, and fix what you find — a clean
+round 1 typically saves two to three paid rounds. Between rounds, batch the
+fixes for ALL open findings into ONE commit per round — never a round per fix.
 When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
 large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
@@ -133,11 +140,26 @@ Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (bra
 `<slug>` is the branch name with `/` and spaces turned to `-`). Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer thread when it fits the vendor's window; an
-oversized or dead thread instead runs a VERIFY round — a fresh session seeded with
-the prior findings plus the FULL diff — re-checking each finding and re-reviewing the
-whole diff). Exit 2 = the
+oversized or dead thread instead runs a SCOPED VERIFY round — a fresh session seeded
+with the OPEN findings plus the cumulative fix diff since the last full review pass,
+with repo read access for context; Tier-1 verify approvals bind directly, Tier-2 ones
+after the once-per-loop clean-slate confirmation). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
-pass. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
+pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER (default 8 rounds) —
+a loop that has not converged by then is a design problem, not a review problem;
+STOP and surface to the human (never restart the loop or clear session state to
+dodge the cap). The PLINTH_* review overrides (PLINTH_REVIEWER_VENDOR,
+PLINTH_REVIEWER_MODEL, PLINTH_AUDIT_VENDOR, PLINTH_AUDIT_MODEL, PLINTH_ROUND_CAP)
+are OPERATOR-ONLY: the driver must NEVER set them — using them to change the
+reviewer, drop the cross-vendor audit, or raise the round cap is the same
+tampering class as dodging the cap, whatever the intent. Every override any round
+recorded in session state (verdict.json for the latest round; the per-round
+usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
+(seat, value, round). HONEST BOUND: no shipped mechanism cross-checks the PR body
+against the ledger — the disclosure duty is CONTRACT-bound, auditable by the
+operator (read `usage.jsonl` under `.plinth/session/review/<slug>/`); an automated
+cross-check is designated for the server-side receipt check (auto mode), not
+claimed today. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (under a Claude driver the guard blocks both at the tool level; for EVERY driver the
 review and CI reject such edits as tampering — so do not rely on the local hook, just
 don't do it). Verdict policy: blockers/majors in project code block;

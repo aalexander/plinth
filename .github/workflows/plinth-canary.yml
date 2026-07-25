@@ -711,8 +711,10 @@ jobs:
           # whole diff for every sibling of a defect class (prompt-only change → content assert).
           grep -q 'SWEEP the entire diff for EVERY sibling' "$RS" || { echo "::error::fresh prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
           grep -q 'SWEEP the whole diff for EVERY sibling' "$RS" || { echo "::error::verify prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
-          # Efficiency #3b: the verify fallback must send the FULL diff, not a thin incremental slice.
-          grep -q 'Re-review the FULL diff with first-pass rigor' "$RS" || { echo "::error::verify prompt no longer sends the FULL diff (#3b)"; exit 1; }
+          # (The pre-v4.6 'Re-review the FULL diff' assertion is gone: v4.6 verify rounds are
+          # SCOPED by design; the full-diff FALLBACK behavior is covered end-to-end by the
+          # 'FALLBACK verify' fixture below, which asserts the anchor announcement and the
+          # full-diff payload.)
 
           # Stub each vendor CLI; assert review.sh drives a Tier-1 review to APPROVED via the
           # REAL dispatch, recording the right session id + usage handling (grok: null).
@@ -805,6 +807,253 @@ jobs:
           seq_probe codex  resume
           seq_probe claude resume
           seq_probe grok   noresume
+          # ── v4.6 loop-efficiency behaviors ─────────────────────────────────────
+          # Sequenced codex stub that CAPTURES each prompt (stdin) and reports HUGE
+          # usage, forcing the non-resumable -> verify fallback path deterministically.
+          mk_cap_codex() { cat > "$1/codex" <<CX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$1/state") + 1 )); echo \$n > "$1/state"
+          [ -f "$1/fail-\$n" ] && { cat >/dev/null; exit 1; }
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat > "$1/prompt-\$n"
+          b="\$(cat "$1/verdict-\$n" 2>/dev/null)"; [ -n "\$b" ] || b='{"verdict":"APPROVED","summary":"s","findings":[]}'
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"cs"}'; echo '{"type":"turn.completed","usage":{"input_tokens":999999999}}'
+          CX
+          chmod +x "$1/codex"; }
+          CNF='{"verdict":"CHANGES_NEEDED","summary":"s","findings":[{"file":"app.py","line":1,"severity":"major","description":"bug one","status":"open"},{"file":"app.py","line":2,"severity":"minor","description":"already fixed","status":"resolved"}]}'
+          APF='{"verdict":"APPROVED","summary":"s","findings":[]}'
+          # (1) SCOPED VERIFY (Tier 1): round 2 must be a verify with ONLY the open prior
+          # findings + the INCREMENTAL fix diff (not the full-branch diff), and its
+          # APPROVED must BIND with no confirmation round (v4.6).
+          VC="$(mktemp -d)"; mkstate "$VC"; mk_cap_codex "$VC"
+          printf '%s' "$CNF" > "$VC/verdict-1"; printf '%s' "$APF" > "$VC/verdict-2"
+          vd="$(mktemp -d)"
+          ( cd "$vd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$vd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; echo z > other.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$VC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$VC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::v4.6 verify loop did not approve (rc=$rc)"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = verify ] || { echo "::error::round 2 was not a verify (mode=$(jq -r .mode "$vj"))"; exit 1; }
+            [ "$(jq -r .round "$vj")" = 2 ] || { echo "::error::Tier-1 verify APPROVED did not bind (round=$(jq -r .round "$vj") — a confirmation ran?)"; exit 1; }
+            grep -q 'CUMULATIVE FIX DIFF' "$VC/prompt-2" || { echo "::error::verify round did not use the scoped cumulative payload"; exit 1; }
+            grep -q 'bug one' "$VC/prompt-2" || { echo "::error::verify round dropped the open prior finding"; exit 1; }
+            grep -q 'already fixed' "$VC/prompt-2" && { echo "::error::verify round re-sent a RESOLVED prior finding (payload not scoped to open)"; exit 1; } || true
+            grep -q 'other.py' "$VC/prompt-2" && { echo "::error::verify payload contains the untouched file — full-branch diff sent instead of the incremental fix diff"; exit 1; } || true
+            # IDEMPOTENCY: a re-invocation at the same APPROVED HEAD must exit 0 via the
+            # fast path WITHOUT spawning any reviewer round (definition-order regression:
+            # a swallowed command-not-found in the early-exit condition silently sent
+            # every re-check into a spurious paid recovery round).
+            rc=0; out="$(PATH="$VC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::same-sha re-invocation after APPROVED did not exit 0 (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'Nothing new to review' || { echo "::error::same-sha re-invocation did not take the idempotent fast path (out: $(printf '%s' "$out" | tail -c 160))"; exit 1; }
+            [ "$(cat "$VC/state")" = 2 ] || { echo "::error::same-sha re-invocation burned a reviewer round (calls=$(cat "$VC/state"))"; exit 1; } )
+          # (2) Tier-2 once-per-loop confirmation: verify-approve -> clean-slate runs
+          # (and FAILS the approval), fix, verify-approve again -> confirmation is
+          # SKIPPED (marker), the skip recorded in verdict.json.
+          T2="$(mktemp -d)"; mkstate "$T2"; mk_cap_codex "$T2"
+          printf '%s' "$CNF" > "$T2/verdict-1"; printf '%s' "$APF" > "$T2/verdict-2"
+          printf '%s' "$CNF" > "$T2/verdict-3"; printf '%s' "$APF" > "$T2/verdict-4"
+          td="$(mktemp -d)"
+          ( cd "$td"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$td" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::Tier-2 confirmation (call 3, CN) should have failed the loop (rc=$rc)"; exit 1; }
+            [ -f .plinth/session/review/feat/confirmed ] || { echo "::error::once-per-loop confirmation marker not written after the clean-slate ran"; exit 1; }
+            echo fix2 >> SPEC.md; git add -A; git commit -qm f2 >/dev/null
+            rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::second Tier-2 verify approval did not bind via the marker (rc=$rc)"; exit 1; }
+            [ "$(cat "$T2/state")" = 4 ] || { echo "::error::confirmation ran AGAIN despite the once-per-loop marker (calls=$(cat "$T2/state"))"; exit 1; }
+            jq -r '.confirmation // empty' "$vj" | grep -q 'skipped-once-per-loop' || { echo "::error::the confirmation skip was not recorded in verdict.json"; exit 1; }
+            # (2b) NEW-LOOP reset: after the concluded (APPROVED) loop, the next
+            # commit starts a fresh loop — the per-loop markers AND the usage.jsonl
+            # override ledger must be cleared (a stale ledger would leak a prior
+            # loop's override rows into the disclosure trace). Sentinel row stands
+            # in for the old loop's ledger content (stub rounds may not write one).
+            echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
+            printf '%s' "$CNF" > "$T2/verdict-5"
+            echo fix3 >> SPEC.md; git add -A; git commit -qm f3 >/dev/null
+            rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::new-loop round 1 should be CHANGES_NEEDED (rc=$rc)"; exit 1; }
+            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::confirmed marker survived the new-loop reset"; exit 1; }
+            ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::stale usage.jsonl ledger survived the new-loop reset"; exit 1; } )
+          # (3) round_cap circuit breaker: base config round_cap=1 -> round 2 refuses
+          # (exit 2, breaker message), and the policy file / loop state are untouched.
+          CB="$(mktemp -d)"; mkstate "$CB"; mk_cap_codex "$CB"
+          printf '%s' "$CNF" > "$CB/verdict-1"
+          cbd="$(mktemp -d)"
+          ( cd "$cbd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$cbd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap = 1\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; PATH="$CB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::breaker fixture round 1 should be CHANGES_NEEDED (rc=$rc)"; exit 1; }
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; out="$(PATH="$CB:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::round_cap=1 did not trip the circuit breaker on round 2 (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'circuit breaker' || { echo "::error::breaker abort did not name itself (out: $(printf '%s' "$out" | tail -c 200))"; exit 1; }
+            [ "$(cat "$CB/state")" = 1 ] || { echo "::error::the capped round still invoked the reviewer (calls=$(cat "$CB/state"))"; exit 1; }
+            # operator unbrick: env cap override lets the loop legitimately continue.
+            printf '%s' '{"verdict":"CHANGES_NEEDED","summary":"s","findings":[{"file":"app.py","line":1,"severity":"major","description":"still bad","status":"open"}]}' > "$CB/verdict-2"
+            rc=0; PLINTH_ROUND_CAP=5 PATH="$CB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] && [ "$(cat "$CB/state")" = 2 ] || { echo "::error::PLINTH_ROUND_CAP override did not unbrick the capped loop (rc=$rc calls=$(cat "$CB/state"))"; exit 1; } )
+          # (4) On-the-fly seat override: env beats the base config for one run, is
+          # recorded in verdict.json (overrides + vendor), and an invalid vendor dies.
+          OV="$(mktemp -d)"
+          cat > "$OV/claude" <<'CL'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/ov-claude-args
+          cat >/dev/null
+          printf '%s' '{"session_id":"ovs","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]},"usage":{"input_tokens":5}}'
+          CL
+          chmod +x "$OV/claude"
+          ovd="$(mktemp -d)"
+          ( cd "$ovd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; PLINTH_REVIEWER_VENDOR=claude PLINTH_REVIEWER_MODEL=sonnet PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::override run failed (rc=$rc)"; exit 1; }
+            [ "$(jq -r '.vendor' "$vj")" = claude ] || { echo "::error::override vendor not recorded as the acting vendor"; exit 1; }
+            [ "$(jq -r '.overrides.reviewer_vendor // empty' "$vj")" = claude ] || { echo "::error::reviewer_vendor override not recorded in verdict.json"; exit 1; }
+            [ "$(jq -r '.overrides.reviewer_model // empty' "$vj")" = sonnet ] || { echo "::error::reviewer_model override not recorded in verdict.json"; exit 1; }
+            grep -qx -- '--model' /tmp/ov-claude-args || { echo "::error::override model not passed to the vendor CLI"; exit 1; }
+            # invalid vendor dies at config parse, before the already-APPROVED short-circuit —
+            # no new branch/commit needed.
+            rc=0; PLINTH_REVIEWER_VENDOR=bogus PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::an invalid vendor override must die_infra (rc=$rc)"; exit 1; } )
+          # (4b) vendor-swap model drop: base pins a per-vendor tier model; a CROSS-vendor
+          # override WITHOUT a model override must NOT pass that model to the new CLI.
+          ovd2="$(mktemp -d)"
+          ( cd "$ovd2"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd2" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_model_tier1 = basemodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; PLINTH_REVIEWER_VENDOR=claude PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::cross-vendor no-model override run failed (rc=$rc)"; exit 1; }
+            grep -qx -- '--model' /tmp/ov-claude-args && { echo "::error::base per-vendor tier model was passed to a DIFFERENT vendor's CLI (drop-on-swap regressed)"; exit 1; } || true )
+          # (4c) same-vendor override keeps the ratified tier model.
+          ovd3="$(mktemp -d)"
+          ( cd "$ovd3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd3" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_vendor = claude\nreviewer_model_tier1 = basemodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; PLINTH_REVIEWER_VENDOR=claude PATH="$OV:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::same-vendor override run failed (rc=$rc)"; exit 1; }
+            awk '/^--model$/{getline nx; if(nx=="basemodel") ok=1} END{exit ok?0:1}' /tmp/ov-claude-args || { echo "::error::same-vendor override dropped the ratified tier model (should keep basemodel)"; exit 1; } )
+          # (4d) audit-seat override: Tier-2 approval with PLINTH_AUDIT_VENDOR swapping the
+          # base claude/opus audit to grok WITHOUT a model — the grok auditor must run with
+          # NO -m flag (per-vendor model dropped), and both the acting audit vendor and the
+          # override must be recorded in verdict.json.
+          cat > "$OV/grok" <<'GK'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" > /tmp/ov-grok-args
+          printf '%s' '{"sessionId":"ga","text":"{\"verdict\":\"APPROVED\",\"summary\":\"ok\",\"findings\":[]}"}'
+          GK
+          chmod +x "$OV/grok"
+          ovd4="$(mktemp -d)"
+          ( cd "$ovd4"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ovd4" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            rc=0; PLINTH_AUDIT_VENDOR=grok PATH="$OV:$RVB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::audit-override run failed (rc=$rc)"; exit 1; }
+            [ "$(jq -r '.audit.vendor // empty' "$vj")" = grok ] || { echo "::error::overridden audit vendor not the acting auditor (got $(jq -r '.audit.vendor' "$vj"))"; exit 1; }
+            [ "$(jq -r '.overrides.audit_vendor // empty' "$vj")" = grok ] || { echo "::error::audit_vendor override not recorded in verdict.json"; exit 1; }
+            grep -qx -- '-m' /tmp/ov-grok-args && { echo "::error::base audit_model (opus, a claude name) was passed to the grok auditor (audit drop-on-swap regressed)"; exit 1; } || true )
+          # (4e) multi-round on/off override: a round-1 override must survive in the
+          # cumulative usage.jsonl ledger after later rounds run WITHOUT it — the
+          # PR-body disclosure rule depends on this trace (verdict.json is overwritten
+          # per round).
+          LG="$(mktemp -d)"; mkstate "$LG"; mk_cap_codex "$LG"
+          printf '%s' "$CNF" > "$LG/verdict-1"; printf '%s' "$APF" > "$LG/verdict-2"
+          lgd="$(mktemp -d)"
+          ( cd "$lgd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$lgd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PLINTH_REVIEWER_MODEL=xmodel PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::ledger fixture loop failed (rc=$rc)"; exit 1; }
+            jq -r 'select(.round == 1) | .overrides.reviewer_model // empty' .plinth/session/review/feat/usage.jsonl | grep -qx xmodel || { echo "::error::a non-final round's override left no trace in the usage.jsonl ledger (disclosure rule unimplementable)"; exit 1; } )
+          # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
+          # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
+          # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
+          CC="$(mktemp -d)"; mkstate "$CC"; mk_cap_codex "$CC"
+          printf '%s' "$CNF" > "$CC/verdict-1"; printf '%s' "$APF" > "$CC/verdict-2"; printf '%s' "$APF" > "$CC/verdict-3"
+          ccd="$(mktemp -d)"
+          ( cd "$ccd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ccd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'round_cap = 2\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$CC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; out="$(PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::capped Tier-2 confirmation did not trip the breaker (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'confirmation would be round 3' || { echo "::error::capped confirmation did not name itself"; exit 1; }
+            [ "$(cat "$CC/state")" = 2 ] || { echo "::error::the capped confirmation still invoked the reviewer"; exit 1; }
+            rc=0; out="$(PLINTH_ROUND_CAP=5 PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::unbricked recovery confirmation failed (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::recovery path not taken after the capped confirmation"; exit 1; } )
+          # (5) FALLBACK verify: with no usable fix-diff anchor (lastfullread gone —
+          # anchor object missing/legacy state), the verify round must send the FULL
+          # diff and say so.
+          FB="$(mktemp -d)"; mkstate "$FB"; mk_cap_codex "$FB"
+          printf '%s' "$CNF" > "$FB/verdict-1"; printf '%s' "$APF" > "$FB/verdict-2"
+          fbd="$(mktemp -d)"
+          ( cd "$fbd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$fbd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$FB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            rm -f .plinth/session/review/feat/lastfullread
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$FB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::fallback verify loop did not approve (rc=$rc)"; exit 1; }
+            grep -q 'no usable fix-diff anchor' "$FB/prompt-2" || { echo "::error::fallback verify did not announce the missing anchor"; exit 1; }
+            grep -q 'DIFF (main...HEAD' "$FB/prompt-2" || { echo "::error::fallback verify did not send the full diff"; exit 1; } )
+          # (6) crash-recovery: a non-binding Tier-2 APPROVED whose confirmation crashed
+          # must NOT early-exit 0 on re-run — the clean-slate runs instead.
+          CR="$(mktemp -d)"; mkstate "$CR"; mk_cap_codex "$CR"
+          printf '%s' "$CNF" > "$CR/verdict-1"; printf '%s' "$APF" > "$CR/verdict-2"
+          : > "$CR/fail-3"   # the confirmation round's CLI call dies
+          printf '%s' "$APF" > "$CR/verdict-4"
+          crd="$(mktemp -d)"
+          ( cd "$crd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$crd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$CR:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; PATH="$CR:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::crashed confirmation should exit 2 (rc=$rc)"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::marker written despite the confirmation never running"; exit 1; }
+            rc=0; out="$(PATH="$CR:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::recovery run failed (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::re-run silently trusted an unconfirmed non-binding APPROVED"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; } )
+          echo "v4.6 loop-efficiency canary block OK"
           # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
           # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
           # "cross-vendor" audit runs (Tier-2 change; grok primary + grok audit).
@@ -899,26 +1148,37 @@ jobs:
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
-          # truth. Extract BOTH real fns and assert the mode x tier matrix (a Tier-1
-          # fallback VERIFY saw only the incremental diff, so it must NOT bind alone).
-          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          # truth. v4.6 semantics: Tier-1 approvals bind in EVERY mode (the round-1
+          # fresh pass carries branch coverage); Tier-2 non-fresh approvals need the
+          # once-per-loop clean-slate pass — bind_note reads the $SDIR/confirmed
+          # marker and must flip its truth once the confirmation has run.
+          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^effective_binds() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
           bash -c "$FNS; binds_directly fresh 2"  || { echo "::error::a fresh full review must bind"; exit 1; }
           bash -c "$FNS; binds_directly resume 1" || { echo "::error::a Tier-1 resume (warm thread) must bind directly"; exit 1; }
           bash -c "$FNS; binds_directly resume 2" && { echo "::error::a Tier-2 resume must get a clean-slate confirmation"; exit 1; } || true
-          bash -c "$FNS; binds_directly verify 1" && { echo "::error::a Tier-1 fallback verify must NOT bind on a narrow view"; exit 1; } || true
+          bash -c "$FNS; binds_directly verify 1" || { echo "::error::a Tier-1 verify must bind directly (v4.6: round-1 fresh pass carries branch coverage)"; exit 1; }
+          bash -c "$FNS; binds_directly verify 2" && { echo "::error::a Tier-2 verify must not bind before the once-per-loop clean-slate pass"; exit 1; } || true
           bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
-          bash -c "$FNS; bind_note verify 1" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-1 verify its verdict does not bind alone"; exit 1; }
+          bash -c "$FNS; bind_note verify 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 verify it binds directly (v4.6)"; exit 1; }
+          BNTD="$(mktemp -d)"
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-2 verify (no confirmation yet) its verdict does not bind alone"; exit 1; }
+          echo sha > "$BNTD/confirmed"
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'binds directly' || { echo "::error::bind_note must flip to binding once the once-per-loop confirmation marker exists"; exit 1; }
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.
           RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main fresh"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main resume" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main verify" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main ''"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 main main bogus"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
-          bash -c "$RP; resumable_prev CHANGES_NEEDED '' main main fresh"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
-          bash -c "$RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main resume codex" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main verify codex" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main '' codex"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main bogus codex"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED '' main main fresh codex"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh codex" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          # v4.6 vendor guard: a mid-loop seat swap must never hand a foreign session id
+          # to a different vendor's --resume; a missing recorded vendor fails CLOSED.
+          bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh ''"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
           # The tools-forbidden auditor must inline the WHOLE canonical spec tree
           # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
           # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.

@@ -1,5 +1,81 @@
 # Plinth changelog
 
+## v4.6.0 — review-loop efficiency: scoped verify, once-per-loop confirmation, circuit breaker, on-the-fly seats, shared charter — July 24, 2026
+- **Scoped verify rounds (payload chunking, cumulative anchor).** A verify round now sends
+  only the OPEN findings from the prior round plus the CUMULATIVE fix diff since the LAST
+  UNANCHORED FULL READ (round 1, or the latest clean-slate confirmation — recorded in the
+  per-loop `lastfullread` marker), never the full branch diff + full finding history — the
+  quadratic payload growth (full diff × full finding history × N rounds) that overflowed
+  the reviewer CLI on long loops (upstream issue #20, corroborated on this repo's own
+  20-round loop). Anchoring at the last full read closes the coverage story for binding
+  verifies: the full pass at the anchor plus this cumulative diff covers the whole branch
+  across the loop's sessions (the binding session itself sees only the delta). Honest bound: on a long Tier-1 (or never-resuming grok) loop no new
+  fresh round re-anchors, so the cumulative diff grows toward the branch diff — the
+  GUARANTEED savings there are the dropped finding-history payload and the eliminated
+  repeat clean-slate confirmations (roughly halving rounds), not a bounded diff size. The reviewer keeps read-only repo
+  access for context; one composed prompt serves both the scoped and the full-diff-fallback
+  form (no usable anchor: anchor object MISSING or legacy state — the check is
+  existence-only, so a rebase that keeps the old anchor object alive is not
+  detected; the ancestry guard is tracked in MANUAL `## Noticed`). ACCEPTED TRADEOFF: findings marked resolved
+  drop out of the tracked list — a later regression re-appears only as code in the
+  cumulative diff, not as the prior finding text.
+- **Tier-1 approvals bind in every mode; Tier-2 clean-slate confirmation runs at most ONCE
+  per loop.** A verify approval on ordinary code binds directly — the binding session's
+  cumulative payload plus the anchored full read cover the whole branch. On Tier 2 the
+  unanchored clean-slate confirmation still runs before a non-fresh approval binds, but
+  once per loop: the `confirmed` marker records the read, later skips are recorded in
+  `verdict.json` (`confirmation` field), and BOTH per-loop markers are cleared when a new
+  loop starts (a stale marker would have turned once-per-loop into once-per-branch).
+  One predicate — `effective_binds()` — is the single source of truth for the gate AND the
+  reviewer-facing `bind_note`, so the note cannot drift from what actually binds. A
+  non-binding APPROVED whose confirmation crashed is NOT trusted on re-run: the early-exit
+  detects the unconfirmed state and runs the clean-slate (recovery counts as the loop's
+  confirmation). Repeated full re-reads were the main cost driver on long loops.
+- **`round_cap` circuit breaker (default 8, 0 disables).** A loop that has not converged by
+  round N stops with exit 2 (the round DID NOT RUN) and surfaces to the human — a
+  non-converging loop is a design problem, not a review problem; the driver rules forbid
+  dodging the cap by restarting the loop. The knob is read from the BASE config (the
+  breaker message says so); `PLINTH_ROUND_CAP` is the operator's recorded unbrick for a
+  loop that must legitimately continue.
+- **On-the-fly seat overrides (operator escape hatch).** Env `PLINTH_REVIEWER_VENDOR` /
+  `PLINTH_REVIEWER_MODEL` / `PLINTH_AUDIT_VENDOR` / `PLINTH_AUDIT_MODEL` /
+  `PLINTH_ROUND_CAP` beat the ratified-base config for ONE run — OPERATOR-ONLY by rule
+  (the driver setting them is tampering-class), announced on stdout and recorded in
+  `verdict.json` (a single `overrides` object built once from the env; `vendor` is now
+  always recorded too). verdict.json is local session state and is overwritten each round, so
+  overrides are ALSO appended per round to the usage.jsonl ledger (a mid-loop override
+  used in a non-final round stays traceable), and the durable disclosure is the
+  driver-rules requirement that the PR body's audit summary list every recorded
+  override (contract-bound — no shipped mechanism cross-checks the PR body against
+  the ledger; the automated cross-check is designated for the receipt check, and the
+  ledger is cleared on a new-loop reset so it only ever describes the current loop).
+  Auditability over prevention, per the trusted-but-fallible model; the base
+  config stays the governing default. On an ACTUAL vendor change without a model override the base
+  per-tier (and audit) models are dropped — they are per-vendor names and would fail loud
+  on a different CLI — while a SAME-vendor override keeps the ratified seat model. A
+  mid-loop vendor swap never resumes the previous vendor's thread: `resumable_prev` now
+  requires the recorded verdict vendor to match the running vendor (a missing recorded
+  vendor fails closed to a non-resume round). The AUDIT vendor is deliberately NOT
+  pre-validated: the audit seat is best-effort by design — `run_auditor` records an
+  unknown/failed vendor as UNAVAILABLE without blocking the loop (and accepts aliases such
+  as `gemini` that a pre-check would wrongly reject); only the reviewer vendor, a hard
+  requirement, is enum-validated.
+- **Phase + convergence charter promoted into the shared reviewer contract**
+  (`shared/reviewer.md`): build-fast/harden-when-declared phases, exhaustive round 1,
+  fix-verification-only later rounds, and the precedence rule (BUILD-phase blocking classes
+  block whenever discovered — severity never depends on the round number). Every project
+  now gets convergence bounds without per-repo AGENTS-project.md pastes.
+- **Driver discipline in the shared rules** (`shared/plinth-rules.md`): build first, review
+  once at feature-complete; a FREE self-review pre-flight before the first paid round; batch
+  all open-finding fixes into ONE commit per round; never restart the loop to dodge the cap.
+- PLANNING-PROMPT.md refreshed to the v4 reality: configurable cross-vendor seats +
+  lanes (not "Claude implements, Codex reviews"), project notes target
+  `.plinth/DRIVER-project.md` (not a CLAUDE.md paste), optional AGENTS-project.md,
+  phase-aware spec guidance, `round_cap` in the reported config values.
+- Config: new `round_cap` knob documented in the scaffold template alongside the env
+  overrides. MODELS.md: seat economics — all seats subscription-billed, assign purely by
+  fit; deep model reserved for what needs depth.
+
 ## v4.5.1 — protected-paths backfill honors the file's anchor convention, fails closed — July 24, 2026
 - **`ensure_protected_paths` backfills in the file's own anchor convention.** The v4.5.0
   backfill appended genuinely-missing managed patterns in the canonical `(^|/)` form even into

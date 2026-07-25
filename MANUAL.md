@@ -336,28 +336,48 @@ Two operator chores the rules generate:
      bumped the tier.
    - **Tier 1** — ordinary code: standard adversarial review by the second model
      (the `reviewer_vendor` — Codex by default; also Claude or Grok) with the
-     reviewer rules in `.plinth/reviewer.md`. A resumed approval binds
-     directly — the warm reviewer thread still holds its first-pass full read, and
-     iterative convergence speed is worth more than a second full read for ordinary
-     code. A fallback verify (a fresh session, used when the prior thread is too
-     large to resume) reads the prior findings plus the FULL diff — thorough, but
-     anchored on those findings, so it does NOT bind on its own; like Tier 2 it gets
-     a clean-slate confirmation first.
+     reviewer rules in `.plinth/reviewer.md`. Approvals bind directly in every
+     mode: a resumed approval carries its warm first-pass full read, and a
+     SCOPED verify (a fresh session used when the prior thread is too large,
+     dead, or from a different vendor) reads the open findings plus the
+     CUMULATIVE fix diff since the last full read — across the loop's sessions
+     the branch is fully covered (the anchor round read everything up to the
+     anchor; this session reads everything after it, with repo read access for
+     context), though the verify session itself sees only the delta and the
+     open findings; the full diff is sent only when no usable anchor exists
+     (anchor commit object missing, or legacy pre-v4.6 state). A rebase that
+     keeps the old anchor object alive is NOT detected — the anchor is
+     existence-checked only; the ancestry guard is backlog (see `## Noticed`).
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
-     public API, dependencies, weakened tests): full review, approval binds only
-     through a clean-slate full pass (a warm reviewer can't approve its own
-     checklist). When a cross-vendor auditor is configured (`audit_vendor` — new
-     projects default to `claude`, the v4 audit seat; on an upgraded project you add
-     the line yourself, and `plinth update` reminds you if it is unset), every Tier-2 approval also
-     gets a best-effort second opinion from that different vendor; its failure is
+     public API, dependencies, weakened tests): full review; a non-fresh
+     approval binds only after a clean-slate full pass (a warm reviewer can't
+     approve its own checklist) — run at most ONCE per loop: the unanchored
+     read is recorded, and later non-fresh approvals in the same loop bind with
+     the skip noted in `verdict.json`. When a cross-vendor auditor is
+     configured (`audit_vendor` — new projects default to `claude`, the v4
+     audit seat; on an upgraded project you add the line yourself, and `plinth
+     update` reminds you if it is unset), every Tier-2 approval also gets a
+     best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
-   same reviewer session with just the incremental diff, or — if that session is too
-   large or dead — a verify round that reads prior findings plus the FULL diff
-   (anchored on those findings) and does NOT bind on its own, so an approval still
-   gets a clean-slate full confirmation first), 2 = the review DID NOT RUN.
+   same reviewer session with just the incremental diff, or — if that session is
+   too large, dead, or from a different vendor — a SCOPED verify round that reads
+   the open findings plus the cumulative fix diff since the last full read; Tier-1
+   verify approvals bind directly, Tier-2 ones after the once-per-loop clean-slate
+   pass), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
+   knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
+   surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
+   `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
+   `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
+   credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
+   tampering-class), every override is announced and recorded in session state
+   (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
+   the PR body's audit summary (contract-bound: nothing shipped cross-checks the
+   PR body against the ledger — the operator audits the ledger directly; the
+   automated cross-check is designated for the receipt check), and a vendor swap
+   never resumes the previous vendor's thread.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
@@ -662,27 +682,68 @@ installed copies.
   `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
   snapshot metadata accumulate under the system temp dir; add a post-report /
   post-audit cleanup step. (Round 11, minors.)
-- **Review-loop cost controls (2026-07-24 credit exhaustion post-mortem).** The codex
-  account ran dry mid-loop; root causes and proposed product fixes, for the next
-  release: (1) verify-mode rounds re-send the FULL diff + ALL prior findings — chunk
-  or scope them to the fix diffs + open findings (upstream issue #20 corroborates);
-  (2) the clean-slate confirmation re-reviews the whole branch fresh — gate it to
-  Tier 2 and run it at most once per loop; (3) promote the ratified phase/convergence
-  charter from this repo's AGENTS-project.md into the SHARED reviewer contract
-  (`shared/reviewer.md`) so every project gets convergence bounds without per-repo
-  pastes; (4) add a round-count circuit breaker (past N rounds, stop and surface
-  rather than keep billing); (5) driver discipline: free self-review pre-flight
-  (/code-review) before round 1, and batch ALL open-finding fixes into one commit per
-  round. Seat economics: subscription seats (claude/grok) for high-frequency loop
-  roles; metered seats only for rare deep passes.
-- **On-the-fly reviewer seat switching (maintainer requirement, 2026-07-24).** The
-  ratified-base config read means a seat change only governs after it lands on main —
-  correct against driver self-serve, but too slow when a vendor's credits run out
-  mid-loop. Proposed: review.sh honors operator ENV overrides
-  (PLINTH_REVIEWER_VENDOR / PLINTH_REVIEWER_MODEL / PLINTH_AUDIT_VENDOR) that take
-  precedence over the base config for THAT run, recorded LOUDLY in verdict.json, the
-  session event feed, and the PR audit summary — auditability over prevention, per the
-  trusted-operator model. Base-ref config stays the governing default.
+- **review.sh: verify/resume anchors are existence-checked, not ancestry-checked**
+  (`lastfullread` and `prev_sha`: `git cat-file -e` only). After a rebase the anchor
+  commit can still exist while no longer being an ancestor of HEAD, so the
+  "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
+  --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
+  pre-existing pattern, hardening backlog per the phase charter. Round-13 grok
+  audit escalated the DOCS half — MANUAL/CHANGELOG/verify-prompt claimed the
+  fallback fires "after a rebase" — as an overclaim; the claims were corrected
+  in v4.6.0, the code guard itself remains backlog.)
+- **Leading-zero octal footgun in numeric knob parsing** (pre-existing:
+  ROUND_BUDGET, RESUME_MAX use digit-only case checks; a value like `08` then
+  crashes bash arithmetic as invalid octal). round_cap now normalizes with
+  `$((10#...))`; apply the same to the sibling knobs. (v4.6 round 10, minor.)
+- **v4.6 canary gaps (round 6 minors):** no fixture for a NON-NUMERIC
+  PLINTH_ROUND_CAP (must die_infra); no end-to-end two-round fixture proving a
+  mid-loop PLINTH_REVIEWER_VENDOR swap falls back to a scoped verify rather than
+  ever reaching a foreign --resume (covered today only by the extracted
+  resumable_prev unit calls). Add with the next canary touch.
+- **v4.6 canary gap: explicit PLINTH_AUDIT_MODEL pass-through untested.** Fixture 4d
+  covers drop-model-on-audit-vendor-swap, but no test asserts an explicit
+  PLINTH_AUDIT_MODEL survives and reaches the auditor CLI (structurally identical to
+  the tested reviewer case — low risk). Add alongside the next canary touch.
+  (v4.6 round 4, minor.)
+- **v4.6 accepted tradeoffs / follow-ups (from the pre-flight self-review).** (a) Findings
+  marked resolved drop from the verify payload — a regression resurfaces only as code in
+  the cumulative diff; consider carrying resolved findings for one extra round. (b) The
+  canary's six v4.6 fixtures repeat a 5-line repo recipe — extract a mk_loop_repo helper
+  on the next canary touch. (c) `.DS_Store` is git-tracked and churns — untrack and
+  gitignore it. (d) The full branch diff is still materialized+hashed even on scoped verify
+  rounds where it is not sent — lazy-materialize if large-repo wall-clock ever matters.
+- **review.sh: round_cap breaker message is misleading on a naive recovery
+  retry.** The crash-recovery path (unconfirmed APPROVED, `recovery=1`) sets
+  `round=prev_round+1`, which can exceed ROUND_CAP and hit the generic breaker
+  at ~line 942 ("rethink the change or the spec") instead of the accurate
+  confirmation-path message at ~line 978 ("PLINTH_ROUND_CAP=<n> to run the
+  confirmation"); `die_infra` overwrites `last-error`, so a naive re-run
+  replaces the good guidance with the misleading one. Exit code and safety
+  unaffected. Route the recovery path to the confirmation-specific message; add
+  a fixture. (v4.6 post-approval round, minor.)
+- **v4.6 canary gap: round_cap = 0 (breaker disabled) has no fixture.** Fixtures
+  cover round_cap=1 and 2 only; nothing drives a loop past round 8 with
+  round_cap=0 to prove the breaker never trips. Same class as the non-numeric
+  PLINTH_ROUND_CAP gap above. Add with the next canary touch. (v4.6
+  post-approval round, minor.)
+- **Canary seat-override fixtures use fixed /tmp capture paths**
+  (`/tmp/ov-claude-args`, `/tmp/ov-grok-args`). Sequential today, race-prone if
+  the canary job is ever split or parallelized; prefer mktemp per fixture.
+  (v4.6 round-13 grok audit, minor.)
+- **Chain-of-sessions binding: the binding APPROVED session never held pre-anchor
+  code.** The session that produces a binding APPROVED sees only the open findings
+  plus the cumulative diff since `lastfullread`; pre-anchor code is reachable only
+  via optional read tools, so a fix diff can break a pre-anchor invariant that no
+  binding session is structurally guaranteed to re-read. Distinct from the
+  resolved-findings-drop tradeoff above (that is about dropped FINDINGS; this is
+  about never-re-read CODE). (v4.6 round 12, minor.)
+- **Review-prompt payload duplication in this repo: reviewer.md phase/convergence
+  charter also lives in `.plinth/AGENTS-project.md`.** v4.6 promoted the "Review
+  phases" / "Convergence — bound the loop" sections into `shared/reviewer.md`, but
+  this repo's ratified `.plinth/AGENTS-project.md` still carries them verbatim;
+  `inline_contract()` concatenates both, so every review prompt here includes the
+  charter twice. No functional impact — trim the duplicate from AGENTS-project.md
+  on the next ratified charter touch. (v4.6 post-approval fresh round, minor.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
