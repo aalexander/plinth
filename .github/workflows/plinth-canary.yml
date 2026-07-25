@@ -1287,22 +1287,24 @@ jobs:
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
-          # truth. v4.6 semantics: Tier-1 approvals bind in EVERY mode (the round-1
-          # fresh pass carries branch coverage); Tier-2 non-fresh approvals need the
-          # once-per-loop clean-slate pass — bind_note reads the $SDIR/confirmed
-          # marker and must flip its truth once the confirmation has run.
-          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^effective_binds() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          # truth. Tier-1 approvals bind in EVERY mode (the round-1 fresh pass carries
+          # branch coverage); a Tier-2 non-fresh approval ALWAYS gets a clean-slate
+          # confirmation first. v4.6's once-per-loop skip (and the $SDIR/confirmed
+          # marker bind_note used to consult) is retired — upstream #27.
+          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
           bash -c "$FNS; binds_directly fresh 2"  || { echo "::error::a fresh full review must bind"; exit 1; }
           bash -c "$FNS; binds_directly resume 1" || { echo "::error::a Tier-1 resume (warm thread) must bind directly"; exit 1; }
           bash -c "$FNS; binds_directly resume 2" && { echo "::error::a Tier-2 resume must get a clean-slate confirmation"; exit 1; } || true
           bash -c "$FNS; binds_directly verify 1" || { echo "::error::a Tier-1 verify must bind directly (v4.6: round-1 fresh pass carries branch coverage)"; exit 1; }
-          bash -c "$FNS; binds_directly verify 2" && { echo "::error::a Tier-2 verify must not bind before the once-per-loop clean-slate pass"; exit 1; } || true
+          bash -c "$FNS; binds_directly verify 2" && { echo "::error::a Tier-2 verify must not bind before its clean-slate confirmation"; exit 1; } || true
           bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
           bash -c "$FNS; bind_note verify 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 verify it binds directly (v4.6)"; exit 1; }
           BNTD="$(mktemp -d)"
-          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-2 verify (no confirmation yet) its verdict does not bind alone"; exit 1; }
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-2 verify its verdict does not bind alone"; exit 1; }
+          # A leftover v4.6 `confirmed` marker must NOT resurrect the retired skip:
+          # bind_note has to keep telling a Tier-2 verify it does not bind (#27).
           echo sha > "$BNTD/confirmed"
-          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'binds directly' || { echo "::error::bind_note must flip to binding once the once-per-loop confirmation marker exists"; exit 1; }
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::a stale 'confirmed' marker flipped bind_note back to binding — the retired once-per-loop skip is back (#27)"; exit 1; }
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.

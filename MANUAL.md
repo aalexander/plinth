@@ -367,10 +367,12 @@ Two operator chores the rules generate:
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is
-   too large, dead, or from a different vendor — a SCOPED verify round that reads
+   too large or dead — a SCOPED verify round that reads
    the open findings plus the cumulative fix diff since the last full read; Tier-1
-   verify approvals bind directly, Tier-2 ones after the once-per-loop clean-slate
-   pass), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
+   verify approvals bind directly, Tier-2 ones only after a clean-slate confirmation
+   pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
+   round: the recorded full read belongs to the previous vendor, and coverage credit
+   does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
    knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
    surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
@@ -627,6 +629,23 @@ summary is commentary. You intervene for exactly three things: infra failures
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
+
+- **`plinth advise` still reports every failure as "CLI missing or not signed in"**
+  (`bin/plinth` `run_advise`, all four vendor branches). v4.7 fixed the wiring bug
+  that this message was masking, but the mask itself remains: each branch is
+  `<cli> ... 2>/dev/null || { echo "$unavail"; ... }`, so a future flag change,
+  auth error, or model rejection is still reported as an absent CLI. That is what
+  made the variadic-prompt bug invisible for a full release. Fix: capture stderr
+  and surface its tail in the unavailable line (advise is non-blocking, so there is
+  no reason to hide the cause). Found in the v4.7 self-review pre-flight.
+- **Every seat-swap path re-anchors coverage except a swap that lands on a fresh
+  round anyway** (`shared/.plinth/review.sh`, #26 fix). The vendor check compares
+  only the IMMEDIATELY preceding round's vendor, which is sound today because the
+  per-loop markers reset together and only fresh rounds write the anchor. If a
+  future change ever writes `lastfullread` from a non-fresh round, or persists it
+  across loops, that transitivity argument silently breaks. A vendor-stamped anchor
+  file would make the invariant local instead of global. Not fixed: it would add a
+  parse format for a property nothing currently violates.
 
 - **guard.sh: protected-path loops fail open on heredoc temp failure**
   (`shared/.claude/hooks/guard.sh`, both pattern loops). If Bash cannot create

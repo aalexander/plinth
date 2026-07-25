@@ -261,8 +261,9 @@ Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 subscription-billed, so assign purely by fit — the fastest model that is capable
 enough for the role, with the deep model reserved for what actually needs depth
 (Tier-2 tooling, declared hardening passes, the binding confirmation). The loop's
-cost controls do the rest: scoped verify rounds, a once-per-loop clean-slate
-confirmation, and the `round_cap` circuit breaker. When a vendor becomes
+cost controls do the rest: scoped verify rounds and the `round_cap` circuit
+breaker. (v4.6 also skipped repeat Tier-2 clean-slate confirmations; v4.7 retired
+that — it traded a coverage guarantee for the saving. See CHANGELOG #27.) When a vendor becomes
 unavailable mid-loop (credits, outage), switch seats ON THE FLY with the operator
 env overrides (`PLINTH_REVIEWER_VENDOR` / `PLINTH_REVIEWER_MODEL` /
 `PLINTH_AUDIT_VENDOR` / `PLINTH_AUDIT_MODEL`) — one run, announced and recorded

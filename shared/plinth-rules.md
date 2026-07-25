@@ -155,7 +155,9 @@ CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 oversized or dead thread instead runs a SCOPED VERIFY round — a fresh session seeded
 with the OPEN findings plus the cumulative fix diff since the last full review pass,
 with repo read access for context; Tier-1 verify approvals bind directly, Tier-2 ones
-after the once-per-loop clean-slate confirmation). Exit 2 = the
+only after a clean-slate confirmation, EVERY time. Swapping the reviewer vendor
+mid-loop forces a fresh full round instead — coverage credit does not transfer
+between vendors). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
 pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER (default 8 rounds) —
 a loop that has not converged by then is a design problem, not a review problem;
