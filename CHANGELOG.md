@@ -1,6 +1,6 @@
 # Plinth changelog
 
-## v4.7.1 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
+## v4.7.2 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
 Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
 instance the reviewer named rather than the class it belonged to, so the next round found
 the next instance. (A hard round count is deliberately not quoted here — an exact tally in

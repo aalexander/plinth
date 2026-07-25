@@ -1048,6 +1048,80 @@ jobs:
             [ "$rc" = 2 ] || { echo "::error::(3c) a malformed round_cap did not abort the run (rc=$rc) — it was silently reinterpreted, so the operator's intended cap is unknowable"; exit 1; }
             printf '%s' "$out" | grep -q 'round_cap' || { echo "::error::(3c) the malformed-round_cap abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
             [ "$(cat "$MC/state")" = 0 ] || { echo "::error::(3c) the reviewer was invoked despite a malformed round_cap — config must be validated BEFORE spending a round"; exit 1; } )
+          # (3e) round_cap MAX bound (100000). A positive cap is capped at 100000 because
+          # past the arithmetic range bash integer wrap turns a huge digit string NEGATIVE
+          # and silently disables the breaker. Both input paths (config + PLINTH_ROUND_CAP)
+          # must accept the max, refuse max+1, and refuse an overflow-sized digit string —
+          # and the refusals must fire BEFORE the reviewer is invoked (state stays 0).
+          # Fixture (3c) only covers the nonnumeric typo 'eight'.
+          RCMAX="$(mktemp -d)"; mkstate "$RCMAX"; mk_cap_codex "$RCMAX"
+          printf '%s' "$CNF" > "$RCMAX/verdict-1"
+          rcmaxd="$(mktemp -d)"
+          ( cd "$rcmaxd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rcmaxd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap = 100000\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PATH="$RCMAX:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::(3e) config round_cap=100000 (the documented max) was not accepted (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(cat "$RCMAX/state")" = 1 ] || { echo "::error::(3e) config round_cap=100000 should have invoked the reviewer once, got $(cat "$RCMAX/state")"; exit 1; } )
+          RC101="$(mktemp -d)"; mkstate "$RC101"; mk_cap_codex "$RC101"
+          printf '%s' "$CNF" > "$RC101/verdict-1"
+          rc101d="$(mktemp -d)"
+          ( cd "$rc101d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rc101d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap = 100001\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PATH="$RC101:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3e) config round_cap=100001 did not abort (rc=$rc) — max+1 must be refused before a round is spent"; exit 1; }
+            printf '%s' "$out" | grep -q 'round_cap' || { echo "::error::(3e) the round_cap=100001 abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$RC101/state")" = 0 ] || { echo "::error::(3e) the reviewer was invoked despite config round_cap=100001 — bound must be validated BEFORE spending a round"; exit 1; } )
+          RCOV="$(mktemp -d)"; mkstate "$RCOV"; mk_cap_codex "$RCOV"
+          printf '%s' "$CNF" > "$RCOV/verdict-1"
+          rcovd="$(mktemp -d)"
+          ( cd "$rcovd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rcovd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap = 99999999999999999999\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PATH="$RCOV:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3e) an overflow-sized config round_cap digit string did not abort (rc=$rc) — past the arithmetic range it would wrap NEGATIVE and disable the breaker"; exit 1; }
+            printf '%s' "$out" | grep -q 'round_cap' || { echo "::error::(3e) the overflow round_cap abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$RCOV/state")" = 0 ] || { echo "::error::(3e) the reviewer was invoked despite an overflow-sized config round_cap"; exit 1; } )
+          RCEMAX="$(mktemp -d)"; mkstate "$RCEMAX"; mk_cap_codex "$RCEMAX"
+          printf '%s' "$CNF" > "$RCEMAX/verdict-1"
+          rcemaxd="$(mktemp -d)"
+          ( cd "$rcemaxd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rcemaxd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -q '^round_cap' .plinth/config && { echo "::error::(3e) PLINTH_ROUND_CAP max fixture must run with no config round_cap line"; exit 1; } || true
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PLINTH_ROUND_CAP=100000 PATH="$RCEMAX:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::(3e) PLINTH_ROUND_CAP=100000 (the documented max) was not accepted (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(cat "$RCEMAX/state")" = 1 ] || { echo "::error::(3e) PLINTH_ROUND_CAP=100000 should have invoked the reviewer once, got $(cat "$RCEMAX/state")"; exit 1; } )
+          RCE101="$(mktemp -d)"; mkstate "$RCE101"; mk_cap_codex "$RCE101"
+          printf '%s' "$CNF" > "$RCE101/verdict-1"
+          rce101d="$(mktemp -d)"
+          ( cd "$rce101d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rce101d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PLINTH_ROUND_CAP=100001 PATH="$RCE101:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3e) PLINTH_ROUND_CAP=100001 did not abort (rc=$rc) — max+1 must be refused before a round is spent"; exit 1; }
+            printf '%s' "$out" | grep -q 'PLINTH_ROUND_CAP\|round_cap' || { echo "::error::(3e) the PLINTH_ROUND_CAP=100001 abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$RCE101/state")" = 0 ] || { echo "::error::(3e) the reviewer was invoked despite PLINTH_ROUND_CAP=100001"; exit 1; } )
+          RCEOV="$(mktemp -d)"; mkstate "$RCEOV"; mk_cap_codex "$RCEOV"
+          printf '%s' "$CNF" > "$RCEOV/verdict-1"
+          rceovd="$(mktemp -d)"
+          ( cd "$rceovd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rceovd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PLINTH_ROUND_CAP=99999999999999999999 PATH="$RCEOV:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3e) an overflow-sized PLINTH_ROUND_CAP digit string did not abort (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'PLINTH_ROUND_CAP\|round_cap' || { echo "::error::(3e) the overflow PLINTH_ROUND_CAP abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$RCEOV/state")" = 0 ] || { echo "::error::(3e) the reviewer was invoked despite an overflow-sized PLINTH_ROUND_CAP"; exit 1; } )
           # (4) On-the-fly seat override: env beats the base config for one run, is
           # recorded in verdict.json (overrides + vendor), and an invalid vendor dies.
           OV="$(mktemp -d)"
@@ -1874,6 +1948,41 @@ jobs:
           r9gt0="$(cat "$R9G_T0/led" 2>/dev/null || true)"
           [ -n "$r9gt0" ] || { echo "::error::(9g) Tier-0 stale-ledger case minted no receipt at all — the case is not exercising the path it claims to"; exit 1; }
           [ "$r9gt0" = '[]' ] || { echo "::error::(9g) a Tier-0 (round 0) receipt inherited a PRIOR loop's override ledger ($r9gt0) — round 0 means no round has run in this loop, so the only correct disclosure is []. A stale tuple fails the server check on a clean Tier-0 PR"; exit 1; }
+          # (9g2) Tier-0 TRANSITION via the real review.sh. (9g) calls mint_receipt directly
+          # and so cannot cover the path that clears prior-loop session files when the
+          # current diff classifies as Tier 0. Seed usage.jsonl (with an override row),
+          # lastfullread and findings-1.json, then run a docs-only review and assert the
+          # per-loop state is gone and the minted receipt's override_ledger is [].
+          R9G2="$(mktemp -d)"
+          r9g2d="$(mktemp -d)"
+          ( cd "$r9g2d"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9g2d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; echo readme > README.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            # Current diff is Tier 0 (inert docs only). Seed prior-loop leftovers AFTER
+            # this commit (and under the session self-gitignore) so they do not enter the
+            # diff or dirty the tree — both would force a non-Tier-0 / refuse path.
+            echo docs >> README.md; git add -A; git commit -qm docs >/dev/null
+            mkdir -p .plinth/session/review/feat
+            printf '*\n' > .plinth/session/.gitignore
+            printf '{"round":1,"mode":"fresh","overrides":{"round_cap":"9"}}\n' > .plinth/session/review/feat/usage.jsonl
+            printf 'deadbeef\n' > .plinth/session/review/feat/lastfullread
+            printf '[]\n' > .plinth/session/review/feat/findings-1.json
+            [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = 0 ] || { echo "::error::(9g2) setup: docs-only diff is not Tier 0 — the transition case would not exercise the Tier-0 path"; exit 1; }
+            [ -f .plinth/session/review/feat/usage.jsonl ] || { echo "::error::(9g2) setup: prior-loop usage.jsonl was not seeded"; exit 1; }
+            rc=0; out="$(./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9g2) Tier-0 transition did not APPROVE (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .verdict "$vj")" = APPROVED ] || { echo "::error::(9g2) Tier-0 transition verdict is not APPROVED"; exit 1; }
+            [ "$(jq -r .round "$vj")" = 0 ] || { echo "::error::(9g2) Tier-0 transition did not bind as round 0 (round=$(jq -r .round "$vj"))"; exit 1; }
+            [ "$(jq -r .reviewer_verdict "$vj")" = TIER0_AUTO ] || { echo "::error::(9g2) Tier-0 transition was not the deterministic floor (reviewer_verdict=$(jq -r .reviewer_verdict "$vj"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/usage.jsonl ] || { echo "::error::(9g2) usage.jsonl survived the Tier-0 transition — prior-loop override ledger was not cleared"; exit 1; }
+            [ ! -f .plinth/session/review/feat/lastfullread ] || { echo "::error::(9g2) lastfullread survived the Tier-0 transition"; exit 1; }
+            [ ! -f .plinth/session/review/feat/findings-1.json ] || { echo "::error::(9g2) findings-1.json survived the Tier-0 transition"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD > "$R9G2/receipt.json" 2>/dev/null || { echo "::error::(9g2) Tier-0 transition minted no receipt"; exit 1; }
+            jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' "$R9G2/receipt.json" >/dev/null || { echo "::error::(9g2) Tier-0 transition receipt fields wrong (want APPROVED/round 0/override_ledger []): $(cat "$R9G2/receipt.json")"; exit 1; } )
           # (9h) THE NOTES-RECOVERY RECIPE, driven end to end against a real remote.
           # plinth-rules.md and NEEDS-HUMAN.md document a recovery for a non-fast-forward
           # push of refs/notes/plinth-receipts. That recipe was PROSE ONLY, and it had
@@ -1982,10 +2091,11 @@ jobs:
             printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k) MOVED: an approval was REUSED after the merge base moved under a fixed HEAD — the reviewed diff shrank, so this mints a receipt for a diff nobody reviewed and the server check verifies it as sound"; exit 1; } || true
             [ "$(cat "$R9K/state")" != "$b2" ] || { echo "::error::(9k) MOVED: no real round ran after the base moved"; exit 1; }
             printf '%s' "$out2" | grep -qE 'BASE HAS|has MOVED' || { echo "::error::(9k) MOVED: the base movement was not announced — an operator sees an unexplained paid round: $(printf '%s' "$out2" | tail -c 200)"; exit 1; } )
-          # (9k2) The same binding rules on the CHANGES_NEEDED side, plus legacy fail-closed
-          # and fully-qualified ref spellings. (9k) covers only the APPROVED path, and the
-          # "fails closed on a pre-v4.7.1 verdict" claim was asserted in prose before it was
-          # implemented — so it gets a test, not a sentence.
+          # (9k2) The same binding rules on the CHANGES_NEEDED side. (9k) covers only the
+          # APPROVED path. Two restart causes at a fixed HEAD — same-name base MOVED, and a
+          # DIFFERENT base selected — must both start a FRESH loop (round 1, per-loop state
+          # cleared), not refuse and not resume/verify. The unchanged-HEAD guard must still
+          # fire when nothing moved.
           R9L="$(mktemp -d)"; mkstate "$R9L"; mk_cap_codex "$R9L"
           r9ld="$(mktemp -d)"
           ( cd "$r9ld"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
@@ -1993,14 +2103,20 @@ jobs:
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
             git remote add origin https://github.com/owner/repo.git
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            ORIG="$(git rev-parse HEAD)"
             git checkout -qb feat >/dev/null 2>&1
             echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; L1="$(git rev-parse HEAD)"
             echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
             # EVERY round must return CHANGES_NEEDED: mk_cap_codex defaults to APPROVED for
             # any round with no verdict file, which would silently move the loop onto the
             # APPROVED fast path and make the guard assertions below test the wrong branch.
-            for r9ln in 1 2 3 4; do printf '%s' "$CNF" > "$R9L/verdict-$r9ln"; done
+            for r9ln in 1 2 3 4 5 6; do printf '%s' "$CNF" > "$R9L/verdict-$r9ln"; done
             PATH="$R9L:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            # Seed per-loop markers that a correct restart MUST clear (a resume/verify path
+            # that only bumps the invocation count would leave these behind).
+            echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
+            printf 'deadbeef\n' > .plinth/session/review/feat/lastfullread
+            printf '[]\n' > .plinth/session/review/feat/findings-99.json
             # CHANGES_NEEDED + base MOVED at a fixed HEAD: must RESET, not refuse. Refusing
             # strands the operator — the loop neither continues nor restarts, and the only
             # escape is faking a commit.
@@ -2009,12 +2125,35 @@ jobs:
             out="$(PATH="$R9L:$PATH" ./.plinth/review.sh main 2>&1)" || true
             printf '%s' "$out" | grep -q 'HEAD unchanged since round' && { echo "::error::(9k2) CHANGES_NEEDED + moved base refused with 'HEAD unchanged' — the prior round read a diff that no longer exists, so this must start a new loop, not strand the operator"; exit 1; } || true
             [ "$(cat "$R9L/state")" != "$b" ] || { echo "::error::(9k2) CHANGES_NEEDED + moved base ran no round at all"; exit 1; }
+            [ "$(jq -r .round .plinth/session/review/feat/verdict.json)" = 1 ] || { echo "::error::(9k2) MOVED: restart was not a fresh round 1 (round=$(jq -r .round .plinth/session/review/feat/verdict.json)) — resume/verify would leave a higher round"; exit 1; }
+            ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::(9k2) MOVED: stale usage.jsonl ledger survived the restart — per-loop state was not cleared"; exit 1; }
+            [ ! -f .plinth/session/review/feat/findings-99.json ] || { echo "::error::(9k2) MOVED: stale findings-99.json survived the restart"; exit 1; }
+            [ "$(cat .plinth/session/review/feat/lastfullread 2>/dev/null || true)" != "deadbeef" ] || { echo "::error::(9k2) MOVED: stale lastfullread survived the restart"; exit 1; }
             # ...but with NOTHING moved the guard must STILL fire, or it has been neutered.
             b2="$(cat "$R9L/state")"
             out2="$(PATH="$R9L:$PATH" ./.plinth/review.sh main 2>&1)" || true
             printf '%s' "$out2" | grep -q 'HEAD unchanged since round' || { echo "::error::(9k2) the unchanged-HEAD guard no longer fires when the context really IS unchanged — the loop would re-review an identical diff on every invocation"; exit 1; }
-            [ "$(cat "$R9L/state")" = "$b2" ] || { echo "::error::(9k2) a round was billed despite an unchanged HEAD and context"; exit 1; } )
-          # (9k3) LEGACY verdict fail-closed + fully-qualified base spellings.
+            [ "$(cat "$R9L/state")" = "$b2" ] || { echo "::error::(9k2) a round was billed despite an unchanged HEAD and context"; exit 1; }
+            # DIFFERENT base at the same HEAD: selecting `other` (the original base tip) is
+            # a different reviewed DIFF, so the loop must restart as fresh round 1 with
+            # per-loop state cleared — not refuse and not resume against the prior base.
+            git branch other "$ORIG"
+            echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
+            printf 'deadbeef\n' > .plinth/session/review/feat/lastfullread
+            printf '[]\n' > .plinth/session/review/feat/findings-99.json
+            b3="$(cat "$R9L/state")"
+            out3="$(PATH="$R9L:$PATH" ./.plinth/review.sh other 2>&1)" || true
+            printf '%s' "$out3" | grep -q 'HEAD unchanged since round' && { echo "::error::(9k2) CHANGES_NEEDED + different base refused with 'HEAD unchanged' — a different base is a different diff, so this must start a new loop"; exit 1; } || true
+            [ "$(cat "$R9L/state")" != "$b3" ] || { echo "::error::(9k2) CHANGES_NEEDED + different base ran no round at all"; exit 1; }
+            [ "$(jq -r .round .plinth/session/review/feat/verdict.json)" = 1 ] || { echo "::error::(9k2) DIFFERENT BASE: restart was not a fresh round 1 (round=$(jq -r .round .plinth/session/review/feat/verdict.json))"; exit 1; }
+            ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::(9k2) DIFFERENT BASE: stale usage.jsonl ledger survived the restart"; exit 1; }
+            [ ! -f .plinth/session/review/feat/findings-99.json ] || { echo "::error::(9k2) DIFFERENT BASE: stale findings-99.json survived the restart"; exit 1; }
+            [ "$(cat .plinth/session/review/feat/lastfullread 2>/dev/null || true)" != "deadbeef" ] || { echo "::error::(9k2) DIFFERENT BASE: stale lastfullread survived the restart"; exit 1; } )
+          # (9k3) LEGACY verdict fail-closed + fully-qualified base spellings. Receipt
+          # base_ref must be the canonical bare name AFTER a fully-qualified invocation
+          # remints (not merely after a bare `main` approval). Order-sensitive form
+          # refs/remotes/origin/main is required: stripping origin/ before refs/remotes/
+          # leaves origin/main in the receipt.
           R9M="$(mktemp -d)"; mkstate "$R9M"; mk_cap_codex "$R9M"
           r9md="$(mktemp -d)"
           ( cd "$r9md"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
@@ -2031,14 +2170,26 @@ jobs:
             out="$(PATH="$R9M:$PATH" ./.plinth/review.sh main 2>&1)" || true
             printf '%s' "$out" | grep -q 'Nothing new to review' && { echo "::error::(9k3) a LEGACY verdict with no merge_base was reused and reminted — the documented fail-closed behaviour was prose only"; exit 1; } || true
             [ "$(cat "$R9M/state")" != "$b" ] || { echo "::error::(9k3) the legacy-verdict path ran no round"; exit 1; }
-            # Fully-qualified spellings must canonicalize into the RECEIPT, or receipt-verify
-            # (which normalizes the PR base to a bare name) rejects a legitimate review.
-            r9mnote="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
-            [ "$r9mnote" = "main" ] || { echo "::error::(9k3) the receipt recorded base_ref '$r9mnote', expected the canonical 'main'"; exit 1; }
+            # Fully-qualified spellings must canonicalize into the RECEIPT on remint, or
+            # receipt-verify (which normalizes the PR base to a bare name) rejects a
+            # legitimate review. Assert AFTER each FQ invocation — a bare-name receipt
+            # from the prior step does not prove the FQ path stores canonically.
+            git update-ref refs/remotes/origin/main refs/heads/main
             b3="$(cat "$R9M/state")"
             out3="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/heads/main 2>&1)" || true
             printf '%s' "$out3" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/heads/main' was not recognised as the same base as 'main' — a fully-qualified spelling buys a spurious paid round and hashes a non-canonical base into the receipt subject: $(printf '%s' "$out3" | tail -c 200)"; exit 1; }
-            [ "$(cat "$R9M/state")" = "$b3" ] || { echo "::error::(9k3) a fully-qualified base spelling billed a round"; exit 1; } )
+            [ "$(cat "$R9M/state")" = "$b3" ] || { echo "::error::(9k3) a fully-qualified base spelling billed a round"; exit 1; }
+            r9mnote="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
+            [ "$r9mnote" = "main" ] || { echo "::error::(9k3) after 'refs/heads/main' the receipt recorded base_ref '$r9mnote', expected the canonical 'main'"; exit 1; }
+            # Order-sensitive form: refs/remotes/origin/main. Stripping origin/ first
+            # leaves the string starting with refs/remotes/, then stripping that yields
+            # origin/main — the non-canonical form receipt-verify rejects.
+            b4="$(cat "$R9M/state")"
+            out4="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/remotes/origin/main 2>&1)" || true
+            printf '%s' "$out4" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/remotes/origin/main' was not recognised as the same base as 'main': $(printf '%s' "$out4" | tail -c 200)"; exit 1; }
+            [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
+            r9mnote2="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
+            [ "$r9mnote2" = "main" ] || { echo "::error::(9k3) after 'refs/remotes/origin/main' the receipt recorded base_ref '$r9mnote2', expected the canonical 'main' (order-sensitive strip of refs/remotes/ before origin/)"; exit 1; } )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
