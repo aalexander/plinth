@@ -1,6 +1,6 @@
 # Plinth changelog
 
-## v4.7.2 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.
