@@ -1632,22 +1632,24 @@ run_changelog_collate() {
   # no-op (exit 0), not an error — nothing to collate is a successful release step.
   local frags="" f base slug
   if [ -d "$cdir" ]; then
-    for f in "$cdir"/*.md; do
-      [ -e "$f" ] || continue
+    # find (not shell glob) so hidden names like .release.md are not silently
+    # skipped — a bad slug must hard-error, never drop release prose.
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
       base="$(basename "$f")"
       [ "$base" = "README.md" ] && continue
-      # Slug = basename without .md; must match the documented grammar so a typo
-      # or non-fragment file is never silently collated into a release. LC_ALL=C so
-      # [a-z] is ASCII-only (en_US.UTF-8 ranges can accept uppercase).
+      # .gitkeep is not .md; any other non-README *.md (including dotfiles) is a
+      # fragment candidate and must pass the slug grammar.
       slug="${base%.md}"
       if ! printf '%s' "$slug" | LC_ALL=C grep -Eq '^[a-z0-9][a-z0-9._-]*$'; then
         echo "changelog-collate: invalid fragment slug in $f (expected changelog.d/<slug>.md where slug matches [a-z0-9][a-z0-9._-]*)" >&2
         exit 1
       fi
       frags="$frags$f"$'\n'
-    done
+    done <<EOF
+$(find "$cdir" -maxdepth 1 -type f -name '*.md' | LC_ALL=C sort)
+EOF
   fi
-  frags="$(printf '%s' "$frags" | sort)"
   if [ -z "$frags" ]; then
     echo "plinth changelog-collate: nothing to collate in $cdir"
     exit 0
