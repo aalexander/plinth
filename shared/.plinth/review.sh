@@ -16,8 +16,10 @@
 # approval gets a clean-slate full confirmation before it binds (always — v4.6's
 # once-per-loop skip is retired, upstream #27).
 # round_cap is an OPT-IN circuit breaker: UNSET (the default) means NO CAP — the loop
-# runs until it converges. Set a positive integer and a loop that has not converged by
-# then stops (exit 2) and surfaces to the human; 0 is also "no cap".
+# runs until it converges. Set a positive integer (max 100000) and a loop that has not
+# converged by then stops (exit 2) and surfaces to the human; 0 is also "no cap". Values
+# above the max are REFUSED, not clamped: past the arithmetic range they wrap negative and
+# would silently disable the breaker the operator was raising.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}

@@ -376,9 +376,12 @@ Two operator chores the rules generate:
    pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
    does not transfer between models), 2 = the review DID NOT RUN. The `round_cap` circuit
-   breaker is OPT-IN: unset (the default) or 0 means NO CAP, and a positive integer stops
-   a loop that has not converged by then — exit 2, surface to the human. A malformed value
-   is refused loudly rather than silently reinterpreted. There is deliberately no default
+   breaker is OPT-IN: unset (the default) or 0 means NO CAP, and a positive integer up to
+   100000 stops a loop that has not converged by then — exit 2, surface to the human. A
+   malformed value, or one above that maximum, is refused loudly rather than silently
+   reinterpreted (past the arithmetic range a large value wraps NEGATIVE, which would
+   disable the breaker instead of raising it). Same rules for the `PLINTH_ROUND_CAP`
+   override. There is deliberately no default
    cap: a long loop means fix the CONVERGENCE (enumerate whole finding-classes, batch each
    round's fixes into one commit, parallelise independent work), not stop reviewing. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,

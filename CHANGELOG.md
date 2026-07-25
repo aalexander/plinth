@@ -41,7 +41,11 @@ parts that were wrong on the way:
   matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
   to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
   stale the moment the fixture grew, and were wrong twice.)
-- **Base spellings are CANONICALIZED before they are stored or hashed.** `main`,
+- **Base spellings are CANONICALIZED before they are COMPARED or hashed into the receipt.**
+  Scope stated exactly, because an earlier revision of this entry said "stored" and that was
+  false: `verdict.json` and `request-*.json` deliberately keep the operator's LITERAL
+  spelling, which records what was actually run and is the more useful forensic record. It
+  is the comparisons and the receipt that must be canonical, and they are. `main`,
   `origin/main`, `refs/heads/main` and `refs/remotes/origin/main` all name one base, but
   only the `origin/` prefix was stripped — so the fully-qualified forms were written to the
   verdict and hashed into the RECEIPT SUBJECT verbatim, while `receipt-verify.sh`
