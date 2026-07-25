@@ -1,5 +1,109 @@
 # Plinth changelog
 
+## v4.7.1 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
+Seven review rounds were spent here because early fixes addressed the named instance
+rather than the class. Recording
+what actually shipped, including the parts that were wrong on the way:
+- **`receipt_nwo()` — one anchored pattern, extracted and testable.** Repository identity
+  is now derived by matching the WHOLE origin URL against two anchored forms
+  (`scheme://[user@]host[:port]/owner/repo` and scp-style `[user@]host:owner/repo`),
+  replacing a pipeline of prefix strips. The strip approach accepted anything that merely
+  SURVIVED reduction — `/tmp/proj.git`, `../canary/receipt.git`, `file:///c/r.git`,
+  `https:///owner/repo`, `ssh://git@/owner/repo` and `C:/owner/repo` all reduced to a
+  plausible `owner/repo` and would have been minted as repository identities, producing
+  receipts that can never satisfy the server check. Anchoring means anything unmatched is
+  refused by construction. Extracted as a pure function so the canary calls IT.
+- **The no-mint diagnostic no longer reproduces the URL at all.** It first echoed the raw
+  `remote.origin.url` — leaking `https://oauth2:TOKEN@…` into terminals, agent transcripts
+  and CI logs. Redacting userinfo was still insufficient (a token also rides in a query
+  string, path segment or fragment), so the rule is now simply: name the remote, never
+  print it, and tell the operator to run `git remote -v`.
+- **`ledger_complete()` — every round, not just the current one.** The override ledger must
+  contain a row for EVERY round 1..N. Checking only "present" missed a stale file; checking
+  only "has a row for this round" missed a swallowed append in an EARLIER round (ledger has
+  round 2 but not round 1). Either way minting drops overrides from the disclosure the
+  server check enforces while `git notes add -f` overwrites the correct receipt. Round 0
+  (Tier 0, before any ledger exists) is still legitimate.
+- **A character-class guard that would have disabled minting outright.** `case $url in
+  *[!\ -~]*)` reads as "non-printable" but the backslash is literal, making the range
+  0x5C–0x7E — so every URL containing `@`, `.`, `:`, `/` or an uppercase letter was
+  refused. Found by the rewritten fixture within seconds of it calling production code
+  instead of a copy. Now `[![:print:]]`.
+- **Fixture (9f) extracts `receipt_nwo` and `ledger_complete` from the shipped script**
+  rather than restating them — an earlier version duplicated the logic and was rightly
+  rejected, since a copy cannot detect the original changing. It covers the accepted URL forms
+  (12 direct assertions plus a combinatorial sweep), 9 that must not, the ledger matrix including the missing-earlier-round case,
+  and asserts the diagnostic still refuses to interpolate the URL.
+- **Scope of `receipt_nwo`, stated honestly.** It extracts an owner/repo pair from a
+  HOST-BASED remote URL; it does NOT verify the host is github.com. Requiring that would
+  break GitHub Enterprise, and it is unnecessary — the recorded `repo` is compared against
+  `${{ github.repository }}` on the server, so an unrelated host yields a pair that simply
+  fails there. The earlier contract and diagnostic said "GitHub repository", which claimed
+  more than the code does; both now say what it actually guarantees, and the fixture
+  asserts a gitlab.com remote IS accepted so the scope cannot quietly drift back.
+- **The fixtures now test the WIRING, not only the rules.** Calling the extracted helpers
+  proved they were correct but not that anything used them — deleting `mint_receipt`'s
+  calls left every negative case green. (9f) now asserts those call sites exist, and (9c)
+  drives a `file://` origin through the REAL loop end to end: the review must approve and
+  mint nothing. Verified against a build with the call deleted and the helpers intact.
+- **A single-character host is accepted.** An SSH config alias (`g:owner/repo`) is a real
+  remote; an earlier revision required a >=2-char host and refused them, in order to
+  exclude the Windows drive form `C:/owner/repo` — which the scp path pattern already
+  excludes, since the owner group cannot match a leading slash. The length rule was
+  refusing valid remotes to guard against something already guarded.
+- **The wiring assertions grep CODE, not comments.** The first version searched the whole
+  `mint_receipt` body, and both helper names appear in its explanatory comments — so
+  deleting the actual call still passed. Comment lines are stripped first, and the
+  identifier must be followed by an argument, which prose cannot satisfy. Verified against
+  a build with the `ledger_complete` call deleted and its comment left in place.
+- **Wiring is proven BEHAVIOURALLY, not by grep.** Fixture (9g) drives the real
+  `mint_receipt` against real repositories, injecting only its three globals
+  (`sha`, `baseref`, `SDIR`), and asserts on whether a note EXISTS. Deleting either
+  guard's call site makes a case mint when it must not — verified in both directions.
+  Source-pattern assertions could be satisfied by a comment; an outcome cannot.
+- **The URL rules are swept combinatorially, with a harness self-check.** Five rounds
+  each named ONE missed URL form; a matrix over scheme x userinfo x host x depth covers
+  the class in one pass. The self-check is the load-bearing part: an earlier hand-written
+  sweep used `path` as a loop variable, which in zsh is TIED to `$PATH`, so `sed`
+  vanished and all 2160 inputs came back refused against a CORRECT parser. Acting on
+  that would have "fixed" working code. (9f) now proves a canonical URL parses before
+  trusting any refusal, and fails loudly as a broken harness otherwise.
+- The documented notes recovery was unusable: `git notes --ref=X merge` exits "must specify
+  a notes ref to merge". Corrected in `shared/plinth-rules.md` and `NEEDS-HUMAN.md` to the
+  three-command form (fetch to a NAMED side ref, merge that ref, push), verified end to end.
+
+### Earlier in this release (superseded above, kept for the record)
+Found by the FIRST review run under the v4.7 engine and the new seats (codex/gpt-5.6-sol
+primary, claude/opus cross-vendor audit). The audit raised all three; the primary caught
+two of them. Both are in the minting path, so neither could be caught by the verifier's
+own fixtures — the receipt was simply built wrong before verification ever saw it.
+- **Origin URL normalization handled only two of git's forms.** `mint_receipt` stripped
+  scp-style (`git@host:owner/repo`) and `http(s)://`, so an `ssh://git@github.com/o/r.git`
+  remote — also `git+ssh://`, a host with a port, or `git://` — left the scheme and host
+  in place and the receipt recorded `repo:"ssh://git@github.com/o/r"`. It then minted
+  anyway: a note that exists but can NEVER satisfy the server check, which is exactly what
+  the adjacent no-origin branch refuses to do as "strictly worse than none". Every affected
+  repo would have failed `receipt / verify` on legitimately approved PRs, with a
+  misdirecting "minted for a different repository", and the remint path would regenerate
+  the same bad value forever. All of git's URL forms are now reduced, and anything that
+  does not reduce to an `owner/repo` pair takes the announce-and-skip path instead of
+  baking in a value that can only fail.
+- **The override ledger could fail OPEN.** v4.7.0 refused to mint on an unparseable
+  `usage.jsonl` but treated an ABSENT one as "no overrides" — sound only at round 0
+  (Tier 0 mints before any ledger exists). After a round has run, the ledger should exist,
+  and its absence means state was lost: minting then asserts zero overrides AND
+  `git notes add -f` OVERWRITES the correct receipt already at that SHA. The server
+  check's tuple-set equality would afterwards read an honest PR body as a phantom
+  disclosure, or verify a body trimmed to match while a real operator override went
+  undisclosed. Absent-after-round-0 is now refused exactly like unparseable.
+- **Spec sync.** MANUAL's Tier-2 bullet still described v4.6's once-per-loop confirmation
+  skip and a `verdict.json` `confirmation` field that v4.7 deleted, contradicting the same
+  file two paragraphs later. The canonical spec is what every future review is judged
+  against; a stale claim there is the defect class this repo blocks on.
+- Instrument refreshed to this version, and `ci.yml`'s required floor/checks gates repinned
+  to the v4.7.0 release commit (their trailing comments corrected too — a stale label on a
+  correct pin is the same overclaim class).
+
 ## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified

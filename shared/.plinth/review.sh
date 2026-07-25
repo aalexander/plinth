@@ -420,36 +420,111 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # own subject and fails closed on any mismatch. Minting is best-effort here (a
 # repo without notes support still reviewed fine — the SERVER check is the
 # enforcer), but failure is announced, never swallowed silently.
+# receipt_nwo <origin-url> -> `owner/repo` on stdout, or NOTHING if the URL does not
+# carry an owner/repo pair. PURE (no globals, no git calls) so the canary can extract
+# and call THIS function rather than restate its logic — a fixture that re-implements
+# the rule cannot detect the rule changing underneath it.
+#
+# ONE anchored pattern, not a pipeline of strips. Three rounds of review found holes in
+# the sequential-stripping approach — `/tmp/proj.git`, `../canary/receipt.git`,
+# `https:///owner/repo`, `ssh://git@/owner/repo`, `C:/owner/repo` all reduced to a
+# plausible-looking pair — because each strip only removed a prefix it recognised and
+# whatever survived was accepted. Anchoring the WHOLE string means anything not matched
+# is refused by construction, which is the property that kept failing to hold.
+#
+# Accepted, and nothing else:
+#   [scheme://][user@]host[:port]/owner/repo[.git][/]     scheme = http(s)|git|(git+)ssh
+#   [user@]host:owner/repo[.git][/]                       scp-style (host REQUIRED)
+# host is [A-Za-z0-9][A-Za-z0-9._-]* or a bracketed IPv6 literal. UNDERSCORES are
+# allowed because SSH config aliases routinely use them (`gh_work:owner/repo`), and an
+# alias is resolved by ssh, not DNS — applying hostname rules to it rejects valid
+# remotes. IPv6 needs the bracket form since a bare literal's colons are ambiguous with
+# the port separator. owner and repo are [A-Za-z0-9._-]+. A single-character host is
+# ACCEPTED on purpose — an SSH config alias like `g:owner/repo` is a legitimate remote.
+# The Windows drive form `C:/owner/repo` is still refused, and without needing a length
+# rule: the scp branch's owner group cannot match a leading slash after the colon. An
+# earlier revision required >=2 chars, which refused valid alias remotes to exclude a
+# form that was already excluded.
+#
+# The HOST IS NOT PART OF THE IDENTITY, deliberately, and this function does NOT check
+# that it is github.com. Requiring that would break GitHub Enterprise, whose remotes
+# carry a private host; and it is unnecessary, because the recorded `repo` field is
+# compared by receipt-verify.sh against ${{ github.repository }} on the server. A
+# gitlab.com or unrelated-host remote therefore yields a pair that simply fails that
+# comparison — fail-closed at the gate rather than refused here. What this function
+# guarantees is narrower than "a GitHub repo": it is "an owner/repo pair extracted from
+# a host-based remote URL". Do not describe it as more.
+receipt_nwo() {
+  local url="$1" core rest
+  [ -n "$url" ] || return 0
+  # POSIX class, not a hand-rolled range: `[!\ -~]` looks like "non-printable" but the
+  # backslash is literal, so the range becomes 0x5C-0x7E and every URL containing @ . : /
+  # or an uppercase letter falls OUTSIDE it and was refused — minting disabled wholesale.
+  case "$url" in *[![:print:]]*) return 0 ;; esac
+  # Normalise only the two decorations git itself treats as optional, then match the
+  # WHOLE remainder. POSIX ERE only: no `+?` (a PCRE lazy quantifier, which BSD sed
+  # rejects outright and would refuse every URL, disabling minting entirely).
+  core="${url%/}"; core="${core%.git}"
+  # scheme://[user@]host[:port]/owner/repo
+  rest="$(printf '%s' "$core" | sed -nE 's#^(https?|git|git\+ssh|ssh)://([^/@]+@)?(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9._-]*)(:[0-9]+)?/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\5/\6#p')"
+  # scp-style [user@]host:owner/repo
+  [ -n "$rest" ] || rest="$(printf '%s' "$core" | sed -nE 's#^([^/@]+@)?([A-Za-z0-9][A-Za-z0-9._-]*):([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\3/\4#p')"
+  [ -n "$rest" ] || return 0
+  printf '%s' "$rest" | tr '[:upper:]' '[:lower:]'
+}
+
+# ledger_complete <session-dir> <round> -> 0 if the per-loop override ledger covers
+# EVERY round 1..N, else 1. PURE apart from reading the file, so the canary calls THIS.
+# Completeness, not presence and not "has a row for the current round": a swallowed
+# append in ANY round drops that round's overrides from the receipt while the file still
+# parses. Round 0 (Tier 0) legitimately has no ledger at all.
+ledger_complete() {
+  local sdir="$1" n="$2" i=1
+  [ "${n:-0}" != "0" ] || return 0
+  [ -f "$sdir/usage.jsonl" ] || return 1
+  while [ "$i" -le "$n" ]; do
+    jq -e --argjson r "$i" -s 'any(.[]; .round == $r)' "$sdir/usage.jsonl" >/dev/null 2>&1 || return 1
+    i=$((i + 1))
+  done
+  return 0
+}
+
 mint_receipt() {  # mint_receipt <round>
-  local mround="$1" repo_nwo htree mb ledger subj receipt
-  # LOWERCASED on both sides of the boundary. GitHub owner/repo names are
-  # case-insensitive for routing, but the verifier compares this field with `=`
-  # AND folds it into the subject digest — both case-SENSITIVE. A remote written
-  # as git@github.com:MyOrg/Repo.git would then never match the API's canonical
-  # `myorg/repo`, failing a legitimate PR closed. receipt-verify.sh lowercases
-  # --repo identically; change one and you must change the other.
-  repo_nwo="$(git config --get remote.origin.url 2>/dev/null \
-    | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' \
-    | tr '[:upper:]' '[:lower:]')" || repo_nwo=""
-  # No resolvable origin => no verifiable receipt. Writing one anyway would record
-  # repo:"" — a note that EXISTS but can never satisfy the server check, which is
-  # strictly worse than none (it looks minted and reads as tampering-adjacent).
-  # Announce and skip; the remint on the same-SHA fast path picks it up once the
-  # remote exists. Local-only repos still review and approve normally.
-  [ -n "$repo_nwo" ] || { echo "Plinth review: NOTE — receipt not minted (no resolvable 'origin' remote, so it could not bind a repository). Add the remote and re-run ./.plinth/review.sh to mint it; 'receipt / verify' fails closed until then."; return 0; }
+  local mround="$1" repo_nwo htree mb ledger subj receipt origin_url
+  origin_url="$(git config --get remote.origin.url 2>/dev/null)" || origin_url=""
+  repo_nwo="$(receipt_nwo "$origin_url")"
+  # NEVER echo the URL. Round 2 showed userinfo redaction was not enough — a token can
+  # also ride in a query string (?access_token=...), a path segment, or a fragment, and
+  # each one would need its own rule. The operator already knows which remote `origin`
+  # is; naming the remote instead of reproducing its URL removes the entire leak class
+  # rather than enumerating it.
+  [ -n "$repo_nwo" ] || {
+    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL carries no owner/repo pair (local paths, file:// and hostless URLs have no repository identity to bind). Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Set an origin remote whose URL names a host and an owner/repo, then re-run ./.plinth/review.sh to mint."
+    return 0
+  }
   htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
   mb="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
   # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
   # to {round, name, value} tuples — the disclosure set the server check holds
   # the PR body to (exact tuple-set equality).
-  # ABSENT ledger is legitimate and means "no overrides": Tier 0 mints before any round
-  # runs, and a loop with no override rows never creates the file. A ledger that EXISTS
-  # but cannot be read or parsed is different — collapsing that to [] would be a
-  # fail-OPEN on the disclosure guarantee, because `git notes add -f` would overwrite a
-  # good receipt with an empty-ledger one and a PR body disclosing nothing would then
-  # verify. Reachable on the remint fast path, where verdict.json can survive while the
-  # per-loop ledger is lost. (jq exits 2 on a missing file and 5 on malformed input, but
-  # still prints [] for the missing case — so the file test, not jq's stdout, decides.)
+  # An absent ledger means "no overrides" ONLY when no round has run — Tier 0 mints at
+  # round 0, before any ledger exists. Once a round HAS run the file should exist (the
+  # append is best-effort and its failure is swallowed), so treating it as absent-means-
+  # empty is a fail-OPEN: `git notes add -f` would overwrite a good receipt with an
+  # empty-ledger one, and the server check's tuple-set equality would then read an honest
+  # PR body as a phantom disclosure — or verify a body trimmed to match, with a real
+  # operator override undisclosed. Reachable on the remint fast path, where verdict.json
+  # survives while the per-loop ledger is lost. So: absent + round>0 is refused exactly
+  # like unparseable. (jq exits 2 on a missing file and 5 on malformed input but prints []
+  # either way, so the file test, not jq's stdout, decides.)
+  # Refuse unless the ledger covers EVERY round so far (see ledger_complete). An absent
+  # ledger after round 0, or one missing ANY round's row, means an append was lost:
+  # minting would omit those overrides from the disclosure the server check enforces and
+  # `git notes add -f` would overwrite the correct receipt with the short one.
+  if ! ledger_complete "$SDIR" "${mround:-0}"; then
+    echo "Plinth review: NOTE — receipt NOT minted: the per-loop override ledger (${SDIR}/usage.jsonl) is missing or does not cover every round up to ${mround} — an append was lost. Minting from it would drop overrides from the disclosure the server check enforces, and would overwrite a correct receipt. Restore session state, or re-run the loop from a clean round 1."
+    return 0
+  fi
   if [ -f "$SDIR/usage.jsonl" ]; then
     ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
         {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \

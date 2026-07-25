@@ -66,15 +66,23 @@ approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 them is PER-CLI — treat local enforcement as ABSENT until verified END-TO-END
 (wire the real hooks, observe the pulse feed and a guard block). `plinth hookprobe
 <vendor>` settles the negative direction: a NONE result means certainly unenforced
-(grok 0.2.93 (reproduce: plinth hookprobe grok)); a positive probe
+(grok 0.2.112 (reproduce: plinth hookprobe grok)); a positive probe
 shows invocation only, never enforcement. For a non-executing
 delegate, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
 and tooling integrity; they do NOT verify the review verdict). The Codex cloud
 review is ADVISORY: it posts PR comments and exposes no status-check context that
 branch protection could require. The server-verifiable APPROVED-at-HEAD receipt
-check (auto mode, next release) is the designated adversarial gate for delegated
-and non-Claude work.
+check (auto mode, v4.7+) is the adversarial gate for delegated and non-Claude
+work: on every binding APPROVED the loop mints (or refreshes) a receipt note
+— best-effort: a repo with no resolvable `origin` mints none and SAYS so, and
+re-running the review at that same approved SHA mints it once the remote exists —
+(refs/notes/plinth-receipts) and the reusable `plinth-receipt.yml` verifies it
+server-side as the requirable `receipt / verify` context. It ENFORCES only where
+that context is wired in ci.yml AND required by branch protection; elsewhere the
+loop remains contract-bound. Honest residual: the check proves a receipt exists
+for exactly this subject with its overrides disclosed — a fabricated receipt
+defeats it (skipping is DETECTABLE and AUDITABLE, not impossible).
 
 ## Subagents and the advisor (speed, and a stronger opinion)
 Fan out independent work to SUBAGENTS for speed and parallelism — the moment a task
@@ -88,12 +96,13 @@ for parallel fan-out; when one subtask genuinely wants another family's strength
 cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
 subagents inherit the `.claude/` guard
 hooks and gates automatically; whether a cross-family codex/grok shell-out does is
-PER-CLI (probe with `plinth hookprobe` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); a
+PER-CLI (probe with `plinth hookprobe` — grok 0.2.112 reported no execution (reproduce: plinth hookprobe grok); a
 not-invoked event is certainly unenforced; invoked events need end-to-end
 verification), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
-protection's required checks (floor + checks; the cloud review is advisory PR
-comments, not a requirable context, and no server-side review gate exists yet).
+protection's required checks (floor + checks, and `receipt / verify` where it is
+wired and required — that one does gate the review verdict; the cloud review is
+advisory PR comments, not a requirable context).
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
 specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
@@ -137,13 +146,34 @@ large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (branch-keyed;
-`<slug>` is the branch name with `/` and spaces turned to `-`). Exit 1 =
+`<slug>` is the branch name with `/` and spaces turned to `-`); the loop also mints the
+review RECEIPT as a git note on the approved commit — push it WITH the branch
+(`git push origin HEAD refs/notes/plinth-receipts`; the server receipt check fails
+closed without it). The notes ref is append-only: NEVER force-push it. On a
+non-fast-forward rejection, recover with the EXACT three commands below —
+`git notes merge` REQUIRES a notes-ref argument (bare `git notes --ref=X merge`
+exits with "must specify a notes ref to merge"), so the side ref must be named:
+```
+git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
+git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
+./.plinth/review.sh <base>   # SAME base you reviewed against (defaults to main);
+                            # re-mints YOUR receipt at HEAD, no paid round
+git push origin refs/notes/plinth-receipts
+```
+NOT `-s cat_sort_uniq`: on a commit that has two different receipts it CONCATENATES
+them, so the note holds two JSON objects, every `jq` field read returns two lines, and
+every comparison in receipt-verify.sh fails on a legitimately approved commit. `-s
+theirs` keeps one valid object and preserves the other commits' notes from both sides;
+the re-run then re-mints yours through the idempotent remint path.
+Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer thread when it fits the vendor's window; an
 oversized or dead thread instead runs a SCOPED VERIFY round — a fresh session seeded
 with the OPEN findings plus the cumulative fix diff since the last full review pass,
 with repo read access for context; Tier-1 verify approvals bind directly, Tier-2 ones
-after the once-per-loop clean-slate confirmation). Exit 2 = the
+only after a clean-slate confirmation, EVERY time. Swapping the reviewer vendor
+mid-loop forces a fresh full round instead — coverage credit does not transfer
+between vendors). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
 pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER (default 8 rounds) —
 a loop that has not converged by then is a design problem, not a review problem;
@@ -155,11 +185,14 @@ reviewer, drop the cross-vendor audit, or raise the round cap is the same
 tampering class as dodging the cap, whatever the intent. Every override any round
 recorded in session state (verdict.json for the latest round; the per-round
 usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
-(seat, value, round). HONEST BOUND: no shipped mechanism cross-checks the PR body
-against the ledger — the disclosure duty is CONTRACT-bound, auditable by the
-operator (read `usage.jsonl` under `.plinth/session/review/<slug>/`); an automated
-cross-check is designated for the server-side receipt check (auto mode), not
-claimed today. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
+(seat, value, round) — in the canonical machine-checked form
+`PLINTH-OVERRIDE: NAME=VALUE (round N)`, one line per tuple. The receipt check
+(v4.7+) enforces EXACT tuple-set equality between the receipt's ledger and the PR
+body's PLINTH-OVERRIDE lines wherever `receipt / verify` is wired and required —
+a missing disclosure fails the check, and so does a phantom one the ledger does
+not back. HONEST BOUND where that context is not yet required: the duty is
+CONTRACT-bound, auditable by the operator (read `usage.jsonl` under
+`.plinth/session/review/<slug>/`). Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (under a Claude driver the guard blocks both at the tool level; for EVERY driver the
 review and CI reject such edits as tampering — so do not rely on the local hook, just
 don't do it). Verdict policy: blockers/majors in project code block;
@@ -169,22 +202,36 @@ never fix the instrument in-session. Then open the PR; CI and the Codex cloud re
 run automatically. The PR body is the audit summary of the loop, derived from
 .plinth/session/review/ — not narrated: rounds and modes, final verdict + SHA,
 real check output, open minors with their `## Noticed` entries, tooling-update
-commits labeled as such, and any UPSTREAM handoffs. Keep the session quiet
-until then.
+commits labeled as such, any UPSTREAM handoffs, and (if any override was
+recorded) the canonical `PLINTH-OVERRIDE:` disclosure lines. Keep the session
+quiet until then.
+HEAL-CI: when a required check comes back red, CLASSIFY before acting —
+TRANSIENT (infra flake, runner loss, rate limit: nothing in the diff could
+cause it) gets ONE rerun, noted in the PR; a second red on the same check is a
+REAL DEFECT by definition — fix it or file it, never rerun-to-green. Pre-existing
+reds (failing on the base at the same commit) are the base's defects: document
+the baseline comparison in the PR, don't launder them into your change.
+PHASE-BOUNDARY HYGIENE: at every phase boundary — plan ratified, review
+APPROVED, PR opened — write the checkpoint (Rule 8) to artifacts, then PREFER a
+fresh session over continuing a long one. Binding state lives in artifacts
+(verdict.json, the ledger, NEEDS-HUMAN, the spec), never in conversation memory.
+Between boundaries, don't clear on token pressure — externalize more state
+instead; harness auto-compaction is the emergency valve, not a schedule.
 Under a CLAUDE driver this is enforced by a `.claude/` Stop gate: it refuses to end
 the turn of a session that created commits until the verdict at HEAD is APPROVED. The
 gate has two pressure valves — a recent mechanical review failure, and a per-session
 block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
 driver whose CLI does not execute `.claude/` hooks (probe with `plinth hookprobe
-<vendor>` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); re-run after upgrades) has no Stop
+<vendor>` — grok 0.2.112 reported no execution (reproduce: plinth hookprobe grok); re-run after upgrades) has no Stop
 gate — nothing LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no
-requirable status context), so for a non-Claude driver the adversarial review loop is
-CONTRACT-bound until the APPROVED-at-HEAD receipt check ships (auto mode, next
-release). Either way: run the loop to APPROVED before you open the PR — that is the
-contract, whether or not a server gate enforces it yet.
+requirable status context). The APPROVED-at-HEAD receipt check (v4.7+) closes that
+gap wherever its `receipt / verify` context is wired and required; where it is not,
+the loop stays CONTRACT-bound for a non-Claude driver. Either way: run the loop to
+APPROVED before you open the PR — that is the contract, whether or not a server
+gate enforces it in a given repo.
 
 ## Upstream channel — two-way, with the Plinth maintainer
 Tooling findings and improvement proposals are never fixed in-project (that is

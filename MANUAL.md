@@ -355,9 +355,11 @@ Two operator chores the rules generate:
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
      approval binds only after a clean-slate full pass (a warm reviewer can't
-     approve its own checklist) — run at most ONCE per loop: the unanchored
-     read is recorded, and later non-fresh approvals in the same loop bind with
-     the skip noted in `verdict.json`. When a cross-vendor auditor is
+     approve its own checklist) — EVERY time. v4.6 ran that pass at most once
+     per loop and recorded later skips in `verdict.json`; v4.7 retired the skip
+     (the fixes answering a confirmation's own findings were the one thing that
+     could never get an unbiased re-read), so there is no `confirmation` field
+     to look for and no skip to expect. When a cross-vendor auditor is
      configured (`audit_vendor` — new projects default to `claude`, the v4
      audit seat; on an upgraded project you add the line yourself, and `plinth
      update` reminds you if it is unset), every Tier-2 approval also gets a

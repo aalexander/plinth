@@ -149,9 +149,23 @@ Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (bra
 `<slug>` is the branch name with `/` and spaces turned to `-`); the loop also mints the
 review RECEIPT as a git note on the approved commit — push it WITH the branch
 (`git push origin HEAD refs/notes/plinth-receipts`; the server receipt check fails
-closed without it). The notes ref is append-only: NEVER force-push it — on a
-non-fast-forward rejection, fetch the remote ref to a side ref and `git notes
---ref=plinth-receipts merge` it, then push again. Exit 1 =
+closed without it). The notes ref is append-only: NEVER force-push it. On a
+non-fast-forward rejection, recover with the EXACT three commands below —
+`git notes merge` REQUIRES a notes-ref argument (bare `git notes --ref=X merge`
+exits with "must specify a notes ref to merge"), so the side ref must be named:
+```
+git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
+git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
+./.plinth/review.sh <base>   # SAME base you reviewed against (defaults to main);
+                            # re-mints YOUR receipt at HEAD, no paid round
+git push origin refs/notes/plinth-receipts
+```
+NOT `-s cat_sort_uniq`: on a commit that has two different receipts it CONCATENATES
+them, so the note holds two JSON objects, every `jq` field read returns two lines, and
+every comparison in receipt-verify.sh fails on a legitimately approved commit. `-s
+theirs` keeps one valid object and preserves the other commits' notes from both sides;
+the re-run then re-mints yours through the idempotent remint path.
+Exit 1 =
 CHANGES_NEEDED with structured findings: fix them, commit, re-run until APPROVED
 (re-runs resume the same reviewer thread when it fits the vendor's window; an
 oversized or dead thread instead runs a SCOPED VERIFY round — a fresh session seeded

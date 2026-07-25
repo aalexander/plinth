@@ -38,20 +38,51 @@
   `~/Dev/wren` is still empty.
   `cd ~/Dev/wren && gh repo create wren --private --source=. --remote=origin && git push -u origin --all`
 
-- [ ] **Turn ON the v4.7 receipt gate (per repo).** v4.7 ships the server-verifiable
-  APPROVED-at-HEAD receipt check, but SHIPPING IT IS NOT ENABLING IT: it gates only
-  where the `receipt` job is wired into that repo's `ci.yml` AND the `receipt / verify`
-  context is added to branch protection's required checks. `ci.yml` is per-project and
-  is NEVER rewritten by `plinth update` — for an EXISTING project you add the job by
-  hand (copy it from `templates/.github/workflows/ci.yml`, and pin its `uses:` ref to
-  this release's commit SHA; only a freshly `plinth init`-ed ci.yml is pinned for you).
-  Until then the review verdict still has no server-side verifier and a non-Claude or
-  delegated driver stays contract-bound. Do this only for repos whose reviewed
-  branches run a v4.7+ instrument (older instruments mint no receipt, so the check
-  fails closed — correct, but it would block every PR):
-  `gh api -X PATCH repos/aalexander/<repo>/branches/main/protection/required_status_checks --input -` with the
-  existing contexts plus `receipt / verify` — or add it in the branch-protection UI.
-  Also push the notes ref with the branch: `git push origin HEAD refs/notes/plinth-receipts`.
+- [ ] **Turn ON the v4.7 receipt gate (per repo) — TWO steps, IN THIS ORDER.** v4.7 ships
+  the server-verifiable APPROVED-at-HEAD receipt check, but SHIPPING IT IS NOT ENABLING
+  IT. I deliberately did NOT do this for plinth itself: enabling changes what can merge
+  in every future PR, so it is yours to switch on after you have seen a receipt mint for
+  real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
+  one mints nothing, so the check fails closed — correct, but it would block every PR).
+  plinth itself is at 4.7.1 as of this branch (VERSION and .plinth-version agree).
+  The v4.7.0 SHA in step 1 below is deliberate and unchanged: that is the commit whose
+  reusable workflow you pin, not the instrument version you run.
+
+  **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
+  per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand
+  (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the release
+  SHA — for v4.7.0 that is `ed8d75b2b90685eddbebb24bd11c2770ed489341`. Merge that PR
+  before doing step 2.
+
+  Why the order is not optional: the check reads the receipt job's pin from the BASE
+  branch and refuses any PR-supplied pin that differs. That is what stops a PR from
+  repointing the verifier at a fork that always passes. A base branch with no receipt job
+  has no operator-owned pin to anchor against, so the check fails closed and says so. If
+  you require the context BEFORE the wiring is on the base, every PR blocks.
+
+  Expect ONE red `receipt / verify` on the wiring PR itself — its base has no receipt job
+  yet, so it correctly fails closed. That is the bootstrap, not a defect; the context is
+  not required at that point, so it does not block the merge.
+
+  **Step 2 — require the context**, once step 1 is on the base:
+  `gh api -X PATCH repos/aalexander/<repo>/branches/main/protection/required_status_checks --input -`
+  with the existing contexts plus `receipt / verify` — or via the branch-protection UI.
+
+  **Then, every branch:** push the notes ref alongside it, or the check fails closed with
+  nothing to verify: `git push origin HEAD refs/notes/plinth-receipts`. Never force-push
+  that ref. On a non-fast-forward rejection, recover with these three commands —
+  `git notes merge` needs the side ref NAMED (bare `git notes --ref=X merge` exits
+  "must specify a notes ref to merge"), which the earlier wording here got wrong:
+  ```
+  git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
+  git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
+  ./.plinth/review.sh <base>   # SAME base you reviewed against (defaults to main);
+                            # re-mints YOUR receipt at HEAD, no paid round
+  git push origin refs/notes/plinth-receipts
+  ```
+  NOT `-s cat_sort_uniq`: it CONCATENATES two differing receipts for the same commit, so
+  the note holds two JSON objects and every field read in receipt-verify.sh returns two
+  lines — failing a legitimately approved commit.
 
 <!-- Resolved 2026-07-24 (operator-delegated close-out): driver-shell migrations done in
      plinth/wren/certeus/anvil (shells byte-identical); seat lines applied — wren by the

@@ -1211,14 +1211,29 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
             rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::(9c) review with no origin should still APPROVE (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'no resolvable' || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin"; exit 1; }
+            printf '%s' "$out" | grep -qi 'receipt not minted' || { echo "::error::(9c) degraded mint did not ANNOUNCE that no receipt was minted"; exit 1; }
+            printf '%s' "$out" | grep -q "owner/repo" || { echo "::error::(9c) the no-origin message did not say WHAT was wrong (it must name the owner/repo requirement, not just fail quietly)"; exit 1; }
             git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) minted a receipt with no resolvable origin — a repo:\"\" note can never verify and is worse than none"; exit 1; } || true
             git remote add origin git@github.com:canary/remint.git
             rc=0; PATH="$RM9:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 0 ] || { echo "::error::(9c) same-SHA re-run after adding origin failed (rc=$rc)"; exit 1; }
             git notes --ref=plinth-receipts show HEAD > r9.json 2>/dev/null || { echo "::error::(9c) same-SHA re-run did NOT remint — receipt/verify would stay red at this SHA forever (cross-vendor audit, round 4)"; exit 1; }
             [ "$(jq -r .repo r9.json)" = "canary/remint" ] || { echo "::error::(9c) reminted receipt has the wrong repo NWO: $(jq -r .repo r9.json)"; exit 1; }
-            [ "$(cat "$RM9/state")" = 1 ] || { echo "::error::(9c) the remint burned a PAID reviewer round (calls=$(cat "$RM9/state"), want 1)"; exit 1; } )
+            [ "$(cat "$RM9/state")" = 1 ] || { echo "::error::(9c) the remint burned a PAID reviewer round (calls=$(cat "$RM9/state"), want 1)"; exit 1; }
+            # END-TO-END through the REAL loop: a file:// origin now carries no repository
+            # identity, so a full review must APPROVE and mint NOTHING. This exercises
+            # mint_receipt's refusal via its actual call site, which a helper-level test
+            # cannot: if the call to receipt_nwo were deleted, this case would mint.
+            git remote remove origin 2>/dev/null || true
+            git remote add origin "file:///tmp/not-a-github-repo.git"
+            rm -f .plinth/session/review/feat/verdict.json
+            echo fix2 > app.py; git add -A; git commit -qm f2 >/dev/null
+            printf '%s' "$APF" > "$RM9/verdict-2"
+            rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9c) review with a file:// origin should still APPROVE (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'receipt not minted' || { echo "::error::(9c) a file:// origin minted (or did not announce): it carries no owner/repo, so the receipt could never verify"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) a receipt was minted for a file:// origin — mint_receipt is not applying receipt_nwo at its call site"; exit 1; } || true
+            )
           # (9d) the plinth-receipt.yml "Verify the APPROVED-at-HEAD receipt" step's own
           # bash has never run anywhere — new trust-boundary-crossing code (parses
           # job_workflow_ref, fetches the verifier binary over the network, reads
@@ -1529,6 +1544,184 @@ jobs:
           [ "$r9e_missing" = 1 ] || { echo "::error::(9e) a MISSING receipt did not reject with exit 1 (rc=$r9e_missing)"; exit 1; }
           # an UNDISCLOSED override: ledger has a row, PR body declares nothing
           r9e_reject "undisclosed override"     '.override_ledger = [{round:1, name:"PLINTH_ROUND_CAP", value:"99"}]'
+          # (9f) mint_receipt's INPUT VALIDATION. These live in the MINTING path, so no
+          # receipt-verify fixture can reach them — the receipt is already wrong by the
+          # time verification sees it.
+          #
+          # This fixture EXTRACTS receipt_nwo() and ledger_complete() from the shipped
+          # review.sh and calls them. An earlier version re-implemented the rules here
+          # and was correctly rejected: a copy cannot detect the original changing, so it
+          # would have kept passing while production drifted. Same technique the
+          # binds_directly/bind_note block above uses.
+          R9F="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+          R9F_FNS="$(sed -n '/^receipt_nwo() {/,/^}/p; /^ledger_complete() {/,/^}/p' "$R9F")"
+          printf '%s' "$R9F_FNS" | grep -q '^receipt_nwo() {'    || { echo "::error::(9f) could not extract receipt_nwo() from review.sh — it was renamed or inlined, so this fixture is no longer testing production"; exit 1; }
+          printf '%s' "$R9F_FNS" | grep -q '^ledger_complete() {' || { echo "::error::(9f) could not extract ledger_complete() from review.sh — it was renamed or inlined"; exit 1; }
+          eval "$R9F_FNS"
+          r9f_accept() {  # <url> <expected-nwo>
+            local got; got="$(receipt_nwo "$1")"
+            [ "$got" = "$2" ] || { echo "::error::(9f) origin '$1' should mint as '$2' but produced '${got:-<refused>}' — receipts for this repo would be unverifiable or absent"; exit 1; }
+          }
+          r9f_refuse() {  # <url> <why>
+            local got; got="$(receipt_nwo "$1")"
+            [ -z "$got" ] || { echo "::error::(9f) origin '$1' ($2) was accepted as '$got' — minting that records a repository identity the server check can never match"; exit 1; }
+          }
+          # Every URL form git accepts that NAMES A HOST must mint.
+          r9f_accept 'git@github.com:MyOrg/Repo.git'           'myorg/repo'
+          r9f_accept 'https://github.com/aalexander/plinth.git' 'aalexander/plinth'
+          r9f_accept 'http://github.com/o/r'                   'o/r'
+          r9f_accept 'https://github.com/o/r/'                 'o/r'
+          r9f_accept 'ssh://git@github.com/owner/repo.git'     'owner/repo'
+          r9f_accept 'git+ssh://git@github.com/owner/repo.git' 'owner/repo'
+          r9f_accept 'ssh://git@github.com:22/owner/repo.git'  'owner/repo'
+          r9f_accept 'git://github.com/owner/repo.git'         'owner/repo'
+          # Hostless forms must be refused, never reduced to a plausible pair. NOTE the
+          # scope deliberately: receipt_nwo extracts an owner/repo pair from a HOST-BASED
+          # url; it does not verify the host is github.com (that would break GitHub
+          # Enterprise). A non-GitHub host yields a pair that fails receipt-verify's own
+          # repo comparison on the server — fail-closed there, not refused here.
+          # The two-segment local path is the trap that survived two earlier fixes:
+          # `/tmp/proj.git` and `../canary/receipt.git` both look like `owner/repo` after
+          # naive stripping. The hostless-URL and Windows-drive forms survived a third.
+          r9f_refuse '../canary/receipt.git'      'relative path'
+          r9f_refuse 'file:///canary/receipt.git' 'file:// URL'
+          r9f_refuse '/tmp/proj.git'              'absolute path'
+          r9f_refuse '~/proj.git'                 'tilde path'
+          r9f_refuse 'https:///owner/repo.git'    'empty host'
+          r9f_refuse 'ssh://git@/owner/repo.git'  'empty host with userinfo'
+          r9f_refuse 'C:/owner/repo.git'          'Windows drive letter (1-char host)'
+          # a non-GitHub host IS accepted here by design — assert that, so the scope
+          # of this helper stays honest and nobody re-reads it as a GitHub check.
+          r9f_accept 'https://gitlab.com/group/proj.git' 'group/proj'
+          # A single-character host is a real remote (SSH config alias), so it must mint —
+          # an earlier host-length rule refused these while trying to exclude C:/ drives,
+          # which the path pattern already excludes.
+          r9f_accept 'g:owner/repo.git'                  'owner/repo'
+          r9f_accept 'gh:owner/repo.git'                 'owner/repo'
+          r9f_refuse 'https://github.com/a/b/c.git' 'three path segments'
+          r9f_refuse ''                           'no origin at all'
+          # COMBINATORIAL matrix over the input space, not hand-picked examples. Five
+          # successive review rounds each named ONE URL form the example list had missed
+          # (a two-segment local path, then a hostless URL, then a Windows drive, then a
+          # one-character alias). Enumerating scheme x userinfo x host x port x depth
+          # covers the class in one pass instead of one form per round.
+          #
+          # SELF-CHECK FIRST, and this is not optional: a sweep that is itself broken
+          # reports every input as failing and manufactures work. The version of this
+          # sweep written by hand did exactly that — it used `path` as a loop variable,
+          # which in zsh is TIED TO $PATH, so `sed` disappeared and all 2160 inputs came
+          # back refused against a parser that was in fact correct. The guard is: prove a
+          # known-good URL mints BEFORE trusting any refusal, and never use a loop
+          # variable that is special in any shell this might run under.
+          [ "$(receipt_nwo 'https://github.com/o/r')" = 'o/r' ] || { echo "::error::(9f) SWEEP HARNESS BROKEN: the canonical URL did not parse, so every refusal below would be meaningless. Fix the harness, do not 'fix' the parser"; exit 1; }
+          r9f_sweep_fail=0
+          for r9f_sch in '' 'https://' 'http://' 'ssh://' 'git://' 'git+ssh://'; do
+            for r9f_usr in '' 'git@'; do
+              for r9f_hst in 'github.com' 'gh' 'g' 'h-1.example.co.uk'; do
+                for r9f_dep in 'o/r' 'o/r.git' 'a/b/c' 'o'; do
+                  if [ -z "$r9f_sch" ]; then r9f_u="${r9f_usr}${r9f_hst}:${r9f_dep}"; else r9f_u="${r9f_sch}${r9f_usr}${r9f_hst}/${r9f_dep}"; fi
+                  case "$r9f_dep" in o/r|o/r.git) r9f_want='o/r' ;; *) r9f_want='' ;; esac
+                  r9f_got="$(receipt_nwo "$r9f_u")"
+                  [ "$r9f_got" = "$r9f_want" ] || { echo "::error::(9f) sweep: '$r9f_u' -> '${r9f_got:-<refuse>}', expected '${r9f_want:-<refuse>}'"; r9f_sweep_fail=1; }
+                done; done; done; done
+          # hostless / pathless / drive forms, swept the same way
+          for r9f_u in '/tmp/o/r.git' '../o/r.git' '~/o/r.git' 'file:///o/r.git' 'https:///o/r.git' 'ssh://git@/o/r.git' 'C:/o/r.git' ''; do
+            r9f_got="$(receipt_nwo "$r9f_u")"
+            [ -z "$r9f_got" ] || { echo "::error::(9f) sweep: hostless form '$r9f_u' was accepted as '$r9f_got'"; r9f_sweep_fail=1; }
+          done
+          [ "$r9f_sweep_fail" = 0 ] || exit 1
+          # CREDENTIAL SAFETY: the no-mint diagnostic must not reproduce the URL at all.
+          # Redacting userinfo alone was not enough — a token can also ride in a query
+          # string, a path segment or a fragment, so the rule is "do not echo the URL".
+          R9F_MSG="$(sed -n '/receipt NOT minted: the .origin. remote is unset/p' "$R9F")"
+          [ -n "$R9F_MSG" ] || { echo "::error::(9f) the no-origin diagnostic in review.sh changed shape — re-point this assertion at it"; exit 1; }
+          printf '%s' "$R9F_MSG" | grep -q 'origin_url\|remote\.origin\.url' && { echo "::error::(9f) the no-mint diagnostic interpolates the origin URL — it can carry a credential (?access_token=, userinfo, a token path segment) and this line reaches terminals, transcripts and CI logs"; exit 1; } || true
+          printf '%s' "$R9F_MSG" | grep -q 'git remote -v' || { echo "::error::(9f) the no-mint diagnostic must tell the operator how to inspect the remote themselves, since it deliberately does not print it"; exit 1; }
+          # WIRING, not just the helpers. The previous revision of this fixture called
+          # receipt_nwo/ledger_complete directly, so deleting mint_receipt's CALLS to them
+          # left every negative case green — the rules were tested, their use was not.
+          # Grep CODE, not comments. The first version of this check searched the whole
+          # mint_receipt body, and both helper names appear in its explanatory comments —
+          # so deleting the actual call still passed. Strip comment lines and blank space
+          # first, then require the identifier followed by an argument, which a prose
+          # mention cannot satisfy.
+          R9F_MINT="$(sed -n '/^mint_receipt() {/,/^}/p' "$R9F" | sed -E 's/[[:space:]]*#.*$//' | grep -v '^[[:space:]]*$')"
+          [ -n "$R9F_MINT" ] || { echo "::error::(9f) could not extract mint_receipt() from review.sh"; exit 1; }
+          printf '%s' "$R9F_MINT" | grep -qE 'receipt_nwo[[:space:]]+"' || { echo "::error::(9f) mint_receipt does not CALL receipt_nwo (a comment mention does not count) — the URL rules are tested above but nothing applies them, so any origin would mint"; exit 1; }
+          printf '%s' "$R9F_MINT" | grep -qE 'ledger_complete[[:space:]]+"' || { echo "::error::(9f) mint_receipt does not CALL ledger_complete (a comment mention does not count) — the ledger rules are tested above but nothing applies them, so a lost append would mint silently"; exit 1; }
+          printf '%s' "$R9F_MINT" | grep -q 'return 0' || { echo "::error::(9f) mint_receipt has no early-return refusal path left"; exit 1; }
+          # OVERRIDE LEDGER completeness: every round 1..N must be present. Round 0 (Tier 0)
+          # legitimately has no ledger. A ledger missing ANY round means an append was
+          # swallowed, so minting would omit that round's overrides while the file still
+          # parses cleanly — and `git notes add -f` would overwrite the correct receipt.
+          R9F_A="$(mktemp -d)"; R9F_B="$(mktemp -d)"; R9F_C="$(mktemp -d)"; R9F_D="$(mktemp -d)"
+          printf '{"round":1,"mode":"fresh"}\n{"round":2,"mode":"resume"}\n' > "$R9F_B/usage.jsonl"
+          printf '{"round":2,"mode":"resume"}\n'                             > "$R9F_C/usage.jsonl"
+          printf '{"round":1,"mode":"fresh"}\n'                              > "$R9F_D/usage.jsonl"
+          ledger_complete "$R9F_A" 0 || { echo "::error::(9f) Tier-0 mint (round 0, no ledger yet) was refused — every Tier-0 PR would lose its receipt"; exit 1; }
+          ledger_complete "$R9F_B" 2 || { echo "::error::(9f) a ledger covering rounds 1-2 was refused at round 2"; exit 1; }
+          ledger_complete "$R9F_A" 2 && { echo "::error::(9f) an ABSENT ledger at round 2 still minted — asserts zero overrides and overwrites a correct receipt"; exit 1; } || true
+          ledger_complete "$R9F_C" 2 && { echo "::error::(9f) a ledger missing ROUND 1 still minted at round 2 — round 1's overrides would be silently dropped from the disclosure"; exit 1; } || true
+          ledger_complete "$R9F_D" 2 && { echo "::error::(9f) a STALE ledger (no row for the current round 2) still minted"; exit 1; } || true
+          # (9g) mint_receipt BEHAVIOURAL wiring. (9f) proves receipt_nwo/ledger_complete
+          # are correct and that their call sites exist; a source grep still cannot prove
+          # the calls GOVERN the outcome. This drives the real mint_receipt — extracted
+          # with its helpers — against a real repo, injecting only its three globals
+          # (sha, baseref, SDIR), and asserts on whether a NOTE EXISTS. Deleting either
+          # call makes a case here mint when it must not.
+          R9G_SRC="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+          R9G_FNS="$(sed -n '/^receipt_nwo() {/,/^}/p; /^ledger_complete() {/,/^}/p; /^mint_receipt() {/,/^}/p' "$R9G_SRC")"
+          printf '%s' "$R9G_FNS" | grep -q '^mint_receipt() {' || { echo "::error::(9g) could not extract mint_receipt() — re-point this fixture"; exit 1; }
+          r9g_case() {  # r9g_case <label> <origin-url> <ledger-mode: full|stale|none|round0> <expect: mint|nomint>
+            local label="$1" origin="$2" lmode="$3" expect="$4" d out got
+            d="$(mktemp -d)"
+            ( cd "$d" && git init -qb main . >/dev/null && git config user.email x@x && git config user.name x
+              echo base > f && git add -A && git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1 && echo more >> f && git add -A && git commit -qm w >/dev/null
+              [ -n "$origin" ] && git remote add origin "$origin"
+              mkdir -p sess
+              case "$lmode" in
+                full)   printf '{"round":1,"mode":"fresh"}\n{"round":2,"mode":"resume"}\n' > sess/usage.jsonl ;;
+                stale)  printf '{"round":1,"mode":"fresh"}\n'                              > sess/usage.jsonl ;;
+                none)   : ;;
+                round0) : ;;
+              esac
+              # Drive the REAL function with only its globals injected.
+              sha="$(git rev-parse HEAD)"; baseref="main"; SDIR="$d/sess"
+              eval "$R9G_FNS"
+              case "$lmode" in round0) mint_receipt 0 ;; *) mint_receipt 2 ;; esac >/dev/null 2>&1
+              git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && echo mint > "$d/got" || echo nomint > "$d/got" )
+            got="$(cat "$d/got" 2>/dev/null || echo '<no-result>')"
+            [ "$got" = "$expect" ] || { echo "::error::(9g) $label: mint_receipt produced '$got', expected '$expect' — the guard for this case is not governing the outcome"; exit 1; }
+          }
+          # CREDENTIAL SAFETY, proven by running the loop rather than reading a source
+          # line. A rejected origin that carries a token must not put it anywhere in the
+          # output. Source inspection can only show the URL is not interpolated at ONE
+          # site; this shows nothing leaks from the whole path.
+          r9g_nocreds() {  # <label> <origin-with-secret> <secret>
+            local d out; d="$(mktemp -d)"
+            out="$( cd "$d" && git init -qb main . >/dev/null 2>&1 && git config user.email x@x && git config user.name x
+              echo a > f && git add -A && git commit -qm b >/dev/null 2>&1
+              git checkout -qb feat >/dev/null 2>&1 && echo c >> f && git add -A && git commit -qm w >/dev/null 2>&1
+              git remote add origin "$2"
+              mkdir -p sess && printf '{"round":1}\n{"round":2}\n' > sess/usage.jsonl
+              sha="$(git rev-parse HEAD)"; baseref=main; SDIR="$d/sess"
+              eval "$R9G_FNS"; mint_receipt 2 2>&1 )"
+            printf '%s' "$out" | grep -q "$3" && { echo "::error::(9g) $1: the secret appeared in mint output — a token must never reach terminals, transcripts or CI logs"; exit 1; } || true
+            printf '%s' "$out" | grep -qi 'receipt not minted' || { echo "::error::(9g) $1: expected an announced refusal, got: $out"; exit 1; }
+          }
+          r9g_nocreds 'https token, 3-segment path' 'https://oauth2:S3CRETTOK@github.com/a/b/c.git' 'S3CRETTOK'
+          r9g_nocreds 'ssh userinfo, local path'    'ssh://user:PWSECRET@/o/r.git'                  'PWSECRET'
+          # Baseline FIRST: if a good repo does not mint, every negative below is vacuous.
+          r9g_case 'good origin + complete ledger'      'https://github.com/canary/r9g.git' full   mint
+          r9g_case 'Tier-0 (round 0, no ledger yet)'    'https://github.com/canary/r9g.git' round0 mint
+          # ledger_complete must GOVERN: a stale or missing ledger after a round blocks the mint.
+          r9g_case 'stale ledger (round 2 row missing)' 'https://github.com/canary/r9g.git' stale  nomint
+          r9g_case 'ledger lost entirely'               'https://github.com/canary/r9g.git' none   nomint
+          # receipt_nwo must GOVERN: an origin with no repository identity blocks the mint.
+          r9g_case 'file:// origin'                     'file:///tmp/not-a-repo.git'        full   nomint
+          r9g_case 'local path origin'                  '/tmp/not-a-repo.git'               full   nomint
+          r9g_case 'no origin at all'                   ''                                  full   nomint
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
