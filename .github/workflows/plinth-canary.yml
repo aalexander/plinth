@@ -1100,6 +1100,40 @@ jobs:
             # session mkdir that used to be the only SDIR assignment.
             [ -f .plinth/session/review/feat/last-error ] || { echo "::error::(3c) PRE-SDIR die_infra left no last-error — the Stop gate cannot take its promised immediate infra escape"; exit 1; }
             grep -q 'round_cap' .plinth/session/review/feat/last-error || { echo "::error::(3c) last-error exists but does not name round_cap: $(cat .plinth/session/review/feat/last-error)"; exit 1; } )
+          # (3f) jq-missing is the sibling that used to fire BEFORE SDIR was assigned, so
+          # die_infra skipped last-error and the Stop gate could not take its infra escape.
+          # Behaviour: hide real jq from PATH, run review.sh in a real repo, assert exit 2
+          # AND that last-error was written. A source grep for "jq not found" would not catch
+          # reordering the check back above the SDIR assignment.
+          JQF="$(mktemp -d)"; mkstate "$JQF"; mk_cap_codex "$JQF"
+          printf '%s' "$CNF" > "$JQF/verdict-1"
+          jqfd="$(mktemp -d)"
+          ( cd "$jqfd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$jqfd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            command -v jq >/dev/null 2>&1 || { echo "::error::(3f) this runner has no jq to hide — fixture cannot test the missing-jq path"; exit 1; }
+            # Minimal PATH with only the tools needed up to the jq check (git, tr, mkdir,
+            # date) plus the codex stub — deliberately NO jq. Filtering PATH entries that
+            # contain jq is fragile (hashed lookups, unexpected locations); a closed set is
+            # the behavioural probe: command -v jq must fail, die_infra must still write
+            # last-error under the already-resolved SDIR.
+            JQ_NEED="$(mktemp -d)"
+            # bash/env/sh: the shebang is `#!/usr/bin/env bash`; without them on PATH
+            # the script never starts (exit 127) and last-error is never reached.
+            for jqc in git tr mkdir date bash env sh; do
+              jqp="$(command -v "$jqc")" || { echo "::error::(3f) need $jqc on the runner to build the no-jq PATH"; exit 1; }
+              ln -sf "$jqp" "$JQ_NEED/$jqc"
+            done
+            NEWPATH="$JQF:$JQ_NEED"
+            PATH="$NEWPATH" command -v jq >/dev/null 2>&1 \
+              && { echo "::error::(3f) failed to construct a PATH without jq (still resolves to $(PATH="$NEWPATH" command -v jq))"; exit 1; } || true
+            rc=0; out="$(PATH="$NEWPATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3f) missing jq did not abort with exit 2 (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'jq not found' || { echo "::error::(3f) missing-jq abort did not name jq: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$JQF/state")" = 0 ] || { echo "::error::(3f) the reviewer was invoked despite missing jq"; exit 1; }
+            [ -f .plinth/session/review/feat/last-error ] || { echo "::error::(3f) die_infra 'jq not found' left no last-error — SDIR was empty or the write was skipped; Stop gate cannot take its infra escape"; exit 1; }
+            grep -qi 'jq not found' .plinth/session/review/feat/last-error || { echo "::error::(3f) last-error exists but does not name jq: $(cat .plinth/session/review/feat/last-error)"; exit 1; } )
           # (3e) round_cap MAX bound (100000). A positive cap is capped at 100000 because
           # past the arithmetic range bash integer wrap turns a huge digit string NEGATIVE
           # and silently disables the breaker. Both input paths (config + PLINTH_ROUND_CAP)
@@ -1590,10 +1624,34 @@ jobs:
           printf '%s' "$out" | grep -q 'receipt verified' || { echo "::error::(9d) happy path did not print 'receipt verified'"; exit 1; }
           # Notes-ref probe status branching: exit 2 = absent, other nonzero = infrastructure.
           # Collapsing every nonzero into "missing receipt" made auth blips look like the
-          # driver forgot to push. Assert the three-way branch is still wired.
-          grep -q 'notes_probe_rc' "$R9D_WD/step.sh" || { echo "::error::(9d) notes ls-remote probe no longer captures its exit status"; exit 1; }
-          grep -q 'notes_probe_rc.*= 2' "$R9D_WD/step.sh" || { echo "::error::(9d) notes probe does not treat ls-remote exit 2 as 'absent'"; exit 1; }
-          grep -q 'could not probe refs/notes/plinth-receipts' "$R9D_WD/step.sh" || { echo "::error::(9d) notes probe has no distinct infrastructure-failure path for nonzero exit other than 2"; exit 1; }
+          # driver forgot to push. BEHAVIOURAL: drive the real step with a git stub that
+          # returns controlled ls-remote exit codes. Flipping `= 2` to `!= 2` swaps the
+          # two failure messages — this fixture fails on that mutant (a source grep would not).
+          R9D_REAL_GIT="$(command -v git)"
+          R9D_GITD="$(mktemp -d)"
+          cat > "$R9D_GITD/git" <<R9DGIT
+          #!/usr/bin/env bash
+          if [ "\${1:-}" = "ls-remote" ] && [ "\${2:-}" = "--exit-code" ]; then
+            exit "\${R9D_LS_RC:-2}"
+          fi
+          exec "$R9D_REAL_GIT" "\$@"
+          R9DGIT
+          chmod +x "$R9D_GITD/git"
+          r9d_notes_probe() {  # r9d_notes_probe <ls-remote-rc> <must-match-re> <must-not-match-re> <label>
+            local rc=0 out
+            rm -rf /tmp/plinth
+            out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+              JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+              GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+              R9D_LS_RC="$1" PATH="$R9D_GITD:$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+            [ "$rc" != 0 ] || { echo "::error::(9d) notes probe ($4, ls-remote rc=$1) unexpectedly succeeded: $out"; exit 1; }
+            printf '%s' "$out" | grep -qiE "$2" || { echo "::error::(9d) notes probe ($4) did not emit expected signal for ls-remote rc=$1: $out"; exit 1; }
+            printf '%s' "$out" | grep -qiE "$3" && { echo "::error::(9d) notes probe ($4) emitted the WRONG class of failure for ls-remote rc=$1 (would pass if absent/infra were swapped): $out"; exit 1; } || true
+          }
+          # exit 2 → proven-absent path (no "could not probe" infrastructure wording)
+          r9d_notes_probe 2 'no refs/notes/plinth-receipts' 'could not probe' 'absent'
+          # other nonzero → infrastructure path (must NOT look like "driver forgot to push")
+          r9d_notes_probe 128 'could not probe' 'no refs/notes/plinth-receipts on this repository' 'infra'
           # 2: EMPTY job_workflow_ref.
           rc=0
           out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
@@ -1781,13 +1839,15 @@ jobs:
           [ "$r9e_missing" = 1 ] || { echo "::error::(9e) a MISSING receipt did not reject with exit 1 (rc=$r9e_missing)"; exit 1; }
           # an UNDISCLOSED override: ledger has a row, PR body declares nothing
           r9e_reject "undisclosed override"     '.override_ledger = [{round:1, name:"PLINTH_ROUND_CAP", value:"99"}]'
-          # Repo-mismatch failure must NOT echo the recorded or expected repo value (a
-          # path-segment secret in identity would otherwise reappear in CI logs).
-          r9e_receipt '.repo = "s3crettok/repo"' > "$R9E/r-secret.json"
+          # Repo-mismatch failure must NOT echo the recorded OR expected repo value (a
+          # path-segment secret in identity would otherwise reappear in CI logs). Marker
+          # sits in BOTH paths: putting it only in the receipt let a reintroduction of
+          # `$REPO` into the error message pass this fixture.
+          r9e_receipt '.repo = "s3crettok-recorded/repo"' > "$R9E/r-secret.json"
           r9e_secret_out="$( cd "$R9E" && bash "$R9E_V" --receipt "$R9E/r-secret.json" --head-sha "$R9E_HEAD" \
             --base-ref main --base-tip "$(git -C "$R9E" rev-parse main)" --pr-body "$R9E/body.txt" \
-            --repo "$R9E_NWO" 2>&1 )" || true
-          printf '%s' "$r9e_secret_out" | grep -qi 's3crettok' && { echo "::error::(9e) repo-mismatch failure echoed the receipt repo value — a path-segment secret would reappear in CI logs: $r9e_secret_out"; exit 1; } || true
+            --repo "s3crettok-expected/repo" 2>&1 )" || true
+          printf '%s' "$r9e_secret_out" | grep -qi 's3crettok' && { echo "::error::(9e) repo-mismatch failure echoed a repo value (recorded and/or expected \$REPO) — a path-segment secret would reappear in CI logs: $r9e_secret_out"; exit 1; } || true
           printf '%s' "$r9e_secret_out" | grep -qi 'repo field' || { echo "::error::(9e) repo-mismatch failure did not name the field without echoing values: $r9e_secret_out"; exit 1; }
           # (9f) mint_receipt's INPUT VALIDATION. These live in the MINTING path, so no
           # receipt-verify fixture can reach them — the receipt is already wrong by the
@@ -2436,10 +2496,13 @@ jobs:
             [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
             )
           # (9k4) MID-ROUND base tip pin. (9k)/(9k2)/(9k3) move the base BETWEEN completed
-          # invocations. The race that ships a wrong subject is INSIDE one invocation: the
-          # reviewer reads tip C1, main advances, mint_receipt recomputes against B. The
-          # mock reviewer moves main after it is invoked; mint must die_infra (exit 2) and
-          # write NO receipt for a subject the reviewer never saw.
+          # invocations. The race that ships a wrong subject is INSIDE one invocation.
+          # Three sites must use the pinned tip, not the mutable ref: DIFF, CLASSIFICATION,
+          # and MINT. A fixture that only moves the ref after classification only proves
+          # the mint-time abort; reverting diff or classifier to baseref would still pass.
+          #
+          # (9k4-mint) mock reviewer moves main after it is invoked; mint must die_infra
+          # (exit 2) and write NO receipt for a subject the reviewer never saw.
           R9K4="$(mktemp -d)"; mkstate "$R9K4"
           cat > "$R9K4/codex" <<R9K4CX
           #!/usr/bin/env bash
@@ -2476,6 +2539,100 @@ jobs:
             printf '%s' "$out" | grep -qi 'moved during this review' || { echo "::error::(9k4) abort did not name the mid-round base movement: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
             git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9k4) a receipt was minted after the base moved mid-round"; exit 1; } || true
             [ "$(cat "$R9K4/state")" = 1 ] || { echo "::error::(9k4) expected exactly one reviewer invocation, got $(cat "$R9K4/state")"; exit 1; } )
+          # (9k4-diff) DIFF is pinned. After the pin is captured, advance origin/main so a
+          # re-resolve would drop part1.py from the subject. The reviewer prompt must still
+          # contain part1.py (computed from base_tip). Reverting `git diff "${base_tip}...`
+          # to `"${baseref}...` fails this fixture. CHANGES_NEEDED so mint is not reached.
+          R9K4D="$(mktemp -d)"; mkstate "$R9K4D"; mk_cap_codex "$R9K4D"
+          printf '%s' "$CNF" > "$R9K4D/verdict-1"
+          R9K4D_REAL_GIT="$(command -v git)"
+          cat > "$R9K4D/git" <<R9K4DGIT
+          #!/usr/bin/env bash
+          # After the pin assignment (2nd successful rev-parse --verify of origin/main),
+          # advance the mutable ref so subsequent baseref uses see C1, not B0.
+          if [ "\${1:-}" = "rev-parse" ]; then
+            out="\$("$R9K4D_REAL_GIT" "\$@")" || { ec=\$?; exit \$ec; }
+            verify=0; for a in "\$@"; do [ "\$a" = "--verify" ] && verify=1; done
+            ref=""; for a in "\$@"; do case "\$a" in origin/main|main) ref="\$a" ;; esac; done
+            if [ "\$verify" = 1 ] && [ -n "\$ref" ] && [ -n "\$out" ]; then
+              n=\$(( \$(cat "$R9K4D/rp-count" 2>/dev/null || echo 0) + 1 ))
+              echo "\$n" > "$R9K4D/rp-count"
+              if [ "\$n" -eq 2 ] && [ -f "$R9K4D/move-to" ]; then
+                tip="\$(cat "$R9K4D/move-to")"
+                "$R9K4D_REAL_GIT" branch -f main "\$tip" 2>/dev/null || true
+                "$R9K4D_REAL_GIT" update-ref refs/remotes/origin/main "\$tip" 2>/dev/null || true
+              fi
+            fi
+            printf '%s\n' "\$out"
+            exit 0
+          fi
+          exec "$R9K4D_REAL_GIT" "\$@"
+          R9K4DGIT
+          chmod +x "$R9K4D/git"
+          r9k4dd="$(mktemp -d)"
+          ( cd "$r9k4dd"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9k4dd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            B0="$(git rev-parse HEAD)"
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; C1="$(git rev-parse HEAD)"
+            echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
+            printf '%s' "$C1" > "$R9K4D/move-to"
+            echo 0 > "$R9K4D/rp-count"
+            git update-ref refs/remotes/origin/main "$B0"
+            rc=0; out="$(PATH="$R9K4D:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::(9k4-diff) expected CHANGES_NEEDED (rc=1) with pinned diff, got rc=$rc: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ -f "$R9K4D/prompt-1" ] || { echo "::error::(9k4-diff) reviewer was not invoked — cannot assert the pinned diff content"; exit 1; }
+            grep -q 'part1.py' "$R9K4D/prompt-1" || { echo "::error::(9k4-diff) reviewer prompt lacks part1.py — diff re-resolved the moved baseref instead of using base_tip"; exit 1; }
+            grep -q 'part2.py' "$R9K4D/prompt-1" || { echo "::error::(9k4-diff) reviewer prompt lacks part2.py — unexpected subject"; exit 1; } )
+          # (9k4-class) CLASSIFICATION is pinned. Wrap risk-classify.sh so it moves the
+          # mutable ref just before classifying; the arg must still be the pinned tip SHA
+          # (B0), not origin/main (now at C1). With pin: auth_token.py is in the subject
+          # → Tier 2 and a model round. With baseref mutant: only ONLYDOC.md remains →
+          # Tier 0 and no model round. Outcome-distinguishable; reverting the classifier
+          # call to "$baseref" fails this fixture. Wrapper is committed on base so the
+          # tree stays clean for review.sh's dirty-tree refusal.
+          R9K4C="$(mktemp -d)"; mkstate "$R9K4C"; mk_cap_codex "$R9K4C"
+          printf '%s' "$CNF" > "$R9K4C/verdict-1"
+          r9k4cd="$(mktemp -d)"
+          ( cd "$r9k4cd"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9k4cd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+            cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh.real
+            # Classifier wrapper: move main to the pre-recorded tip, then invoke real
+            # classifier with the args production passed. If production passed base_tip
+            # (B0 SHA), tier stays high; if it passed baseref (origin/main → C1), only
+            # ONLYDOC.md remains in the subject.
+            cat > .plinth/risk-classify.sh <<R9K4CRC
+          #!/usr/bin/env bash
+          tip="\$(cat "$R9K4C/move-to" 2>/dev/null || true)"
+          if [ -n "\$tip" ]; then
+            git branch -f main "\$tip" 2>/dev/null || true
+            git update-ref refs/remotes/origin/main "\$tip" 2>/dev/null || true
+          fi
+          printf '%s\n' "\$1" > "$R9K4C/class-arg"
+          exec bash .plinth/risk-classify.sh.real "\$@"
+          R9K4CRC
+            chmod +x .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            B0="$(git rev-parse HEAD)"
+            git checkout -qb feat >/dev/null 2>&1
+            # High-consequence path signal (SECURITY surface) so B0...HEAD is Tier 2.
+            mkdir -p lib; echo 'x' > lib/auth_token.py; git add -A; git commit -qm c1 >/dev/null; C1="$(git rev-parse HEAD)"
+            echo doc > ONLYDOC.md; git add -A; git commit -qm c2 >/dev/null
+            git update-ref refs/remotes/origin/main "$B0"
+            printf '%s' "$C1" > "$R9K4C/move-to"
+            rc=0; out="$(PATH="$R9K4C:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            # Pinned tip → Tier 2 → model round → CN (rc=1). Mutable baseref → Tier 0
+            # (docs only) → no model, mint aborts on moved base (rc=2) or silent Tier-0.
+            [ "$rc" = 1 ] || { echo "::error::(9k4-class) expected CHANGES_NEEDED (rc=1) under pinned classification, got rc=$rc: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            printf '%s' "$out" | grep -q 'risk Tier 2' || { echo "::error::(9k4-class) classification was not Tier 2 — classifier likely re-resolved the moved baseref: $(printf '%s' "$out" | grep -i risk | head -3)"; exit 1; }
+            [ "$(cat "$R9K4C/state")" = 1 ] || { echo "::error::(9k4-class) reviewer not invoked (state=$(cat "$R9K4C/state")) — Tier 0 path means classifier used the moved ref"; exit 1; }
+            class_arg="$(cat "$R9K4C/class-arg" 2>/dev/null || true)"
+            [ "$class_arg" = "$B0" ] || { echo "::error::(9k4-class) classifier was invoked with '$class_arg', not the pinned tip $B0 — production passed the mutable baseref"; exit 1; } )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
@@ -3227,19 +3384,33 @@ jobs:
             grep -qxF "$ibpat" "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill the managed protected pattern '$ibpat' into a pre-existing pre-v4.4 protected-paths — the Claude guard would not protect that file"; exit 1; }
           done < "$IB/mpat.expected"
           # INDEPENDENT manifest cross-check: PATTERNS alone is circular if a managed leaf
-          # is added to copy_shared/preflight/HARNESS_PATHS while PATTERNS is forgotten.
-          # Require every version-pinned .plinth leaf that copy_shared installs (and the
-          # two reserved lane agents) to appear as a managed protected pattern. Patterns
-          # escape dots (`review\.sh`), so match the stem, not the unescaped filename.
-          for ib_stem in review risk-classify lane-guard receipt-verify review-schema \
-              plinth-rules MODELS reviewer; do
-            grep -qF "$ib_stem" "$IB/mpat.expected" \
-              || { echo "::error::(init-backfill) copy_shared installs a .plinth/$ib_stem* leaf but PATTERNS has no managed protected pattern for it — the Claude guard would not protect a newly pinned leaf"; exit 1; }
-          done
-          for ib_agent in grok-implementer codex-implementer; do
-            grep -qF "$ib_agent" "$IB/mpat.expected" \
-              || { echo "::error::(init-backfill) lane agent $ib_agent is reserved tooling but PATTERNS has no managed pattern for it"; exit 1; }
-          done
+          # is added to copy_shared while PATTERNS is forgotten. Derive the expectation from
+          # copy_shared's actual destination list in bin/plinth (must change when a leaf is
+          # added), then require each to appear in PATTERNS. A restated stem list would
+          # pass when both lists are forgotten together — the regression this claims to prevent.
+          sed -n '/^copy_shared() {/,/^}/p' "$GITHUB_WORKSPACE/bin/plinth" > "$IB/copy_shared.body"
+          [ -s "$IB/copy_shared.body" ] || { echo "::error::(init-backfill) could not extract copy_shared() from bin/plinth — independent manifest has no authority"; exit 1; }
+          # .plinth leaves: every `$target/.plinth/<name>` destination copy_shared writes.
+          sed -n 's/.*\$target\/\.plinth\/\([^"]\{1,\}\)".*/\1/p' "$IB/copy_shared.body" | sort -u > "$IB/cs.plinth-leaves"
+          ib_nleaves="$(grep -c . "$IB/cs.plinth-leaves" || true)"
+          [ "${ib_nleaves:-0}" -ge 7 ] || { echo "::error::(init-backfill) copy_shared yielded only ${ib_nleaves:-0} .plinth destinations — extraction is broken or the inventory collapsed"; exit 1; }
+          while IFS= read -r ib_leaf; do
+            [ -n "$ib_leaf" ] || continue
+            # PATTERNS escape dots (`review\.sh`); require the escaped basename, not a hand stem.
+            ib_esc="$(printf '%s' "$ib_leaf" | sed 's/\./\\./g')"
+            grep -qF "$ib_esc" "$IB/mpat.expected" \
+              || { echo "::error::(init-backfill) copy_shared installs .plinth/$ib_leaf but PATTERNS has no managed protected pattern for it (looked for '$ib_esc') — the Claude guard would not protect a newly pinned leaf"; exit 1; }
+          done < "$IB/cs.plinth-leaves"
+          # Reserved lane agents: every cp_lane_agent destination under .claude/agents/.
+          sed -n 's/.*\$target\/\.claude\/agents\/\([^"]\{1,\}\)".*/\1/p' "$IB/copy_shared.body" | sort -u > "$IB/cs.agents"
+          ib_nagents="$(grep -c . "$IB/cs.agents" || true)"
+          [ "${ib_nagents:-0}" -ge 2 ] || { echo "::error::(init-backfill) copy_shared yielded only ${ib_nagents:-0} lane-agent destinations — extraction is broken"; exit 1; }
+          while IFS= read -r ib_agent; do
+            [ -n "$ib_agent" ] || continue
+            ib_esc="$(printf '%s' "$ib_agent" | sed 's/\./\\./g')"
+            grep -qF "$ib_esc" "$IB/mpat.expected" \
+              || { echo "::error::(init-backfill) lane agent $ib_agent is installed by copy_shared but PATTERNS has no managed pattern for it"; exit 1; }
+          done < "$IB/cs.agents"
           # A generated project must IGNORE nested agent worktrees. An agent harness may
           # create git worktrees under the repo (Claude Code uses .claude/worktrees/); the
           # untracked directory then makes the tree read dirty and review.sh refuses to run

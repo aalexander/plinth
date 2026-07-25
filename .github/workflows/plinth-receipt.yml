@@ -19,6 +19,15 @@ name: plinth-receipt
 # defeats it — the check makes skipping DETECTABLE AND AUDITABLE (the notes ref
 # is append-only history), not cryptographically impossible.
 #
+# SUBJECT-AS-OF-EXECUTION: this job verifies the PR subject at the moment it
+# runs. The live base.sha comparison detects base movement only WHILE the job is
+# running. After a green exit the base can still advance while the PR head and
+# this successful status remain unchanged — no status check can invalidate itself
+# post-success. The mechanism that closes that window is GitHub branch protection
+# "Require branches to be up to date before merging" (`strict: true`) wherever
+# `receipt / verify` is a required context. Do not invent an in-workflow claim
+# that covers post-success base movement; document the bound and require strict.
+#
 # v1 LIMITS (fail closed, never silently pass):
 # - pull_request events only. GitHub merge queues rewrite SHAs into synthetic
 #   heads no local loop ever approved — exact-HEAD semantics cannot be

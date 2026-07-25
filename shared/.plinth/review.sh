@@ -34,7 +34,7 @@ set -euo pipefail
 base="${1:-main}"
 SCHEMA=".plinth/review-schema.json"
 # Session state is keyed by branch so parallel branches/sessions don't fight
-# over verdicts. SDIR is set after the git checks below.
+# over verdicts. SDIR is set after the git-repo check below.
 SDIR=""
 die() { echo "PLINTH REVIEW FAILED: $*" >&2; exit 2; }
 # Infrastructure failure (broken pipeline, NOT loop discipline): recorded so the
@@ -42,26 +42,32 @@ die() { echo "PLINTH REVIEW FAILED: $*" >&2; exit 2; }
 # human can fix. Discipline refusals (dirty tree, empty diff, unchanged HEAD)
 # use plain die — they must NOT open the gate.
 die_infra() {
-  # Safe when SDIR is still empty (e.g. jq missing before the git-repo check): still
-  # exit 2 and print, but skip the last-error write rather than `mkdir -p ""`.
+  # Always print and exit 2. When SDIR is set, also write last-error so the Stop
+  # gate can take its immediate infra escape. When SDIR is still empty (only the
+  # non-git path, before the repo check below), skip the write — never
+  # `mkdir -p ""` or swallow the failure silently.
   if [ -n "${SDIR:-}" ]; then
     { mkdir -p "$SDIR" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" > "$SDIR/last-error"; } 2>/dev/null || true
   fi
   die "$@"
 }
 
+# Order: git-repo check → resolve SDIR → jq check → everything else.
+# SDIR needs only the branch slug (git). jq is independent and used to sit before
+# both for no reason — which left `die_infra "jq not found"` with an empty SDIR,
+# so last-error was skipped and the Stop gate could not take its infra escape.
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+# Session dir is branch-keyed. Resolve it as soon as we know we are in a git repo
+# so every later die_infra (missing jq, malformed round_cap, missing base, …)
+# can write last-error and release the Stop gate. The mkdir itself is deferred
+# to first use / the normal session setup below — die_infra creates the dir when needed.
+branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+SDIR=".plinth/session/review/${slug}"
 # NB: the codex CLI is required only for a model round (Tier 1/2); the check is
 # deferred to just before the first round so a Tier-0 (deterministic-floor)
 # approval genuinely needs no model infrastructure.
 command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
-git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
-# Session dir is branch-keyed. Resolve it as soon as we know we are in a git repo
-# so every later die_infra (malformed round_cap, missing base, …) can write
-# last-error and release the Stop gate. The mkdir itself is deferred to first
-# use / the normal session setup below — die_infra creates the dir when needed.
-branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-slug="$(printf '%s' "$branch" | tr '/ ' '--')"
-SDIR=".plinth/session/review/${slug}"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
 
 # Reviews are SHA-bound. A dirty tree means the diff below would not match the work —

@@ -9,6 +9,22 @@ collected twice.) The convergence lever now lives in `shared/reviewer.md`: the r
 instructed to enumerate every instance of a class it finds, and to say so explicitly when
 it has checked a class and found only one. Recording what actually shipped, including the
 parts that were wrong on the way:
+- **PRE-SDIR class closed for the jq sibling.** `SDIR` is resolved immediately after the
+  git-repo check and *before* the `jq` check, so `die_infra "jq not found"` writes
+  `last-error` and the Stop gate can take its infra escape. `die_infra` still refuses
+  `mkdir -p ""` when `SDIR` is empty (print + exit 2 only). Canary (3f) asserts
+  `last-error` is written when `jq` is hidden from `PATH` (behaviour, not a source grep).
+- **Receipt check post-success bound documented honestly.** A green `receipt / verify`
+  describes the subject as of job execution; post-success base movement is outside what
+  any status check can detect. `MANUAL.md` and `.plinth/NEEDS-HUMAN.md` now require
+  `"strict":true` wherever that context is required; `plinth-receipt.yml` states the bound.
+- **Three canary greps replaced with behavioural probes.** Notes-ref probe (exit 2 =
+  absent vs other nonzero = infrastructure) is driven with a `git` stub; repo-mismatch
+  redaction places the marker in both the recorded and expected `$REPO` paths; mid-round
+  base pinning adds DIFF and CLASSIFICATION cases (mutable-ref mutants fail).
+- **Init-backfill "independent" manifest is derived from `copy_shared`.** Managed
+  `.plinth` leaves and reserved lane agents are extracted from `bin/plinth`'s
+  `copy_shared` body, then cross-checked against `PATTERNS` — not a restated stem list.
 - **Credential-safety claim narrowed to non-identity URL parts.** The guarantee covers
   userinfo, query string, fragment, and the no-mint diagnostic never reproducing the URL
   (name the remote; operator runs `git remote -v`). It does NOT cover the path segments
@@ -29,8 +45,9 @@ parts that were wrong on the way:
 - **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
   failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
   `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now
-  skips the write when `SDIR` is empty, and `SDIR` is assigned as soon as the git-repo check
-  passes so later pre-round failures still release the gate.
+  skips the write when `SDIR` is empty (still print + exit 2), and `SDIR` is assigned as
+  soon as the git-repo check passes — before the `jq` check — so every ordinary pre-round
+  failure still releases the gate.
 - **Live receipt check binds `base.sha`.** The TOCTOU re-fetch in `plinth-receipt.yml`
   compares the live PR's `base.sha` to the tip used for verification, not only head and
   body. Notes-ref probing branches on `ls-remote` status: exit 2 is "absent"; any other

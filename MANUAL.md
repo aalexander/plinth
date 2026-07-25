@@ -506,8 +506,12 @@ names that never report leaves every future PR blocked forever.
 UI route, once the first PR shows its checks:
 1. Repo -> Settings -> Branches -> "Add branch protection rule".
 2. Branch name pattern: `main`.
-3. Tick "Require status checks to pass before merging" (add "Require branches
-   to be up to date" if you want rebase-before-merge discipline).
+3. Tick "Require status checks to pass before merging". If this repo requires
+   the `receipt / verify` context, also tick "Require branches to be up to date
+   before merging" (`strict: true`): a green receipt check describes the subject
+   as of job execution, and without that setting the base can advance while the
+   successful status stays green. Floor/checks-only repos may leave it off if
+   they accept rebase-before-merge as optional discipline.
 4. In the search box, pick EVERY floor context and the checks context. GitHub
    names a required check by its JOB name, NOT the workflow name — for a
    reusable-workflow job the context is `<caller-job> / <reusable-job>`. With the
@@ -517,13 +521,19 @@ UI route, once the first PR shows its checks:
    reusable checks call with a direct-steps job). There is NO `CI / ` prefix. The
    floor is FOUR independent required contexts, not one: any you omit stays
    advisory. The Codex cloud review will NOT appear in this list — it posts PR
-   comments, not a status check, so it cannot be required here.
+   comments, not a status check, so it cannot be required here. When enabling
+   the receipt gate, also add `receipt / verify` and set `strict: true` (step 3).
 5. Create. From then on red = unmergeable, for humans and agents alike.
 
-CLI route (same contexts; use `checks` alone if your checks job is direct-steps):
+CLI route (same contexts; use `checks` alone if your checks job is direct-steps).
+Any repo that requires `receipt / verify` MUST use `"strict":true` — without it a
+green receipt check can describe a base that has since moved, and nothing forces
+a re-run before merge. Floor/checks-only example below uses `true` so a later
+receipt enablement does not leave the silent hole open; set `false` only if you
+consciously accept post-success base movement for non-receipt contexts:
 
     gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {"required_status_checks":{"strict":false,
+    {"required_status_checks":{"strict":true,
       "contexts":["floor / secrets","floor / sast",
                   "floor / dependencies / osv-scan","floor / harness",
                   "checks / checks"]},

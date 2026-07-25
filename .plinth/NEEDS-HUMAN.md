@@ -64,9 +64,19 @@
   yet, so it correctly fails closed. That is the bootstrap, not a defect; the context is
   not required at that point, so it does not block the merge.
 
-  **Step 2 — require the context**, once step 1 is on the base:
+  **Step 2 — require the context with strict up-to-date**, once step 1 is on the
+  base. Include `receipt / verify` among the required contexts AND set
+  `"strict":true` ("Require branches to be up to date before merging"). The
+  receipt job verifies the subject **as of job execution**; after it exits green
+  the base can still advance while the PR head and the successful status stay
+  unchanged — only `strict:true` forces re-evaluation before merge. A job cannot
+  invalidate its own status after it exits.
   `gh api -X PATCH repos/aalexander/<repo>/branches/main/protection/required_status_checks --input -`
-  with the existing contexts plus `receipt / verify` — or via the branch-protection UI.
+  with body like
+  `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
+  (keep whatever contexts you already require; always include `receipt / verify`
+  and `strict:true`) — or via the branch-protection UI with both the context and
+  "Require branches to be up to date" ticked.
 
   **Then, every branch:** push the notes ref alongside it, or the check fails closed with
   nothing to verify: `git push origin HEAD refs/notes/plinth-receipts`. Never force-push
