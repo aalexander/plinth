@@ -1010,19 +1010,19 @@ jobs:
               n=$((n + 1))
             done
             [ "$(cat "$NC/state")" = 9 ] || { echo "::error::(3b) expected 9 reviewer invocations with no cap, got $(cat "$NC/state")"; exit 1; } )
-          # PADDED-BUT-VALID values, both paths, asserted on OUTCOMES. The first version of
-          # this block was hollow: it discarded the exit status and only checked that the
-          # output lacked the phrase "absurdly large", so it passed if the value was ignored
-          # entirely, or if the run aborted for some unrelated reason. It also reused one repo
-          # for both paths, so the env case was answered by the config case's stored approval
-          # and never proved PLINTH_ROUND_CAP was accepted through a real round.
-          # Each case now gets its OWN repo and asserts three things: the round exited 0, the
-          # reviewer was actually invoked, and the value normalized to the magnitude (so a
-          # padded 0000001 is a cap of 1, not a rejected string and not a literal 0000001).
+          # PADDED-BUT-VALID values, both paths, proving the VALUE WAS APPLIED. Two earlier
+          # versions of this block were hollow in different ways. The first only checked that
+          # the output lacked "absurdly large". The second asserted rc=1 and one reviewer
+          # invocation — but a config knob IGNORED (read as 0 = no cap) produces exactly that
+          # too, so it still could not tell "cap of 1" from "cap absent". The only observable
+          # difference is what the cap DOES: with round_cap=1, a SECOND round must trip the
+          # breaker (exit 2) without invoking the reviewer again. That is asserted here for
+          # both paths. The env path additionally announces its resolved value, so the
+          # normalized magnitude is checked directly there.
           r3_padded() {  # r3_padded <label> <value> <expected-normalized> <path: config|env>
-            local lbl="$1" val="$2" want="$3" via="$4" PD pdd rc out
+            local lbl="$1" val="$2" want="$3" via="$4" PD pdd rc out rc2 out2
             PD="$(mktemp -d)"; mkstate "$PD"; mk_cap_codex "$PD"
-            printf '%s' "$CNF" > "$PD/verdict-1"
+            printf '%s' "$CNF" > "$PD/verdict-1"; printf '%s' "$CNF" > "$PD/verdict-2"
             pdd="$(mktemp -d)"
             ( cd "$pdd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$pdd" >/dev/null 2>&1
               cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
@@ -1033,17 +1033,25 @@ jobs:
               rc=0
               if [ "$via" = env ]; then out="$(PLINTH_ROUND_CAP="$val" PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
               else                      out="$(PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?; fi
-              # 1. It must RUN. rc=2 is the refusal path; anything else non-1 is a different failure.
               [ "$rc" = 1 ] || { echo "::error::(3e/$lbl) round_cap='$val' via $via gave rc=$rc, expected 1 (CHANGES_NEEDED). A padded value is magnitude, not string length — rc=2 means it was refused as malformed or too large: $(printf '%s' "$out" | tail -c 250)"; exit 1; }
-              # 2. The reviewer must actually have been invoked — otherwise rc=1 could come
-              #    from some earlier abort and this case would prove nothing.
-              [ "$(cat "$PD/state")" = 1 ] || { echo "::error::(3e/$lbl) the reviewer was invoked $(cat "$PD/state") times for round_cap='$val' via $via, expected exactly 1 — the round did not really run, so accepting the value is unproven"; exit 1; }
-              # 3. And it must normalize to the MAGNITUDE. The env path announces the value it
-              #    resolved, which is the only place the normalized number is observable.
+              [ "$(cat "$PD/state")" = 1 ] || { echo "::error::(3e/$lbl) the reviewer was invoked $(cat "$PD/state") times, expected exactly 1 — the round did not really run, so nothing below proves anything"; exit 1; }
               if [ "$via" = env ]; then
-                printf '%s' "$out" | grep -q "round_cap=${want} from PLINTH_ROUND_CAP" || { echo "::error::(3e/$lbl) PLINTH_ROUND_CAP='$val' did not normalize to ${want} — leading zeros are padding; a literal or octal reading would cap the loop at the wrong round: $(printf '%s' "$out" | grep -i override | tail -c 200)"; exit 1; }
+                printf '%s' "$out" | grep -q "round_cap=${want} from PLINTH_ROUND_CAP" || { echo "::error::(3e/$lbl) PLINTH_ROUND_CAP='$val' did not normalize to ${want} — leading zeros are padding; a literal or octal reading caps the loop at the wrong round: $(printf '%s' "$out" | grep -i override | tail -c 200)"; exit 1; }
               fi
-              printf '%s' "$out" | grep -q 'absurdly large' && { echo "::error::(3e/$lbl) round_cap='$val' via $via was REFUSED as too large — the guard must bound magnitude, not raw string length"; exit 1; } || true )
+              printf '%s' "$out" | grep -q 'absurdly large' && { echo "::error::(3e/$lbl) round_cap='$val' via $via was REFUSED as too large — the guard must bound magnitude, not raw string length"; exit 1; } || true
+              # THE VALUE ITSELF. Only meaningful for a cap of 1: commit again and the SECOND
+              # round must hit the breaker. If the knob were ignored (read as 0 = no cap), this
+              # round would return 1 and bill the reviewer — which is exactly the hole the
+              # previous revision of this fixture left open.
+              if [ "$want" = 1 ]; then
+                echo b >> app.py; git add -A; git commit -qm w2 >/dev/null
+                rc2=0
+                if [ "$via" = env ]; then out2="$(PLINTH_ROUND_CAP="$val" PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc2=$?
+                else                      out2="$(PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || rc2=$?; fi
+                [ "$rc2" = 2 ] || { echo "::error::(3e/$lbl) with round_cap='$val' (=1) the SECOND round returned rc=$rc2, expected 2 — the cap was parsed but never APPLIED, so the padded value was silently read as 0 (no cap): $(printf '%s' "$out2" | tail -c 250)"; exit 1; }
+                printf '%s' "$out2" | grep -q 'circuit breaker' || { echo "::error::(3e/$lbl) the second round did not name the circuit breaker, so rc=2 came from somewhere else"; exit 1; }
+                [ "$(cat "$PD/state")" = 1 ] || { echo "::error::(3e/$lbl) the capped second round still invoked the reviewer ($(cat "$PD/state") times) — the breaker must refuse BEFORE billing"; exit 1; }
+              fi )
           }
           r3_padded "padded-1-config"      "0000001"    "1"      config
           r3_padded "padded-1-env"         "0000001"    "1"      env
@@ -2249,20 +2257,32 @@ jobs:
             # produce a receipt receipt-verify.sh rejects. So recompute the digest here from the
             # canonical base and compare. Both sha256 backends are covered because this uses the
             # same selection order as mint_receipt.
-            r9m_subj() {  # r9m_subj <repo> <base> <mergebase> <sha> <tree> -> digest
-              if command -v shasum >/dev/null 2>&1; then
-                printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | shasum -a 256 | cut -d' ' -f1
-              else
-                printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | sha256sum | cut -d' ' -f1
-              fi
+            # Compute with an EXPLICIT backend. The earlier version mirrored mint_receipt's
+            # if/else, so on a given runner it exercised whichever tool happened to exist and
+            # the other branch went untested while the comment claimed both were covered.
+            r9m_subj() {  # r9m_subj <backend> <repo> <base> <mergebase> <sha> <tree> -> digest
+              local be="$1"; shift
+              case "$be" in
+                shasum)   printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | shasum -a 256 | cut -d' ' -f1 ;;
+                sha256sum) printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "$5" | sha256sum | cut -d' ' -f1 ;;
+              esac
             }
             r9m_check_subject() {  # r9m_check_subject <label>
               local nj want got hs ht mb
               nj="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null)"
               hs="$(git rev-parse HEAD)"; ht="$(git rev-parse HEAD^{tree})"; mb="$(git merge-base main HEAD)"
-              want="sha256:$(r9m_subj "$(printf '%s' "$nj" | jq -r .repo)" main "$mb" "$hs" "$ht")"
               got="$(printf '%s' "$nj" | jq -r .subject_digest)"
-              [ "$got" = "$want" ] || { echo "::error::(9k3) $1: the receipt's SUBJECT DIGEST does not match one computed over the CANONICAL base 'main' (got $got, expected $want) — the JSON base_ref can look right while the hash input is the raw spelling, and it is the digest the server recomputes, so this receipt would be rejected for a legitimately reviewed PR"; exit 1; }
+              # Check against EVERY backend available here. mint_receipt picks one at runtime;
+              # both must produce the same canonical digest, so comparing against each in turn
+              # covers both branches on whichever runner this lands on, and asserts they agree.
+              local be found=0
+              for be in shasum sha256sum; do
+                command -v "$be" >/dev/null 2>&1 || continue
+                found=$((found + 1))
+                want="sha256:$(r9m_subj "$be" "$(printf '%s' "$nj" | jq -r .repo)" main "$mb" "$hs" "$ht")"
+                [ "$got" = "$want" ] || { echo "::error::(9k3) $1: the receipt's SUBJECT DIGEST does not match one computed with '$be' over the CANONICAL base 'main' (got $got, expected $want) — the JSON base_ref can look right while the hash input is the raw spelling, and it is the digest the server recomputes, so this receipt would be rejected for a legitimately reviewed PR"; exit 1; }
+              done
+              [ "$found" -ge 1 ] || { echo "::error::(9k3) $1: neither shasum nor sha256sum is available, so the digest was never actually checked"; exit 1; }
             }
             r9m_check_subject "after refs/heads/main"
             # Order-sensitive form: refs/remotes/origin/main. Stripping origin/ first
