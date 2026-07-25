@@ -3838,6 +3838,40 @@ jobs:
             bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
+          # NON-UTF-8 FILENAME — the mutation-sensitive test for `grep -a`. Every other lane-guard
+          # fixture uses ASCII names, so removing `-a` left the canary GREEN while the documented
+          # failure mode stayed live: GNU grep applies a binary-input heuristic to stdin, and a
+          # path list carrying a byte it reads as an encoding error makes it print
+          # "Binary file (standard input) matches" and exit 0 INSTEAD of the matching lines —
+          # collapsing the candidate list, emptying the sensitive baseline, and letting a later
+          # `scope` read clean. rc=0, so no status check can see it.
+          # SCOPE, stated honestly: the heuristic is GNU-specific. On this job (ubuntu) removing
+          # `-a` makes this fixture RED. On a developer machine running BSD grep or ugrep it may
+          # pass either way — so this is a real regression test on CI and a harmless assertion
+          # elsewhere. Do not read a local pass as proof that `-a` is unnecessary.
+          UTF="$(mktemp -d)"; ( cd "$UTF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            # quotePath=false makes git emit the raw bytes rather than an escaped \\xff form;
+            # without it the path reaches grep as printable ASCII and the heuristic never fires.
+            git config core.quotePath false
+            mkdir -p .plinth; printf '(^|/)nothing$\n' > .plinth/protected-paths
+            UTFBAD="$(printf 'sec\xffret.pem')"
+            # A skip is only acceptable where the FILESYSTEM cannot host the case (macOS APFS
+            # rejects non-UTF-8 names outright). On Linux — which is where this job runs and
+            # where GNU grep's heuristic lives — inability to create it is a FAILURE, not a
+            # skip: silently skipping there would turn the one mutation-sensitive test for
+            # `grep -a` into a placebo that passes whether or not the flag is present.
+            if ! printf 'k\n' > "$UTFBAD" 2>/dev/null || [ ! -e "$UTFBAD" ]; then
+              case "$(uname -s)" in
+                Linux) echo "::error::(non-utf8) could not create a non-UTF-8 filename on Linux — this is the platform the fixture exists for, so skipping would leave 'grep -a' untested"; exit 1 ;;
+                *)     echo "::notice::(non-utf8) $(uname -s) filesystem rejects non-UTF-8 filenames — skipping (this case is exercised on the Linux runner)"; exit 0 ;;
+              esac
+            fi
+            echo code > app.py; git add -A >/dev/null 2>&1; git commit -qm base >/dev/null
+            r=0; out="$(bash "$LG" snapshot 2>&1)" || r=$?
+            [ "$r" = 0 ] || { echo "::error::(non-utf8) snapshot FAILED (rc=$r) on a repo containing a non-UTF-8 sensitive filename"; exit 1; }
+            # The .pem must still be enumerated. If grep collapsed the list to one binary
+            # diagnostic, it will be absent and the sensitive baseline is silently empty.
+            printf '%s' "$out" | grep -aq 'ret\.pem' || { echo "::error::(non-utf8) the non-UTF-8 sensitive filename is MISSING from the snapshot — the bulk prefilter hit grep's binary-input heuristic and returned a diagnostic instead of matches (rc=0, so nothing else catches it). This is what 'grep -a' prevents; if -a was removed, restore it"; exit 1; } )
           # PREFILTER rc=1 — the CLEAN-REPO path, and the one the other two fixtures miss.
           # They drive rc>=2 (rigged failure) and rc=0 (matches found). rc=1 means "no sensitive
           # path anywhere", which is not an error: a freshly scaffolded project with no .env,
