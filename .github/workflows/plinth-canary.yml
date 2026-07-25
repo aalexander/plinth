@@ -3838,6 +3838,103 @@ jobs:
             bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
+          # NON-UTF-8 FILENAME — the mutation-sensitive test for `grep -a`. Every other lane-guard
+          # fixture uses ASCII names, so removing `-a` left the canary GREEN while the documented
+          # failure mode stayed live: GNU grep applies a binary-input heuristic to stdin, and a
+          # path list carrying a byte it reads as an encoding error makes it print
+          # "Binary file (standard input) matches" and exit 0 INSTEAD of the matching lines —
+          # collapsing the candidate list, emptying the sensitive baseline, and letting a later
+          # `scope` read clean. rc=0, so no status check can see it.
+          # SCOPE, stated honestly: the heuristic is GNU-specific. On this job (ubuntu) removing
+          # `-a` makes this fixture RED. On a developer machine running BSD grep or ugrep it may
+          # pass either way — so this is a real regression test on CI and a harmless assertion
+          # elsewhere. Do not read a local pass as proof that `-a` is unnecessary.
+          UTF="$(mktemp -d)"; ( cd "$UTF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            # quotePath=false makes git emit the raw bytes rather than an escaped \\xff form;
+            # without it the path reaches grep as printable ASCII and the heuristic never fires.
+            git config core.quotePath false
+            mkdir -p .plinth; printf '(^|/)nothing$\n' > .plinth/protected-paths
+            UTFBAD="$(printf 'sec\xffret.pem')"
+            # A skip is only acceptable where the FILESYSTEM cannot host the case (macOS APFS
+            # rejects non-UTF-8 names outright). On Linux — which is where this job runs and
+            # where GNU grep's heuristic lives — inability to create it is a FAILURE, not a
+            # skip: silently skipping there would turn the one mutation-sensitive test for
+            # `grep -a` into a placebo that passes whether or not the flag is present.
+            if ! printf 'k\n' > "$UTFBAD" 2>/dev/null || [ ! -e "$UTFBAD" ]; then
+              case "$(uname -s)" in
+                Linux) echo "::error::(non-utf8) could not create a non-UTF-8 filename on Linux — this is the platform the fixture exists for, so skipping would leave 'grep -a' untested"; exit 1 ;;
+                *)     echo "::notice::(non-utf8) $(uname -s) filesystem rejects non-UTF-8 filenames — skipping (this case is exercised on the Linux runner)"; exit 0 ;;
+              esac
+            fi
+            echo code > app.py; git add -A >/dev/null 2>&1; git commit -qm base >/dev/null
+            r=0; out="$(bash "$LG" snapshot 2>&1)" || r=$?
+            [ "$r" = 0 ] || { echo "::error::(non-utf8) snapshot FAILED (rc=$r) on a repo containing a non-UTF-8 sensitive filename"; exit 1; }
+            # The .pem must still be enumerated. If grep collapsed the list to one binary
+            # diagnostic, it will be absent and the sensitive baseline is silently empty.
+            printf '%s' "$out" | grep -aq 'ret\.pem' || { echo "::error::(non-utf8) the non-UTF-8 sensitive filename is MISSING from the snapshot — the bulk prefilter hit grep's binary-input heuristic and returned a diagnostic instead of matches (rc=0, so nothing else catches it). This is what 'grep -a' prevents; if -a was removed, restore it"; exit 1; } )
+          # PREFILTER rc=1 — the CLEAN-REPO path, and the one the other two fixtures miss.
+          # They drive rc>=2 (rigged failure) and rc=0 (matches found). rc=1 means "no sensitive
+          # path anywhere", which is not an error: a freshly scaffolded project with no .env,
+          # no secrets/ and protected-paths patterns matching nothing tracked is exactly that.
+          # If the prefilter's status handling ever treated rc=1 as failure, snapshot would fail
+          # hard on every such repo and break every delegated lane run there — so the supported
+          # case gets an assertion rather than an argument.
+          TCL="$(mktemp -d)"; ( cd "$TCL"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)nothing-matches-this-pattern$\n' > .plinth/protected-paths
+            echo hello > app.py; git add -A; git commit -qm base >/dev/null
+            r=0; out="$(bash "$LG" snapshot 2>&1)" || r=$?
+            [ "$r" = 0 ] || { echo "::error::(prefilter rc=1) snapshot FAILED (rc=$r) on a repo with no sensitive files at all — 'no matches' is a legitimate grep rc=1, not an error, and treating it as one breaks every lane run in a freshly scaffolded project"; exit 1; }
+            # It must still return the control-plane records (a separate scan, not prefiltered),
+            # so an empty *sensitive* set does not mean an empty snapshot.
+            printf '%s' "$out" | grep -q '  \.git/' || { echo "::error::(prefilter rc=1) the snapshot lost its control-plane records on a secret-free repo — the control-plane scan must not depend on the sensitive prefilter"; exit 1; }
+            printf '%s' "$out" | grep -q '  app\.py$' && { echo "::error::(prefilter rc=1) a non-sensitive tracked file was recorded as sensitive — the prefilter widened the set"; exit 1; } || true )
+          # SUPERSET property, asserted GENERICALLY rather than by five sample paths. The entire
+          # safety argument is that the bulk prefilter can only ever be a superset of what
+          # sens_match classifies — so the filtered snapshot must equal an UNFILTERED one, byte
+          # for byte, on a repo containing every sensitive shape at once. Sampling known paths
+          # cannot catch a drift (a flag on one side but not the other) that drops some OTHER path.
+          SUP="$(mktemp -d)"; SUPG="$SUP/lane-guard-nofilter.sh"
+          # Build the reference by replacing ONLY the prefilter body with a pass-through `cat`,
+          # so the two runs differ in exactly one thing: whether the bulk filter is applied.
+          awk '/^sens_prefilter\(\) \{/ { print "sens_prefilter() {"; print "  cat"; print "}"; skip=1; next } skip && /^\}/ { skip=0; next } skip { next } { print }' "$LG" > "$SUPG"
+          chmod +x "$SUPG"
+          grep -q '^sens_prefilter() {' "$SUPG" || { echo "::error::(superset) the bypass build did not produce a sens_prefilter stub — the comparison below would be meaningless"; exit 1; }
+          bash -n "$SUPG" || { echo "::error::(superset) the bypass reference script does not parse"; exit 1; }
+          ( cd "$SUP"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth secrets credentials vendor/pinned .ssh
+            printf '(^|/)vendor/pinned/.*\.lock$\n' > .plinth/protected-paths
+            printf 'node_modules/\n.env\nsecrets/\ncredentials/\nvendor/pinned/\n*.pem\nid_rsa\n' > .gitignore
+            printf 'T=1\n' > .env; printf 'k\n' > secrets/s.txt; printf 'k\n' > credentials/c.json
+            printf 'k\n' > vendor/pinned/dep.lock; printf 'k\n' > cert.pem; printf 'k\n' > id_rsa
+            printf 'k\n' > .ssh/known_hosts; echo code > app.py
+            mkdir -p node_modules; i=0; while [ "$i" -lt 300 ]; do printf 'x' > "node_modules/f$i.js"; i=$((i+1)); done
+            git add -A >/dev/null 2>&1; git commit -qm base >/dev/null
+            bash "$LG"  snapshot 2>/dev/null | sort > "$SUP/filtered"
+            bash "$SUPG" snapshot 2>/dev/null | sort > "$SUP/unfiltered"
+            [ -s "$SUP/unfiltered" ] || { echo "::error::(superset) the unfiltered reference snapshot is EMPTY — the bypass build failed, so this comparison proves nothing"; exit 1; }
+            diff -q "$SUP/filtered" "$SUP/unfiltered" >/dev/null || { echo "::error::(superset) the prefiltered snapshot DIFFERS from an unfiltered run — the bulk filter is no longer a superset of sens_match, so it is dropping paths the classifier would have caught: $(diff "$SUP/filtered" "$SUP/unfiltered" | head -4 | tr '\n' ' ')"; exit 1; } )
+          # sibling, TARGETED at the v4.7.1 bulk prefilter: the shim above fails EVERY grep, so
+          # validate_prot_pats aborts BEFORE `sens_prefilter`'s `grep -E -f` is ever reached —
+          # meaning deleting the prefilter's own `_gvrc >= 2` gate would leave this canary green.
+          # This shim delegates ordinary greps to the real one and fails ONLY the `-f` invocation,
+          # so the prefilter is the single failing step and its fail-closed path is what is proven.
+          REALGREP="$(command -v grep)"
+          PFB="$(mktemp -d)"
+          { printf '#!/usr/bin/env bash\n'
+            printf 'for a in "$@"; do [ "$a" = "-f" ] && exit 2; done\n'
+            printf 'exec %s "$@"\n' "$REALGREP"; } > "$PFB/grep"
+          chmod +x "$PFB/grep"
+          TPF="$(mktemp -d)"; ( cd "$TPF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            # A bare failing command would abort under `set -e` before any check ran, so every
+            # invocation here uses the `r=0; ... || r=$?` idiom the sibling fixtures use.
+            r=0; PATH="$PFB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" -ne 0 ] || { echo "::error::(prefilter fail-closed) snapshot SUCCEEDED while the bulk prefilter's grep was rigged to fail. Two possible causes, both bad: the prefilter's fail-closed gate has been removed (a grep error now silently empties the sensitive baseline, which later reads as 'scope ok'), or the '-f' invocation was never reached and this fixture proves nothing"; exit 1; }
+            [ "$r" = 5 ] || { echo "::error::(prefilter fail-closed) snapshot returned $r, expected 5, when ONLY the bulk 'grep -E -f' prefilter failed — a prefilter error must never silently empty the sensitive baseline (it would later read as 'scope ok')"; exit 1; }
+            bash "$LG" snapshot > "$TPF/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$PFB:$PATH" bash "$LG" scope HEAD --snapshot "$TPF/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::(prefilter fail-closed) scope returned $r, expected 5, when ONLY the bulk prefilter failed — the re-snapshot would compare against an empty sensitive set"; exit 1; } )
           # sibling: a shadowed failing `sed` (the tag/extraction transforms) must ALSO fail closed.
           # CRITICAL: test sed EXIT 1 too — native BSD/macOS sed returns rc=1 on a real error, which in
           # a `grep | sed` pipeline is indistinguishable from grep's legitimate empty rc=1 and would be
@@ -3969,6 +4066,56 @@ jobs:
             printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
             r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
+          # LARGE IGNORED TREE (v4.7.1): the snapshot must stay fast WITHOUT narrowing
+          # what it sees. Classification used to fork two greps per pattern per path over the FULL
+          # ignored listing, so a repo with a real node_modules/ paid minutes (232s measured on a
+          # 25k-file ignored tree) and lanes stalled. Both halves are asserted here, because the
+          # tempting fast fix — enumerating fewer files — buys the speed with the security property:
+          LGBIG="$(mktemp -d)"; ( cd "$LGBIG"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth
+            # a protected pattern that is a REGEX — NOT a literal path and NOT a git pathspec. A
+            # candidate filter built from hardcoded secret globs (the obvious "push it down into
+            # git ls-files" fix) would stop seeing this file entirely:
+            printf '(^|/)vendor/pinned/.*\\.lock$\n' > .plinth/protected-paths
+            printf 'node_modules/\n.env\nsecrets/\ncredentials/\nid_rsa*\nvendor/pinned/\n' > .gitignore
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            # GITIGNORED sensitive files — every one must survive whatever narrowing the fast path does:
+            printf 'K=1\n' > .env; mkdir -p secrets credentials vendor/pinned
+            printf 'T\n' > secrets/api-token.txt; printf 'C\n' > credentials/aws.json; printf 'P\n' > id_rsa
+            printf 'L\n' > vendor/pinned/dep.lock          # sensitive ONLY via the protected-paths REGEX
+            mkdir -p node_modules/pkg{000..099}/lib        # 5k ignored files: the condition that made the cost visible
+            for d in node_modules/pkg*/lib; do for f in {000..049}; do : > "$d/f$f.js"; done; done
+            [ "$(git ls-files -o -i --exclude-standard | wc -l)" -ge 5000 ] || { echo "::error::large-ignored-tree fixture did not build (fewer than 5000 ignored files) — the perf assertion below would be vacuous"; exit 1; }
+            SNAPB="$(mktemp)"; bs="$(date +%s)"; r=0; bash "$LG" snapshot > "$SNAPB" || r=$?; be="$(date +%s)"
+            [ "$r" = 0 ] || { echo "::error::lane-guard snapshot failed on a repo with a large ignored tree (rc=$r)"; exit 1; }
+            # SECURITY PROPERTY (the point of the snapshot): gitignored secrets are STILL enumerated.
+            # A snapshot that got fast by no longer listing ignored files would silently stop seeing a
+            # lane planting secrets in .env / secrets/ — a regression, not a fix:
+            for s in '  \.env$' '  secrets/api-token\.txt$' '  credentials/aws\.json$' '  id_rsa$'; do
+              grep -qE "$s" "$SNAPB" || { echo "::error::lane-guard snapshot no longer enumerates the GITIGNORED secret matching /$s/ under a large ignored tree — a speed fix must never narrow WHICH files are seen"; exit 1; }
+            done
+            grep -qE '  vendor/pinned/dep\.lock$' "$SNAPB" || { echo "::error::lane-guard snapshot missed a GITIGNORED path that is sensitive only via a protected-paths REGEX — any candidate prefilter must run the REAL pattern set (protected-paths entries are grep -E regexes, not git pathspecs)"; exit 1; }
+            grep -q node_modules "$SNAPB" && { echo "::error::lane-guard snapshot lists node_modules — the candidate prefilter WIDENED the sensitive set (every ignored artifact would be compared)"; exit 1; } || true
+            # …and it must be FAST. Measured on THIS fixture: 31s pre-fix vs 1s filtered (a fast
+            # laptop; a runner is slower on both). The bound sits between them with room on each
+            # side — ~15x headroom before a healthy run false-fails, ~2x before a reintroduced
+            # per-path fork storm sneaks under it:
+            # 30s, not 15s: this is 1-second-granularity wall clock on a SHARED runner, so a
+            # loaded runner can inflate a healthy ~1s snapshot and turn the whole required
+            # canary red. The bound is a fork-storm tripwire, not a performance benchmark —
+            # the pathological case measured 232s on 25k files and ~30s on 5k, so 30s still
+            # catches a reintroduced per-path classification while leaving headroom for load.
+            [ "$(( be - bs ))" -lt 30 ] || { echo "::error::lane-guard snapshot took $(( be - bs ))s on 5k ignored files (expected ~1s) — the O(every ignored file) per-path classification is likely back; real repos (25k-200k ignored files) stall lanes for minutes. If the runner was heavily loaded, re-run once before treating this as a regression"; exit 1; }
+            # The candidate filter also runs inside scope's RE-snapshot, where the policy must be the
+            # BASE UNION, not the working tree. The load-bearing case is a NEWLY PLANTED file: a lane
+            # narrows protected-paths, then creates a gitignored path only the deleted pattern
+            # covered. It is invisible to git diff (ignored) and absent from the BEFORE snapshot, so
+            # a filter reading the narrowed tree policy leaves before == after and scope says ok.
+            # (Editing an EXISTING sensitive file would not test this — it is caught either way, just
+            # by vanishing from the after-snapshot.)
+            printf '# narrowed away\n' > .plinth/protected-paths; printf 'PLANTED\n' > vendor/pinned/new.lock
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNAPB" app.py .plinth/protected-paths 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor/pinned/new.lock'; } || { echo "::error::a lane NARROWED protected-paths and PLANTED a new gitignored file that only the deleted pattern covered, and scope did not catch it (rc=$r) — the re-snapshot's candidate filter must use the BASE-unioned policy, never the working tree's"; exit 1; } )
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor, and the
           # prompt must actually ARRIVE by that vendor's route: claude=STDIN (v4.7 — it was a
           # positional argument until the variadic --allowed-tools was found to swallow it,
