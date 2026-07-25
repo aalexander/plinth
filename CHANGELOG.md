@@ -1,5 +1,20 @@
 # Plinth changelog
 
+## Unreleased — changelog fragments (`changelog.d/`) — July 25, 2026
+- **Branches declare intent; release computes the number.** Parallel product
+  branches no longer edit `VERSION` or the top of `CHANGELOG.md` (those two
+  files are serial bottlenecks: every branch off the same base picks the same
+  next version and inserts at the same place). A branch adds one fragment under
+  `changelog.d/<slug>.md` with `bump: patch|minor|major` and the bullet body;
+  unique filenames never conflict. At release, `plinth changelog-collate
+  [<target-repo>]` reads every fragment, takes the highest bump, writes the new
+  top section of `CHANGELOG.md`, updates `VERSION`, and deletes the collated
+  fragments (keeps `README.md` and `.gitkeep`). Empty `changelog.d/` is a no-op;
+  an invalid or missing `bump:` aborts and names the file without rewriting
+  either release file. See `changelog.d/README.md`. The old
+  "edit VERSION + CHANGELOG on every `shared/`/`bin/` change" *enforcement* is
+  unchanged in this release — only the mechanism and docs land here.
+
 ## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified

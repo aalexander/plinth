@@ -4002,4 +4002,40 @@ jobs:
             printf 'advisor_vendor = grok\n' >> .plinth/config
             PATH="$GIB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise --impactful "migrate the DB" >/dev/null 2>&1 || true )
           grep -qi "IMPACTFUL, hard-to-reverse" "$gcap" || { echo "::error::advise --impactful (non-claude vendor) lacks the hard-to-reverse weighting"; exit 1; }
-          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths + v4.4.0(contract/isolation/deny-ship/advise/needs-human) OK"
+          # --- changelog-collate (fragments under changelog.d/) ---
+          # Highest bump wins: patch + minor fragments must yield a MINOR bump (X.Y+1.0),
+          # not patch. If this regresses to "last fragment wins" or "always patch", parallel
+          # release branches mis-number and a minor feature ships as a patch.
+          CLC="$(mktemp -d)"; printf '1.2.3\n' > "$CLC/VERSION"
+          printf '# Plinth changelog\n\n## v1.2.3 — base — January 01, 2020\n- base\n' > "$CLC/CHANGELOG.md"
+          mkdir -p "$CLC/changelog.d"
+          printf 'bump: patch\n---\n- **Patch fix.**\n' > "$CLC/changelog.d/patch-fix.md"
+          printf 'bump: minor\n---\n- **Minor feature.**\n' > "$CLC/changelog.d/minor-feature.md"
+          printf 'keep\n' > "$CLC/changelog.d/README.md"; touch "$CLC/changelog.d/.gitkeep"
+          "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLC" >/dev/null
+          [ "$(cat "$CLC/VERSION")" = "1.3.0" ] || { echo "::error::changelog-collate did not take the highest bump (patch+minor should be 1.3.0, got $(cat "$CLC/VERSION")) — release numbers would under-bump"; exit 1; }
+          head -5 "$CLC/CHANGELOG.md" | grep -q '^## v1.3.0 — ' || { echo "::error::changelog-collate did not write a v1.3.0 section at the top of CHANGELOG.md"; exit 1; }
+          [ ! -e "$CLC/changelog.d/patch-fix.md" ] && [ ! -e "$CLC/changelog.d/minor-feature.md" ] || { echo "::error::changelog-collate left fragment files after collating — re-run would double-insert the section"; exit 1; }
+          [ -f "$CLC/changelog.d/README.md" ] || { echo "::error::changelog-collate deleted changelog.d/README.md — only fragments must be drained"; exit 1; }
+          [ -e "$CLC/changelog.d/.gitkeep" ] || { echo "::error::changelog-collate deleted changelog.d/.gitkeep — directory would vanish when empty"; exit 1; }
+          # No-op: empty changelog.d/ (only README) exits 0 and must not rewrite VERSION/CHANGELOG.
+          # A non-zero exit here would break a release job that collates "just in case".
+          CLC0="$(mktemp -d)"; printf '9.9.9\n' > "$CLC0/VERSION"
+          printf '# Plinth changelog\n\nold body\n' > "$CLC0/CHANGELOG.md"
+          mkdir -p "$CLC0/changelog.d"; printf 'docs\n' > "$CLC0/changelog.d/README.md"
+          r=0; "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLC0" >/dev/null || r=$?
+          [ "$r" = 0 ] || { echo "::error::changelog-collate empty dir exited $r (must be a no-op exit 0 so a release job can always call it)"; exit 1; }
+          [ "$(cat "$CLC0/VERSION")" = "9.9.9" ] || { echo "::error::changelog-collate empty dir rewrote VERSION"; exit 1; }
+          grep -q 'old body' "$CLC0/CHANGELOG.md" || { echo "::error::changelog-collate empty dir rewrote CHANGELOG.md"; exit 1; }
+          # Invalid bump aborts, names the file, and leaves VERSION + CHANGELOG untouched.
+          # Silently skipping a bad fragment would drop a shipped change from the changelog.
+          CLCB="$(mktemp -d)"; printf '3.0.0\n' > "$CLCB/VERSION"
+          printf '# Plinth changelog\n\nuntouched\n' > "$CLCB/CHANGELOG.md"
+          mkdir -p "$CLCB/changelog.d"
+          printf 'bump: huge\n---\n- **Bad.**\n' > "$CLCB/changelog.d/bad-frag.md"
+          r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCB" 2>&1)" || r=$?
+          [ "$r" != 0 ] || { echo "::error::changelog-collate accepted an invalid bump: (must hard-error)"; exit 1; }
+          printf '%s' "$out" | grep -q 'bad-frag.md' || { echo "::error::changelog-collate invalid-bump error did not name the fragment file — operator cannot find the offender"; exit 1; }
+          [ "$(cat "$CLCB/VERSION")" = "3.0.0" ] || { echo "::error::changelog-collate rewrote VERSION after an invalid fragment — partial write"; exit 1; }
+          grep -q 'untouched' "$CLCB/CHANGELOG.md" || { echo "::error::changelog-collate rewrote CHANGELOG.md after an invalid fragment — partial write"; exit 1; }
+          echo "canary: scaffold + fail-loud + classifier tiers + bypass + tier0-no-codex + audit + smoke-precheck + update-protected-paths + v4.4.0(contract/isolation/deny-ship/advise/needs-human) + changelog-collate OK"

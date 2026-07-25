@@ -113,6 +113,14 @@ Everything between is the model's call.
   guidance to the model, not an enforced/validated output. `--impactful` (architectural /
   hard-to-reverse decisions) escalates to the stronger model. Vendor-agnostic and
   cross-family (a Grok driver can consult Fable); see the `advisor_*` knobs below.
+- `plinth changelog-collate [<target-repo>]` — **Plinth-repo release helper** (not a
+  per-project command). Folds every `changelog.d/*.md` fragment except `README.md`
+  into a new top section of `CHANGELOG.md`, bumps `VERSION` from the highest fragment
+  `bump:` (major > minor > patch), and deletes the collated fragments. Defaults to
+  the current working directory; pass a target repo path to operate elsewhere.
+  Empty `changelog.d/` is a no-op (exit 0). An invalid or missing `bump:` aborts and
+  names the file without rewriting `VERSION` or `CHANGELOG.md`. Format and rationale:
+  `changelog.d/README.md`.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
@@ -606,6 +614,12 @@ it has run green with a real smoke_cmd.
   driver consults via `advisor_vendor`/`advisor_model`/`advisor_model_max`.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.
+- **Plinth product changes (`shared/`, `bin/`) use changelog fragments, not a
+  direct VERSION edit on the branch.** Add `changelog.d/<slug>.md` with
+  `bump: patch|minor|major` and the bullet body; do not hand-edit `VERSION` or the
+  top of `CHANGELOG.md` for the same change (parallel branches collide on both).
+  At release, run `plinth changelog-collate` so the number is derived from the
+  highest pending bump, then tag `v$(cat VERSION)`. See `changelog.d/README.md`.
 
 ## Watch list
 - **First PR per repo**: confirm the Codex review actually posts (connection
