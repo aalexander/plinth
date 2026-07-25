@@ -366,7 +366,13 @@ github_preflight() {
     # The receipt check (auto mode, v4.7+) is expected ONLY where the project's CI
     # actually wires plinth-receipt.yml — never demanded of an older scaffold, so
     # the preflight cannot tell an operator to require a context no job reports.
-    if grep -qs 'plinth-receipt\.yml' "$target/.github/workflows/"*.yml 2>/dev/null; then
+    # Match a `uses:` LINE, not the bare filename anywhere in any workflow: a comment
+    # or an unrelated job name mentioning plinth-receipt.yml would otherwise make the
+    # preflight tell the operator to require a context that no job reports. (Not the
+    # full job-scoped awk that warn_stale_reusable_refs uses — this check is ADVISORY
+    # and gates nothing, so a `uses:`-line match is the proportionate precision; a
+    # decoy would have to be a real uses: line, which IS the wiring.)
+    if grep -qsE '^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:.*plinth-receipt\.yml' "$target/.github/workflows/"*.yml 2>/dev/null; then
       printf '%s\n' "$ctxs" | grep -qxF "receipt / verify" || miss="${miss:+$miss, }receipt/verify"
     fi
     [ -z "$fmiss" ] || for w in $fmiss; do case "$w" in *secrets) miss="${miss:+$miss, }floor/secrets";; *sast) miss="${miss:+$miss, }floor/sast";; *harness) miss="${miss:+$miss, }floor/harness";; *osv-scan) miss="${miss:+$miss, }floor/dependencies/osv-scan";; esac; done

@@ -615,13 +615,68 @@ it has run green with a real smoke_cmd.
   automatic fallback): if access lapses, move the advisor seat to GPT-5.6 per the
   v4 contingency in `.plinth/MODELS.md`.
 - **GPT-5.6 eligibility**: GA landed July 9, 2026 (per-account; Codex CLI >=
-  0.144.0). When `codex -m gpt-5.6` works on your account, uncomment the two
-  scaffolded reviewer tier lines — the seat activates with that one edit.
+  0.144.0). VERIFIED 2026-07-25 on the maintainer's account: plain `gpt-5.6` is
+  REJECTED ("not supported when using Codex with a ChatGPT account") and
+  `gpt-5.6-sol` WORKS — pin the `-sol` name, not the bare one. Probe before
+  believing either way, and probe CAREFULLY: `codex exec` exits **0** both on a
+  hard model rejection and on "Not inside a trusted directory" (without
+  `--skip-git-repo-check`), so a naive check reports a rejected model as working.
+  Same hazard as grok printing "You are not authenticated." on exit 0.
+- **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
+  the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
+  `.plinth/lane-guard.sh preflight grok`. Two open defects currently make it
+  unreliable — upstream #19 (lane-guard's sensitive-path snapshot enumerates EVERY
+  ignored file, stalling minutes on any repo with `node_modules`/`.venv`) and #32
+  (the lane implemented a task itself instead of delegating, which its contract
+  forbids). Until both are fixed, treat "grok typed it" as a claim to verify, not an
+  assumption — check the report, and prefer typing it yourself over believing a lane
+  that may have silently self-implemented.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
   (`codex exec` flags — sandbox, --json, resume, --output-schema — verified
   against codex-cli 0.142.5 in v3.6.)
+
+## Next (v4.8) — make the worker seat real, then split the reviewer tiers
+Ratified 2026-07-25, in this order. The ordering is the point: items 1 and 2 come
+first because item 3 is meant to be BUILT through the lane, and building it through
+a lane that stalls or silently self-implements would defeat the exercise twice.
+
+1. **Upstream #19 — the lane-guard stall.** `sens_snapshot` enumerates every ignored
+   file (`git ls-files -o -i --exclude-standard`) and then classifies/hashes each with
+   a fork apiece, so cost is O(all ignored files) rather than O(sensitive files). Any
+   repo with `node_modules`/`.venv` pays minutes per lane invocation — certeus measured
+   ~6 minutes across ~28,000 files, before the lane ever reached grok. Plinth itself is
+   fast only because it has almost no ignored tree, which is exactly why its own
+   dogfooding never surfaced this. Fix: push the filtering into git by passing the
+   sensitive pathspecs to `git ls-files`, so matching happens in C and only candidates
+   come back. This touches the boundary deciding what a delegated lane may not alter —
+   it wants its own focused Tier-2 review, not a ride-along.
+2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
+   implement the task itself, but nothing structurally enforces that; a lane that
+   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
+   require a grok-invocation artifact (transcript + exit) under the session dir before
+   the lane may report `STATUS: complete`, and surface the delegate model in the report
+   so "typed by grok-4.5" is verifiable rather than asserted.
+3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
+   risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
+   — and with codex offering exactly one usable model here, they cannot meaningfully
+   differ at all. Add `reviewer_vendor_tier1` / `reviewer_vendor_tier2` resolved AFTER
+   risk classification, each with its own model, so Tier 1 can run a fast cheap vendor
+   and Tier 2 the deepest one. Keep the audit vendor different from BOTH.
+
+**Auto mode is an ordering, not a switch.** Enabling the receipt gate requires, in
+sequence: merge v4.7 → refresh the instrument to v4.7 (a pre-v4.7 instrument mints no
+receipt) → wire the `receipt` job into `ci.yml` → add `receipt / verify` to branch
+protection. Requiring the context before the refresh fails every PR closed.
+
+**Audit-seat rule, refined.** The auditor must differ from whoever PRODUCED the diff,
+not merely from the reviewer. While the driver types directly, `audit_vendor = grok`
+keeps it independent; once the grok lane carries the volume, that becomes
+`claude`/`opus`. Evidence for taking the seat seriously: across the v4.7 loop the
+cross-vendor auditor raised a blocking finding the primary reviewer had missed in
+**three of three** audits, including one sharper than the driver's own note on the
+same code.
 
 ## Your role, in one paragraph
 Write the spec. Stand up the gates (init preflight + first-PR checklist). Then
@@ -643,13 +698,15 @@ installed copies.
   as APPLIED while the round ran on the thread's original model — a dishonest disclosure
   trail. Wants a behavioral probe: two resumed rounds with different `-m` values, assert the
   recorded model differs. Raised by the primary reviewer (v4.7, new-loop round 1).
-- **The receipt WORKFLOW GLUE has no canary coverage** (`.github/workflows/plinth-receipt.yml`).
-  Fixtures (9)/(9b)/(9c) exercise minting and `receipt-verify.sh` end-to-end with the real
-  scripts, but not the workflow around them: the `git clone plinth@v${ver}` from
-  `repository_owner`, the notes fetch, `origin/${BASE_REF}` as base-tip, or the `gh` TOCTOU
-  re-fetch. Those are the residual integration risks for the requirable check. Raised by the
-  cross-vendor audit (v4.7 round 4, non-blocking). Wants a fixture or a documented RUNTIME
-  receipt from the first real PR that runs it.
+- **The receipt workflow's REAL-NETWORK behaviour is still unexercised**
+  (`.github/workflows/plinth-receipt.yml`). Fixture (9d) now extracts the workflow's own
+  `run:` blocks and drives them end-to-end — verifier fetch, notes fetch, base-tip
+  resolution, the `gh` TOCTOU re-check, the event guard, and the malformed-pin paths — so
+  the GLUE LOGIC is covered. What remains uncovered is what only a real PR can exercise:
+  fetching a commit from GitHub over the network (the fixture substitutes a local
+  `url.insteadOf` rewrite), private-repo/PAT visibility of the pinned plinth source, and
+  the real `gh api` response shape. Wants a documented RUNTIME receipt from the first PR
+  that runs the check for real.
 - **`plinth advise` still reports every failure as "CLI missing or not signed in"**
   (`bin/plinth` `run_advise`, all four vendor branches). v4.7 fixed the wiring bug
   that this message was masking, but the mask itself remains: each branch is

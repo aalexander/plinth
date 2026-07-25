@@ -1304,7 +1304,7 @@ jobs:
           rc=0
           out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
             JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
-            PLINTH_OWNER="$R9D_OWNER" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" = 0 ] || { echo "::error::(9d) happy-path receipt-verify step failed (rc=$rc): $out"; exit 1; }
           printf '%s' "$out" | grep -q 'receipt verified' || { echo "::error::(9d) happy path did not print 'receipt verified'"; exit 1; }
@@ -1322,7 +1322,7 @@ jobs:
           rc=0
           out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
             JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_OLD_SHA}" \
-            PLINTH_OWNER="$R9D_OWNER" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) a plinth pin predating receipt-verify.sh did not fail"; exit 1; }
           printf '%s' "$out" | grep -q 'v4.7+' || { echo "::error::(9d) predating-pin failure did not tell the operator to repin to v4.7+"; exit 1; }
@@ -1331,6 +1331,26 @@ jobs:
           out="$(bash "$R9D_WD/guard.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) event guard did not reject a non-pull_request event"; exit 1; }
           printf '%s' "$out" | grep -q 'got workflow_dispatch' || { echo "::error::(9d) event guard failure did not name the actual event"; exit 1; }
+          # 6: the verifier REPOSITORY must come from job_workflow_ref too, not from any
+          # other context value. Point JOB_WF_REF at a DIFFERENT owner/repo than the one
+          # the url.insteadOf rewrite maps: the fetch must follow job_workflow_ref (and
+          # therefore fail, since nothing maps that name) rather than silently resolving
+          # the "right" repo from elsewhere. The earlier revision took only the @REF from
+          # job_workflow_ref and built the URL from github.repository_owner, so a consumer
+          # whose owner differed from the plinth source's owner fetched the wrong repo —
+          # and the fixture could not see it, because it set both to the same value.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="someone-else/other-plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a job_workflow_ref naming a DIFFERENT owner/repo still resolved a verifier — the repository half is not anchored to the pin"; exit 1; }
+          printf '%s' "$out" | grep -q 'someone-else/other-plinth' || { echo "::error::(9d) the fetch did not follow job_workflow_ref's owner/repo (error did not name it): $out"; exit 1; }
+          # 7: malformed job_workflow_ref with no /.github/ path segment must fail closed.
+          rc=0
+          out="$(JOB_WF_REF="owner/repo@abc123" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no /.github/ segment did not fail"; exit 1; }
           # CLEAN UP the global URL rewrite this fixture installed. On a CI runner this is
           # cosmetic (ephemeral machine), but the canary is also run locally against a
           # working tree, and a leaked mapping there breaks the NEXT run and every other
