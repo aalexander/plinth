@@ -1010,6 +1010,28 @@ jobs:
               n=$((n + 1))
             done
             [ "$(cat "$NC/state")" = 9 ] || { echo "::error::(3b) expected 9 reviewer invocations with no cap, got $(cat "$NC/state")"; exit 1; } )
+          # (3d) EXPLICIT `round_cap = 0` also means no cap. This is a DISTINCT input from
+          # (3b)'s absent knob — (3b) asserts the knob is missing, so it cannot speak for the
+          # zero case, and claiming it closed that gap was wrong. Both are documented inputs
+          # ("leave it unset or set 0 to disable"), so both get a fixture.
+          ZC="$(mktemp -d)"; mkstate "$ZC"; mk_cap_codex "$ZC"
+          zcd="$(mktemp -d)"
+          ( cd "$zcd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$zcd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap = 0\n' >> .plinth/config
+            grep -qx 'round_cap = 0' .plinth/config || { echo "::error::(3d) the explicit zero knob was not written — this fixture would silently be a duplicate of (3b)"; exit 1; }
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            n=1
+            while [ "$n" -le 9 ]; do
+              printf '%s' "$CNF" > "$ZC/verdict-$n"
+              echo "rev$n" > app.py; git add -A; git commit -qm "r$n" >/dev/null
+              rc=0; out="$(PATH="$ZC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+              [ "$rc" = 1 ] || { echo "::error::(3d) round $n returned rc=$rc with an EXPLICIT round_cap = 0 — expected 1 (CHANGES_NEEDED); 0 must disable the breaker: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+              printf '%s' "$out" | grep -q 'circuit breaker' && { echo "::error::(3d) the circuit breaker tripped at round $n although round_cap is explicitly 0"; exit 1; } || true
+              n=$((n + 1))
+            done
+            [ "$(cat "$ZC/state")" = 9 ] || { echo "::error::(3d) expected 9 reviewer invocations with round_cap = 0, got $(cat "$ZC/state")"; exit 1; } )
           # (3c) A MALFORMED round_cap is refused LOUDLY, not silently reinterpreted as a
           # number. Without this, a typo ('round_cap = eight') would quietly disable a
           # breaker the operator believed was armed — the same silent-default trap (3b)
@@ -1918,6 +1940,59 @@ jobs:
             [ "$r9hn_who" = "$r9hw" ] || { echo "::error::(9h) $r9hl: the note on $r9hc came from '$r9hn_who', expected '$r9hw' — '-s theirs' did not resolve as documented (theirs = the fetched remote ref; the local side is restored by the review.sh re-run in the recipe)"; exit 1; }
           done
           cd "$GITHUB_WORKSPACE"
+          # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
+          # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
+          # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
+          # divergence. Neither reaches the interaction the recipe actually depends on:
+          # `-s theirs` resolves a same-object conflict AT HEAD in favour of the REMOTE
+          # receipt — temporarily replacing the recovering driver's own — and only the
+          # review.sh rerun puts the driver's receipt back before the push. If that ordering
+          # were wrong, a driver would publish someone else's receipt for their own commit
+          # and `receipt / verify` would compare the wrong subject. Asserted step by step,
+          # because the intermediate state is the whole point.
+          R9J="$(mktemp -d)"; mkstate "$R9J"; mk_cap_codex "$R9J"
+          r9jr="$(mktemp -d)"
+          ( cd "$r9jr"; git init -q --bare -b main remote.git >/dev/null
+            git clone -q remote.git b 2>/dev/null; cd b
+            git config user.email b@x; git config user.name b
+            # origin must be HOST-BASED for receipt_nwo to mint at all; insteadOf maps it to
+            # the local bare repo. LOCAL config ONLY — a --global mapping persists on the
+            # machine and poisons later runs (a lane did exactly that; upstream #32).
+            git remote set-url origin https://github.com/owner/repo.git
+            git config url."$r9jr/remote.git".insteadOf https://github.com/owner/repo.git
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9jr/b" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null; git push -q origin main
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null; git push -q origin feat
+            rc=0; PATH="$R9J:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9j) setup: the loop did not APPROVE (rc=$rc), so there is no receipt to recover"; exit 1; }
+            H="$(git rev-parse HEAD)"
+            git notes --ref=plinth-receipts show "$H" >/dev/null 2>&1 || { echo "::error::(9j) setup: no receipt minted at HEAD"; exit 1; }
+            # Driver A publishes a DIFFERENT receipt for the SAME commit, first.
+            ( cd "$r9jr" && git clone -q remote.git a 2>/dev/null && cd a \
+              && git config user.email a@x && git config user.name a \
+              && git fetch -q origin feat && git checkout -q FETCH_HEAD \
+              && git notes --ref=plinth-receipts add -f -m '{"repo":"owner/repo","who":"A-FABRICATED"}' "$H" \
+              && git push -q origin refs/notes/plinth-receipts ) || { echo "::error::(9j) setup: driver A could not publish its receipt"; exit 1; }
+            # PRECONDITION: B's push must actually be rejected, or the recipe is untested.
+            git push origin refs/notes/plinth-receipts >/dev/null 2>&1 && { echo "::error::(9j) B's notes push was ACCEPTED — the non-fast-forward this recipe exists for did not occur"; exit 1; } || true
+            # 1+2. fetch to a NAMED side ref, merge it with -s theirs.
+            git fetch -q origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
+            git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts >/dev/null 2>&1 || { echo "::error::(9j) the documented merge failed"; exit 1; }
+            mid="$(git notes --ref=plinth-receipts show "$H" 2>/dev/null | jq -r '.who // "real"')"
+            [ "$mid" = "A-FABRICATED" ] || { echo "::error::(9j) after 'merge -s theirs' HEAD's receipt is '$mid', expected the REMOTE one — the displacement this recipe must undo did not happen, so the rerun assertion below would pass vacuously"; exit 1; }
+            # 3. the rerun — must restore the driver's OWN receipt, and cost NO paid round.
+            b4="$(cat "$R9J/state")"
+            rc=0; out="$(PATH="$R9J:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9j) the recipe's review.sh rerun failed (rc=$rc): $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$R9J/state")" = "$b4" ] || { echo "::error::(9j) the recipe's rerun INVOKED THE REVIEWER ($b4 -> $(cat "$R9J/state")) — the recipe promises a free remint"; exit 1; }
+            fin="$(git notes --ref=plinth-receipts show "$H" 2>/dev/null | jq -r '.who // "real"')"
+            [ "$fin" = "real" ] || { echo "::error::(9j) after the rerun HEAD still carries the REMOTE driver's receipt ('$fin') — publishing it would attest another driver's review for this commit and 'receipt / verify' would compare the wrong subject"; exit 1; }
+            git notes --ref=plinth-receipts show "$H" | jq -e --arg h "$H" '.head_sha == $h' >/dev/null || { echo "::error::(9j) the restored receipt does not bind HEAD"; exit 1; }
+            objs="$(git notes --ref=plinth-receipts show "$H" | jq -r '.head_sha' | grep -c . || true)"
+            [ "$objs" = 1 ] || { echo "::error::(9j) HEAD's note holds $objs receipt objects, not 1"; exit 1; }
+            # 4. push — the recipe's promised final state.
+            git push -q origin refs/notes/plinth-receipts || { echo "::error::(9j) the push after the full recipe was still rejected — the documented recovery does not actually recover"; exit 1; } )
           # (9i) THE REAL LOOP, driven end to end with a mock reviewer. (9g) proves
           # mint_receipt's rules by calling the extracted function; that CANNOT show what
           # the whole of review.sh emits, so a credential claim resting on it is wider than
@@ -2595,6 +2670,27 @@ jobs:
             [ -n "$ibpat" ] || continue
             grep -qxF "$ibpat" "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill the managed protected pattern '$ibpat' into a pre-existing pre-v4.4 protected-paths — the Claude guard would not protect that file"; exit 1; }
           done < "$IB/mpat.expected"
+          # A generated project must IGNORE nested agent worktrees. An agent harness may
+          # create git worktrees under the repo (Claude Code uses .claude/worktrees/); the
+          # untracked directory then makes the tree read dirty and review.sh refuses to run
+          # for as long as a subagent is alive — exactly when parallel review is wanted.
+          # Behaviour, not a string match: a REAL nested worktree is created and the tree
+          # must still be clean. The negative half is what makes it non-hollow — with the
+          # pattern removed the same repo MUST read dirty, so deleting it from the template
+          # cannot leave this green.
+          WT="$(mktemp -d)"; ( cd "$WT" && git init -qb main . >/dev/null && git config user.email x@x && git config user.name x
+            "$GITHUB_WORKSPACE/bin/plinth" init "$WT" >/dev/null 2>&1
+            grep -qxF '.claude/worktrees/' .gitignore || { echo "::error::(worktree-ignore) the generated project's .gitignore does not ignore .claude/worktrees/ — a subagent worktree would block that project's review loop with a 'working tree is dirty' refusal that names the wrong cause"; exit 1; }
+            echo seed > f && git add -A && git commit -qm seed >/dev/null
+            git worktree add -q -b agentwt .claude/worktrees/agent-probe >/dev/null 2>&1 || { echo "::error::(worktree-ignore) could not create the nested probe worktree — fixture cannot test what it claims"; exit 1; }
+            [ -d .claude/worktrees/agent-probe ] || { echo "::error::(worktree-ignore) the probe worktree was not created"; exit 1; }
+            [ -z "$(git status --porcelain)" ] || { echo "::error::(worktree-ignore) a nested agent worktree left the tree DIRTY: $(git status --porcelain | tr '\n' ' ') — review.sh would refuse to run while any subagent is alive"; exit 1; }
+            # NEGATIVE half: without the pattern the very same repo must read dirty.
+            grep -vxF '.claude/worktrees/' .gitignore > .gitignore.probe && mv .gitignore.probe .gitignore
+            [ -n "$(git status --porcelain)" ] || { echo "::error::(worktree-ignore) removing .claude/worktrees/ from .gitignore did NOT make the tree dirty — something else is hiding the worktree, so this fixture proves nothing about the pattern"; exit 1; } )
+          # The Plinth repo's OWN .gitignore carries the same rule: this repo is where
+          # worktree-spawning drivers actually run, and templates/ is never applied to it.
+          grep -qxF '.claude/worktrees/' "$GITHUB_WORKSPACE/.gitignore" || { echo "::error::(worktree-ignore) this repo's own .gitignore lost the .claude/worktrees/ rule — its review loop would be blocked whenever a subagent worktree exists"; exit 1; }
           grep -qxF '(^|/)\.claude/agents/' "$IB/.plinth/protected-paths" && { echo "::error::init backfill added the BROAD .claude/agents/ pattern — freezes a project's own agents"; exit 1; } || true
 
           # ── v4.4.0: update regenerates a STOCK old CLAUDE.md, PRESERVES a CUSTOM one ──

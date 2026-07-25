@@ -840,11 +840,16 @@ installed copies.
   replaces the good guidance with the misleading one. Exit code and safety
   unaffected. Route the recovery path to the confirmation-specific message; add
   a fixture. (v4.6 post-approval round, minor.)
-- **v4.6 canary gap: round_cap = 0 (breaker disabled) has no fixture.** Fixtures
-  cover round_cap=1 and 2 only; nothing drives a loop past round 8 with
-  round_cap=0 to prove the breaker never trips. Same class as the non-numeric
-  PLINTH_ROUND_CAP gap above. Add with the next canary touch. (v4.6
-  post-approval round, minor.)
+<!-- RESOLVED v4.7.1: round_cap = 0 (breaker disabled) had no fixture. Now covered by
+     (3d), which drives nine rounds with an EXPLICIT `round_cap = 0`, alongside (3b) for
+     the ABSENT knob and (3c) for a malformed value. Kept visible briefly because a first
+     attempt claimed (3b) closed this on its own — it cannot, since (3b) asserts the knob
+     is missing, and unset vs explicit zero are separate documented inputs. -->
+- **Canary gap: a non-numeric `PLINTH_ROUND_CAP` env override has no fixture.**
+  The config-file path is covered by (3c), which proves a malformed `round_cap`
+  aborts before a round is spent; the equivalent env-override validation
+  (`die_infra` on a non-integer `PLINTH_ROUND_CAP`) is asserted nowhere. Same
+  class as the config gap that (3c) closed. Add with the next canary touch.
 - **Canary seat-override fixtures use fixed /tmp capture paths**
   (`/tmp/ov-claude-args`, `/tmp/ov-grok-args`). Sequential today, race-prone if
   the canary job is ever split or parallelized; prefer mktemp per fixture.

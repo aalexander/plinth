@@ -51,10 +51,13 @@ parts that were wrong on the way:
   positive integer still arms the breaker exactly as before. A MALFORMED value is now
   refused loudly (exit 2, before any round is spent) rather than silently reinterpreted as
   a number, so a typo like `round_cap = eight` cannot quietly disarm a breaker the operator
-  believed was set. Fixtures (3b)/(3c) drive nine rounds with no knob to prove the breaker
-  never trips, prove an explicit cap still trips, and prove the malformed case aborts
-  without invoking the reviewer — closing the `round_cap = 0` fixture gap that `## Noticed`
-  had recorded since v4.6.
+  believed was set. Four fixtures, because unset / explicit-zero / positive / malformed are
+  four separate documented inputs and one cannot speak for another: (3b) drives nine rounds
+  with the knob ABSENT, (3d) drives nine rounds with an EXPLICIT `round_cap = 0` — that
+  pair is what closes the `round_cap = 0` gap `## Noticed` had carried since v4.6, and an
+  earlier revision of this entry wrongly credited (3b) alone — while the existing breaker
+  fixture proves a positive cap still trips, and (3c) proves a malformed value aborts
+  before the reviewer is invoked.
 - **Scope of `receipt_nwo` is a CLOSED LIST, stated honestly.** It accepts exactly two
   forms — `scheme://[user@]host[:port]/owner/repo` (scheme = http, https, git, ssh,
   git+ssh) and scp-style `[user@]host:owner/repo` — which is deliberately NARROWER than
@@ -93,7 +96,7 @@ parts that were wrong on the way:
   guard's call site makes a case mint when it must not — verified in both directions.
   Source-pattern assertions could be satisfied by a comment; an outcome cannot.
 - **The URL rules are swept combinatorially, with a harness self-check.** Five rounds
-  each named ONE missed URL form; a matrix over scheme x userinfo x host x depth covers
+  each named ONE missed URL form; a matrix over scheme x userinfo x host x port x depth covers
   the class in one pass. The self-check is the load-bearing part: an earlier hand-written
   sweep used `path` as a loop variable, which in zsh is TIED to `$PATH`, so `sed`
   vanished and all 2160 inputs came back refused against a CORRECT parser. Acting on
