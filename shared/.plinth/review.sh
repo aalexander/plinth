@@ -42,7 +42,11 @@ die() { echo "PLINTH REVIEW FAILED: $*" >&2; exit 2; }
 # human can fix. Discipline refusals (dirty tree, empty diff, unchanged HEAD)
 # use plain die — they must NOT open the gate.
 die_infra() {
-  { mkdir -p "$SDIR" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" > "$SDIR/last-error"; } 2>/dev/null || true
+  # Safe when SDIR is still empty (e.g. jq missing before the git-repo check): still
+  # exit 2 and print, but skip the last-error write rather than `mkdir -p ""`.
+  if [ -n "${SDIR:-}" ]; then
+    { mkdir -p "$SDIR" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" > "$SDIR/last-error"; } 2>/dev/null || true
+  fi
   die "$@"
 }
 
@@ -51,6 +55,13 @@ die_infra() {
 # approval genuinely needs no model infrastructure.
 command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+# Session dir is branch-keyed. Resolve it as soon as we know we are in a git repo
+# so every later die_infra (malformed round_cap, missing base, …) can write
+# last-error and release the Stop gate. The mkdir itself is deferred to first
+# use / the normal session setup below — die_infra creates the dir when needed.
+branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+SDIR=".plinth/session/review/${slug}"
 [ -f "$SCHEMA" ] || die_infra "missing $SCHEMA — run 'plinth update' on this project"
 
 # Reviews are SHA-bound. A dirty tree means the diff below would not match the work —
@@ -80,8 +91,15 @@ if git rev-parse --verify --quiet "origin/${base}" >/dev/null; then baseref="ori
 elif git rev-parse --verify --quiet "${base}" >/dev/null; then baseref="${base}"
 else die_infra "base ref '${base}' not found (tried origin/${base} and ${base})"
 fi
+# Pin the base to ONE immutable tip SHA before any subject-defining work. A ref
+# name is a moving label: if main advances mid-round, the reviewer, the classifier
+# and mint_receipt must not each re-resolve it independently (that minting a
+# subject the reviewer never saw). base_tip is that pin; baseref stays the
+# operator's spelling for display and for the receipt's base_ref field.
+base_tip="$(git rev-parse --verify "$baseref")" \
+  || die_infra "cannot resolve tip of base ref '${baseref}'"
 
-diff="$(git diff "${baseref}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
+diff="$(git diff "${base_tip}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
 [ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
 
 # Per-project config (.plinth/config — the driver must not edit it; it is in protected-paths,
@@ -110,13 +128,13 @@ REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0
 # review target to a weaker/empty spec in its own diff. Read the base config with
 # `|| true` FIRST — under set -euo pipefail a failing `git show` (base has no
 # .plinth/config: first spec / new project) would abort before the fallback runs.
-basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+basecfg="$(git show "${base_tip}:.plinth/config" 2>/dev/null || true)"
 # Whether the base config FILE exists — distinct from its CONTENT being non-empty. The
 # first-adoption fallbacks (spec_path/audit_vendor) key on FILE existence: an existing but
 # empty/blank/all-comment base config is VALID (every knob is optional), and must NOT be
 # treated as first adoption — else a PR could add spec_path=EVIL.md / audit_vendor=<primary>
 # to a project with an empty base config and repoint/suppress its own review.
-base_has_config=0; git cat-file -e "${baseref}:.plinth/config" 2>/dev/null && base_has_config=1
+base_has_config=0; git cat-file -e "${base_tip}:.plinth/config" 2>/dev/null && base_has_config=1
 # bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
 # path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
 # come from the ratified base, NOT the working tree: else a PR could weaken its OWN
@@ -289,7 +307,7 @@ inline_goal() {
 # The reviewer contract, INLINED into the prompt. review.sh passes it explicitly (not
 # by auto-load / by-reference): codex runs with project_doc_max_bytes=0 and grok/claude
 # are isolated too, so the verdict policy must be IN the prompt, not merely pointed at.
-# Read from the RATIFIED BASE (git show "${baseref}:…"), never the PR working tree:
+# Read from the RATIFIED BASE (git show "${base_tip}:…"), never the PR working tree:
 # reviewer.md / AGENTS-project.md are review POLICY, so a same-PR edit must not weaken
 # the review that judges it (mirrors bcfg / spec_path base reads). Falls back to the
 # working tree only when the file is absent at base (first review after install —
@@ -318,8 +336,8 @@ inline_contract() {
   echo "inlined here. This restriction covers POLICY/CONTRACT files ONLY — it does NOT limit your"
   echo "review of the spec, code, or diff."
   echo "--- reviewer contract [${RC_SRC}] ---"; cat "$RC_FILE"
-  if git cat-file -e "${baseref}:.plinth/AGENTS-project.md" 2>/dev/null; then
-    echo "--- .plinth/AGENTS-project.md (base) ---"; git show "${baseref}:.plinth/AGENTS-project.md" 2>/dev/null
+  if git cat-file -e "${base_tip}:.plinth/AGENTS-project.md" 2>/dev/null; then
+    echo "--- .plinth/AGENTS-project.md (base) ---"; git show "${base_tip}:.plinth/AGENTS-project.md" 2>/dev/null
   elif [ -f .plinth/AGENTS-project.md ]; then
     echo "--- .plinth/AGENTS-project.md ---"; cat .plinth/AGENTS-project.md
   fi
@@ -405,9 +423,8 @@ HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implemente
 # commits that touch version-pinned tooling — the set the tamper policy judges by label.
 HARNESS_PATHS='.claude/hooks .claude/agents/grok-implementer.md .claude/agents/codex-implementer.md .claude/settings.json .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/receipt-verify.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md'
 
-branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-slug="$(printf '%s' "$branch" | tr '/ ' '--')"
-SDIR=".plinth/session/review/${slug}"
+# SDIR / slug were resolved just after the git-repo check (so pre-session die_infra
+# can write last-error). RECEIPT is run-gate state, only needed past that point.
 RECEIPT=".plinth/session/run/${slug}/receipt.json"
 
 mkdir -p "$SDIR"
@@ -429,13 +446,15 @@ diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
 # survive base movement key on this SHA, never on the spelling. Empty (no merge base,
 # e.g. unrelated histories) fails CLOSED at the comparison sites: an unknown anchor
 # never matches, so the loop re-reads rather than assuming continuity.
-merge_base="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || merge_base=""
+merge_base="$(git merge-base "$base_tip" "$sha" 2>/dev/null)" || merge_base=""
 # Fail CLOSED: a missing/broken classifier must not de-escalate. Default Tier 2
 # (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
 # high-consequence diff is over-reviewed, never under-reviewed.
 RISK=2; RISK_JSON='{"tier":2,"reasons":["classifier unavailable — failing closed to Tier 2"]}'
 if [ -x ".plinth/risk-classify.sh" ]; then
-  out="$(./.plinth/risk-classify.sh "$base" 2>/dev/null || true)"
+  # Pass the pinned tip SHA (not the mutable base name) so classification cannot
+  # re-resolve a moved ref and disagree with the diff already taken.
+  out="$(./.plinth/risk-classify.sh "$base_tip" 2>/dev/null || true)"
   t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
   case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
 fi
@@ -445,7 +464,7 @@ fi
 # arithmetic). Check the diff directly: if it touches ANY version-pinned tooling path, it CANNOT
 # be Tier 0 — floor to Tier 2 so the full review + tamper arithmetic run. (This repo's own shared/
 # product edits do not match the root-anchored HARNESS_RE, so they are unaffected.)
-if [ "$RISK" = "0" ] && git diff --name-only "${baseref}..HEAD" 2>/dev/null | grep -Eq "$HARNESS_RE"; then
+if [ "$RISK" = "0" ] && git diff --name-only "${base_tip}..HEAD" 2>/dev/null | grep -Eq "$HARNESS_RE"; then
   RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the working-tree classifier to prevent a self-referential Tier-0 bypass"]}'
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
@@ -479,12 +498,13 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 #   scheme://[user@]host[:port]/owner/repo[.git][/]   scheme = http|https|git|ssh|git+ssh
 #   [user@]host:owner/repo[.git][/]                   scp-style; host REQUIRED, path RELATIVE
 #
-# host is [A-Za-z0-9][A-Za-z0-9._-]*, or — IN THE SCHEME FORM ONLY — a bracketed IPv6
-# literal (`ssh://git@[2001:db8::1]:22/owner/repo` parses). owner and repo are
-# [A-Za-z0-9._-]+. UNDERSCORES are allowed in the host because SSH config aliases
-# routinely use them (`gh_work:owner/repo`) and an alias is resolved by ssh, not DNS, so
-# hostname rules would reject valid remotes. A single-character host is ACCEPTED on
-# purpose — `g:owner/repo` is a legitimate alias remote.
+# host is [A-Za-z0-9][A-Za-z0-9._-]*, or — IN THE SCHEME FORM ONLY — a bracketed
+# [0-9A-Fa-f:]+ host (IPv6-shaped; NOT full RFC validation — `[:::]` and nine-hextet
+# forms parse). Port is :digits only, also not range-checked (`:65536` parses). owner
+# and repo are [A-Za-z0-9._-]+. UNDERSCORES are allowed in the host because SSH config
+# aliases routinely use them (`gh_work:owner/repo`) and an alias is resolved by ssh, not
+# DNS, so hostname rules would reject valid remotes. A single-character host is ACCEPTED
+# on purpose — `g:owner/repo` is a legitimate alias remote.
 #
 # REFUSED ON PURPOSE, each one a form git itself would accept:
 #   ftp://, ftps://          documented git schemes; no receipt use case, so not carried
@@ -562,20 +582,37 @@ canon_base() {
 }
 
 mint_receipt() {  # mint_receipt <round>
-  local mround="$1" repo_nwo htree mb ledger subj receipt origin_url
+  local mround="$1" repo_nwo htree mb ledger subj receipt origin_url live_tip pinned
   origin_url="$(git config --get remote.origin.url 2>/dev/null)" || origin_url=""
   repo_nwo="$(receipt_nwo "$origin_url")"
-  # NEVER echo the URL. Round 2 showed userinfo redaction was not enough — a token can
-  # also ride in a query string (?access_token=...), a path segment, or a fragment, and
-  # each one would need its own rule. The operator already knows which remote `origin`
-  # is; naming the remote instead of reproducing its URL removes the entire leak class
-  # rather than enumerating it.
+  # NEVER echo the URL. The credential guarantee covers parts that are NOT repository
+  # identity: userinfo, query string, fragment — and the fact that this diagnostic never
+  # reproduces the URL. It does NOT cover the path segments identity is DERIVED from
+  # (owner/repo): those are recorded in the receipt by design so the server can compare
+  # them to ${{ github.repository }}. An origin that embeds a secret in a path segment
+  # will have that segment recorded; that is not a supported origin form. Naming the
+  # remote and telling the operator to run `git remote -v` is the whole non-identity
+  # leak class, without enumerating URL positions.
   [ -n "$repo_nwo" ] || {
-    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
+    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential in userinfo/query/fragment. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
     return 0
   }
   htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
-  mb="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
+  # Bind minting to the tip the round pinned before the diff was taken. Re-resolve the
+  # named ref: if it has moved, abort (exit 2) rather than mint a subject the reviewer
+  # never saw. Fixtures that inject only baseref (no base_tip) pin now and skip the
+  # movement check — production always sets base_tip before the first subject read.
+  pinned="${base_tip:-}"
+  if [ -n "$pinned" ]; then
+    live_tip="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
+      || die_infra "base ref '${baseref}' disappeared during this review — re-run ./.plinth/review.sh"
+    [ "$live_tip" = "$pinned" ] \
+      || die_infra "base ref '${baseref}' moved during this review (${pinned:0:12} → ${live_tip:0:12}). The reviewed subject is no longer the one that would be minted — re-run ./.plinth/review.sh."
+  else
+    pinned="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
+      || { echo "Plinth review: NOTE — receipt not minted (cannot resolve ${baseref})."; return 0; }
+  fi
+  mb="$(git merge-base "$pinned" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
   # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
   # to {round, name, value} tuples — the disclosure set the server check holds
   # the PR body to (exact tuple-set equality).
@@ -685,11 +722,11 @@ command -v "$REVIEWER_VENDOR" >/dev/null 2>&1 || die_infra "$REVIEWER_VENDOR CLI
 #   4. else — true FIRST ADOPTION (no ratified Plinth contract at base, or an unrelated
 #      AGENTS.md): use the shipped working-tree .plinth/reviewer.md (nothing to weaken).
 RC_FILE="$SDIR/reviewer-contract.md"
-if git cat-file -e "${baseref}:.plinth/reviewer.md" 2>/dev/null; then
-  git show "${baseref}:.plinth/reviewer.md" > "$RC_FILE" 2>/dev/null; RC_SRC=".plinth/reviewer.md (base)"
-elif git show "${baseref}:AGENTS.md" 2>/dev/null | grep -qF '# Plinth — Reviewer'; then
-  git show "${baseref}:AGENTS.md" > "$RC_FILE" 2>/dev/null; RC_SRC="AGENTS.md (base — pre-v4.4 reviewer contract)"
-elif git show "${baseref}:AGENTS.md" 2>/dev/null | grep -qF 'Plinth driver shell (version-pinned)'; then
+if git cat-file -e "${base_tip}:.plinth/reviewer.md" 2>/dev/null; then
+  git show "${base_tip}:.plinth/reviewer.md" > "$RC_FILE" 2>/dev/null; RC_SRC=".plinth/reviewer.md (base)"
+elif git show "${base_tip}:AGENTS.md" 2>/dev/null | grep -qF '# Plinth — Reviewer'; then
+  git show "${base_tip}:AGENTS.md" > "$RC_FILE" 2>/dev/null; RC_SRC="AGENTS.md (base — pre-v4.4 reviewer contract)"
+elif git show "${base_tip}:AGENTS.md" 2>/dev/null | grep -qF 'Plinth driver shell (version-pinned)'; then
   die_infra "post-v4.4 base has the driver-shell AGENTS.md but no ratified .plinth/reviewer.md — the reviewer contract is missing (corruption/tampering); refusing to review."
 elif [ -f .plinth/reviewer.md ]; then
   cat .plinth/reviewer.md > "$RC_FILE"; RC_SRC=".plinth/reviewer.md (shipped — first adoption)"
@@ -1066,7 +1103,7 @@ run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
 
 TOOLING COMMITS IN RANGE (${baseref}..HEAD — COMPLETE list of commits touching version-pinned
 tooling, for the tamper policy; judge each by its subject label):
-$(git log --format='%h %s' "${baseref}..HEAD" -- $HARNESS_PATHS 2>/dev/null)"
+$(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)"
 
   # Execution evidence: the latest run receipt turns runtime guessing into
   # observation — RUNTIME findings get verified against it.
@@ -1083,7 +1120,7 @@ $(cat "$RECEIPT")"
   spec_changed=""
   for sp in "$SPEC_PATH" "$WSPEC"; do
     [ -n "$sp" ] || continue
-    git diff --name-only "${baseref}...HEAD" 2>/dev/null | grep -q "^${sp}" && spec_changed=1
+    git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -q "^${sp}" && spec_changed=1
   done
   [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ] && spec_changed=1
   if [ -n "$spec_changed" ]; then
@@ -1240,7 +1277,7 @@ ${inc}${evidence}${commits}"
   # (findings block via the HARNESS_RE project scope above). A Claude driver's guard also
   # blocks driver edits in-session; labeling every human edit "tampering" unless the
   # subject says 'plinth' would contradict the contract.
-  tamper="$(git log --format='%s' "${baseref}..HEAD" -- $HARNESS_PATHS 2>/dev/null | { grep -civ 'plinth' || true; })"
+  tamper="$(git log --format='%s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null | { grep -civ 'plinth' || true; })"
   RRAW="$RVERDICT"
   if [ "${tamper:-0}" -gt 0 ] 2>/dev/null; then
     RVERDICT="CHANGES_NEEDED"
@@ -1366,10 +1403,10 @@ $(inline_spec)
 $(inline_goal)
 
 === TOOLING COMMITS IN RANGE (${baseref}..HEAD — COMPLETE list of commits touching version-pinned tooling, for the tamper policy; judge each by its subject label) ===
-$(git log --format='%h %s' "${baseref}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
+$(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
-$(git diff "${baseref}...HEAD")"
+$(git diff "${base_tip}...HEAD")"
     if run_auditor "$aprompt" "$afind"; then
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))

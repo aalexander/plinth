@@ -44,7 +44,7 @@
   in every future PR, so it is yours to switch on after you have seen a receipt mint for
   real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
   one mints nothing, so the check fails closed — correct, but it would block every PR).
-  plinth itself is at 4.7.1 as of this branch (VERSION and .plinth-version agree).
+  plinth itself is at 4.7.2 as of this branch (VERSION and .plinth-version agree).
   The v4.7.0 SHA in step 1 below is deliberate and unchanged: that is the commit whose
   reusable workflow you pin, not the instrument version you run.
 

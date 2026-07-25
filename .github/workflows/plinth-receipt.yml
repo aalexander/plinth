@@ -132,28 +132,40 @@ jobs:
           # repo only — that is the point.
           git fetch -q origin "+refs/pull/${PR_NUM}/head:refs/plinth/prhead" \
             || { echo "::error::cannot fetch the PR head ref"; exit 1; }
-          # Distinguish "the ref is legitimately absent" from "the fetch failed" before
-          # blaming the driver. HEAL-CI asks the operator to classify a red check as
-          # transient vs real defect, which is impossible if both render as the same
-          # message — an auth blip would read as "you forgot to push your receipts".
-          if git ls-remote --exit-code origin 'refs/notes/plinth-receipts' >/dev/null 2>&1; then
+          # Distinguish "the ref is legitimately absent" from "the probe failed"
+          # (network/auth) before blaming the driver. `git ls-remote --exit-code`
+          # returns 2 when no matching ref exists; any other nonzero is infrastructure.
+          # HEAL-CI asks the operator to classify a red check as transient vs real
+          # defect, which is impossible if both render as the same message.
+          notes_probe_rc=0
+          git ls-remote --exit-code origin 'refs/notes/plinth-receipts' >/dev/null 2>&1 || notes_probe_rc=$?
+          if [ "$notes_probe_rc" = 0 ]; then
             git fetch -q origin '+refs/notes/plinth-receipts:refs/notes/plinth-receipts' \
               || { echo "::error::refs/notes/plinth-receipts EXISTS on the remote but could not be fetched — this is an infrastructure failure (network/auth), not a missing receipt. Re-run the check; if it persists, treat it as a real defect per HEAL-CI."; exit 1; }
-          else
+          elif [ "$notes_probe_rc" = 2 ]; then
             echo "::error::no refs/notes/plinth-receipts on this repository — the review loop mints it on APPROVED; push it with the branch: git push origin HEAD refs/notes/plinth-receipts"
+            exit 1
+          else
+            echo "::error::could not probe refs/notes/plinth-receipts on the remote (git ls-remote exit ${notes_probe_rc}) — this is an infrastructure failure (network/auth), not a proven missing receipt. Re-run the check; if it persists, treat it as a real defect per HEAL-CI."
             exit 1
           fi
           git notes --ref=plinth-receipts show "$HEAD_SHA" > receipt.json 2>/dev/null || rm -f receipt.json
           # PR body via the event payload file — never shell-interpolated.
           jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pr-body.txt
+          # Bind the base tip once, then re-check it against the live PR's base.sha
+          # in the TOCTOU block below — a base movement mid-run can change the merge
+          # base and make a successful verify describe an obsolete subject.
+          BASE_TIP="$(git rev-parse "origin/${BASE_REF}")"
           "$VERIFY" --receipt receipt.json --head-sha "$HEAD_SHA" \
-            --base-ref "$BASE_REF" --base-tip "$(git rev-parse "origin/${BASE_REF}")" \
+            --base-ref "$BASE_REF" --base-tip "$BASE_TIP" \
             --pr-body pr-body.txt --repo "${{ github.repository }}"
-          # TOCTOU: re-fetch the live PR just before success — a head or body
-          # swap mid-run must invalidate this run, not ride its green check.
-          live="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUM}" --jq '{sha: .head.sha, body: (.body // "")}')"
+          # TOCTOU: re-fetch the live PR just before success — a head, base tip, or
+          # body swap mid-run must invalidate this run, not ride its green check.
+          live="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUM}" --jq '{sha: .head.sha, base_sha: .base.sha, body: (.body // "")}')"
           [ "$(jq -r .sha <<<"$live")" = "$HEAD_SHA" ] \
             || { echo "::error::PR head changed while verifying — re-run the check"; exit 1; }
+          [ "$(jq -r .base_sha <<<"$live")" = "$BASE_TIP" ] \
+            || { echo "::error::PR base tip changed while verifying (merge base may differ from the verified subject) — re-run the check"; exit 1; }
           jq -r .body <<<"$live" > pr-body-live.txt
           cmp -s pr-body.txt pr-body-live.txt \
             || { echo "::error::PR body changed while verifying (override disclosure could differ) — re-run the check"; exit 1; }

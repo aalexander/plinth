@@ -9,6 +9,32 @@ collected twice.) The convergence lever now lives in `shared/reviewer.md`: the r
 instructed to enumerate every instance of a class it finds, and to say so explicitly when
 it has checked a class and found only one. Recording what actually shipped, including the
 parts that were wrong on the way:
+- **Credential-safety claim narrowed to non-identity URL parts.** The guarantee covers
+  userinfo, query string, fragment, and the no-mint diagnostic never reproducing the URL
+  (name the remote; operator runs `git remote -v`). It does NOT cover the path segments
+  identity is DERIVED from: `owner/repo` is recorded in the receipt by design so the
+  server can compare it to `${{ github.repository }}`. An origin that embeds a secret in a
+  path segment will have that segment recorded; that is not a supported origin form. Do not
+  build a secret detector for path segments — shrink the claim, do not expand a guess.
+  `receipt-verify.sh` no longer echoes the recorded or expected `repo` value on a mismatch
+  (same pattern as the no-mint diagnostic). Credential fixtures cover a secret in the OWNER
+  position and the REPO position of an accepted two-segment origin, and match
+  case-insensitively (the parser lowercases).
+- **Reviewed subject is pinned for the whole round.** The base ref is resolved to ONE
+  immutable tip SHA before the diff is taken; that SHA drives the diff, risk
+  classification, and minting. Before minting, the named ref is re-resolved and the round
+  ABORTS (`die_infra`, exit 2) if it has moved — naming old and new tips and telling the
+  operator to re-run. No silent continue and no in-place re-review of a subject the
+  reviewer never saw.
+- **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
+  failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
+  `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now
+  skips the write when `SDIR` is empty, and `SDIR` is assigned as soon as the git-repo check
+  passes so later pre-round failures still release the gate.
+- **Live receipt check binds `base.sha`.** The TOCTOU re-fetch in `plinth-receipt.yml`
+  compares the live PR's `base.sha` to the tip used for verification, not only head and
+  body. Notes-ref probing branches on `ls-remote` status: exit 2 is "absent"; any other
+  nonzero is infrastructure (network/auth), not a proven missing receipt.
 - **`receipt_nwo()` — one anchored pattern, extracted and testable.** Repository identity
   is now derived by matching the WHOLE origin URL against two anchored forms
   (`scheme://[user@]host[:port]/owner/repo` and scp-style `[user@]host:owner/repo`),
@@ -21,8 +47,9 @@ parts that were wrong on the way:
 - **The no-mint diagnostic no longer reproduces the URL at all.** It first echoed the raw
   `remote.origin.url` — leaking `https://oauth2:TOKEN@…` into terminals, agent transcripts
   and CI logs. Redacting userinfo was still insufficient (a token also rides in a query
-  string, path segment or fragment), so the rule is now simply: name the remote, never
-  print it, and tell the operator to run `git remote -v`.
+  string or fragment — and path segments are identity, not covered by this diagnostic), so
+  the rule is: name the remote, never print the URL, and tell the operator to run
+  `git remote -v`.
 - **`ledger_complete()` — every round, not just the current one.** The override ledger must
   contain a row for EVERY round 1..N. Checking only "present" missed a stale file; checking
   only "has a row for this round" missed a swallowed append in an EARLIER round (ledger has
@@ -181,15 +208,18 @@ parts that were wrong on the way:
   to inherit the approval, announces why, and runs a real round.
 - **Credential safety is proven for ACCEPTED origins too, and at the LOOP level.** (9g)
   previously exercised only origins that fail to parse, which is the easy half. The
-  dangerous shape is a valid credential-bearing remote (`https://oauth2:TOKEN@host/o/r`,
-  the everyday CI checkout form): it travels the whole minting path AND produces a note
-  that gets PUSHED, so a leak there is published rather than merely logged. Three such
-  origins now assert the token reaches neither the output nor the receipt, and that the
-  receipt still records the right identity. (9g) drives the extracted `mint_receipt`, so
-  it can only speak for the minting path — a claim that "nothing leaks from the loop"
-  rested on evidence that did not cover the loop. (9i) supplies that: it runs the real
-  `./.plinth/review.sh` against a credential-bearing origin and asserts on ALL of its
-  output plus the minted note.
+  dangerous shape for NON-identity credentials is a valid remote with userinfo
+  (`https://oauth2:TOKEN@host/o/r`, the everyday CI checkout form): it travels the whole
+  minting path AND produces a note that gets PUSHED, so a leak there is published rather
+  than merely logged. Those origins assert the token reaches neither the output nor the
+  receipt, and that the receipt still records the right identity. Path-segment secrets in
+  accepted two-segment origins are a separate class: they ARE recorded as identity (by
+  design) and the fixtures assert that honestly, case-insensitively, while still requiring
+  mint/verify logs not to re-echo values beyond the identity field. (9g) drives the
+  extracted `mint_receipt`, so it can only speak for the minting path — a claim that
+  "nothing leaks from the loop" rested on evidence that did not cover the loop. (9i)
+  supplies that for userinfo: it runs the real `./.plinth/review.sh` against a
+  credential-bearing origin and asserts on ALL of its output plus the minted note.
 - **A Tier-0 receipt could inherit a PREVIOUS loop's override ledger.** Round 0 mints and
   exits before the round-bookkeeping that clears per-loop markers, so reusing a branch
   after its base advanced left a stale `usage.jsonl` in place and `mint_receipt` read it —

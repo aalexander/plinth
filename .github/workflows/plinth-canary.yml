@@ -1094,7 +1094,12 @@ jobs:
             rc=0; out="$(PATH="$MC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 2 ] || { echo "::error::(3c) a malformed round_cap did not abort the run (rc=$rc) — it was silently reinterpreted, so the operator's intended cap is unknowable"; exit 1; }
             printf '%s' "$out" | grep -q 'round_cap' || { echo "::error::(3c) the malformed-round_cap abort did not name the knob: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
-            [ "$(cat "$MC/state")" = 0 ] || { echo "::error::(3c) the reviewer was invoked despite a malformed round_cap — config must be validated BEFORE spending a round"; exit 1; } )
+            [ "$(cat "$MC/state")" = 0 ] || { echo "::error::(3c) the reviewer was invoked despite a malformed round_cap — config must be validated BEFORE spending a round"; exit 1; }
+            # PRE-SDIR class: die_infra must still write last-error so the Stop gate can
+            # take its immediate infra escape. Malformed round_cap is validated before the
+            # session mkdir that used to be the only SDIR assignment.
+            [ -f .plinth/session/review/feat/last-error ] || { echo "::error::(3c) PRE-SDIR die_infra left no last-error — the Stop gate cannot take its promised immediate infra escape"; exit 1; }
+            grep -q 'round_cap' .plinth/session/review/feat/last-error || { echo "::error::(3c) last-error exists but does not name round_cap: $(cat .plinth/session/review/feat/last-error)"; exit 1; } )
           # (3e) round_cap MAX bound (100000). A positive cap is capped at 100000 because
           # past the arithmetic range bash integer wrap turns a huge digit string NEGATIVE
           # and silently disables the breaker. Both input paths (config + PLINTH_ROUND_CAP)
@@ -1528,6 +1533,9 @@ jobs:
               git push -q origin main
               git checkout -q feat
               git fetch -q origin '+main:refs/remotes/origin/main' )
+            # Keep the gh TOCTOU stub's base_sha in lockstep with origin/main — the
+            # live check now binds base.sha, so a stale stub fails every later case.
+            r9d_write_gh "$R9D_HEAD" "$(git -C "$R9D_PROJ" rev-parse refs/remotes/origin/main)"
           }
           R9D_HEAD="$(git -C "$R9D_PROJ" rev-parse HEAD)"
           R9D_BARE="$(mktemp -d)/proj.git"
@@ -1554,14 +1562,19 @@ jobs:
           git -C "$R9D_PROJ" notes --ref=plinth-receipts add -m "$R9D_RECEIPT" "$R9D_HEAD"
           git -C "$R9D_PROJ" push -q origin refs/notes/plinth-receipts
           echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
-          # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
-          # the happy path's live re-check matches.
+          # `gh` stub for the TOCTOU re-fetch: same head + base tip + empty body as the
+          # fixture, so the happy path's live re-check matches. base_sha is required —
+          # omitting it made the new base-tip binding unreachable.
           R9D_GHDIR="$(mktemp -d)"
-          cat > "$R9D_GHDIR/gh" <<GHEOF
+          R9D_BASE_TIP="$(git -C "$R9D_PROJ" rev-parse refs/remotes/origin/main 2>/dev/null || git -C "$R9D_PROJ" rev-parse main)"
+          r9d_write_gh() {  # r9d_write_gh <head-sha> <base-sha>
+            cat > "$R9D_GHDIR/gh" <<GHEOF
           #!/usr/bin/env bash
-          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          echo '{"sha":"'"$1"'","base_sha":"'"$2"'","body":""}'
           GHEOF
-          chmod +x "$R9D_GHDIR/gh"
+            chmod +x "$R9D_GHDIR/gh"
+          }
+          r9d_write_gh "$R9D_HEAD" "$R9D_BASE_TIP"
           # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
           # Clear /tmp/plinth first: the step script hardcodes that path, so a leftover
           # from an earlier run (or an earlier case) makes `git remote add origin` fail
@@ -1575,6 +1588,12 @@ jobs:
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" = 0 ] || { echo "::error::(9d) happy-path receipt-verify step failed (rc=$rc): $out"; exit 1; }
           printf '%s' "$out" | grep -q 'receipt verified' || { echo "::error::(9d) happy path did not print 'receipt verified'"; exit 1; }
+          # Notes-ref probe status branching: exit 2 = absent, other nonzero = infrastructure.
+          # Collapsing every nonzero into "missing receipt" made auth blips look like the
+          # driver forgot to push. Assert the three-way branch is still wired.
+          grep -q 'notes_probe_rc' "$R9D_WD/step.sh" || { echo "::error::(9d) notes ls-remote probe no longer captures its exit status"; exit 1; }
+          grep -q 'notes_probe_rc.*= 2' "$R9D_WD/step.sh" || { echo "::error::(9d) notes probe does not treat ls-remote exit 2 as 'absent'"; exit 1; }
+          grep -q 'could not probe refs/notes/plinth-receipts' "$R9D_WD/step.sh" || { echo "::error::(9d) notes probe has no distinct infrastructure-failure path for nonzero exit other than 2"; exit 1; }
           # 2: EMPTY job_workflow_ref.
           rc=0
           out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
@@ -1652,6 +1671,37 @@ jobs:
           [ "$rc" != 0 ] || { echo "::error::(9d) a base branch with no receipt job still trusted the PR's pin"; exit 1; }
           printf '%s' "$out" | grep -q 'does not wire a plinth-receipt.yml job' || { echo "::error::(9d) missing base pin was not reported as such: $out"; exit 1; }
           r9d_base_pin "$R9D_GOODPIN"
+          # 10: live base.sha TOCTOU. After a successful subject bind, advance the PR base
+          # tip WITHOUT changing the merge base (new commit on main after feat diverged)
+          # and have `gh` return the NEW base.sha. The step must refuse: a green check
+          # would otherwise describe an obsolete base tip. Earlier the gh stub returned
+          # only head/body, so this window was unreachable.
+          R9D_OLD_BASE="$(git -C "$R9D_PROJ" rev-parse refs/remotes/origin/main)"
+          ( cd "$R9D_PROJ" && git checkout -q main
+            echo base-moved >> SPEC.md && git add -A && git commit -qm "base tip moves" >/dev/null
+            git push -q origin main
+            git checkout -q feat
+            git fetch -q origin '+main:refs/remotes/origin/main' )
+          R9D_NEW_BASE="$(git -C "$R9D_PROJ" rev-parse refs/remotes/origin/main)"
+          [ "$R9D_NEW_BASE" != "$R9D_OLD_BASE" ] || { echo "::error::(9d) base tip did not move — case 10 would be vacuous"; exit 1; }
+          [ "$(git -C "$R9D_PROJ" merge-base main feat)" = "$R9D_MB" ] || { echo "::error::(9d) case 10 must keep the merge base stable so only the live base.sha check can fire"; exit 1; }
+          # Reset origin/main to the OLD tip for the verify half (what checkout had), then
+          # gh returns the NEW tip — simulating base movement mid-run after local resolve.
+          git -C "$R9D_PROJ" update-ref refs/remotes/origin/main "$R9D_OLD_BASE"
+          r9d_write_gh "$R9D_HEAD" "$R9D_NEW_BASE"
+          # r9d_base_pin / main checkouts can remove event.json from the feat worktree
+          # (git add -A on main commits it; checkout feat drops it). Recreate before the step.
+          echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="$R9D_GOODPIN" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) live base.sha drift was accepted — a base movement mid-verify can leave a green check on an obsolete subject"; exit 1; }
+          printf '%s' "$out" | grep -qi 'base tip changed' || { echo "::error::(9d) base.sha TOCTOU failure did not name the base tip: $out"; exit 1; }
+          # Restore a consistent origin/main for cleanup.
+          git -C "$R9D_PROJ" update-ref refs/remotes/origin/main "$R9D_NEW_BASE"
+          r9d_write_gh "$R9D_HEAD" "$R9D_NEW_BASE"
           # CLEAN UP the global URL rewrite this fixture installed. On a CI runner this is
           # cosmetic (ephemeral machine), but the canary is also run locally against a
           # working tree, and a leaked mapping there breaks the NEXT run and every other
@@ -1731,6 +1781,14 @@ jobs:
           [ "$r9e_missing" = 1 ] || { echo "::error::(9e) a MISSING receipt did not reject with exit 1 (rc=$r9e_missing)"; exit 1; }
           # an UNDISCLOSED override: ledger has a row, PR body declares nothing
           r9e_reject "undisclosed override"     '.override_ledger = [{round:1, name:"PLINTH_ROUND_CAP", value:"99"}]'
+          # Repo-mismatch failure must NOT echo the recorded or expected repo value (a
+          # path-segment secret in identity would otherwise reappear in CI logs).
+          r9e_receipt '.repo = "s3crettok/repo"' > "$R9E/r-secret.json"
+          r9e_secret_out="$( cd "$R9E" && bash "$R9E_V" --receipt "$R9E/r-secret.json" --head-sha "$R9E_HEAD" \
+            --base-ref main --base-tip "$(git -C "$R9E" rev-parse main)" --pr-body "$R9E/body.txt" \
+            --repo "$R9E_NWO" 2>&1 )" || true
+          printf '%s' "$r9e_secret_out" | grep -qi 's3crettok' && { echo "::error::(9e) repo-mismatch failure echoed the receipt repo value — a path-segment secret would reappear in CI logs: $r9e_secret_out"; exit 1; } || true
+          printf '%s' "$r9e_secret_out" | grep -qi 'repo field' || { echo "::error::(9e) repo-mismatch failure did not name the field without echoing values: $r9e_secret_out"; exit 1; }
           # (9f) mint_receipt's INPUT VALIDATION. These live in the MINTING path, so no
           # receipt-verify fixture can reach them — the receipt is already wrong by the
           # time verification sees it.
@@ -1816,6 +1874,15 @@ jobs:
           r9f_accept 'gh_work:owner/repo.git'                    'owner/repo'
           r9f_accept 'ssh://git@gh_work/owner/repo.git'          'owner/repo'
           r9f_accept 'my_host.example.com:owner/repo.git'        'owner/repo'
+          # HONEST LIMIT of the IPv6/port grammar (not full RFC validation): the scheme
+          # form accepts any bracketed [0-9A-Fa-f:]+ host and any :digits port. Malformed
+          # IPv6 and out-of-range ports therefore PARSE today — pinned here so the limit
+          # cannot silently widen or be claimed as full validation. Shrink the claim, do
+          # not invent a partial validator without a real need.
+          r9f_accept 'ssh://git@[:::]/owner/repo.git'            'owner/repo'
+          r9f_accept 'ssh://git@[2001:db8:1:2:3:4:5:6:7]/o/r.git' 'o/r'
+          r9f_accept 'ssh://git@github.com:65536/owner/repo.git' 'owner/repo'
+          r9f_accept 'https://github.com:999999/owner/repo.git'  'owner/repo'
           # COMBINATORIAL matrix over the input space, not hand-picked examples. Five
           # successive review rounds each named ONE URL form the example list had missed
           # (a two-segment local path, then a hostless URL, then a Windows drive, then a
@@ -1927,20 +1994,19 @@ jobs:
             [ "$got" = "$expect" ] || { echo "::error::(9g) $label: mint_receipt produced '$got', expected '$expect' — the guard for this case is not governing the outcome"; exit 1; }
           }
           # CREDENTIAL SAFETY at the MINTING FUNCTION. Scope stated exactly: this drives the
-          # extracted mint_receipt, so it proves the minting path itself does not reproduce
-          # the URL — strictly more than a source grep (which shows only that ONE site does
-          # not interpolate), but strictly LESS than "nothing leaks from the loop", which is
-          # what an earlier version of this comment claimed. The whole-loop property is
-          # (9i), which runs the real ./.plinth/review.sh against a credential-bearing
-          # origin and asserts on all of its output.
-          #
-          # BOTH OUTCOMES, deliberately. An earlier version covered only REFUSED origins,
-          # which is the easy half: on refusal the URL is barely touched. The dangerous case
-          # is a VALID credential-bearing origin — the everyday shape of a CI checkout
-          # (`https://oauth2:TOKEN@github.com/owner/repo`) — because that one travels the
-          # whole minting path AND produces a note that gets pushed to the remote. A token
-          # surviving into the receipt would be published, not merely logged.
-          r9g_nocreds() {  # <label> <origin-with-secret> <secret> <expect: mint|nomint>
+          # extracted mint_receipt. Two classes, deliberately separated:
+          #   USERINFO / non-identity: a token in userinfo must reach neither mint output
+          #     nor the receipt. Case-insensitive match — the parser lowercases identity,
+          #     and a case-sensitive check was blind to lowercased leakage.
+          #   PATH-SEGMENT identity: owner/repo is recorded by design. A secret embedded
+          #     in an accepted two-segment path WILL appear (lowercased) in the receipt's
+          #     repo field; that is not a supported origin form. Fixtures assert the
+          #     identity is recorded and that mint OUTPUT still does not re-echo beyond it.
+          # The whole-loop userinfo property is (9i).
+          r9g_secret_in() {  # case-insensitive: does haystack contain needle?
+            printf '%s' "$1" | grep -qiF -- "$2"
+          }
+          r9g_nocreds() {  # <label> <origin-with-secret> <secret> <expect: mint|nomint> [expected-repo]
             local d out got; d="$(mktemp -d)"
             out="$( cd "$d" && git init -qb main . >/dev/null 2>&1 && git config user.email x@x && git config user.name x
               echo a > f && git add -A && git commit -qm b >/dev/null 2>&1
@@ -1954,22 +2020,47 @@ jobs:
             # Assert the OUTCOME first: a case that silently stopped minting would pass the
             # leak checks below for the wrong reason and prove nothing.
             [ "$got" = "$4" ] || { echo "::error::(9g) $1: expected '$4' but got '$got' — this credential case is no longer exercising the path it claims to"; exit 1; }
-            printf '%s' "$out" | grep -q "$3" && { echo "::error::(9g) $1: the secret appeared in mint output — a token must never reach terminals, transcripts or CI logs"; exit 1; } || true
+            r9g_secret_in "$out" "$3" && { echo "::error::(9g) $1: the secret appeared in mint output (case-insensitive) — a non-identity credential must never reach terminals, transcripts or CI logs"; exit 1; } || true
             if [ "$4" = mint ]; then
-              grep -q "$3" "$d/note" && { echo "::error::(9g) $1: the secret appeared in the MINTED RECEIPT — notes are pushed to the remote, so this publishes the token"; exit 1; } || true
-              grep -q '"repo":"owner/repo"' "$d/note" || { echo "::error::(9g) $1: the receipt did not record the expected owner/repo — credential stripping altered the identity"; exit 1; }
+              r9g_secret_in "$(cat "$d/note")" "$3" && { echo "::error::(9g) $1: the secret appeared in the MINTED RECEIPT (case-insensitive) — notes are pushed to the remote, so this publishes the token"; exit 1; } || true
+              grep -q "\"repo\":\"${5:-owner/repo}\"" "$d/note" || { echo "::error::(9g) $1: the receipt did not record the expected repo identity '${5:-owner/repo}' — credential stripping altered the identity"; exit 1; }
             else
               printf '%s' "$out" | grep -qi 'receipt not minted' || { echo "::error::(9g) $1: expected an announced refusal, got: $out"; exit 1; }
             fi
           }
+          # PATH-SEGMENT identity (accepted two-segment origin). Secret IS recorded
+          # (lowercased) as owner or repo — by design. Mint output must still not re-echo
+          # the URL. Case-insensitive checks on output; identity asserted explicitly.
+          r9g_path_secret() {  # <label> <origin> <secret> <expected-repo>
+            local d out got note; d="$(mktemp -d)"
+            out="$( cd "$d" && git init -qb main . >/dev/null 2>&1 && git config user.email x@x && git config user.name x
+              echo a > f && git add -A && git commit -qm b >/dev/null 2>&1
+              git checkout -qb feat >/dev/null 2>&1 && echo c >> f && git add -A && git commit -qm w >/dev/null 2>&1
+              git remote add origin "$2"
+              mkdir -p sess && printf '{"round":1}\n{"round":2}\n' > sess/usage.jsonl
+              sha="$(git rev-parse HEAD)"; baseref=main; SDIR="$d/sess"
+              eval "$R9G_FNS"; mint_receipt 2 2>&1
+              git notes --ref=plinth-receipts show HEAD > "$d/note" 2>/dev/null && echo mint > "$d/got" || echo nomint > "$d/got" )"
+            got="$(cat "$d/got" 2>/dev/null || echo '<no-result>')"
+            [ "$got" = mint ] || { echo "::error::(9g) $1: expected a mint for an accepted two-segment origin, got '$got'"; exit 1; }
+            note="$(cat "$d/note")"
+            grep -q "\"repo\":\"$4\"" <<<"$note" || { echo "::error::(9g) $1: expected identity '$4' recorded in the receipt (path segments ARE identity), got: $note"; exit 1; }
+            # Mint success line must not re-echo the secret (case-insensitive). Identity is
+            # only in the note, already asserted above — not in the success line.
+            r9g_secret_in "$out" "$3" && { echo "::error::(9g) $1: path-segment secret re-echoed in mint output"; exit 1; } || true
+          }
           # Refused origins carrying a token.
           r9g_nocreds 'https token, 3-segment path' 'https://oauth2:S3CRETTOK@github.com/a/b/c.git' 'S3CRETTOK' nomint
           r9g_nocreds 'ssh userinfo, local path'    'ssh://user:PWSECRET@/o/r.git'                  'PWSECRET'  nomint
-          # ACCEPTED origins carrying a token — these mint, so the whole path plus the
-          # published receipt must stay clean.
+          # ACCEPTED origins carrying a USERINFO token — these mint; token must not reach
+          # output or receipt; identity stays owner/repo.
           r9g_nocreds 'https oauth2 token, MINTS'   'https://oauth2:S3CRETTOK@github.com/owner/repo.git' 'S3CRETTOK' mint
           r9g_nocreds 'https PAT userinfo, MINTS'   'https://ghp_TOKENAAA@github.com/owner/repo.git'     'ghp_TOKENAAA' mint
           r9g_nocreds 'ssh password + port, MINTS'  'ssh://git:PWSECRET@github.com:22/owner/repo.git'    'PWSECRET'  mint
+          # ACCEPTED two-segment origins with a secret in OWNER or REPO position. Identity
+          # is recorded lowercased; that is the honest claim (not "no secret in path").
+          r9g_path_secret 'secret in OWNER path segment' 'https://git.example.com/S3CRETTOK/repo.git' 'S3CRETTOK' 's3crettok/repo'
+          r9g_path_secret 'secret in REPO path segment'  'https://git.example.com/owner/S3CRETTOK.git' 'S3CRETTOK' 'owner/s3crettok'
           # Baseline FIRST: if a good repo does not mint, every negative below is vacuous.
           r9g_case 'good origin + complete ledger'      'https://github.com/canary/r9g.git' full   mint
           r9g_case 'Tier-0 (round 0, no ledger yet)'    'https://github.com/canary/r9g.git' round0 mint
@@ -2344,6 +2435,47 @@ jobs:
             fi
             [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
             )
+          # (9k4) MID-ROUND base tip pin. (9k)/(9k2)/(9k3) move the base BETWEEN completed
+          # invocations. The race that ships a wrong subject is INSIDE one invocation: the
+          # reviewer reads tip C1, main advances, mint_receipt recomputes against B. The
+          # mock reviewer moves main after it is invoked; mint must die_infra (exit 2) and
+          # write NO receipt for a subject the reviewer never saw.
+          R9K4="$(mktemp -d)"; mkstate "$R9K4"
+          cat > "$R9K4/codex" <<R9K4CX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$R9K4/state") + 1 )); echo \$n > "$R9K4/state"
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          # Mid-round: advance main (and origin/main) so the tip the round pinned is stale
+          # by the time mint_receipt re-resolves. Uses a pre-recorded SHA of an ancestor.
+          if [ -f "$R9K4/move-to" ]; then
+            tip="\$(cat "$R9K4/move-to")"
+            git branch -f main "\$tip" 2>/dev/null || true
+            git update-ref refs/remotes/origin/main "\$tip" 2>/dev/null || true
+          fi
+          b='{"verdict":"APPROVED","summary":"s","findings":[]}'
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"k4"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
+          R9K4CX
+          chmod +x "$R9K4/codex"
+          r9k4d="$(mktemp -d)"
+          ( cd "$r9k4d"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9k4d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            B0="$(git rev-parse HEAD)"
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; C1="$(git rev-parse HEAD)"
+            echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
+            # Reviewer will move main onto C1 (ancestor of feat) mid-round.
+            printf '%s' "$C1" > "$R9K4/move-to"
+            git update-ref refs/remotes/origin/main "$B0"
+            rc=0; out="$(PATH="$R9K4:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(9k4) mid-round base movement did not abort with exit 2 (rc=$rc) — mint would bind a subject the reviewer never saw: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'moved during this review' || { echo "::error::(9k4) abort did not name the mid-round base movement: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9k4) a receipt was minted after the base moved mid-round"; exit 1; } || true
+            [ "$(cat "$R9K4/state")" = 1 ] || { echo "::error::(9k4) expected exactly one reviewer invocation, got $(cat "$R9K4/state")"; exit 1; } )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
@@ -3094,6 +3226,20 @@ jobs:
             [ -n "$ibpat" ] || continue
             grep -qxF "$ibpat" "$IB/.plinth/protected-paths" || { echo "::error::init did not backfill the managed protected pattern '$ibpat' into a pre-existing pre-v4.4 protected-paths — the Claude guard would not protect that file"; exit 1; }
           done < "$IB/mpat.expected"
+          # INDEPENDENT manifest cross-check: PATTERNS alone is circular if a managed leaf
+          # is added to copy_shared/preflight/HARNESS_PATHS while PATTERNS is forgotten.
+          # Require every version-pinned .plinth leaf that copy_shared installs (and the
+          # two reserved lane agents) to appear as a managed protected pattern. Patterns
+          # escape dots (`review\.sh`), so match the stem, not the unescaped filename.
+          for ib_stem in review risk-classify lane-guard receipt-verify review-schema \
+              plinth-rules MODELS reviewer; do
+            grep -qF "$ib_stem" "$IB/mpat.expected" \
+              || { echo "::error::(init-backfill) copy_shared installs a .plinth/$ib_stem* leaf but PATTERNS has no managed protected pattern for it — the Claude guard would not protect a newly pinned leaf"; exit 1; }
+          done
+          for ib_agent in grok-implementer codex-implementer; do
+            grep -qF "$ib_agent" "$IB/mpat.expected" \
+              || { echo "::error::(init-backfill) lane agent $ib_agent is reserved tooling but PATTERNS has no managed pattern for it"; exit 1; }
+          done
           # A generated project must IGNORE nested agent worktrees. An agent harness may
           # create git worktrees under the repo (Claude Code uses .claude/worktrees/); the
           # untracked directory then makes the tree read dirty and review.sh refuses to run

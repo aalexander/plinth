@@ -90,7 +90,11 @@ git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || infra "PR head object ${HE
 # would fail closed. review.sh lowercases the minted field identically; the two
 # MUST stay in lockstep, since $REPO is folded into the digest at step 6.
 REPO="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
-[ "$(r repo | tr '[:upper:]' '[:lower:]')" = "$REPO" ] || fail "receipt repo '$(r repo)' != '${REPO}' — receipt minted for a different repository"
+# Do NOT interpolate the recorded or expected repo values into the failure text:
+# owner/repo is repository identity (and may embed a secret-looking path segment
+# from an unsupported origin form). Name the field and how to inspect it locally.
+[ "$(r repo | tr '[:upper:]' '[:lower:]')" = "$REPO" ] \
+  || fail "receipt repo field does not match the PR repository — inspect the receipt note locally (git notes --ref=plinth-receipts show <head>) and re-run the loop if origin names a different repository"
 rbase="$(r base_ref)"; nbase="${BASE_REF#refs/heads/}"
 [ "${rbase#origin/}" = "${nbase#origin/}" ] || fail "receipt base_ref '${rbase}' != PR base '${nbase}'"
 
