@@ -230,7 +230,7 @@ preflight_reserved_lanes() {
   #     or unrelated .github/* symlink must NOT block init/update.
   for f in \
     .plinth/plinth-rules.md .plinth/MODELS.md .plinth/review.sh .plinth/risk-classify.sh \
-    .plinth/lane-guard.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
+    .plinth/lane-guard.sh .plinth/receipt-verify.sh .plinth/review-schema.json .plinth/reviewer.md .plinth/protected-paths \
     .plinth/config .plinth/AGENTS-project.md .plinth/DRIVER-project.md \
     .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
     .claude/hooks/pulse.sh .claude/settings.json .github/workflows/ci.yml .github/workflows/smoke.yml \
@@ -271,6 +271,7 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
   cp "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
   cp "$PLINTH_ROOT/shared/.plinth/lane-guard.sh"  "$target/.plinth/lane-guard.sh"
+  cp "$PLINTH_ROOT/shared/.plinth/receipt-verify.sh" "$target/.plinth/receipt-verify.sh"
   cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
   cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
   cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
@@ -284,6 +285,7 @@ copy_shared() {
   cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
   materialize_driver_shell
   chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" "$target/.plinth/lane-guard.sh" \
+           "$target/.plinth/receipt-verify.sh" \
            "$target/.claude/hooks/guard.sh" \
            "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
            "$target/.claude/hooks/pulse.sh"
@@ -361,6 +363,12 @@ github_preflight() {
     for want in "floor / secrets" "floor / sast" "floor / dependencies / osv-scan" "floor / harness"; do
       printf '%s\n' "$ctxs" | grep -qxF "$want" || fmiss="${fmiss:+$fmiss }$want"
     done
+    # The receipt check (auto mode, v4.7+) is expected ONLY where the project's CI
+    # actually wires plinth-receipt.yml — never demanded of an older scaffold, so
+    # the preflight cannot tell an operator to require a context no job reports.
+    if grep -qs 'plinth-receipt\.yml' "$target/.github/workflows/"*.yml 2>/dev/null; then
+      printf '%s\n' "$ctxs" | grep -qxF "receipt / verify" || miss="${miss:+$miss, }receipt/verify"
+    fi
     [ -z "$fmiss" ] || for w in $fmiss; do case "$w" in *secrets) miss="${miss:+$miss, }floor/secrets";; *sast) miss="${miss:+$miss, }floor/sast";; *harness) miss="${miss:+$miss, }floor/harness";; *osv-scan) miss="${miss:+$miss, }floor/dependencies/osv-scan";; esac; done
     [ -n "$ckctx" ] || miss="${miss:+$miss, }checks"
     # then cross-check EVERY present floor/checks context against actual check runs (fail closed on
@@ -465,6 +473,7 @@ ensure_protected_paths() {
 (^|/)\.plinth/review\.sh$
 (^|/)\.plinth/risk-classify\.sh$
 (^|/)\.plinth/lane-guard\.sh$
+(^|/)\.plinth/receipt-verify\.sh$
 (^|/)\.plinth/review-schema\.json$
 (^|/)\.plinth/plinth-rules\.md$
 (^|/)\.plinth/MODELS\.md$

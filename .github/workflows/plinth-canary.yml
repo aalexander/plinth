@@ -1042,6 +1042,51 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::(4g) resume-model loop did not approve (rc=$rc)"; exit 1; }
             grep -qx resume "$RM/args-2" || { echo "::error::(4g) round 2 was not a resume — fixture premise broken"; exit 1; }
             awk '/^-m$/{getline nx; if(nx=="tinymodel") ok=1} END{exit ok?0:1}' "$RM/args-2" || { echo "::error::resume invocation dropped the pinned reviewer model (#25 regressed)"; exit 1; } )
+          # (9) receipt minting + server verification (auto mode, v4.7): a binding
+          # APPROVED mints a plinth.review-receipt/v1 git note on the approved SHA;
+          # receipt-verify.sh accepts exactly that subject, enforces override
+          # disclosure both ways, and rejects a drifted head. Uses the REAL product
+          # scripts end-to-end (mint by review.sh, verify by receipt-verify.sh).
+          RC="$(mktemp -d)"; mkstate "$RC"; mk_cap_codex "$RC"
+          printf '%s' "$APF" > "$RC/verdict-1"
+          rcd="$(mktemp -d)"
+          ( cd "$rcd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rcd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin git@github.com:canary/receipt.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; PLINTH_ROUND_CAP=9 PATH="$RC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9) approval run failed (rc=$rc)"; exit 1; }
+            rsha=$(git rev-parse HEAD)
+            git notes --ref=plinth-receipts show "$rsha" > receipt.json 2>/dev/null || { echo "::error::(9) binding APPROVED minted no receipt note"; exit 1; }
+            jq -e '.schema=="plinth.review-receipt/v1" and .verdict=="APPROVED"' receipt.json >/dev/null || { echo "::error::(9) receipt malformed"; exit 1; }
+            [ "$(jq -r .head_sha receipt.json)" = "$rsha" ] || { echo "::error::(9) receipt head_sha != approved HEAD"; exit 1; }
+            jq -e '.override_ledger == [{"round":1,"name":"PLINTH_ROUND_CAP","value":"9"}]' receipt.json >/dev/null || { echo "::error::(9) override ledger missing the PLINTH_ROUND_CAP tuple (disclosure trail broken)"; exit 1; }
+            V="$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh"; chmod +x "$V"
+            echo "PLINTH-OVERRIDE: PLINTH_ROUND_CAP=9 (round 1)" > body.txt
+            "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body body.txt --repo canary/receipt >/dev/null || { echo "::error::(9) verifier rejected a valid, disclosed receipt"; exit 1; }
+            : > empty.txt
+            rc2=0; "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body empty.txt --repo canary/receipt >/dev/null 2>&1 || rc2=$?
+            [ "$rc2" = 1 ] || { echo "::error::(9) UNDISCLOSED override did not fail closed (rc=$rc2)"; exit 1; }
+            printf 'PLINTH-OVERRIDE: PLINTH_ROUND_CAP=9 (round 1)\nPLINTH-OVERRIDE: PLINTH_AUDIT_VENDOR=grok (round 2)\n' > phantom.txt
+            rc3=0; "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body phantom.txt --repo canary/receipt >/dev/null 2>&1 || rc3=$?
+            [ "$rc3" = 1 ] || { echo "::error::(9) PHANTOM disclosure (unbacked by the ledger) did not fail closed (rc=$rc3)"; exit 1; }
+            echo drift >> app.py; git add -A; git commit -qm drift >/dev/null
+            rc4=0; "$V" --receipt receipt.json --head-sha "$(git rev-parse HEAD)" --base-ref main --base-tip "$(git rev-parse main)" --pr-body body.txt --repo canary/receipt >/dev/null 2>&1 || rc4=$?
+            [ "$rc4" = 1 ] || { echo "::error::(9) receipt verified against a DRIFTED head (approve-then-push bypass)"; exit 1; } )
+          # (9b) Tier-0 approvals mint too — a docs-only diff gets its deterministic
+          # APPROVED and must still produce a receipt, or Tier-0 PRs would fail the
+          # required receipt context.
+          t0d="$(mktemp -d)"
+          ( cd "$t0d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$t0d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin git@github.com:canary/tier0.git
+            echo REQ > SPEC.md; echo readme > README.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo docs >> README.md; git add -A; git commit -qm docs >/dev/null
+            rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9b) Tier-0 run failed (rc=$rc)"; exit 1; }
+            git notes --ref=plinth-receipts show "$(git rev-parse HEAD)" > t0receipt.json 2>/dev/null || { echo "::error::(9b) Tier-0 APPROVED minted no receipt"; exit 1; }
+            jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' t0receipt.json >/dev/null || { echo "::error::(9b) Tier-0 receipt fields wrong"; exit 1; } )
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.

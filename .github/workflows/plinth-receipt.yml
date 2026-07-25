@@ -1,0 +1,86 @@
+name: plinth-receipt
+
+# The APPROVED-at-HEAD receipt check (auto mode, v4.7): the required status
+# check that verifies review.sh's own verdict server-side. The review loop
+# mints a plinth.review-receipt/v1 as a git note on the approved commit
+# (refs/notes/plinth-receipts); this workflow fetches that note for the PR's
+# exact head and re-derives every binding from the PR's own subject via
+# receipt-verify.sh (fetched from the PINNED plinth release, same trust anchor
+# as the floor's harness byte-check — never the PR's working tree, which is
+# PR-controlled). Fails closed on every path: no receipt, stale receipt,
+# non-APPROVED, subject mismatch, or an override the PR body does not disclose.
+#
+# HONEST BOUND (documented everywhere this check is): this verifies that a
+# receipt was minted for exactly this subject and that its override ledger is
+# disclosed. A driver that fabricates a receipt without running the loop
+# defeats it — the check makes skipping DETECTABLE AND AUDITABLE (the notes ref
+# is append-only history), not cryptographically impossible.
+#
+# v1 LIMITS (fail closed, never silently pass):
+# - pull_request events only. GitHub merge queues rewrite SHAs into synthetic
+#   heads no local loop ever approved — exact-HEAD semantics cannot be
+#   inherited; do not enable a merge queue with this check required.
+# - Receipts are fetched from the BASE repository's notes ref. A fork driver
+#   cannot push notes there, so fork PRs fail closed — the estate's flow is
+#   same-repo branches.
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject unsupported events (fail closed)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "::error::plinth-receipt v1 verifies pull_request events only (got ${{ github.event_name }}); merge queues rewrite SHAs — the synthetic head was never approved by any loop"
+          exit 1
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+      - name: Verify the APPROVED-at-HEAD receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Verifier comes from the pinned release — same anchor and same known
+          # downgrade limit as the floor harness (a .plinth-version change
+          # outside a plinth-update commit is reviewed as tampering).
+          ver="$(cat .plinth-version 2>/dev/null || true)"
+          [ -n "$ver" ] || { echo "::error::no .plinth-version — not a Plinth project?"; exit 1; }
+          git clone --depth 1 --branch "v${ver}" \
+            "https://github.com/${{ github.repository_owner }}/plinth" /tmp/plinth \
+            || { echo "::error::cannot fetch plinth@v${ver} — missing tag, or plinth repo not readable from Actions"; exit 1; }
+          VERIFY=/tmp/plinth/shared/.plinth/receipt-verify.sh
+          [ -f "$VERIFY" ] || { echo "::error::plinth v${ver} predates the receipt check (no receipt-verify.sh) — update the instrument before requiring this check"; exit 1; }
+          chmod +x "$VERIFY"
+          # The PR head object must exist locally even for fork PRs (the base
+          # repo serves it via the pull ref); the notes ref comes from the BASE
+          # repo only — that is the point.
+          git fetch -q origin "+refs/pull/${PR_NUM}/head:refs/plinth/prhead" \
+            || { echo "::error::cannot fetch the PR head ref"; exit 1; }
+          git fetch -q origin '+refs/notes/plinth-receipts:refs/notes/plinth-receipts' \
+            || { echo "::error::no refs/notes/plinth-receipts on this repository — the review loop mints it on APPROVED; push it with the branch: git push origin HEAD refs/notes/plinth-receipts"; exit 1; }
+          git notes --ref=plinth-receipts show "$HEAD_SHA" > receipt.json 2>/dev/null || rm -f receipt.json
+          # PR body via the event payload file — never shell-interpolated.
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pr-body.txt
+          "$VERIFY" --receipt receipt.json --head-sha "$HEAD_SHA" \
+            --base-ref "$BASE_REF" --base-tip "$(git rev-parse "origin/${BASE_REF}")" \
+            --pr-body pr-body.txt --repo "${{ github.repository }}"
+          # TOCTOU: re-fetch the live PR just before success — a head or body
+          # swap mid-run must invalidate this run, not ride its green check.
+          live="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUM}" --jq '{sha: .head.sha, body: (.body // "")}')"
+          [ "$(jq -r .sha <<<"$live")" = "$HEAD_SHA" ] \
+            || { echo "::error::PR head changed while verifying — re-run the check"; exit 1; }
+          jq -r .body <<<"$live" > pr-body-live.txt
+          cmp -s pr-body.txt pr-body-live.txt \
+            || { echo "::error::PR body changed while verifying (override disclosure could differ) — re-run the check"; exit 1; }
+          echo "receipt verified: APPROVED at ${HEAD_SHA}"

@@ -410,6 +410,53 @@ fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
 
+# ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
+# Every BINDING APPROVED (including Tier 0's deterministic one) mints a
+# plinth.review-receipt/v1 as a git note on the approved commit
+# (refs/notes/plinth-receipts) — out-of-band of the commit so HEAD never moves,
+# keyed to the exact SHA the verdict binds. The server-side receipt check
+# (plinth-receipt.yml + receipt-verify.sh) re-derives every field from the PR's
+# own subject and fails closed on any mismatch. Minting is best-effort here (a
+# repo without notes support still reviewed fine — the SERVER check is the
+# enforcer), but failure is announced, never swallowed silently.
+mint_receipt() {  # mint_receipt <round>
+  local mround="$1" repo_nwo htree mb ledger subj receipt
+  repo_nwo="$(git config --get remote.origin.url 2>/dev/null \
+    | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')" || repo_nwo=""
+  htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
+  mb="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
+  # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
+  # to {round, name, value} tuples — the disclosure set the server check holds
+  # the PR body to (exact tuple-set equality).
+  ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
+      {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
+      "$SDIR/usage.jsonl" 2>/dev/null)" || ledger="[]"
+  [ -n "$ledger" ] || ledger="[]"
+  if command -v shasum >/dev/null 2>&1; then
+    subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | shasum -a 256 | cut -d' ' -f1)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | sha256sum | cut -d' ' -f1)"
+  else
+    echo "Plinth review: NOTE — receipt not minted (no sha256 tool)."; return 0
+  fi
+  receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
+    --arg br "${baseref#origin/}" --arg mb "$mb" --arg sd "sha256:${subj}" \
+    --argjson round "$mround" --argjson ledger "$ledger" \
+    '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+      base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+      round:$round, override_ledger:$ledger}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+  # -f replaces THIS commit's note on re-approval; other commits' notes are
+  # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
+  # and `git notes merge` first (the driver rules carry the recipe).
+  if git notes --ref=plinth-receipts add -f -m "$receipt" "$sha" 2>/dev/null; then
+    echo "Plinth review: receipt minted on ${sha:0:12} (refs/notes/plinth-receipts) — push it WITH the branch: git push origin HEAD refs/notes/plinth-receipts"
+  else
+    echo "Plinth review: NOTE — receipt note could not be written (git notes failed); the server receipt check will fail closed until a receipt exists at HEAD."
+  fi
+}
+
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
@@ -420,6 +467,7 @@ if [ "$RISK" = "0" ]; then
           round:0, session_id:"", model:"deterministic-floor", risk:$risk,
           diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error"
+  mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
 fi
@@ -1088,5 +1136,6 @@ elif [ "$RISK" = "2" ]; then
   # primary + the default audit_vendor=claude).
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
 fi
+mint_receipt "$round"
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0
