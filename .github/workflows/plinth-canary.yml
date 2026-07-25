@@ -3969,6 +3969,51 @@ jobs:
             printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
             r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
+          # LARGE IGNORED TREE (v4.7.2): the snapshot must stay O(sensitive files), WITHOUT narrowing
+          # what it sees. Classification used to fork two greps per pattern per path over the FULL
+          # ignored listing, so a repo with a real node_modules/ paid minutes (232s measured on a
+          # 25k-file ignored tree) and lanes stalled. Both halves are asserted here, because the
+          # tempting fast fix — enumerating fewer files — buys the speed with the security property:
+          LGBIG="$(mktemp -d)"; ( cd "$LGBIG"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth
+            # a protected pattern that is a REGEX — NOT a literal path and NOT a git pathspec. A
+            # candidate filter built from hardcoded secret globs (the obvious "push it down into
+            # git ls-files" fix) would stop seeing this file entirely:
+            printf '(^|/)vendor/pinned/.*\\.lock$\n' > .plinth/protected-paths
+            printf 'node_modules/\n.env\nsecrets/\ncredentials/\nid_rsa*\nvendor/pinned/\n' > .gitignore
+            echo a > app.py; git add -A; git commit -qm base >/dev/null
+            # GITIGNORED sensitive files — every one must survive whatever narrowing the fast path does:
+            printf 'K=1\n' > .env; mkdir -p secrets credentials vendor/pinned
+            printf 'T\n' > secrets/api-token.txt; printf 'C\n' > credentials/aws.json; printf 'P\n' > id_rsa
+            printf 'L\n' > vendor/pinned/dep.lock          # sensitive ONLY via the protected-paths REGEX
+            mkdir -p node_modules/pkg{000..099}/lib        # 5k ignored files: the condition that made the cost visible
+            for d in node_modules/pkg*/lib; do for f in {000..049}; do : > "$d/f$f.js"; done; done
+            [ "$(git ls-files -o -i --exclude-standard | wc -l)" -ge 5000 ] || { echo "::error::large-ignored-tree fixture did not build (fewer than 5000 ignored files) — the perf assertion below would be vacuous"; exit 1; }
+            SNAPB="$(mktemp)"; bs="$(date +%s)"; r=0; bash "$LG" snapshot > "$SNAPB" || r=$?; be="$(date +%s)"
+            [ "$r" = 0 ] || { echo "::error::lane-guard snapshot failed on a repo with a large ignored tree (rc=$r)"; exit 1; }
+            # SECURITY PROPERTY (the point of the snapshot): gitignored secrets are STILL enumerated.
+            # A snapshot that got fast by no longer listing ignored files would silently stop seeing a
+            # lane planting secrets in .env / secrets/ — a regression, not a fix:
+            for s in '  \.env$' '  secrets/api-token\.txt$' '  credentials/aws\.json$' '  id_rsa$'; do
+              grep -qE "$s" "$SNAPB" || { echo "::error::lane-guard snapshot no longer enumerates the GITIGNORED secret matching /$s/ under a large ignored tree — a speed fix must never narrow WHICH files are seen"; exit 1; }
+            done
+            grep -qE '  vendor/pinned/dep\.lock$' "$SNAPB" || { echo "::error::lane-guard snapshot missed a GITIGNORED path that is sensitive only via a protected-paths REGEX — any candidate prefilter must run the REAL pattern set (protected-paths entries are grep -E regexes, not git pathspecs)"; exit 1; }
+            grep -q node_modules "$SNAPB" && { echo "::error::lane-guard snapshot lists node_modules — the candidate prefilter WIDENED the sensitive set (every ignored artifact would be compared)"; exit 1; } || true
+            # …and it must be FAST. Measured on THIS fixture: 31s pre-fix vs 1s filtered (a fast
+            # laptop; a runner is slower on both). The bound sits between them with room on each
+            # side — ~15x headroom before a healthy run false-fails, ~2x before a reintroduced
+            # per-path fork storm sneaks under it:
+            [ "$(( be - bs ))" -lt 15 ] || { echo "::error::lane-guard snapshot took $(( be - bs ))s on 5k ignored files (expected ~1s) — the O(every ignored file) per-path classification is back; real repos (25k-200k ignored files) stall lanes for minutes"; exit 1; }
+            # The candidate filter also runs inside scope's RE-snapshot, where the policy must be the
+            # BASE UNION, not the working tree. The load-bearing case is a NEWLY PLANTED file: a lane
+            # narrows protected-paths, then creates a gitignored path only the deleted pattern
+            # covered. It is invisible to git diff (ignored) and absent from the BEFORE snapshot, so
+            # a filter reading the narrowed tree policy leaves before == after and scope says ok.
+            # (Editing an EXISTING sensitive file would not test this — it is caught either way, just
+            # by vanishing from the after-snapshot.)
+            printf '# narrowed away\n' > .plinth/protected-paths; printf 'PLANTED\n' > vendor/pinned/new.lock
+            r=0; out="$(bash "$LG" scope HEAD --snapshot "$SNAPB" app.py .plinth/protected-paths 2>&1)" || r=$?
+            { [ "$r" = 4 ] && printf '%s' "$out" | grep -q 'vendor/pinned/new.lock'; } || { echo "::error::a lane NARROWED protected-paths and PLANTED a new gitignored file that only the deleted pattern covered, and scope did not catch it (rc=$r) — the re-snapshot's candidate filter must use the BASE-unioned policy, never the working tree's"; exit 1; } )
           # plinth advise applies the verdict-not-survey discipline to EVERY vendor, and the
           # prompt must actually ARRIVE by that vendor's route: claude=STDIN (v4.7 — it was a
           # positional argument until the variadic --allowed-tools was found to swallow it,
