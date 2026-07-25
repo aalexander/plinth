@@ -41,6 +41,22 @@ parts that were wrong on the way:
   matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
   to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
   stale the moment the fixture grew, and were wrong twice.)
+- **Approval and coverage reuse now key on IMMUTABLE state, not on a base ref's spelling.**
+  The first fix compared `prev_base = baseref` literally, which is wrong in both
+  directions because a ref is a moving label. If `main` advances ONTO an ancestor of the
+  branch (the first half of the work merged separately), HEAD and the base NAME are
+  unchanged but the merge base moves and the three-dot diff SHRINKS — so the fast path
+  reminted a receipt for a diff nobody reviewed, and the server check would verify it as
+  sound. Conversely `main` and `origin/main` at the same commit are the SAME base, and
+  treating the spellings as different spuriously bought a full paid round, breaking the
+  documented free remint as soon as an operator added and fetched an origin. Verdicts now
+  record `merge_base`, the remint requires the recorded `diff_digest` to still match, and
+  continuation (warm resume and scoped verify) requires the merge base to be unmoved —
+  both normalized across the `origin/` prefix. All fail CLOSED on a pre-v4.7.1 verdict
+  that lacks the fields. A moved base is announced and starts a new loop rather than
+  silently resetting the round counter. Fixture (9k) covers both directions; note that
+  merely adding commits to `main` is NOT this case — the merge base is unchanged, the diff
+  is byte-identical, and reusing the approval is correct.
 - **`round_cap` is now OPT-IN: unset means NO CAP (was 8).** Removing the knob from
   `.plinth/config` used to look like disabling the breaker while silently restoring a
   default of 8 — the loop would stop at round 8 and the config held no evidence why. This

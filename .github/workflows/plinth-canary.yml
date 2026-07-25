@@ -1940,6 +1940,48 @@ jobs:
             [ "$r9hn_who" = "$r9hw" ] || { echo "::error::(9h) $r9hl: the note on $r9hc came from '$r9hn_who', expected '$r9hw' — '-s theirs' did not resolve as documented (theirs = the fetched remote ref; the local side is restored by the review.sh re-run in the recipe)"; exit 1; }
           done
           cd "$GITHUB_WORKSPACE"
+          # (9k) BASE BINDING keyed on IMMUTABLE state, not on the ref's spelling. A base
+          # ref is a moving label, so "same name" does not mean "same diff" and "different
+          # name" does not mean "different diff". Both errors are reachable and both are
+          # covered here, because an earlier fix compared `prev_base = baseref` literally:
+          #   MOVED  — main advances ONTO an ancestor of the branch (the first half of the
+          #            work merged separately). HEAD and the base NAME are unchanged, but
+          #            the merge base moves and the three-dot diff SHRINKS. Reusing the
+          #            approval would mint a receipt for a diff nobody reviewed. Note that
+          #            simply ADDING commits to main does NOT do this — the merge base is
+          #            unchanged, the diff is byte-identical, and reusing IS correct.
+          #   ALIAS  — `main` vs `origin/main` at the SAME commit is the SAME base. Treating
+          #            the spellings as different spuriously buys a full paid round, which
+          #            breaks the documented free remint right after adding/fetching origin.
+          R9K="$(mktemp -d)"; mkstate "$R9K"; mk_cap_codex "$R9K"
+          r9kd="$(mktemp -d)"
+          ( cd "$r9kd"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9kd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; C1="$(git rev-parse HEAD)"
+            echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
+            rc=0; PATH="$R9K:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9k) setup: the loop did not APPROVE (rc=$rc)"; exit 1; }
+            mb0="$(jq -r '.merge_base // empty' .plinth/session/review/feat/verdict.json)"
+            [ -n "$mb0" ] || { echo "::error::(9k) verdict.json records no merge_base — continuation cannot be bound to immutable state"; exit 1; }
+            # ALIAS: origin/main at the same commit must still take the FREE remint.
+            git update-ref refs/remotes/origin/main refs/heads/main
+            b="$(cat "$R9K/state")"
+            out="$(PATH="$R9K:$PATH" ./.plinth/review.sh origin/main 2>&1)" || true
+            [ "$(cat "$R9K/state")" = "$b" ] || { echo "::error::(9k) ALIAS: reviewing 'origin/main' at the same commit as 'main' invoked the reviewer again ($b -> $(cat "$R9K/state")) — equivalent spellings of one base must not buy a paid round, or the documented free remint breaks as soon as an origin is added"; exit 1; }
+            printf '%s' "$out" | grep -q 'Nothing new to review' || { echo "::error::(9k) ALIAS: the free remint did not happen for an equivalent base spelling: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            # MOVED: advance main onto C1, an ancestor of feat -> merge base moves, diff shrinks.
+            git branch -f main "$C1"
+            git update-ref refs/remotes/origin/main refs/heads/main
+            [ "$(git merge-base main HEAD)" != "$mb0" ] || { echo "::error::(9k) MOVED: the merge base did not actually move — the case below would pass vacuously"; exit 1; }
+            b2="$(cat "$R9K/state")"
+            out2="$(PATH="$R9K:$PATH" ./.plinth/review.sh main 2>&1)" || true
+            printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k) MOVED: an approval was REUSED after the merge base moved under a fixed HEAD — the reviewed diff shrank, so this mints a receipt for a diff nobody reviewed and the server check verifies it as sound"; exit 1; } || true
+            [ "$(cat "$R9K/state")" != "$b2" ] || { echo "::error::(9k) MOVED: no real round ran after the base moved"; exit 1; }
+            printf '%s' "$out2" | grep -qE 'BASE HAS|has MOVED' || { echo "::error::(9k) MOVED: the base movement was not announced — an operator sees an unexplained paid round: $(printf '%s' "$out2" | tail -c 200)"; exit 1; } )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
@@ -2685,9 +2727,13 @@ jobs:
             git worktree add -q -b agentwt .claude/worktrees/agent-probe >/dev/null 2>&1 || { echo "::error::(worktree-ignore) could not create the nested probe worktree — fixture cannot test what it claims"; exit 1; }
             [ -d .claude/worktrees/agent-probe ] || { echo "::error::(worktree-ignore) the probe worktree was not created"; exit 1; }
             [ -z "$(git status --porcelain)" ] || { echo "::error::(worktree-ignore) a nested agent worktree left the tree DIRTY: $(git status --porcelain | tr '\n' ' ') — review.sh would refuse to run while any subagent is alive"; exit 1; }
-            # NEGATIVE half: without the pattern the very same repo must read dirty.
+            # NEGATIVE half, SCOPED to the worktree path. An unscoped `git status` here is
+            # vacuous: editing .gitignore to remove the line dirties .gitignore ITSELF, so
+            # the check would pass even if some other mechanism still hid the worktree.
+            # Restricting the pathspec makes the assertion actually about the pattern.
+            [ -z "$(git status --porcelain -- .claude/worktrees/)" ] || { echo "::error::(worktree-ignore) the nested worktree is reported under a .claude/worktrees/ pathspec even WITH the ignore rule present"; exit 1; }
             grep -vxF '.claude/worktrees/' .gitignore > .gitignore.probe && mv .gitignore.probe .gitignore
-            [ -n "$(git status --porcelain)" ] || { echo "::error::(worktree-ignore) removing .claude/worktrees/ from .gitignore did NOT make the tree dirty — something else is hiding the worktree, so this fixture proves nothing about the pattern"; exit 1; } )
+            [ -n "$(git status --porcelain -- .claude/worktrees/)" ] || { echo "::error::(worktree-ignore) removing .claude/worktrees/ from .gitignore did NOT surface the worktree under that pathspec — something else is hiding it, so this fixture proves nothing about the pattern"; exit 1; } )
           # The Plinth repo's OWN .gitignore carries the same rule: this repo is where
           # worktree-spawning drivers actually run, and templates/ is never applied to it.
           grep -qxF '.claude/worktrees/' "$GITHUB_WORKSPACE/.gitignore" || { echo "::error::(worktree-ignore) this repo's own .gitignore lost the .claude/worktrees/ rule — its review loop would be blocked whenever a subagent worktree exists"; exit 1; }

@@ -397,12 +397,19 @@ mkdir -p "$SDIR"
 # The tier is computed deterministically from the diff by version-pinned tooling
 # the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
 # docs/text) is granted by the deterministic floor without a model round; Tier
-# 1/2 get adversarial review. diff_digest is recorded in the verdict as a
-# forensic fingerprint of the reviewed diff (dashboard/audit only — it is not
-# a merge-time enforcement point; that hardening is deferred until real use
-# shows it is needed).
+# 1/2 get adversarial review. diff_digest is a fingerprint of the REVIEWED DIFF.
+# It is still not a merge-time enforcement point (the server check owns that), but it
+# IS now load-bearing for loop continuation: see the base-binding block below, where
+# reusing an approval or a coverage anchor keyed on a base ref's SPELLING was found to
+# be unsound because a ref is mutable. Real use showed the need, which is the bar.
 diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
 [ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+# The IMMUTABLE identity of "where the base was" for this run. A ref name is a moving
+# label — `main` today is not `main` tomorrow — so continuation decisions that must
+# survive base movement key on this SHA, never on the spelling. Empty (no merge base,
+# e.g. unrelated histories) fails CLOSED at the comparison sites: an unknown anchor
+# never matches, so the loop re-reads rather than assuming continuity.
+merge_base="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || merge_base=""
 # Fail CLOSED: a missing/broken classifier must not de-escalate. Default Tier 2
 # (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
 # high-consequence diff is over-reviewed, never under-reviewed.
@@ -607,10 +614,11 @@ mint_receipt() {  # mint_receipt <round>
 # still run at PR; any code file would have bumped the tier above 0.
 if [ "$RISK" = "0" ]; then
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
+        --arg mbase "$merge_base" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
           round:0, session_id:"", model:"deterministic-floor", risk:$risk,
-          diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
+          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
@@ -684,10 +692,17 @@ if [ -n "${RV_MODEL:-}" ]; then REVIEWER_MODEL="$RV_MODEL"; fi
 # would pass a FOREIGN session id to the new vendor's --resume and safety would
 # rest on that CLI failing cleanly; a missing recorded vendor (pre-v4.6
 # verdict.json) fails CLOSED to a non-resume round. Pure fn -> testable.
-resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode> <prev_vendor>
+resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode> <prev_vendor> <prev_mbase> <merge_base>
   [ "$1" = "CHANGES_NEEDED" ] || return 1
   [ -n "$2" ] || return 1
-  [ "$3" = "$4" ] || return 1
+  # Base identity NORMALIZED (origin/main and main are the same base; treating them as
+  # different spuriously burned a full round after an operator added and fetched origin)
+  # AND the merge base UNMOVED. The second test is the load-bearing one: a same-named
+  # base that MOVED changes the diff while the spelling still matches, so a warm thread
+  # would continue against a diff it never read. Empty prev_mbase (pre-v4.7.1 verdict)
+  # fails CLOSED here, as everywhere else in this function.
+  [ "${3#origin/}" = "${4#origin/}" ] || return 1
+  [ -n "${7:-}" ] && [ "${7:-}" = "${8:-}" ] || return 1
   [ "${6:-}" = "${REVIEWER_VENDOR:-}" ] || return 1
   # Only resume a mode that carries a warm UNANCHORED full read: fresh, or a prior
   # resume that continues such a thread. verify is anchored on prior findings; an
@@ -749,6 +764,14 @@ if [ -f "$SDIR/verdict.json" ]; then
   prev_mode="$(jq -r '.mode // empty'          "$SDIR/verdict.json")"
   prev_vendor="$(jq -r '.vendor // empty'      "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
+  # IMMUTABLE reviewed state. A base REF is a moving label, so neither reusing an
+  # approval nor inheriting a coverage anchor may key on its spelling: `main` can move
+  # under a fixed HEAD, which changes the diff while the name stays equal. prev_digest
+  # pins WHAT was reviewed; prev_mbase pins WHERE the base was. Both are empty on a
+  # pre-v4.7.1 verdict.json, and every comparison below fails CLOSED on empty — an
+  # unknown anchor re-reads rather than assuming continuity.
+  prev_digest="$(jq -r '.diff_digest // empty' "$SDIR/verdict.json")"
+  prev_mbase="$(jq -r '.merge_base // empty'   "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
   # Budget is ADVISORY: warn loudly and continue — never park the loop on a
@@ -757,10 +780,22 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_in" -gt "$ROUND_BUDGET" ]; then
     echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
   fi
+  # A MOVED base restarts the loop rather than continuing it. Announce it: the round
+  # counter, finding history and override ledger all reset, and an operator watching
+  # round numbers would otherwise see the loop silently start over.
+  if [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "${prev_base#origin/}" = "${baseref#origin/}" ] \
+     && [ -n "$prev_mbase" ] && [ "$prev_mbase" != "$merge_base" ]; then
+    echo "Plinth review: NOTE — '${baseref}' has MOVED since round ${prev_round} (merge base ${prev_mbase:0:12} → ${merge_base:0:12}). The recorded coverage anchor describes a diff that no longer exists, so continuing would verify fixes against a base nobody read. Starting a NEW loop: full round, fresh finding history and override ledger."
+  fi
   # Say so when the base is why the free remint did not happen — otherwise an operator
   # following the notes-recovery recipe with the wrong base silently buys a full round.
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] && [ "$prev_base" != "$baseref" ]; then
-    echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}', but this run targets '${baseref}'. A verdict binds a DIFF, so that approval does not carry over and no receipt is reminted for it. Running a full round against '${baseref}'. If you meant to remint the existing receipt, re-run with the base you reviewed: ./.plinth/review.sh ${prev_base#origin/}"
+  # Two DIFFERENT causes, reported differently, because the operator's next move differs.
+  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
+    if [ "${prev_base#origin/}" != "${baseref#origin/}" ]; then
+      echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}', but this run targets '${baseref}'. A verdict binds a DIFF, so that approval does not carry over and no receipt is reminted for it. Running a full round against '${baseref}'. If you meant to remint the existing receipt, re-run with the base you reviewed: ./.plinth/review.sh ${prev_base#origin/}"
+    elif [ -n "$prev_digest" ] && [ "$prev_digest" != "$diff_digest" ]; then
+      echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}' and HEAD has not moved, but the BASE HAS: the diff under review no longer matches the one that was approved (digest ${prev_digest:0:12} → ${diff_digest:0:12}). Reusing that approval would mint a receipt for a diff nobody reviewed. Running a full round."
+    fi
   fi
   # The stored BASE must match too, not just the SHA. A verdict is a statement about a
   # DIFF, and the receipt's subject digest binds the base ref and merge-base — so an
@@ -772,7 +807,9 @@ if [ -f "$SDIR/verdict.json" ]; then
   # server check would happily verify it. Mismatch falls through to the new-loop branch
   # below, which clears the per-loop markers and runs a real round 1 against the new base
   # (correct: different base, different diff, different subject, fresh ledger).
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] && [ "$prev_base" = "$baseref" ]; then
+  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] \
+     && [ "${prev_base#origin/}" = "${baseref#origin/}" ] \
+     && [ -n "$prev_digest" ] && [ "$prev_digest" = "$diff_digest" ]; then
     if binds_directly "$prev_mode" "$RISK"; then
       # REMINT before the fast path returns. Minting is best-effort (a repo with no
       # origin, no notes support, or no sha256 tool still reviews fine), so a binding
@@ -799,7 +836,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
   if [ "${recovery:-0}" = 1 ]; then
     :  # confirmation recovery already selected fresh mode — skip the resume logic
-  elif [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode" "$prev_vendor"; then
+  elif [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode" "$prev_vendor" "$prev_mbase" "$merge_base"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
     # Resume only when it can plausibly work; otherwise a verify round (fresh
     # session, SCOPED: open prior findings + the cumulative fix diff since the
@@ -818,7 +855,9 @@ if [ -f "$SDIR/verdict.json" ]; then
         mode="$fallback"
       fi
     fi
-  elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$prev_base" = "$baseref" ] && [ -f "$SDIR/findings-${prev_round}.json" ]; then
+  elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "${prev_base#origin/}" = "${baseref#origin/}" ] \
+       && [ -n "$prev_mbase" ] && [ "$prev_mbase" = "$merge_base" ] \
+       && [ -f "$SDIR/findings-${prev_round}.json" ]; then
     # Non-warm-resume reviewer (grok: no headless token usage → no size-gateable
     # warm thread) can't resume — and so can a vendor swap mid-loop — but prior
     # findings on the SAME base exist → a scoped verify round continues the fix
@@ -1163,8 +1202,9 @@ ${inc}${evidence}${commits}"
         --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
+        --arg mbase "$merge_base" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts}
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
   # usage.jsonl is the CUMULATIVE per-round ledger (verdict.json is overwritten
