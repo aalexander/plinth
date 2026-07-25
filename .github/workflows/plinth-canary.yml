@@ -2291,6 +2291,13 @@ jobs:
             b4="$(cat "$R9M/state")"
             out4="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/remotes/origin/main 2>&1)" || true
             printf '%s' "$out4" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/remotes/origin/main' was not recognised as the same base as 'main': $(printf '%s' "$out4" | tail -c 200)"; exit 1; }
+            # CAPTURE AND ASSERT HERE, before anything else touches the note. This assertion
+            # used to sit after the forced-backend block below, which removes and re-mints
+            # HEAD's note with baseref=refs/heads/main — so it was reading THAT receipt, not
+            # this invocation's, and a regression leaving refs/remotes/origin/main
+            # uncanonicalized would have passed. Order matters as much as the assertion.
+            r9mnote2="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
+            [ "$r9mnote2" = "main" ] || { echo "::error::(9k3) after 'refs/remotes/origin/main' the receipt recorded base_ref '$r9mnote2', expected the canonical 'main' (order-sensitive: refs/remotes/ must be stripped before origin/)"; exit 1; }
             r9m_check_subject "after refs/remotes/origin/main"
             # BOTH PRODUCTION BACKENDS, forced. Everything above ran with the normal PATH, so
             # mint_receipt always took its `shasum` branch and the `sha256sum` branch never
@@ -2336,8 +2343,7 @@ jobs:
               echo "::notice::(9k3) only one sha256 backend is present here; the cross-backend comparison runs where both exist"
             fi
             [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
-            r9mnote2="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
-            [ "$r9mnote2" = "main" ] || { echo "::error::(9k3) after 'refs/remotes/origin/main' the receipt recorded base_ref '$r9mnote2', expected the canonical 'main' (order-sensitive strip of refs/remotes/ before origin/)"; exit 1; } )
+            )
           # (9j) THE COMPLETE FOUR-COMMAND RECIPE, IN ORDER, with the conflict AT HEAD.
           # (9h) covers notes mechanics but pushes BEFORE any review.sh rerun and places the
           # conflict on a non-HEAD commit; (9i) covers the rerun but in a repo with no notes
