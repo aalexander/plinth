@@ -82,6 +82,12 @@ jobs:
             */*) : ;;
             *) echo "::error::job_workflow_ref does not name owner/repo (got ${wf_nwo}) — cannot resolve the verifier repository"; exit 1 ;;
           esac
+          # Clear first: a GitHub-hosted runner is ephemeral, but a REUSED/self-hosted one
+          # can carry a stale /tmp/plinth from a prior job (a partial failure leaves the dir
+          # behind), and `remote add origin` then dies with "already exists" — a confusing
+          # failure with nothing to do with the receipt. The canary's own fixture clears it
+          # between cases; the production step must not rely on a fresh VM to be correct.
+          rm -rf /tmp/plinth
           git init -q /tmp/plinth
           git -C /tmp/plinth remote add origin "https://github.com/${wf_nwo}"
           git -C /tmp/plinth fetch -q --depth 1 origin "$ref" \
@@ -95,8 +101,17 @@ jobs:
           # repo only — that is the point.
           git fetch -q origin "+refs/pull/${PR_NUM}/head:refs/plinth/prhead" \
             || { echo "::error::cannot fetch the PR head ref"; exit 1; }
-          git fetch -q origin '+refs/notes/plinth-receipts:refs/notes/plinth-receipts' \
-            || { echo "::error::no refs/notes/plinth-receipts on this repository — the review loop mints it on APPROVED; push it with the branch: git push origin HEAD refs/notes/plinth-receipts"; exit 1; }
+          # Distinguish "the ref is legitimately absent" from "the fetch failed" before
+          # blaming the driver. HEAL-CI asks the operator to classify a red check as
+          # transient vs real defect, which is impossible if both render as the same
+          # message — an auth blip would read as "you forgot to push your receipts".
+          if git ls-remote --exit-code origin 'refs/notes/plinth-receipts' >/dev/null 2>&1; then
+            git fetch -q origin '+refs/notes/plinth-receipts:refs/notes/plinth-receipts' \
+              || { echo "::error::refs/notes/plinth-receipts EXISTS on the remote but could not be fetched — this is an infrastructure failure (network/auth), not a missing receipt. Re-run the check; if it persists, treat it as a real defect per HEAL-CI."; exit 1; }
+          else
+            echo "::error::no refs/notes/plinth-receipts on this repository — the review loop mints it on APPROVED; push it with the branch: git push origin HEAD refs/notes/plinth-receipts"
+            exit 1
+          fi
           git notes --ref=plinth-receipts show "$HEAD_SHA" > receipt.json 2>/dev/null || rm -f receipt.json
           # PR body via the event payload file — never shell-interpolated.
           jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pr-body.txt

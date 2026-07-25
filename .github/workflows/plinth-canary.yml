@@ -1407,6 +1407,78 @@ jobs:
           # mid-fixture failure can leave at most one mapping that can never collide.
           git config --global --unset-all url."file://$R9D_FP".insteadOf 2>/dev/null || true
           rm -rf /tmp/plinth
+          # (9e) receipt-verify.sh REJECTION BRANCHES, driven one at a time. This script is
+          # the security boundary the whole v4.7 feature exists to add, yet only its happy
+          # path, the override-disclosure branch, and a head-drift case (which conflates
+          # head_sha with tree) had coverage — every other fail-closed branch was exercised
+          # only implicitly. Each case below mutates EXACTLY ONE field of an otherwise-valid
+          # receipt, so a passing case proves that branch specifically rejects, not that some
+          # earlier check happened to fire first. Uses the real shipped script.
+          R9E_V="$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh"
+          R9E="$(mktemp -d)"
+          ( cd "$R9E" && git init -qb main . >/dev/null
+            echo base > SPEC.md && git add -A && git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo change >> SPEC.md && git add -A && git commit -qm change >/dev/null )
+          R9E_HEAD="$(git -C "$R9E" rev-parse HEAD)"
+          R9E_TREE="$(git -C "$R9E" rev-parse HEAD^{tree})"
+          R9E_MB="$(git -C "$R9E" merge-base main feat)"
+          R9E_NWO="canary/receipt9e"
+          if command -v shasum >/dev/null 2>&1; then R9E_S() { shasum -a 256 | cut -d' ' -f1; }
+          else R9E_S() { sha256sum | cut -d' ' -f1; }
+          fi
+          R9E_SUBJ="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$R9E_NWO" main "$R9E_MB" "$R9E_HEAD" "$R9E_TREE" | R9E_S)"
+          r9e_receipt() {  # r9e_receipt [jq-filter-applied-to-the-valid-receipt]
+            jq -cn --arg repo "$R9E_NWO" --arg hs "$R9E_HEAD" --arg ht "$R9E_TREE" \
+              --arg br main --arg mb "$R9E_MB" --arg sd "sha256:${R9E_SUBJ}" \
+              '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+                base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+                round:1, override_ledger:[]}' | jq -c "${1:-.}"
+          }
+          : > "$R9E/body.txt"
+          r9e_run() {  # r9e_run <receipt-file> ; echoes exit code
+            local rc=0
+            ( cd "$R9E" && bash "$R9E_V" --receipt "$1" --head-sha "$R9E_HEAD" --base-ref main \
+                --base-tip "$(git -C "$R9E" rev-parse main)" --pr-body "$R9E/body.txt" \
+                --repo "$R9E_NWO" ) >/dev/null 2>&1 || rc=$?
+            echo "$rc"
+          }
+          r9e_reject() {  # r9e_reject <label> <jq-filter>
+            r9e_receipt "$2" > "$R9E/r.json"
+            local rc; rc="$(r9e_run "$R9E/r.json")"
+            [ "$rc" = 1 ] || { echo "::error::(9e) $1: expected exit 1 (reject), got $rc — this fail-closed branch of receipt-verify.sh does not reject"; exit 1; }
+          }
+          # baseline: the unmutated receipt MUST verify, or every rejection below is vacuous
+          r9e_receipt > "$R9E/r.json"
+          r9e_ok="$(r9e_run "$R9E/r.json")"
+          [ "$r9e_ok" = 0 ] || { echo "::error::(9e) baseline valid receipt did not verify (rc=$r9e_ok) — the rejection cases would pass vacuously"; exit 1; }
+          r9e_reject "repo mismatch"            '.repo = "someone/else"'
+          r9e_reject "base_ref mismatch"        '.base_ref = "release"'
+          r9e_reject "head_sha mismatch"        '.head_sha = "0000000000000000000000000000000000000000"'
+          r9e_reject "head_tree mismatch"       '.head_tree_sha = "1111111111111111111111111111111111111111"'
+          r9e_reject "merge_base stale"         '.merge_base_sha = "2222222222222222222222222222222222222222"'
+          r9e_reject "tampered subject_digest"  '.subject_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"'
+          r9e_reject "verdict not APPROVED"     '.verdict = "CHANGES_NEEDED"'
+          r9e_reject "wrong schema id"          '.schema = "plinth.review-receipt/v2"'
+          r9e_reject "missing required field"   'del(.merge_base_sha)'
+          r9e_reject "non-allowlisted override" '.override_ledger = [{round:1, name:"PLINTH_ANYTHING", value:"x"}]'
+          r9e_reject "override value w/ space"  '.override_ledger = [{round:1, name:"PLINTH_REVIEWER_MODEL", value:"gpt 5.6"}]'
+          r9e_reject "empty repo"               '.repo = ""'
+          # size bound: >64KB must be rejected before any field is trusted
+          r9e_receipt > "$R9E/big.json"
+          python3 - "$R9E/big.json" <<'R9EPY'
+          import sys, json
+          p = sys.argv[1]; d = json.load(open(p))
+          d["pad"] = "x" * 70000
+          json.dump(d, open(p, "w"))
+          R9EPY
+          r9e_big="$(r9e_run "$R9E/big.json")"
+          [ "$r9e_big" = 1 ] || { echo "::error::(9e) oversized receipt (>64KB) was not rejected (rc=$r9e_big)"; exit 1; }
+          # a MISSING receipt is a reject (1), never an infra pass
+          r9e_missing="$(r9e_run "$R9E/definitely-absent.json")"
+          [ "$r9e_missing" = 1 ] || { echo "::error::(9e) a MISSING receipt did not reject with exit 1 (rc=$r9e_missing)"; exit 1; }
+          # an UNDISCLOSED override: ledger has a row, PR body declares nothing
+          r9e_reject "undisclosed override"     '.override_ledger = [{round:1, name:"PLINTH_ROUND_CAP", value:"99"}]'
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
