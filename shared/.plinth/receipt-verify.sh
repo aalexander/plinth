@@ -72,9 +72,9 @@ jq -e '
           (type == "object")
           and (.round | type == "number")
           and (.name | type == "string" and IN("PLINTH_REVIEWER_VENDOR","PLINTH_REVIEWER_MODEL","PLINTH_AUDIT_VENDOR","PLINTH_AUDIT_MODEL","PLINTH_ROUND_CAP"))
-          and (.value | type == "string" and length <= 128)
+          and (.value | type == "string" and length <= 128 and test("^\\S+$"))
         ) | all))
-' "$RECEIPT" > /dev/null 2>&1 || fail "receipt is not a valid plinth.review-receipt/v1 (schema/bounds/override-allowlist)"
+' "$RECEIPT" > /dev/null 2>&1 || fail "receipt is not a valid plinth.review-receipt/v1 (schema/bounds/override-allowlist; override values must be non-empty and whitespace-free)"
 
 r() { jq -r ".$1" "$RECEIPT"; }
 
@@ -108,6 +108,14 @@ subj=$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
 # The PR body must carry one disclosure line per ledger tuple, in the canonical
 # form `PLINTH-OVERRIDE: NAME=VALUE (round N)`, and no disclosure lines that the
 # ledger does not back (a phantom disclosure is as suspect as a missing one).
+# The `[^ ]*` value group below can only match a whitespace-free value — which is
+# why the schema above REQUIRES one. Without that constraint a legitimately
+# disclosed value containing a space would fail to match here and be reported as
+# an UNDISCLOSED override: a false positive with a misleading reason. Now such a
+# receipt is rejected at the schema stage, which says what is actually wrong.
+# NOTE for PR authors: this greps the WHOLE body, so a literal example of the
+# disclosure form (with a real name and digits) reads as a phantom disclosure.
+# Document the format with a non-digit placeholder.
 lset=$(jq -r '.override_ledger[] | "PLINTH-OVERRIDE: \(.name)=\(.value) (round \(.round))"' "$RECEIPT" | sort -u)
 bset=$(grep -o 'PLINTH-OVERRIDE: [A-Z_]*=[^ ]* (round [0-9]*)' "$PR_BODY" 2>/dev/null | sort -u || true)
 if [ "$lset" != "$bset" ]; then

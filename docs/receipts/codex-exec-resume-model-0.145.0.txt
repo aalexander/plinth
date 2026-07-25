@@ -1,0 +1,15 @@
+# codex `exec resume -m` receipt — codex-cli 0.145.0
+# date: 2026-07-25  host: darwin 25.5.0 (maintainer workstation)
+# why: shared/.plinth/review.sh passes the pinned/override reviewer model to the
+#      RESUME invocation (upstream #25). That is a vendor-behavior claim about an
+#      external CLI, so it carries a receipt like the hookprobe claims do.
+# Re-run after CLI upgrades. If a build ever rejects the flag, review.sh degrades
+# via `|| return 1` to a verify round, which applies the model in a fresh session.
+
+$ codex --version
+codex-cli 0.145.0
+
+$ codex exec resume --help | grep -E '^\s*-m|--model'
+  -m, --model <MODEL>
+
+Result: `codex exec resume` accepts -m/--model on 0.145.0.

@@ -65,6 +65,21 @@
   degraded, never dishonest), and the cross-vendor audit prompt now inlines the same
   TOOLING COMMITS IN RANGE list the primary reviewer gets, so a legitimate instrument
   refresh stops false-flagging as tampering.
+- **Two new binding driver rules** (`shared/plinth-rules.md` — every Plinth-driven session
+  applies them without being asked):
+  - **HEAL-CI.** A red required check must be CLASSIFIED before it is acted on. TRANSIENT
+    (infra flake, runner loss, rate limit — nothing in the diff could cause it) earns exactly
+    ONE rerun, noted in the PR; a second red on the same check is a REAL DEFECT by definition
+    — fix it or file it, never rerun-to-green. A PRE-EXISTING red (failing on the base at the
+    same commit) is the base's defect: document the baseline comparison in the PR rather than
+    laundering it into your change. This closes the most common way a red gate quietly becomes
+    a green one.
+  - **PHASE-BOUNDARY HYGIENE.** At every phase boundary — plan ratified, review APPROVED, PR
+    opened — write the Rule 8 checkpoint to ARTIFACTS, then prefer a fresh session over
+    continuing a long one. Binding state lives in artifacts (verdict.json, the usage ledger,
+    NEEDS-HUMAN, the spec), never in conversation memory. Between boundaries, do not clear on
+    token pressure — externalize more state instead; harness auto-compaction is the emergency
+    valve, not a schedule.
 - **Docs + receipts.** Enforcement wording across MANUAL / MODELS / SETUP / plinth-rules /
   driver-shell / guard.sh now distinguishes "the check exists" from "the check is
   required", rather than the pre-v4.7 "until the receipt check ships". Fresh hookprobe

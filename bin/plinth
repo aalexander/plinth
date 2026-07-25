@@ -373,7 +373,14 @@ github_preflight() {
     [ -n "$ckctx" ] || miss="${miss:+$miss, }checks"
     # then cross-check EVERY present floor/checks context against actual check runs (fail closed on
     # no data): a required context not among real check runs is a ghost gate that never reports.
-    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / checks)?\$" || true)"
+    # `receipt / verify` joins the ghost sweep on the same terms as floor/checks: it is a
+    # REQUIRED context wherever the operator enabled it, so a misspelled one — or one left
+    # required after the job was removed — is exactly the ghost gate this detects. Included
+    # unconditionally: membership above is gated on the workflow being wired, but a context
+    # that is already REQUIRED must be checked for reporting whether or not ci.yml wires it
+    # (a required context naming no job is the failure mode, and that is the case where the
+    # wiring is gone).
+    present="$(printf '%s\n' "$ctxs" | grep -E "^floor / (secrets|sast|harness|dependencies / osv-scan)\$|^checks( / checks)?\$|^receipt / verify\$" || true)"
     if [ -n "$present" ]; then
       if [ -z "$runs" ]; then
         miss="${miss:+$miss, }UNVERIFIED: no check-run data on $defb — cannot confirm the required contexts name real jobs; re-run after the first PR"
