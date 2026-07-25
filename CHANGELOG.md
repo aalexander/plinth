@@ -1,5 +1,82 @@
 # Plinth changelog
 
+## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
+- **The review verdict becomes a requirable status check.** Until now branch protection
+  could gate CI and tooling integrity (floor + checks) but nothing server-side verified
+  that an adversarial review had actually APPROVED the commit being merged — the loop was
+  enforced locally by a Claude driver's Stop gate and otherwise by contract. Every BINDING
+  APPROVED (including Tier 0's deterministic one) now mints a `plinth.review-receipt/v1`
+  as a git note on the approved commit (`refs/notes/plinth-receipts`): head/tree/merge-base
+  bindings, a canonical subject digest over object identities (no patch-render
+  variability), and the full per-loop override ledger. Notes are the transport because
+  they are out-of-band of the commit — HEAD never moves — yet keyed to the exact SHA the
+  verdict binds; a receipt COMMIT could not bind its own HEAD, and statuses or PR-body
+  text are mutable assertions. (Transport confirmed by a cross-family design consult.)
+- **`receipt / verify` — the new reusable check.** `shared/.plinth/receipt-verify.sh`
+  re-derives every field from the PR's own subject and fails closed on any mismatch;
+  `.github/workflows/plinth-receipt.yml` runs it as the requirable context. Hardening:
+  the verifier is fetched from the PINNED release (the harness trust anchor), the notes
+  ref is fetched from the BASE repo only, the PR body comes from the event payload and is
+  never shell-interpolated, and head + body are re-fetched before success (TOCTOU).
+  `pull_request` events only — merge queues rewrite SHAs, unsupported in v1, fail closed.
+  Override disclosure is enforced as exact tuple-set equality between the receipt's ledger
+  and the PR body's `PLINTH-OVERRIDE` lines, so phantom disclosures are rejected too.
+- **HONEST BOUND — shipping it is not enabling it.** The check gates only where the
+  `receipt` job is wired into a repo's `ci.yml` AND `receipt / verify` is added to branch
+  protection's required contexts; elsewhere the loop stays contract-bound exactly as
+  before. Enabling it is an operator step, queued in `.plinth/NEEDS-HUMAN.md`. Residual:
+  the check proves a receipt exists for exactly this subject with its overrides disclosed
+  — a fabricated receipt defeats it. Skipping review becomes DETECTABLE and AUDITABLE,
+  not impossible. Repos whose branches run a pre-v4.7 instrument mint no receipt, so the
+  check fails closed there — required it too early and every PR blocks.
+- **Tier-2 clean-slate confirmation is unconditional again (upstream #27).** v4.6 ran the
+  confirmation at most ONCE per loop, arming the skip as soon as a confirmation RAN,
+  whatever its verdict. That inverted the guarantee precisely where it mattered: the fixes
+  answering a confirmation's OWN findings are by definition absent from the read that
+  produced them — the likeliest place for a fresh regression became the only code that
+  could never get a frontier re-read. Restricting the marker to APPROVING confirmations
+  fixes the hole but makes the marker unreachable (an approving confirmation ends the
+  loop; any later commit starts a new loop that clears it), so the whole once-per-loop
+  mechanism is REMOVED rather than left dormant — dead machinery whose comments describe
+  live behavior is how the bug returns. COST, stated plainly: a Tier-2 loop pays one fresh
+  round per non-fresh approval again, as in v4.5. Coverage beat the round saving.
+- **A mid-loop reviewer-vendor swap now re-anchors with a fresh round (upstream #26).**
+  A swap makes the prior session unresumable, and the loop fell through to a scoped VERIFY
+  — which at Tier 1 BINDS. The justification for binding ("round 1 already read the full
+  branch") is false across a swap: `lastfullread` records THAT a full read happened, never
+  WHO did it, so the incoming vendor could bind having seen only the fix slice. The
+  preceding round's vendor is now checked (sufficient AND complete: markers reset per loop,
+  only fresh rounds write the anchor, and a mismatch re-anchors, so "every consecutive pair
+  matched" transitively means the anchor is the running vendor's own read). Empty vendor —
+  a pre-v4.6 verdict.json — fails closed. Round numbering and the override ledger continue;
+  only the coverage credit resets.
+- **`plinth advise` was silently dead for the default advisor vendor.** The claude branch
+  passed the prompt as a positional AFTER `--allowed-tools`, which is VARIADIC in the
+  claude CLI (verified 2.1.220) and swallowed it; every consult failed with "Input must be
+  provided ...", and `2>/dev/null` relabelled that as the generic "CLI missing or not
+  signed in". Now piped via stdin, the same shape the claude reviewer and auditor adapters
+  already used — which is why those were never affected. The canary asserted argv shape
+  only, so it stayed green; it now asserts the QUESTION actually REACHES each vendor, with
+  a stub that models the real variadic-flag contract (an argv-only assertion cannot catch
+  this — the prompt IS in argv, just not where it is read).
+- **Upstream #25 / #28** (carried from the v4.6 line): the codex resume invocation now
+  passes the pinned/override reviewer model (`-m` verified on codex-cli 0.145.0; a
+  rejecting CLI falls back to a verify round, which applies the model in a fresh session —
+  degraded, never dishonest), and the cross-vendor audit prompt now inlines the same
+  TOOLING COMMITS IN RANGE list the primary reviewer gets, so a legitimate instrument
+  refresh stops false-flagging as tampering.
+- **Docs + receipts.** Enforcement wording across MANUAL / MODELS / SETUP / plinth-rules /
+  driver-shell / guard.sh now distinguishes "the check exists" from "the check is
+  required", rather than the pre-v4.7 "until the receipt check ships". Fresh hookprobe
+  receipt: grok 0.2.112 still executes NONE of the four wired `.claude/` hook events
+  (`docs/receipts/hookprobe-grok-0.2.112.txt`, superseding the 0.2.93 receipt) — the
+  no-execution finding is not a stale-version artifact.
+- Canary: new fixtures for the receipt mint→verify path end-to-end incl. undisclosed /
+  phantom-override and drifted-head rejection (9, 9b), Tier-0 minting, the unconditional
+  Tier-2 confirmation (2), the vendor-swap re-anchor (4h), the audit tooling-commit list
+  (4f), resume model propagation (4g), and advisor prompt delivery. Fixtures (2), (4h) and
+  the advisor one were each verified to FAIL against the pre-fix tree and pass after.
+
 ## v4.6.0 — review-loop efficiency: scoped verify, once-per-loop confirmation, circuit breaker, on-the-fly seats, shared charter — July 24, 2026
 - **Scoped verify rounds (payload chunking, cumulative anchor).** A verify round now sends
   only the OPEN findings from the prior round plus the CUMULATIVE fix diff since the LAST

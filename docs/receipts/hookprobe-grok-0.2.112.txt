@@ -1,0 +1,8 @@
+# hookprobe receipt — grok CLI 0.2.112
+# date: 2026-07-25  host: darwin 25.5.0 (maintainer workstation)
+# command: plinth hookprobe grok  (bin/plinth @ feat/auto-mode)
+# Supersedes hookprobe-grok-0.2.93.txt: same result on a newer CLI — the
+# no-execution finding is not a stale-version artifact.
+
+hookprobe: grok (grok 0.2.112 (9bbd559437aa) [stable]) executed NONE of the wired .claude/ hook events (SessionStart: no; PreToolUse: no; PostToolUse: no; Stop: no;) — nothing local is enforced: expect feedless watch and contract-bound review under this driver. Re-run after CLI upgrades.
+exit: 1

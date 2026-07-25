@@ -852,12 +852,16 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::same-sha re-invocation after APPROVED did not exit 0 (rc=$rc)"; exit 1; }
             printf '%s' "$out" | grep -q 'Nothing new to review' || { echo "::error::same-sha re-invocation did not take the idempotent fast path (out: $(printf '%s' "$out" | tail -c 160))"; exit 1; }
             [ "$(cat "$VC/state")" = 2 ] || { echo "::error::same-sha re-invocation burned a reviewer round (calls=$(cat "$VC/state"))"; exit 1; } )
-          # (2) Tier-2 once-per-loop confirmation: verify-approve -> clean-slate runs
-          # (and FAILS the approval), fix, verify-approve again -> confirmation is
-          # SKIPPED (marker), the skip recorded in verdict.json.
+          # (2) Tier-2 clean-slate confirmation runs before EVERY non-fresh approval
+          # binds (upstream #27). v4.6 armed a once-per-loop skip as soon as a
+          # confirmation RAN, whatever its verdict — so the fixes answering a
+          # confirmation's OWN findings could never get a frontier re-read. Sequence:
+          # verify-approve -> confirmation runs and FAILS -> fix -> verify-approve
+          # again -> a SECOND confirmation must run (call 5) and only then bind.
           T2="$(mktemp -d)"; mkstate "$T2"; mk_cap_codex "$T2"
           printf '%s' "$CNF" > "$T2/verdict-1"; printf '%s' "$APF" > "$T2/verdict-2"
           printf '%s' "$CNF" > "$T2/verdict-3"; printf '%s' "$APF" > "$T2/verdict-4"
+          printf '%s' "$APF" > "$T2/verdict-5"
           td="$(mktemp -d)"
           ( cd "$td"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$td" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
@@ -865,28 +869,35 @@ jobs:
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
             PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .risk.tier "$vj")" = 2 ] || { echo "::error::fixture (2) is not Tier 2 (tier=$(jq -r .risk.tier "$vj")) — the confirmation rule under test is Tier-2 only"; exit 1; }
             echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] || { echo "::error::Tier-2 confirmation (call 3, CN) should have failed the loop (rc=$rc)"; exit 1; }
-            [ -f .plinth/session/review/feat/confirmed ] || { echo "::error::once-per-loop confirmation marker not written after the clean-slate ran"; exit 1; }
+            [ "$(cat "$T2/state")" = 3 ] || { echo "::error::expected 3 reviewer calls through the failed confirmation (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::a CHANGES_NEEDED confirmation armed a once-per-loop skip (upstream #27) — the marker must never be written"; exit 1; }
             echo fix2 >> SPEC.md; git add -A; git commit -qm f2 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
-            vj=".plinth/session/review/feat/verdict.json"
-            [ "$rc" = 0 ] || { echo "::error::second Tier-2 verify approval did not bind via the marker (rc=$rc)"; exit 1; }
-            [ "$(cat "$T2/state")" = 4 ] || { echo "::error::confirmation ran AGAIN despite the once-per-loop marker (calls=$(cat "$T2/state"))"; exit 1; }
-            jq -r '.confirmation // empty' "$vj" | grep -q 'skipped-once-per-loop' || { echo "::error::the confirmation skip was not recorded in verdict.json"; exit 1; }
+            [ "$rc" = 0 ] || { echo "::error::the confirmed Tier-2 approval did not conclude the loop (rc=$rc)"; exit 1; }
+            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::the second Tier-2 approval bound WITHOUT its own clean-slate confirmation (calls=$(cat "$T2/state"), want 5) — upstream #27"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::the binding round was '$(jq -r .mode "$vj")', not the clean-slate 'fresh' confirmation"; exit 1; }
+            [ "$(jq -r '.confirmation // "-"' "$vj")" = "-" ] || { echo "::error::verdict.json still records a once-per-loop skip — the retired mechanism is back"; exit 1; }
             # (2b) NEW-LOOP reset: after the concluded (APPROVED) loop, the next
             # commit starts a fresh loop — the per-loop markers AND the usage.jsonl
             # override ledger must be cleared (a stale ledger would leak a prior
             # loop's override rows into the disclosure trace). Sentinel row stands
             # in for the old loop's ledger content (stub rounds may not write one).
             echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
-            printf '%s' "$CNF" > "$T2/verdict-5"
+            # A v4.6 instrument could have left a `confirmed` marker in this session
+            # dir; the reset must still sweep it (nothing reads it any more, but a
+            # leftover would be a misleading artifact).
+            : > .plinth/session/review/feat/confirmed
+            printf '%s' "$CNF" > "$T2/verdict-6"
             echo fix3 >> SPEC.md; git add -A; git commit -qm f3 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] || { echo "::error::new-loop round 1 should be CHANGES_NEEDED (rc=$rc)"; exit 1; }
-            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
-            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::confirmed marker survived the new-loop reset"; exit 1; }
+            [ "$(cat "$T2/state")" = 6 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::a stale v4.6 confirmed marker survived the new-loop reset"; exit 1; }
             ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::stale usage.jsonl ledger survived the new-loop reset"; exit 1; } )
           # (3) round_cap circuit breaker: base config round_cap=1 -> round 2 refuses
           # (exit 2, breaker message), and the policy file / loop state are untouched.
@@ -1042,6 +1053,40 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::(4g) resume-model loop did not approve (rc=$rc)"; exit 1; }
             grep -qx resume "$RM/args-2" || { echo "::error::(4g) round 2 was not a resume — fixture premise broken"; exit 1; }
             awk '/^-m$/{getline nx; if(nx=="tinymodel") ok=1} END{exit ok?0:1}' "$RM/args-2" || { echo "::error::resume invocation dropped the pinned reviewer model (#25 regressed)"; exit 1; } )
+          # (4h) mid-loop reviewer-vendor swap re-anchors with a FRESH round (upstream
+          # #26). A swap makes the prior session unresumable, and the loop used to fall
+          # through to a scoped VERIFY — which at Tier 1 BINDS. The justification for
+          # binding ("round 1 already read the full branch") is false across a swap:
+          # $SDIR/lastfullread records THAT a full read happened, never WHO did it, so
+          # the newcomer would bind having seen only the fix slice. Tier 1 on purpose:
+          # Tier 2 was never exposed (it forces a confirmation regardless).
+          SW="$(mktemp -d)"; mkstate "$SW"; mk_cap_codex "$SW"
+          cat > "$SW/claude" <<CL
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$SW/state") + 1 )); echo \$n > "$SW/state"
+          cat >/dev/null
+          printf '{"session_id":"cls","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]},"usage":{"input_tokens":999999999}}'
+          CL
+          chmod +x "$SW/claude"
+          printf '%s' "$CNF" > "$SW/verdict-1"
+          swd="$(mktemp -d)"
+          ( cd "$swd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$swd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'reviewer_vendor = codex\n' >> .plinth/config
+            echo REQ > SPEC.md; echo x > app.py; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$SW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            # The config knob is read from the BASE branch, so the on-the-fly env
+            # override is the real mid-loop swap mechanism (and the one #26 reports).
+            rc=0; out="$(PLINTH_REVIEWER_VENDOR=claude PATH="$SW:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::(4h) post-swap round failed (rc=$rc)"; exit 1; }
+            [ "$(jq -r .risk.tier "$vj")" = 1 ] || { echo "::error::(4h) fixture is not Tier 1 (tier=$(jq -r .risk.tier "$vj")) — the binding claim under test is Tier-1 specific"; exit 1; }
+            [ "$(jq -r .vendor "$vj")" = claude ] || { echo "::error::(4h) the vendor swap did not take effect (vendor=$(jq -r .vendor "$vj")) — fixture premise broken"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::post-swap round was '$(jq -r .mode "$vj")', must be 'fresh' — a verify BINDS at Tier 1 on the PRIOR vendor's full read (#26 regressed)"; exit 1; }
+            printf '%s' "$out" | grep -q 'reviewer vendor changed mid-loop' || { echo "::error::(4h) the mid-loop vendor swap was not announced to the operator"; exit 1; } )
           # (9) receipt minting + server verification (auto mode, v4.7): a binding
           # APPROVED mints a plinth.review-receipt/v1 git note on the approved SHA;
           # receipt-verify.sh accepts exactly that subject, enforces override
@@ -1945,7 +1990,7 @@ jobs:
           # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
           # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
           # that codex or grok invoke `.claude/` hooks: whether they do is PROBEABLE, not assumed
-          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]), so a non-Claude
+          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]), so a non-Claude
           # driver whose CLI does not execute hooks has a SERVER-SIDE ship gate, not this hook. Deliberate
           # obfuscation is out of scope (a client hook cannot win that race).
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
@@ -2118,6 +2163,64 @@ jobs:
           AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
+          # v4.7: the QUESTION must actually REACH the advisor. Every assertion above
+          # matches argv only, so `advise` stayed green while the claude branch passed
+          # the prompt as a positional AFTER --allowed-tools — a VARIADIC flag in the
+          # claude CLI (verified 2.1.220), which swallowed it. Every consult died with
+          # "Input must be provided ...", and 2>/dev/null relabelled that as the
+          # generic "CLI missing or not signed in": the advisor was silently dead for
+          # the DEFAULT advisor_vendor. Assert delivery on stdin OR argv, per vendor.
+          QB="$(mktemp -d)"; QCAP="$QB/qcap"
+          for v in claude codex grok agy; do
+            cat > "$QB/$v" <<EOF
+          #!/usr/bin/env bash
+          # Mimics a real CLI: the prompt must arrive SOMEWHERE. Record argv + stdin.
+          printf '%s\n' "\$*" >> "$QCAP"; cat >> "$QCAP" 2>/dev/null || true; echo ok
+          EOF
+            chmod +x "$QB/$v"
+          done
+          for v in claude codex grok agy; do
+            qd="$(mktemp -d)"; mkdir -p "$qd/.plinth"
+            printf 'advisor_vendor = %s\n' "$v" > "$qd/.plinth/config"
+            : > "$QCAP"
+            # </dev/null: for the vendors that take the prompt on ARGV the stub's `cat`
+            # would otherwise inherit (and block on) the caller's stdin. advise supplies
+            # its own pipe for claude/codex, so stdin delivery is still exercised.
+            ( cd "$qd" && PATH="$QB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "ZQMARKER-should-reach-the-advisor" >/dev/null 2>&1 </dev/null )
+            grep -q 'ZQMARKER-should-reach-the-advisor' "$QCAP" \
+              || { echo "::error::advise: the DECISION never reached the '$v' advisor CLI (neither argv nor stdin) — the consult would fail at runtime"; exit 1; }
+          done
+          # The assertion that actually catches the regression: a stub modelling the REAL
+          # claude CLI contract. --allowed-tools is VARIADIC, so it swallows every
+          # following non-flag token — a prompt passed as a positional AFTER it is
+          # consumed as a tool name, and with -p and nothing left on argv or stdin the
+          # CLI exits nonzero. (An argv-only assertion cannot catch this: under the
+          # broken wiring the prompt IS present in argv, just not where it is read.)
+          SB="$(mktemp -d)"
+          cat > "$SB/claude" <<'SCL'
+          #!/usr/bin/env bash
+          p=""; expect_val=0; in_tools=0
+          for a in "$@"; do
+            if [ "$expect_val" = 1 ]; then expect_val=0; continue; fi
+            case "$a" in
+              --allowed-tools) in_tools=1; continue ;;
+              --model|--permission-mode|--resume|--output-format|--json-schema) in_tools=0; expect_val=1; continue ;;
+              -*) in_tools=0; continue ;;
+            esac
+            [ "$in_tools" = 1 ] && continue   # swallowed by the variadic flag
+            p="$a"
+          done
+          s="$(cat 2>/dev/null || true)"
+          [ -n "$p$s" ] || { echo "Error: Input must be provided either through stdin or as a prompt argument when using --print" >&2; exit 1; }
+          echo "advice-ok"
+          SCL
+          chmod +x "$SB/claude"
+          sd="$(mktemp -d)"; mkdir -p "$sd/.plinth"; printf 'advisor_vendor = claude\n' > "$sd/.plinth/config"
+          sout="$( cd "$sd" && PATH="$SB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "a real question" 2>/dev/null </dev/null )"
+          printf '%s' "$sout" | grep -q 'advice-ok' \
+            || { echo "::error::advise: claude advisor returned no advice against a prompt-requiring CLI (got: $(printf '%s' "$sout" | tail -c 120)) — the prompt is not reaching it"; exit 1; }
+          printf '%s' "$sout" | grep -q 'advisor unavailable' \
+            && { echo "::error::advise: claude advisor reported 'unavailable' though the CLI is present and working — a wiring failure is being masked as a missing CLI"; exit 1; } || true
 
           # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy/claude (round-24) ──
           audit_iso() {  # <primary_reviewer_vendor> <audit_vendor>
@@ -2290,7 +2393,7 @@ jobs:
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 
           # ── v4.5: plinth watch renders FEEDLESS (a driver whose hooks are not executing — e.g. grok,
-          # probed at 0.2.93: no execution — receipt: docs/receipts/hookprobe-grok-0.2.93.txt; the vendor-behavior verification is
+          # probed at 0.2.112: no execution — receipt: docs/receipts/hookprobe-grok-0.2.112.txt; the vendor-behavior verification is
           # the MANUAL's local marker-hook probe, not this canary, which has no grok CLI) ──
           FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1
@@ -2865,7 +2968,7 @@ jobs:
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
-          # UNAUTHENTICATED grok — grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but
+          # UNAUTHENTICATED grok — grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but
           # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }

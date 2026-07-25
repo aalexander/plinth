@@ -66,7 +66,7 @@ approved; use your judgment. Every CLAUDE subagent you spawn inherits the same
 them is PER-CLI — treat local enforcement as ABSENT until verified END-TO-END
 (wire the real hooks, observe the pulse feed and a guard block). `plinth hookprobe
 <vendor>` settles the negative direction: a NONE result means certainly unenforced
-(grok 0.2.93 (reproduce: plinth hookprobe grok)); a positive probe
+(grok 0.2.112 (reproduce: plinth hookprobe grok)); a positive probe
 shows invocation only, never enforcement. For a non-executing
 delegate, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
@@ -94,12 +94,13 @@ for parallel fan-out; when one subtask genuinely wants another family's strength
 cross-family CLI shell-out is fine — with the enforcement caveat that follows. CLAUDE
 subagents inherit the `.claude/` guard
 hooks and gates automatically; whether a cross-family codex/grok shell-out does is
-PER-CLI (probe with `plinth hookprobe` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); a
+PER-CLI (probe with `plinth hookprobe` — grok 0.2.112 reported no execution (reproduce: plinth hookprobe grok); a
 not-invoked event is certainly unenforced; invoked events need end-to-end
 verification), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
-protection's required checks (floor + checks; the cloud review is advisory PR
-comments, not a requirable context, and no server-side review gate exists yet).
+protection's required checks (floor + checks, and `receipt / verify` where it is
+wired and required — that one does gate the review verdict; the cloud review is
+advisory PR comments, not a requirable context).
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
 specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
@@ -204,7 +205,7 @@ gate has two pressure valves — a recent mechanical review failure, and a per-s
 block cap (PLINTH_GATE_MAX_BLOCKS, default 10) — and every release without approval is
 logged to the session event feed, where `plinth watch` shows it in red. A codex/grok
 driver whose CLI does not execute `.claude/` hooks (probe with `plinth hookprobe
-<vendor>` — grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok); re-run after upgrades) has no Stop
+<vendor>` — grok 0.2.112 reported no execution (reproduce: plinth hookprobe grok); re-run after upgrades) has no Stop
 gate — nothing LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no

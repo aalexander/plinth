@@ -693,7 +693,7 @@ warn_missing_gate_wiring() {
     echo "NOTE: .claude/settings.json lacks pulse.sh wiring — under a CLAUDE driver"
     echo "'plinth watch' will run feedless (reduced frame: branch/verdict/queue only)."
     echo "Whether a grok/codex driver executes these hooks: run 'plinth hookprobe <vendor>'"
-    echo "(grok 0.2.93 reported no execution (reproduce: plinth hookprobe grok) — feedless is"
+    echo "(grok 0.2.112 reported no execution (reproduce: plinth hookprobe grok) — feedless is"
     echo "expected there; a driver the probe shows INVOKING PostToolUse yet feedless needs"
     echo "investigating: broken wiring, or the hook gets no usable stdin/env — see the probe"
     echo "json-stdin flag). For Claude, see CHANGELOG v3.8."
@@ -1389,8 +1389,15 @@ $question"
   local margs=()
   case "$vendor" in
     claude) [ -n "$use" ] && margs=(--model "$use")
-      claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" "$aprompt" 2>/dev/null || { echo "$unavail"; return 0; } ;;
+      # Prompt via STDIN, never as a positional after --allowed-tools: that flag is
+      # VARIADIC in the claude CLI (verified 2.1.220), so it swallowed the prompt
+      # argument and every consult died with "Input must be provided either through
+      # stdin or as a prompt argument" — which 2>/dev/null turned into the generic
+      # "CLI missing or not signed in". The advisor was silently unavailable for the
+      # DEFAULT advisor_vendor. Same stdin shape as the claude reviewer/auditor
+      # adapters in review.sh, which is why those were never affected.
+      printf '%s' "$aprompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" 2>/dev/null || { echo "$unavail"; return 0; } ;;
     codex)  [ -n "$use" ] && margs=(-m "$use")
       printf '%s' "$aprompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
         || { echo "$unavail"; return 0; } ;;

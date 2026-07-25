@@ -32,8 +32,10 @@
    (or `checks` for a direct checks job) — GitHub names required checks by JOB
    name, not the workflow name (no `CI / ` prefix); the preflight names any
    missing one. (The Codex cloud review
-   posts comments — advisory, not a requirable check; the receipt check shipping
-   with auto mode adds the server-side review gate.)
+   posts comments — advisory, not a requirable check. To put the review VERDICT
+   under branch protection too, wire the `receipt` job in `ci.yml` and add the
+   `receipt / verify` context to the required list — auto mode, v4.7; it needs an
+   instrument that mints receipts, i.e. v4.7+ on the branch being reviewed.)
 6. Daily driving happens in Claude Code (the architect-resident default):
    `/model` -> Opus 4.8 (Fable 5 by exception, credits); `/effort` -> ultracode
    for big tasks; the grok worker lane carries the typing. The grok CLI as the

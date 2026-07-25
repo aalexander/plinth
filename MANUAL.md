@@ -18,8 +18,10 @@ each PR (security-briefed via the reviewer contract .plinth/reviewer.md). It is 
 mechanism, not just by choice: it posts as PR comments and exposes no status-check context
 that branch protection could require. Under the architect-resident DEFAULT the local
 Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop is
-contract-bound until the APPROVED-at-HEAD receipt check ships (auto mode — the
-designated server-side review gate). The name is the design:
+contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7 — the
+server-side review gate) is REQUIRED in branch protection. Shipping it is not
+enabling it: it gates only where an operator wires `receipt / verify` into ci.yml
+AND requires that context. The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -46,12 +48,13 @@ Everything between is the model's call.
   the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
-  **KNOWN LIMITATION (until the receipt check ships with auto mode):** under the
-  grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
-  gate fires (grok 0.2.93 executes no `.claude/` hooks) and no required status
-  check verifies APPROVED-at-HEAD. The ENFORCED-gate path today is a Claude
-  driver; choose per task, and treat non-Claude-driven PRs accordingly (the PR
-  body's review audit is the evidence trail).
+  **KNOWN LIMITATION (until the receipt check is REQUIRED in branch protection):**
+  under the grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
+  gate fires (grok 0.2.112 executes no `.claude/` hooks) and, until `receipt / verify`
+  is wired and required, no status check verifies APPROVED-at-HEAD. v4.7 ships that
+  check; enabling it per repo is an operator step. Where it is not yet required, the
+  ENFORCED-gate path is a Claude driver; choose per task, and treat non-Claude-driven
+  PRs accordingly (the PR body's review audit is the evidence trail).
 - **Under the architect-resident default** the in-family routing still applies —
   Sonnet 5 for mechanical/doc work (Tier 0–1), Opus 4.8 default, Fable 5 by
   exception on usage credits — and the implementer lanes carry the typing
@@ -275,8 +278,8 @@ Two operator chores the rules generate:
      (The v4 default is ARCHITECT-RESIDENT: the top model orchestrates here with
      the full hook machinery enforced, and delegates the coding volume to the
      grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
-     the enforced Stop gate for wall-clock: review becomes contract discipline
-     until the receipt check ships; see the known limitation.)
+     the enforced Stop gate for wall-clock: review is contract discipline until
+     the receipt check is required in branch protection; see the known limitation.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
@@ -292,8 +295,8 @@ Two operator chores the rules generate:
    reports each event separately — a NOT-invoked event is certainly unenforced;
    an INVOKED event means the CLI ran the hook command (necessary, not
    sufficient — the real hooks also need Claude-shaped stdin JSON and
-   CLAUDE_PROJECT_DIR). At release time grok 0.2.93 reported: NONE executed
-   (receipt: docs/receipts/hookprobe-grok-0.2.93.txt)
+   CLAUDE_PROJECT_DIR). At release time grok 0.2.112 reported: NONE executed
+   (receipt: docs/receipts/hookprobe-grok-0.2.112.txt)
    (its Claude-compat is instruction/flag-level — CLAUDE.md auto-load,
    `--allowedTools` naming). Vendor compat moves — re-run the probe after CLI
    upgrades; trust the probe, not vendor docs or this sentence. An all-four
@@ -308,7 +311,8 @@ Two operator chores the rules generate:
    protection's required checks (floor + checks — CI and tooling integrity; they do
    not verify the review verdict, and the cloud review is advisory comments). The
    adversarial loop is contract-bound for a non-Claude driver until the receipt
-   check ships (auto mode). Wiring the hooks into codex's own
+   check (auto mode, v4.7) is required in branch protection — which closes exactly
+   this gap, server-side and driver-agnostic. Wiring the hooks into codex's own
    hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
@@ -317,7 +321,7 @@ Two operator chores the rules generate:
    model line shows who is actually answering, and red guard-blocks mean the base
    deflected something. Under the grok-RESIDENT alternative the hook-fed lines are
    SILENT (its CLI does not execute `.claude/` hooks — per-CLI, probe with `plinth
-   hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) — Pane B still shows review rounds and verdicts
+   hookprobe`; grok 0.2.112: none [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]) — Pane B still shows review rounds and verdicts
    (written by `review.sh`), the NEEDS-HUMAN queue, and branch state. Those are
    local files, and a hookless driver could write them — the dashboard is
    OBSERVABILITY, not a gate; what actually binds any driver is server-side:
@@ -382,7 +386,7 @@ Two operator chores the rules generate:
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
    whose CLI does not execute the Stop hook (per-CLI — `plinth hookprobe`; grok
-   0.2.93 reported no execution; receipt: docs/receipts/hookprobe-grok-0.2.93.txt) has nothing LOCAL forcing it to review — it is bound
+   0.2.112 reported no execution; receipt: docs/receipts/hookprobe-grok-0.2.112.txt) has nothing LOCAL forcing it to review — it is bound
    by the driver rules (trusted to run the loop) and, at merge, by the required CI
    status checks that branch protection enforces. Those required checks verify the
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
@@ -401,7 +405,7 @@ Run it in any second terminal or tmux split; it repaints within ~1s of session
 activity (change-detection on the event feed, 10s heartbeat for the clocks;
 ctrl-c to quit; `--once` prints a single frame). A "no event feed" banner is
 NORMAL under a driver whose CLI does not execute `.claude/` hooks (per-CLI —
-`plinth hookprobe`; grok 0.2.93: none [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]; if the probe reports PostToolUse INVOKED,
+`plinth hookprobe`; grok 0.2.112: none [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]; if the probe reports PostToolUse INVOKED,
 investigate — the same banner may mean broken wiring instead): the frame reduces to
 branch @ head, review verdict, and the NEEDS-HUMAN queue (observability from
 local files — the binding gate for any driver is branch protection, not this
@@ -551,17 +555,17 @@ it has run green with a real smoke_cmd.
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
-  probeable — `plinth hookprobe <vendor>`; grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). The guard is a
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
   fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
-  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.93
-  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]). Under a non-executing
+  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
+  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
-  server-side verifier until the receipt check ships, and the cloud review is
+  server-side verifier until `receipt / verify` is required, and the cloud review is
   advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
   the merge gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
@@ -569,7 +573,7 @@ it has run green with a real smoke_cmd.
   feature branches and commit-making sessions; releases loudly on review
   infrastructure failure or after PLINTH_GATE_MAX_BLOCKS blocks (default 10), so it
   can't trap a session. A driver whose CLI does not execute the Stop hook (per-CLI —
-  `plinth hookprobe`; grok 0.2.93: no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]) has no
+  `plinth hookprobe`; grok 0.2.112: no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]) has no
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
   APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
@@ -579,8 +583,9 @@ it has run green with a real smoke_cmd.
 - Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
   harness) + `checks` required to merge (requires public repo or GitHub Pro; the
   preflight reports which state you're in AND names any missing required
-  context). The cloud review is advisory; the receipt check (auto mode) adds
-  the review-verdict gate.
+  context). The cloud review is advisory; adding `receipt / verify` (auto mode,
+  v4.7) to the required contexts is what puts the review verdict itself under
+  branch protection.
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —
