@@ -9,12 +9,14 @@
   the reviewer CLI on long loops (upstream issue #20, corroborated on this repo's own
   20-round loop). Anchoring at the last full read closes the coverage story for binding
   verifies: the full pass at the anchor plus this cumulative diff covers the whole branch
-  in one session. Honest bound: on a long Tier-1 (or never-resuming grok) loop no new
+  across the loop's sessions (the binding session itself sees only the delta). Honest bound: on a long Tier-1 (or never-resuming grok) loop no new
   fresh round re-anchors, so the cumulative diff grows toward the branch diff — the
   GUARANTEED savings there are the dropped finding-history payload and the eliminated
   repeat clean-slate confirmations (roughly halving rounds), not a bounded diff size. The reviewer keeps read-only repo
   access for context; one composed prompt serves both the scoped and the full-diff-fallback
-  form (no valid anchor: rebase/legacy state). ACCEPTED TRADEOFF: findings marked resolved
+  form (no usable anchor: anchor object MISSING or legacy state — the check is
+  existence-only, so a rebase that keeps the old anchor object alive is not
+  detected; the ancestry guard is tracked in MANUAL `## Noticed`). ACCEPTED TRADEOFF: findings marked resolved
   drop out of the tracked list — a later regression re-appears only as code in the
   cumulative diff, not as the prior finding text.
 - **Tier-1 approvals bind in every mode; Tier-2 clean-slate confirmation runs at most ONCE

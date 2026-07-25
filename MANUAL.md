@@ -344,8 +344,10 @@ Two operator chores the rules generate:
      the branch is fully covered (the anchor round read everything up to the
      anchor; this session reads everything after it, with repo read access for
      context), though the verify session itself sees only the delta and the
-     open findings; the full diff is sent only when no valid anchor exists,
-     e.g. after a rebase.
+     open findings; the full diff is sent only when no usable anchor exists
+     (anchor commit object missing, or legacy pre-v4.6 state). A rebase that
+     keeps the old anchor object alive is NOT detected — the anchor is
+     existence-checked only; the ancestry guard is backlog (see `## Noticed`).
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
      approval binds only after a clean-slate full pass (a warm reviewer can't
@@ -683,7 +685,10 @@ installed copies.
   commit can still exist while no longer being an ancestor of HEAD, so the
   "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
   --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
-  pre-existing pattern, hardening backlog per the phase charter.)
+  pre-existing pattern, hardening backlog per the phase charter. Round-13 grok
+  audit escalated the DOCS half — MANUAL/CHANGELOG/verify-prompt claimed the
+  fallback fires "after a rebase" — as an overclaim; the claims were corrected
+  in v4.6.0, the code guard itself remains backlog.)
 - **Leading-zero octal footgun in numeric knob parsing** (pre-existing:
   ROUND_BUDGET, RESUME_MAX use digit-only case checks; a value like `08` then
   crashes bash arithmetic as invalid octal). round_cap now normalizes with
@@ -705,6 +710,24 @@ installed copies.
   on the next canary touch. (c) `.DS_Store` is git-tracked and churns — untrack and
   gitignore it. (d) The full branch diff is still materialized+hashed even on scoped verify
   rounds where it is not sent — lazy-materialize if large-repo wall-clock ever matters.
+- **review.sh: round_cap breaker message is misleading on a naive recovery
+  retry.** The crash-recovery path (unconfirmed APPROVED, `recovery=1`) sets
+  `round=prev_round+1`, which can exceed ROUND_CAP and hit the generic breaker
+  at ~line 942 ("rethink the change or the spec") instead of the accurate
+  confirmation-path message at ~line 978 ("PLINTH_ROUND_CAP=<n> to run the
+  confirmation"); `die_infra` overwrites `last-error`, so a naive re-run
+  replaces the good guidance with the misleading one. Exit code and safety
+  unaffected. Route the recovery path to the confirmation-specific message; add
+  a fixture. (v4.6 post-approval round, minor.)
+- **v4.6 canary gap: round_cap = 0 (breaker disabled) has no fixture.** Fixtures
+  cover round_cap=1 and 2 only; nothing drives a loop past round 8 with
+  round_cap=0 to prove the breaker never trips. Same class as the non-numeric
+  PLINTH_ROUND_CAP gap above. Add with the next canary touch. (v4.6
+  post-approval round, minor.)
+- **Canary seat-override fixtures use fixed /tmp capture paths**
+  (`/tmp/ov-claude-args`, `/tmp/ov-grok-args`). Sequential today, race-prone if
+  the canary job is ever split or parallelized; prefer mktemp per fixture.
+  (v4.6 round-13 grok audit, minor.)
 - **Chain-of-sessions binding: the binding APPROVED session never held pre-anchor
   code.** The session that produces a binding APPROVED sees only the open findings
   plus the cumulative diff since `lastfullread`; pre-anchor code is reachable only

@@ -1001,8 +1001,9 @@ jobs:
             rc=0; out="$(PLINTH_ROUND_CAP=5 PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::unbricked recovery confirmation failed (rc=$rc)"; exit 1; }
             printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::recovery path not taken after the capped confirmation"; exit 1; } )
-          # (5) FALLBACK verify: with no valid fix-diff anchor (lastfullread gone —
-          # rebase/legacy state), the verify round must send the FULL diff and say so.
+          # (5) FALLBACK verify: with no usable fix-diff anchor (lastfullread gone —
+          # anchor object missing/legacy state), the verify round must send the FULL
+          # diff and say so.
           FB="$(mktemp -d)"; mkstate "$FB"; mk_cap_codex "$FB"
           printf '%s' "$CNF" > "$FB/verdict-1"; printf '%s' "$APF" > "$FB/verdict-2"
           fbd="$(mktemp -d)"
@@ -1015,7 +1016,7 @@ jobs:
             echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
             rc=0; PATH="$FB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 0 ] || { echo "::error::fallback verify loop did not approve (rc=$rc)"; exit 1; }
-            grep -q 'no valid fix-diff anchor' "$FB/prompt-2" || { echo "::error::fallback verify did not announce the missing anchor"; exit 1; }
+            grep -q 'no usable fix-diff anchor' "$FB/prompt-2" || { echo "::error::fallback verify did not announce the missing anchor"; exit 1; }
             grep -q 'DIFF (main...HEAD' "$FB/prompt-2" || { echo "::error::fallback verify did not send the full diff"; exit 1; } )
           # (6) crash-recovery: a non-binding Tier-2 APPROVED whose confirmation crashed
           # must NOT early-exit 0 on re-run — the clean-slate runs instead.

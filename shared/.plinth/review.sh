@@ -797,8 +797,10 @@ ${diff}${evidence}${commits}"
     # plus this diff = the whole branch — without re-sending the full branch
     # diff + finding history that overflowed the CLI on long loops (upstream
     # issue #20). The reviewer keeps read-only repo access for context.
-    # Fallback to the full diff when no valid anchor exists (rebase, missing
-    # or legacy state).
+    # Fallback to the full diff when no usable anchor exists (anchor object
+    # missing, or legacy state). Existence-checked only: a rebase that keeps
+    # the old anchor object alive is NOT detected — ancestry guard is backlog
+    # (MANUAL ## Noticed).
     local prior vanchor="" vinc="" vscope vlabel vpayload vrule
     prior="$(jq -c '{findings: [.findings[] | select(.status == "open")]}' "$SDIR/findings-$((r - 1)).json")"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
@@ -815,7 +817,7 @@ do NOT re-read the rest of the branch."
       vlabel="CUMULATIVE FIX DIFF (${vanchor}..${sha})"
       vpayload="$vinc"
     else
-      vscope="no valid fix-diff anchor exists (rebase or legacy state) — the FULL diff is below."
+      vscope="no usable fix-diff anchor exists (anchor object missing or legacy state) — the FULL diff is below."
       vrule="evidence in the diff, not the driver's claim"
       vlabel="DIFF (${baseref}...HEAD at ${sha})"
       vpayload="$diff"
