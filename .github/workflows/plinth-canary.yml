@@ -1948,12 +1948,17 @@ jobs:
           r9gt0="$(cat "$R9G_T0/led" 2>/dev/null || true)"
           [ -n "$r9gt0" ] || { echo "::error::(9g) Tier-0 stale-ledger case minted no receipt at all — the case is not exercising the path it claims to"; exit 1; }
           [ "$r9gt0" = '[]' ] || { echo "::error::(9g) a Tier-0 (round 0) receipt inherited a PRIOR loop's override ledger ($r9gt0) — round 0 means no round has run in this loop, so the only correct disclosure is []. A stale tuple fails the server check on a clean Tier-0 PR"; exit 1; }
-          # (9g2) Tier-0 TRANSITION via the real review.sh. (9g) calls mint_receipt directly
-          # and so cannot cover the path that clears prior-loop session files when the
-          # current diff classifies as Tier 0. Seed usage.jsonl (with an override row),
-          # lastfullread and findings-1.json, then run a docs-only review and assert the
-          # per-loop state is gone and the minted receipt's override_ledger is [].
-          R9G2="$(mktemp -d)"
+          # (9g2) Tier-0 TRANSITION via the real review.sh — a REAL transition, not a branch
+          # that was Tier 0 all along. (9g) calls mint_receipt directly and cannot reach this
+          # path. The reachable scenario: a branch is reviewed at Tier 1/2, leaving per-loop
+          # state; then the BASE ADVANCES onto part of the work (the first half merged
+          # separately), the remaining diff is inert docs, and review.sh takes the Tier-0 path.
+          # Round 0 means "no round has run in THIS loop", so the prior loop's ledger, coverage
+          # anchor and findings must be cleared — otherwise the audit trail describes overrides
+          # that never applied to this subject. An earlier version of this fixture seeded stale
+          # files into an ALREADY-Tier-0 branch, so it never exercised the transition it claimed.
+          R9G2="$(mktemp -d)"; mkstate "$R9G2"; mk_cap_codex "$R9G2"
+          printf '%s' "$CNF" > "$R9G2/verdict-1"
           r9g2d="$(mktemp -d)"
           ( cd "$r9g2d"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
             "$GITHUB_WORKSPACE/bin/plinth" init "$r9g2d" >/dev/null 2>&1
@@ -1961,26 +1966,31 @@ jobs:
             git remote add origin https://github.com/owner/repo.git
             echo REQ > SPEC.md; echo readme > README.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1
-            # Current diff is Tier 0 (inert docs only). Seed prior-loop leftovers AFTER
-            # this commit (and under the session self-gitignore) so they do not enter the
-            # diff or dirty the tree — both would force a non-Tier-0 / refuse path.
+            # 1. CODE commit -> NOT Tier 0, so a real round runs and leaves per-loop state.
+            echo "print(1)" > app.py; git add -A; git commit -qm code >/dev/null; G2C="$(git rev-parse HEAD)"
             echo docs >> README.md; git add -A; git commit -qm docs >/dev/null
-            mkdir -p .plinth/session/review/feat
-            printf '*\n' > .plinth/session/.gitignore
-            printf '{"round":1,"mode":"fresh","overrides":{"round_cap":"9"}}\n' > .plinth/session/review/feat/usage.jsonl
-            printf 'deadbeef\n' > .plinth/session/review/feat/lastfullread
-            printf '[]\n' > .plinth/session/review/feat/findings-1.json
-            [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = 0 ] || { echo "::error::(9g2) setup: docs-only diff is not Tier 0 — the transition case would not exercise the Tier-0 path"; exit 1; }
-            [ -f .plinth/session/review/feat/usage.jsonl ] || { echo "::error::(9g2) setup: prior-loop usage.jsonl was not seeded"; exit 1; }
-            rc=0; out="$(./.plinth/review.sh main 2>&1)" || rc=$?
-            [ "$rc" = 0 ] || { echo "::error::(9g2) Tier-0 transition did not APPROVE (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" != 0 ] || { echo "::error::(9g2) setup: the pre-transition diff is already Tier 0 — there is no transition to test"; exit 1; }
+            rc=0; PATH="$R9G2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::(9g2) setup: the pre-transition round did not return CHANGES_NEEDED (rc=$rc), so no per-loop state was left to clear"; exit 1; }
+            G2L=".plinth/session/review/feat/usage.jsonl"
+            [ -f "$G2L" ] || { echo "::error::(9g2) setup: the pre-transition round left no ledger — nothing to prove cleared"; exit 1; }
+            # Give the ledger an override row so a survivor is unmistakable.
+            printf '{"round":1,"mode":"fresh","overrides":{"round_cap":"9"}}\n' > "$G2L"
+            printf 'deadbeef\n' > ".plinth/session/review/feat/lastfullread"
+            # 2. THE TRANSITION: main advances onto the code commit; the remaining diff is docs.
+            git branch -f main "$G2C"
+            [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = 0 ] || { echo "::error::(9g2) after advancing the base the diff is still not Tier 0 — the transition did not occur, so the assertions below would be vacuous"; exit 1; }
+            b4="$(cat "$R9G2/state")"
+            rc=0; out="$(PATH="$R9G2:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9g2) the Tier-0 transition did not APPROVE (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(cat "$R9G2/state")" = "$b4" ] || { echo "::error::(9g2) the Tier-0 path invoked the reviewer — the deterministic floor must grant it with no model round"; exit 1; }
             vj=".plinth/session/review/feat/verdict.json"
             [ "$(jq -r .verdict "$vj")" = APPROVED ] || { echo "::error::(9g2) Tier-0 transition verdict is not APPROVED"; exit 1; }
             [ "$(jq -r .round "$vj")" = 0 ] || { echo "::error::(9g2) Tier-0 transition did not bind as round 0 (round=$(jq -r .round "$vj"))"; exit 1; }
             [ "$(jq -r .reviewer_verdict "$vj")" = TIER0_AUTO ] || { echo "::error::(9g2) Tier-0 transition was not the deterministic floor (reviewer_verdict=$(jq -r .reviewer_verdict "$vj"))"; exit 1; }
-            [ ! -f .plinth/session/review/feat/usage.jsonl ] || { echo "::error::(9g2) usage.jsonl survived the Tier-0 transition — prior-loop override ledger was not cleared"; exit 1; }
-            [ ! -f .plinth/session/review/feat/lastfullread ] || { echo "::error::(9g2) lastfullread survived the Tier-0 transition"; exit 1; }
-            [ ! -f .plinth/session/review/feat/findings-1.json ] || { echo "::error::(9g2) findings-1.json survived the Tier-0 transition"; exit 1; }
+            [ ! -f "$G2L" ] || { echo "::error::(9g2) the ledger survived the Tier-0 transition — the PRIOR loop's override rows are still on disk, so the audit trail describes overrides that never applied to this subject"; exit 1; }
+            [ ! -f ".plinth/session/review/feat/lastfullread" ] || { echo "::error::(9g2) lastfullread survived the Tier-0 transition — a stale coverage anchor would let a later scoped verify claim credit for a full read that never covered this diff"; exit 1; }
+            [ ! -f ".plinth/session/review/feat/findings-1.json" ] || { echo "::error::(9g2) findings-1.json survived the Tier-0 transition"; exit 1; }
             git notes --ref=plinth-receipts show HEAD > "$R9G2/receipt.json" 2>/dev/null || { echo "::error::(9g2) Tier-0 transition minted no receipt"; exit 1; }
             jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' "$R9G2/receipt.json" >/dev/null || { echo "::error::(9g2) Tier-0 transition receipt fields wrong (want APPROVED/round 0/override_ledger []): $(cat "$R9G2/receipt.json")"; exit 1; } )
           # (9h) THE NOTES-RECOVERY RECIPE, driven end to end against a real remote.

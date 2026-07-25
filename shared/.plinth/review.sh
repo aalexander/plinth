@@ -157,7 +157,12 @@ ROUND_CAP="$(bcfg round_cap)"
 case "$ROUND_CAP" in
   '')       ROUND_CAP=0 ;;
   *[!0-9]*) die_infra "round_cap in .plinth/config must be a non-negative integer (got '$ROUND_CAP'). Leave it unset or set 0 to disable the breaker; set a positive integer to cap the loop." ;;
-  *)        [ "${#ROUND_CAP}" -le 6 ] && [ "$((10#$ROUND_CAP))" -le "$ROUND_CAP_MAX" ] \
+  *)        # Length is checked on the value with LEADING ZEROS STRIPPED. Checking the raw
+            # string rejected `0000001`, which is a perfectly valid 1 that the normalization
+            # below explicitly supports — the guard exists to stop an OVERFLOW-sized magnitude,
+            # not a padded small number.
+            case "$ROUND_CAP" in *[!0]*) rc_mag="${ROUND_CAP#"${ROUND_CAP%%[!0]*}"}" ;; *) rc_mag=0 ;; esac
+            [ "${#rc_mag}" -le 6 ] && [ "$((10#$rc_mag))" -le "$ROUND_CAP_MAX" ] \
               || die_infra "round_cap in .plinth/config is absurdly large (got '$ROUND_CAP'; max ${ROUND_CAP_MAX}). Past the arithmetic range it wraps NEGATIVE and disables the breaker instead of raising it — set 0 (or leave it unset) if you mean no cap." ;;
 esac
 ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal and crash the -gt test
@@ -167,7 +172,8 @@ ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal an
 if [ -n "${PLINTH_ROUND_CAP:-}" ]; then
   case "$PLINTH_ROUND_CAP" in
     *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;;
-    *) { [ "${#PLINTH_ROUND_CAP}" -le 6 ] && [ "$((10#$PLINTH_ROUND_CAP))" -le "$ROUND_CAP_MAX" ]; } \
+    *) case "$PLINTH_ROUND_CAP" in *[!0]*) prc_mag="${PLINTH_ROUND_CAP#"${PLINTH_ROUND_CAP%%[!0]*}"}" ;; *) prc_mag=0 ;; esac
+       { [ "${#prc_mag}" -le 6 ] && [ "$((10#$prc_mag))" -le "$ROUND_CAP_MAX" ]; } \
          || die_infra "PLINTH_ROUND_CAP is absurdly large (got '$PLINTH_ROUND_CAP'; max ${ROUND_CAP_MAX}) — it would wrap NEGATIVE and disable the breaker instead of raising it; use 0 for no cap"
        ROUND_CAP=$((10#$PLINTH_ROUND_CAP)) ;;
   esac

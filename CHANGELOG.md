@@ -41,6 +41,16 @@ parts that were wrong on the way:
   matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
   to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
   stale the moment the fixture grew, and were wrong twice.)
+- **The Tier-0 transition fixture now performs an actual transition.** Its first version
+  seeded stale session files into a branch that was ALREADY Tier 0, so it never exercised
+  the path it claimed to — and the commit message describing it was wrong in the same way.
+  It now reviews a branch at Tier 1/2 (leaving real per-loop state), advances the base onto
+  the code commit so the remaining diff is inert docs, asserts the tier actually changed,
+  and only then checks the cleanup. Both halves are asserted, so it cannot pass vacuously.
+- `round_cap` length-bounding now strips LEADING ZEROS before measuring. `0000001` is a
+  valid 1 that the normalization below it explicitly supports, but the raw-length check
+  rejected anything padded past six characters. The guard exists to stop an overflow-sized
+  MAGNITUDE, not a padded small number. Same fix on the `PLINTH_ROUND_CAP` path.
 - **Base spellings are CANONICALIZED before they are COMPARED or hashed into the receipt.**
   Scope stated exactly, because an earlier revision of this entry said "stored" and that was
   false: `verdict.json` and `request-*.json` deliberately keep the operator's LITERAL
