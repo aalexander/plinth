@@ -1728,6 +1728,12 @@ jobs:
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) a base branch with no receipt job still trusted the PR's pin"; exit 1; }
           printf '%s' "$out" | grep -q 'does not wire a plinth-receipt.yml job' || { echo "::error::(9d) missing base pin was not reported as such: $out"; exit 1; }
+          # The diagnostic must also name STRICT, not just the wiring order. Asserting only
+          # the phrase above let the strict guidance be deleted while this stayed green —
+          # the message is the operator's whole instruction for enabling the gate, and an
+          # enabling order that omits strict produces a check that can pass and then
+          # describe a base that has since moved.
+          printf '%s' "$out" | grep -q 'strict=true' || { echo "::error::(9d) the missing-base-pin diagnostic no longer names required_status_checks.strict=true — an operator following it would wire and require the context and stop there, which is exactly the incomplete configuration preflight now flags: $out"; exit 1; }
           r9d_base_pin "$R9D_GOODPIN"
           # 10: live base.sha TOCTOU. After a successful subject bind, advance the PR base
           # tip WITHOUT changing the merge base (new commit on main after feat diverged)
