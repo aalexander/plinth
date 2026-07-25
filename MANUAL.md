@@ -118,9 +118,9 @@ Everything between is the model's call.
   into a new top section of `CHANGELOG.md`, bumps `VERSION` from the highest fragment
   `bump:` (major > minor > patch), and deletes the collated fragments. Defaults to
   the current working directory; pass a target repo path to operate elsewhere.
-  Empty `changelog.d/` is a no-op (exit 0). An invalid or missing `bump:` aborts and
-  names the file without rewriting `VERSION` or `CHANGELOG.md`. Format and rationale:
-  `changelog.d/README.md`.
+  Empty `changelog.d/` is a no-op (exit 0). Invalid/missing `bump:`, empty body, bad
+  slug, or malformed `VERSION` aborts without rewriting `VERSION` or `CHANGELOG.md`.
+  Format and rationale: `changelog.d/README.md`.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
@@ -614,12 +614,17 @@ it has run green with a real smoke_cmd.
   driver consults via `advisor_vendor`/`advisor_model`/`advisor_model_max`.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.
-- **Plinth product changes (`shared/`, `bin/`) use changelog fragments, not a
-  direct VERSION edit on the branch.** Add `changelog.d/<slug>.md` with
-  `bump: patch|minor|major` and the bullet body; do not hand-edit `VERSION` or the
-  top of `CHANGELOG.md` for the same change (parallel branches collide on both).
-  At release, run `plinth changelog-collate` so the number is derived from the
-  highest pending bump, then tag `v$(cat VERSION)`. See `changelog.d/README.md`.
+- **Plinth product changes (`shared/`, `bin/`) — changelog fragments (transition).**
+  Parallel branches that each edit `VERSION` and the top of `CHANGELOG.md` collide
+  (same next number, same insert point). The intended end state is: each branch
+  adds only `changelog.d/<slug>.md` (`bump: patch|minor|major` + bullet body);
+  the release operator runs `plinth changelog-collate`, then tags
+  `v$(cat VERSION)`. **Until a follow-up removes the old enforcement**, the
+  ratified project rule still requires a CHANGELOG entry and a VERSION bump that
+  matches the top changelog section — collate is how a release PR produces both
+  from pending fragments without every feature branch racing the same two files.
+  See `changelog.d/README.md`. Switching CI/review enforcement off the dual-write
+  rule is deliberately out of scope of the collate mechanism itself.
 
 ## Watch list
 - **First PR per repo**: confirm the Codex review actually posts (connection
@@ -866,3 +871,9 @@ installed copies.
   affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
   wave, consider an explicit `plinth update --regen-shell` that completes the
   migration under a byte-honest no-content-loss check.
+- **`changelog-collate` is not multi-file atomic across CHANGELOG + VERSION +
+  fragment deletes.** Each file is written via temp+mv (so no half-written single
+  file), but if the VERSION install or a fragment `rm` fails after CHANGELOG is
+  installed, a retry can double-insert a section. The command reports the
+  condition; a transactional rollback or a collate lockfile would harden
+  environment failures. (changelog-fragments review round 1, minor.)

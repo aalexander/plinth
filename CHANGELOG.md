@@ -1,21 +1,21 @@
 # Plinth changelog
 
-## Unreleased — changelog fragments (`changelog.d/`) — July 25, 2026
-- **Branches declare intent; release computes the number.** Parallel product
-  branches no longer edit `VERSION` or the top of `CHANGELOG.md` (those two
-  files are serial bottlenecks: every branch off the same base picks the same
-  next version and inserts at the same place). A branch adds one fragment under
-  `changelog.d/<slug>.md` with `bump: patch|minor|major` and the bullet body;
-  unique filenames never conflict. At release, `plinth changelog-collate
-  [<target-repo>]` reads every fragment, takes the highest bump, writes the new
-  top section of `CHANGELOG.md`, updates `VERSION`, and deletes the collated
-  fragments (keeps `README.md` and `.gitkeep`). Empty `changelog.d/` is a no-op;
-  an invalid or missing `bump:` aborts and names the file without rewriting
-  either release file. See `changelog.d/README.md`. The old
-  "edit VERSION + CHANGELOG on every `shared/`/`bin/` change" *enforcement* is
-  unchanged in this release — only the mechanism and docs land here.
-
 ## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
+- **Changelog fragments (`changelog.d/`) — mechanism only; VERSION unchanged.**
+  Parallel product branches collide when every branch edits `VERSION` and the top
+  of `CHANGELOG.md` from the same base. This release adds the towncrier-style
+  alternative: a branch writes `changelog.d/<slug>.md` with `bump:
+  patch|minor|major` and the bullet body; `plinth changelog-collate
+  [<target-repo>]` folds fragments at release time (highest bump wins), updates
+  `VERSION`/`CHANGELOG.md`, and drains the fragments. Empty `changelog.d/` is a
+  no-op; invalid/missing `bump:`, empty body, or bad slug aborts and names the
+  file without rewriting either release file. See `changelog.d/README.md`. The
+  existing "CHANGELOG entry + VERSION bump" *enforcement* is not removed here —
+  only the collate mechanism and docs land; a follow-up switches the contract.
+  Transition: feature branches add a fragment (and, until enforcement changes,
+  still satisfy the current VERSION/CHANGELOG rule on the PR that ships the
+  release — typically the release PR that runs collate). This bullet is the
+  CHANGELOG entry for the mechanism itself; VERSION stays 4.7.0 by design.
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified
   that an adversarial review had actually APPROVED the commit being merged — the loop was

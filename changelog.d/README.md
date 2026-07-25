@@ -21,7 +21,12 @@ bump: patch|minor|major
 
 - The `bump:` line MUST be the first line. Allowed values: `patch`, `minor`, `major`.
 - `---` on its own line separates the header from the body.
-- Do not edit `VERSION` or `CHANGELOG.md` on the feature branch — collate does both.
+- The body MUST contain one or more bullet lines (lines starting with `- `).
+- The `<slug>` in the filename must match `[a-z0-9][a-z0-9._-]*`.
+- Feature branches add a fragment so they do not race on `VERSION` /
+  `CHANGELOG.md`. Collate computes both at release. Until enforcement is switched
+  (a separate change), the release PR that runs collate is what satisfies the
+  still-ratified "CHANGELOG + VERSION" project rule.
 
 ## Release
 
