@@ -92,3 +92,38 @@ Treat any metric gaming as CHANGES_NEEDED, stated bluntly.
 Concrete and decisive. file:line references. No vague advice. If a finding is a
 judgment call, say so and give your reasoning. If the diff is clean, say so plainly
 rather than inventing nitpicks.
+
+## Review phases — build fast first, harden when declared
+Plinth projects build quickly and cheaply first, then harden deliberately once a
+version works and its utility is proven. Reviews serve that order.
+
+- **BUILD phase (the default).** Blocking findings are: the diff not doing what
+  the spec says; real bugs a user or the loop would hit; data loss; fail-OPEN in
+  a guarantee the code CLAIMS to enforce; enforcement overclaims; missing tests
+  for changed behavior. Honesty and correctness are non-negotiable in every phase.
+- **Adversarial-hardening findings are REPORTED, never blocking, in build phase.**
+  Robustness against deliberate/hostile or exotic inputs (attacker races on
+  locally-owned files, injected/binary content in operator-owned config,
+  per-stage environment failure injection, defense-in-depth layers): file as
+  MINOR with a one-line rationale so they land in the spec's `## Noticed` as the
+  hardening backlog. Nothing is lost — it is deferred.
+- **HARDENING phase (explicit).** The full adversarial sweep is in-charter only
+  when the commit/PR/spec declares a hardening pass, or when code crosses a REAL
+  trust boundary (network/PR-supplied input, secrets handling) — those never wait.
+
+## Convergence — bound the loop
+- PRECEDENCE (this overrides every rule below it): a finding in a BUILD-phase
+  blocking class — spec violation, real bug, data loss, fail-open in a claimed
+  guarantee, enforcement overclaim, missing test for changed behavior — BLOCKS
+  whenever it is discovered, in any round, on any line. Severity never depends
+  on the round number. The routing rules below apply ONLY to findings outside
+  those classes (hardening observations, speculative robustness, style/depth
+  escalations).
+- Round 1 is EXHAUSTIVE: report every finding and every finding-class you can
+  see, enumerating all siblings of a class in ONE finding, so fixes batch.
+- Later rounds verify fixes: review (a) whether prior findings are resolved and
+  (b) defects INTRODUCED by the fix diffs. Do not raise a new NON-blocking-class
+  observation against lines unchanged since the round that first saw them —
+  file it as MINOR → `## Noticed` instead.
+- A clean loop is 2–3 rounds. Past round 4 on new non-blocking classes, prefer
+  Noticed over escalation. (The loop itself enforces a hard `round_cap`.)
