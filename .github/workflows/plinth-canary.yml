@@ -993,6 +993,55 @@ jobs:
             rc=0; PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 0 ] || { echo "::error::ledger fixture loop failed (rc=$rc)"; exit 1; }
             jq -r 'select(.round == 1) | .overrides.reviewer_model // empty' .plinth/session/review/feat/usage.jsonl | grep -qx xmodel || { echo "::error::a non-final round's override left no trace in the usage.jsonl ledger (disclosure rule unimplementable)"; exit 1; } )
+          # (4f) audit prompt carries the tooling-commit labels (upstream #28): on a
+          # Tier-2 approval whose range includes a labeled tooling commit, the audit
+          # prompt (findings-audit-N.json.prompt) must contain the COMMITS IN RANGE
+          # list — without it the auditor is told to check labels it cannot see and
+          # false-flags every legitimate instrument refresh.
+          AUD="$(mktemp -d)"; mkstate "$AUD"; mk_cap_codex "$AUD"
+          cp "$OV/claude" "$AUD/claude"
+          printf '%s' "$APF" > "$AUD/verdict-1"
+          audd="$(mktemp -d)"
+          ( cd "$audd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$audd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf '\n# canary probe comment\n' >> .plinth/review.sh
+            git add -A; git commit -qm 'plinth: instrument comment probe' >/dev/null
+            rc=0; PATH="$AUD:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(4f) labeled-tooling Tier-2 approval failed (rc=$rc)"; exit 1; }
+            ap=".plinth/session/review/feat/findings-audit-1.json.prompt"
+            [ -f "$ap" ] || { echo "::error::(4f) audit prompt file not written"; exit 1; }
+            grep -q 'TOOLING COMMITS IN RANGE' "$ap" || { echo "::error::audit prompt lacks the COMMITS IN RANGE section (#28 regressed)"; exit 1; }
+            grep -q 'plinth: instrument comment probe' "$ap" || { echo "::error::audit prompt lacks the tooling commit label line (#28)"; exit 1; } )
+          # (4g) resume carries the reviewer model (upstream #25): with a per-tier model
+          # pinned, the round-2 RESUME invocation must pass -m <model> to codex — a
+          # resumed thread silently continuing on its original model while the ledger
+          # records the pin as applied corrupts the disclosure trail.
+          RM="$(mktemp -d)"; mkstate "$RM"
+          cat > "$RM/codex" <<CX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$RM/state") + 1 )); echo \$n > "$RM/state"
+          printf '%s\n' "\$@" > "$RM/args-\$n"
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          if [ "\$n" = 1 ]; then b='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else b='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"cs"}'; echo '{"type":"turn.completed","usage":{"input_tokens":10}}'
+          CX
+          chmod +x "$RM/codex"
+          rmd="$(mktemp -d)"
+          ( cd "$rmd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_model_tier1 = tinymodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$RM:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$RM:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(4g) resume-model loop did not approve (rc=$rc)"; exit 1; }
+            grep -qx resume "$RM/args-2" || { echo "::error::(4g) round 2 was not a resume — fixture premise broken"; exit 1; }
+            awk '/^-m$/{getline nx; if(nx=="tinymodel") ok=1} END{exit ok?0:1}' "$RM/args-2" || { echo "::error::resume invocation dropped the pinned reviewer model (#25 regressed)"; exit 1; } )
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.

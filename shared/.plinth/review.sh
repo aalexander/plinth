@@ -643,7 +643,13 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
   # contract passed in the prompt, not on driver instructions. (Verified: codex 0.142.5.)
   local m="$1" margs=(); [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
   if [ "$m" = "resume" ]; then
-    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' -c project_doc_max_bytes=0 --json \
+    # margs on resume too (upstream #25): a same-vendor model override must reach
+    # the resumed thread — silently continuing on the thread's original model
+    # while the ledger records the override as applied corrupts the disclosure
+    # trail. -m on `exec resume` verified against codex-cli 0.145.0; if a vendor
+    # build rejects it the `|| return 1` falls back to a verify round, which
+    # applies the override in a fresh session — degraded, never dishonest.
+    printf '%s' "$prompt" | codex exec resume "$s" ${margs[@]+"${margs[@]}"} -c 'sandbox_mode="read-only"' -c project_doc_max_bytes=0 --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" || return 1
   else
     printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
@@ -1040,6 +1046,9 @@ $(inline_spec)
 
 === OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)
+
+=== TOOLING COMMITS IN RANGE (${baseref}..HEAD — COMPLETE list of commits touching version-pinned tooling, for the tamper policy; judge each by its subject label) ===
+$(git log --format='%h %s' "${baseref}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"
