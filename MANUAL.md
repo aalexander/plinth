@@ -380,10 +380,13 @@ Two operator chores the rules generate:
    credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
    tampering-class), every override is announced and recorded in session state
    (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
-   the PR body's audit summary (contract-bound: nothing shipped cross-checks the
-   PR body against the ledger — the operator audits the ledger directly; the
-   automated cross-check is designated for the receipt check), and a vendor swap
-   never resumes the previous vendor's thread.
+   the PR body's audit summary. That disclosure IS cross-checked automatically
+   wherever `receipt / verify` is wired and required: the receipt carries the
+   override ledger and the verifier holds the PR body to EXACT tuple-set equality
+   with it, rejecting a missing OR a phantom disclosure line (auto mode, v4.7+).
+   Where the check is not required, the duty stays contract-bound and the operator
+   audits `usage.jsonl` directly. A vendor swap never resumes the previous vendor's
+   thread — and, since v4.7, forces a fresh full round rather than a scoped verify.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver
@@ -394,8 +397,10 @@ Two operator chores the rules generate:
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
    cannot close that gap (it posts comments, not a requirable status check). Under
    the grok-RESIDENT alternative the review loop is therefore contract-bound driver
-   discipline today; the server-side check of `review.sh`'s own APPROVED-at-HEAD
-   verdict — the receipt check, shipping with auto mode — is what closes it.
+   discipline wherever the receipt check is not required; the server-side check of
+   `review.sh`'s own APPROVED-at-HEAD verdict — `receipt / verify` (auto mode,
+   v4.7+) — is what closes it, once wired into `ci.yml` and required in branch
+   protection.
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -577,9 +582,10 @@ it has run green with a real smoke_cmd.
   can't trap a session. A driver whose CLI does not execute the Stop hook (per-CLI —
   `plinth hookprobe`; grok 0.2.112: no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]) has no
   local hard block; the server-side hard gate is branch protection's required checks
-  (floor + checks), and the driver is trusted to run the risk-tiered review loop (its
-  APPROVED-at-HEAD verdict has no server-side verifier yet — the receipt check,
-  shipping with auto mode, closes this). Every gate release (a Claude driver ending
+  (floor + checks), and the driver is trusted to run the risk-tiered review loop — unless
+  `receipt / verify` is wired and required, which is exactly what puts its APPROVED-at-HEAD
+  verdict under a server-side verifier (auto mode, v4.7+). Where it is not required, the
+  verdict still has no server-side check. Every gate release (a Claude driver ending
   its turn without approval, e.g. on a broken review pipeline) is logged as a
   `gate_release` event the dashboard shows in red.
 - Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
@@ -630,6 +636,13 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
+  (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
+  flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
+  accepted-but-ignored `-m` on a resumed thread, an override would be recorded and disclosed
+  as APPLIED while the round ran on the thread's original model — a dishonest disclosure
+  trail. Wants a behavioral probe: two resumed rounds with different `-m` values, assert the
+  recorded model differs. Raised by the primary reviewer (v4.7, new-loop round 1).
 - **The receipt WORKFLOW GLUE has no canary coverage** (`.github/workflows/plinth-receipt.yml`).
   Fixtures (9)/(9b)/(9c) exercise minting and `receipt-verify.sh` end-to-end with the real
   scripts, but not the workflow around them: the `git clone plinth@v${ver}` from

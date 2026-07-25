@@ -435,10 +435,25 @@ mint_receipt() {  # mint_receipt <round>
   # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
   # to {round, name, value} tuples — the disclosure set the server check holds
   # the PR body to (exact tuple-set equality).
-  ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
-      {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
-      "$SDIR/usage.jsonl" 2>/dev/null)" || ledger="[]"
-  [ -n "$ledger" ] || ledger="[]"
+  # ABSENT ledger is legitimate and means "no overrides": Tier 0 mints before any round
+  # runs, and a loop with no override rows never creates the file. A ledger that EXISTS
+  # but cannot be read or parsed is different — collapsing that to [] would be a
+  # fail-OPEN on the disclosure guarantee, because `git notes add -f` would overwrite a
+  # good receipt with an empty-ledger one and a PR body disclosing nothing would then
+  # verify. Reachable on the remint fast path, where verdict.json can survive while the
+  # per-loop ledger is lost. (jq exits 2 on a missing file and 5 on malformed input, but
+  # still prints [] for the missing case — so the file test, not jq's stdout, decides.)
+  if [ -f "$SDIR/usage.jsonl" ]; then
+    ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
+        {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
+        "$SDIR/usage.jsonl" 2>/dev/null)" || ledger=""
+    if [ -z "$ledger" ]; then
+      echo "Plinth review: NOTE — receipt NOT minted: the per-loop override ledger (${SDIR}/usage.jsonl) exists but could not be parsed, and minting an empty ledger could drop a real override from the disclosure the server check enforces. Re-run the loop, or restore session state."
+      return 0
+    fi
+  else
+    ledger="[]"
+  fi
   if command -v shasum >/dev/null 2>&1; then
     subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
       "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | shasum -a 256 | cut -d' ' -f1)"
