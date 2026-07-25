@@ -1,6 +1,25 @@
 # Plinth changelog
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+- **Targeted `gh pr merge` commands now gate the PR being merged** (upstream #16).
+  A positional PR number/URL or `-R` selection is resolved to its head branch and SHA, and
+  only that branch slug's APPROVED-at-head verdict authorizes the merge. Resolution,
+  metadata, and argument-parse failures block; a repository other than the checkout's
+  `origin` also blocks. Bare current-branch shipping keeps its prior behavior. Verdict
+  state remains worktree-local, so a reviewed worktree must run its own merge.
+- **Managed-file refreshes no longer rewrite running scripts in place** (upstream #10).
+  `plinth init`/`update` materialize managed files through same-directory temporary files
+  and atomic renames, preserving the exact existing mode on refresh. This lets an
+  already-running `review.sh` finish from its open inode. Update also warns and continues
+  when a request record indicates that a review round is in flight.
+- **Implementer specs and project-owned policy files stay data, not tooling source**
+  (upstream #22). Both lane contracts now require the non-shell Write tool for their
+  unique prompt file, so a literal `SPEC_EOF` line cannot terminate shell source.
+  Destructive-command matching skips only quoted-heredoc bodies while continuing to scan
+  unquoted bodies and ordinary commands. The review harness documents its matching
+  pinned-tooling sets, and canary coverage explicitly verifies that project-owned
+  `.plinth` files—including `DRIVER-project.md`, config, protected paths, and the human
+  queue—stay outside tamper arithmetic.
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.

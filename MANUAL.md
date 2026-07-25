@@ -573,9 +573,15 @@ it has run green with a real smoke_cmd.
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
-- Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
-  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
+- Deny-ship tripwire (same hook): on a feature branch, a bare current-branch
+  `gh pr create`/`gh pr merge` is refused unless the branch has an APPROVED review
+  at HEAD. A targeted merge
+  (positional PR number/URL or `-R`) resolves that PR's head branch and SHA and requires
+  the verdict for that branch slug at that SHA; resolution failure or a target naming a
+  repository other than the checkout's `origin` blocks. Review state is worktree-local,
+  so run the merge from the worktree that holds
+  its verdict. Like every `.claude/` hook it fires only under a Claude driver, or a CLI
+  verified END-TO-END to run the guard —
   a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
