@@ -52,8 +52,11 @@ unbind_verdict() {
   local why="${1:-binding gate failed}" tmp
   [ -n "${SDIR:-}" ] && [ -f "$SDIR/verdict.json" ] || return 0
   tmp="$SDIR/verdict.json.unbind"
-  if jq --arg w "$why" '.verdict = "UNBOUND" | .unbound_reason = $w' "$SDIR/verdict.json" > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$SDIR/verdict.json"
+  # jq AND mv must both succeed; under set -e a bare `mv` after a successful jq
+  # would abort the script while the original APPROVED still sits on disk.
+  if jq --arg w "$why" '.verdict = "UNBOUND" | .unbound_reason = $w' "$SDIR/verdict.json" > "$tmp" 2>/dev/null \
+     && mv "$tmp" "$SDIR/verdict.json" 2>/dev/null; then
+    :
   else
     rm -f "$tmp"
     # Cannot rewrite it — removing it is still fail-closed (no verdict reads as no approval).
@@ -634,10 +637,15 @@ mint_receipt() {  # mint_receipt <round>
   # movement check — production always sets base_tip before the first subject read.
   pinned="${base_tip:-}"
   if [ -n "$pinned" ]; then
-    live_tip="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
-      || die_infra "base ref '${baseref}' disappeared during this review — re-run ./.plinth/review.sh"
-    # BOTH actions, or neither: demote the persisted APPROVED *and* abort. Splitting them
-    # made die_infra unconditional, which would have aborted every mint.
+    # BOTH actions, or neither, on every mint-time abort: demote the persisted APPROVED
+    # *and* exit 2. Leaving APPROVED readable lets guard.sh's ship gate and the Stop gate
+    # release on a verdict the loop refused to bind. The disappear path is the sibling of
+    # "moved" — same fail-open without demotion. Splitting the compound into a bare
+    # die_infra made it unconditional and would have aborted every mint.
+    live_tip="$(git rev-parse --verify "$baseref" 2>/dev/null)" || {
+      unbind_verdict "the base ref disappeared during the round, so this approval never bound to a mintable subject"
+      die_infra "base ref '${baseref}' disappeared during this review — re-run ./.plinth/review.sh"
+    }
     [ "$live_tip" = "$pinned" ] || {
       unbind_verdict "the base ref moved during the round, so this approval never bound to a mintable subject"
       die_infra "base ref '${baseref}' moved during this review (${pinned:0:12} → ${live_tip:0:12}). The reviewed subject is no longer the one that would be minted — re-run ./.plinth/review.sh."
@@ -888,8 +896,20 @@ if [ -f "$SDIR/verdict.json" ]; then
   # unknown anchor re-reads rather than assuming continuity.
   prev_digest="$(jq -r '.diff_digest // empty' "$SDIR/verdict.json")"
   prev_mbase="$(jq -r '.merge_base // empty'   "$SDIR/verdict.json")"
+  prev_unbound_reason="$(jq -r '.unbound_reason // empty' "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
+  # Cap-demoted unconfirmed: unbind_verdict() turns a capped Tier-2 confirmation's
+  # APPROVED into UNBOUND so ship/Stop gates fail closed, but the operator's documented
+  # recovery (raise PLINTH_ROUND_CAP and re-run) must still run that pending confirmation.
+  # Match the reason string the demotion records — a moved/disappeared-base UNBOUND must
+  # NOT recover (the subject never bound; re-review is required).
+  cap_unbound=0
+  if [ "$prev_verdict" = "UNBOUND" ]; then
+    case "$prev_unbound_reason" in
+      *"round cap"*) cap_unbound=1 ;;
+    esac
+  fi
   # Budget is ADVISORY: warn loudly and continue — never park the loop on a
   # human. Runaway protection is the verdict arithmetic (v3.14) plus the
   # spend being visible in plinth watch; the human can always interrupt.
@@ -923,11 +943,14 @@ if [ -f "$SDIR/verdict.json" ]; then
   # server check would happily verify it. Mismatch falls through to the new-loop branch
   # below, which clears the per-loop markers and runs a real round 1 against the new base
   # (correct: different base, different diff, different subject, fresh ledger).
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] \
+  # UNBOUND-from-cap is admitted ONLY for the non-binding confirmation recovery below —
+  # never for the remint fast path (an UNBOUND verdict must not mint).
+  if [ "$prev_sha" = "$sha" ] \
+     && { [ "$prev_verdict" = "APPROVED" ] || [ "$cap_unbound" = 1 ]; } \
      && [ "$(canon_base "$prev_base")" = "$(canon_base "$baseref")" ] \
      && [ -n "$prev_digest" ] && [ "$prev_digest" = "$diff_digest" ] \
      && [ -n "$prev_mbase" ] && [ "$prev_mbase" = "$merge_base" ]; then
-    if binds_directly "$prev_mode" "$RISK"; then
+    if [ "$prev_verdict" = "APPROVED" ] && binds_directly "$prev_mode" "$RISK"; then
       # REMINT before the fast path returns. Minting is best-effort (a repo with no
       # origin, no notes support, or no sha256 tool still reviews fine), so a binding
       # APPROVED can be recorded with NO receipt — or, worse, one carrying an empty
@@ -940,13 +963,16 @@ if [ -f "$SDIR/verdict.json" ]; then
       echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
       exit 0
     fi
-    # A non-binding APPROVED (e.g. Tier-2 verify) was persisted but its
-    # clean-slate confirmation never completed (crash/kill between the
-    # approval and the confirmation round). Trusting the stored verdict here
-    # would silently convert an unconfirmed approval into a binding one —
-    # run the confirmation now instead.
-    echo "Plinth review: prior APPROVED at ${sha} (round ${prev_round}, mode ${prev_mode}, Tier ${RISK}) is NON-BINDING and unconfirmed — running the clean-slate confirmation now."
-    recovery=1; mode="fresh"; round=$((prev_round + 1)); sid=""
+    # A non-binding APPROVED (e.g. Tier-2 verify) was persisted but its clean-slate
+    # confirmation never completed — crash/kill between the approval and the
+    # confirmation, OR demotion to UNBOUND because the confirmation was over the
+    # round cap. Trusting the stored verdict here would silently convert an
+    # unconfirmed approval into a binding one — run the confirmation now instead.
+    # (A moved/disappeared-base UNBOUND does not reach this branch: cap_unbound=0.)
+    if ! binds_directly "$prev_mode" "$RISK"; then
+      echo "Plinth review: prior APPROVED at ${sha} (round ${prev_round}, mode ${prev_mode}, Tier ${RISK}) is NON-BINDING and unconfirmed — running the clean-slate confirmation now."
+      recovery=1; mode="fresh"; round=$((prev_round + 1)); sid=""
+    fi
   fi
   # "HEAD unchanged" only means "nothing new to review" while the REVIEW CONTEXT is also
   # unchanged. A CHANGES_NEEDED round is about a DIFF, and the diff moves when the base
@@ -1375,13 +1401,13 @@ esac
 if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
   # The cap is HARD here too: the confirmation is a fresh full-diff frontier
   # round — the most expensive kind — and the docs promise round_cap has no
-  # carve-outs. Dying here is safe: the non-binding APPROVED is already
-  # persisted, and the unconfirmed-approval recovery path runs the
-  # confirmation on the next invocation once the operator unbricks with
-  # PLINTH_ROUND_CAP.
+  # carve-outs. Dying here demotes the persisted APPROVED to UNBOUND (so ship/
+  # Stop gates fail closed) while recording the round-cap reason; the recovery
+  # predicate admits that specific UNBOUND and runs the confirmation once the
+  # operator unbricks with PLINTH_ROUND_CAP.
   if [ "$ROUND_CAP" -gt 0 ] && [ $((round + 1)) -gt "$ROUND_CAP" ]; then
     unbind_verdict "the Tier-2 clean-slate confirmation could not run (round cap), so this approval never bound"
-    die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED is recorded but NON-BINDING until the confirmation runs — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
+    die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED was demoted to UNBOUND (non-binding until the confirmation runs) — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
   fi
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))

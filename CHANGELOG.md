@@ -53,6 +53,15 @@ parts that were wrong on the way:
   but some later subject-defining ops still re-resolve symbolic HEAD — a concurrent
   local ref rewind could make reviewed content differ from the commit receiving the
   verdict (hardening backlog under MANUAL `## Noticed`; not pinned in this release).
+- **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
+  abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
+  exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's
+  ship gate and the Stop gate would release on a verdict the loop had just refused to
+  bind. Demote `verdict` to `UNBOUND` and record `unbound_reason`; consumers compare
+  against `"APPROVED"`, so they fail closed with no new field. Recovery admits an
+  `UNBOUND` whose reason is the round cap (operator raises `PLINTH_ROUND_CAP` → pending
+  confirmation runs); a moved/disappeared base stays unrecoverable (must re-review).
+  Canary covers demotion, disappearance, and both recovery directions.
 - **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
   failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
   `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now

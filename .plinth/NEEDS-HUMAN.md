@@ -45,18 +45,15 @@
   real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
   one mints nothing, so the check fails closed — correct, but it would block every PR).
   plinth itself is at 4.7.2 as of this branch (VERSION and .plinth-version agree).
-  The v4.7.0 SHA in step 1 below is deliberate and unchanged: that is the commit whose
-  reusable workflow you pin, not the instrument version you run.
 
   **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
   per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand
-  (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the release
-  SHA — for v4.7.0 that is `ed8d75b2b90685eddbebb24bd11c2770ed489341`. **Pin the release you are RUNNING, not v4.7.0.** That SHA delivers v4.7.0's
-  verifier, which predates this release's live base-SHA check, notes-probe error
-  classification, strict-enablement diagnostic and repo-mismatch redaction — so a
-  v4.7.2 rollout that keeps it silently ships the older verifier. After tagging,
-  take the SHA with `git rev-parse v<version>` and pin that. Merge that PR
-  before doing step 2.
+  (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the SHA of
+  **the release you are RUNNING** — after tagging, `git rev-parse v<version>`. Do NOT pin
+  an older release such as v4.7.0 (`ed8d75b2b90685eddbebb24bd11c2770ed489341`): that
+  verifier predates this release's live base-SHA check, notes-probe error classification,
+  strict-enablement diagnostic and repo-mismatch redaction — a v4.7.2 instrument with a
+  v4.7.0 pin silently ships the older verifier. Merge that PR before doing step 2.
 
   Why the order is not optional: the check reads the receipt job's pin from the BASE
   branch and refuses any PR-supplied pin that differs. That is what stops a PR from

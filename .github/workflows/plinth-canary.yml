@@ -2544,7 +2544,59 @@ jobs:
             [ "$rc" = 2 ] || { echo "::error::(9k4) mid-round base movement did not abort with exit 2 (rc=$rc) — mint would bind a subject the reviewer never saw: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
             printf '%s' "$out" | grep -qi 'moved during this review' || { echo "::error::(9k4) abort did not name the mid-round base movement: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
             git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9k4) a receipt was minted after the base moved mid-round"; exit 1; } || true
-            [ "$(cat "$R9K4/state")" = 1 ] || { echo "::error::(9k4) expected exactly one reviewer invocation, got $(cat "$R9K4/state")"; exit 1; } )
+            [ "$(cat "$R9K4/state")" = 1 ] || { echo "::error::(9k4) expected exactly one reviewer invocation, got $(cat "$R9K4/state")"; exit 1; }
+            # Demotion: abort must leave verdict UNBOUND, not APPROVED — otherwise
+            # guard.sh's ship gate and the Stop gate release on a refused approval.
+            # Mutant: unbind_verdict never called on the moved path.
+            vj=".plinth/session/review/feat/verdict.json"
+            [ -f "$vj" ] || { echo "::error::(9k4) verdict.json missing after mid-round move abort"; exit 1; }
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::(9k4) after mid-round move, verdict is '$(jq -r .verdict "$vj")' not UNBOUND — a refused approval is still readable as APPROVED"; exit 1; }
+            printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'moved' || { echo "::error::(9k4) unbound_reason does not name the move: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; }
+            # NEGATIVE recovery: a moved-base UNBOUND must NOT take the confirmation
+            # recovery path (that is only for the round-cap demotion). Mutant: recovery
+            # accepts every UNBOUND → re-run greps NON-BINDING and unconfirmed / skips re-review.
+            b_before="$(cat "$R9K4/state")"
+            rc=0; out2="$(PATH="$R9K4:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            printf '%s' "$out2" | grep -q 'NON-BINDING and unconfirmed' && { echo "::error::(9k4) moved-base UNBOUND took confirmation recovery — only a round-cap demotion is recoverable; a moved base must re-review"; exit 1; } || true
+            printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k4) moved-base UNBOUND reminted / fast-pathed — an unbound approval must not mint"; exit 1; } || true
+            # Re-run must invoke a real round (or fail on empty diff after the base moved onto
+            # an ancestor that shrinks the subject). Either way it is NOT confirmation recovery.
+            [ "$(cat "$R9K4/state")" != "$b_before" ] || [ "$rc" != 0 ] || { echo "::error::(9k4) re-run after moved-base UNBOUND neither billed a round nor failed (rc=$rc state=$(cat "$R9K4/state"))"; exit 1; } )
+          # (9k4-gone) BASE DISAPPEARS mid-round. Sibling of (9k4-mint): delete the named
+          # base ref after the reviewer runs; mint must demote to UNBOUND and die_infra.
+          # Mutant: only "moved" is demoted → disappear still leaves APPROVED readable.
+          R9K4G="$(mktemp -d)"; mkstate "$R9K4G"
+          cat > "$R9K4G/codex" <<R9K4GCX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$R9K4G/state") + 1 )); echo \$n > "$R9K4G/state"
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          # Mid-round: remove main and origin/main so mint's re-resolve fails.
+          git update-ref -d refs/heads/main 2>/dev/null || true
+          git update-ref -d refs/remotes/origin/main 2>/dev/null || true
+          b='{"verdict":"APPROVED","summary":"s","findings":[]}'
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"k4g"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
+          R9K4GCX
+          chmod +x "$R9K4G/codex"
+          r9k4gd="$(mktemp -d)"
+          ( cd "$r9k4gd"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9k4gd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin https://github.com/owner/repo.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            B0="$(git rev-parse HEAD)"
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null
+            git update-ref refs/remotes/origin/main "$B0"
+            rc=0; out="$(PATH="$R9K4G:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(9k4-gone) mid-round base disappearance did not abort with exit 2 (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'disappeared during this review' || { echo "::error::(9k4-gone) abort did not name disappearance: $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9k4-gone) a receipt was minted after the base disappeared"; exit 1; } || true
+            vj=".plinth/session/review/feat/verdict.json"
+            [ -f "$vj" ] || { echo "::error::(9k4-gone) verdict.json missing after disappear abort"; exit 1; }
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::(9k4-gone) after disappear, verdict is '$(jq -r .verdict "$vj")' not UNBOUND — refused approval still readable as APPROVED"; exit 1; }
+            printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'disappeared' || { echo "::error::(9k4-gone) unbound_reason does not name disappearance: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; } )
           # (9k4-diff) DIFF is pinned. After the pin is captured, advance origin/main so a
           # re-resolve would drop part1.py from the subject. The reviewer prompt must still
           # contain part1.py (computed from base_tip). Reverting `git diff "${base_tip}...`
@@ -2733,8 +2785,11 @@ jobs:
             [ "$(cat "$R9I/state")" != "$b5" ] || { echo "::error::(9i) the different-base run did not invoke the reviewer ($b5 unchanged) — it must run a real round rather than inherit the other base's approval"; exit 1; }
             printf '%s' "$out3" | grep -q 'does not carry over' || { echo "::error::(9i) the different-base run did not ANNOUNCE why the free remint was skipped — an operator following the recovery recipe with the wrong base is silently billed for a full round: $(printf '%s' "$out3" | tail -c 200)"; exit 1; } )
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
-          # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
-          # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
+          # must NOT launch a round-cap+1 clean-slate; exit 2, demote the persisted APPROVED
+          # to UNBOUND (so ship/Stop gates fail closed), and a PLINTH_ROUND_CAP unbrick runs
+          # the recovery confirmation. Mutants: (a) leave verdict APPROVED after the cap
+          # → ship gate would release; (b) recovery accepts only APPROVED → unbrick starts
+          # round 1 instead of the pending confirmation (this assertion at NON-BINDING).
           CC="$(mktemp -d)"; mkstate "$CC"; mk_cap_codex "$CC"
           printf '%s' "$CNF" > "$CC/verdict-1"; printf '%s' "$APF" > "$CC/verdict-2"; printf '%s' "$APF" > "$CC/verdict-3"
           ccd="$(mktemp -d)"
@@ -2750,9 +2805,13 @@ jobs:
             [ "$rc" = 2 ] || { echo "::error::capped Tier-2 confirmation did not trip the breaker (rc=$rc)"; exit 1; }
             printf '%s' "$out" | grep -q 'confirmation would be round 3' || { echo "::error::capped confirmation did not name itself"; exit 1; }
             [ "$(cat "$CC/state")" = 2 ] || { echo "::error::the capped confirmation still invoked the reviewer"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::capped confirmation left verdict='$(jq -r .verdict "$vj")' — must demote to UNBOUND so ship/Stop gates fail closed"; exit 1; }
+            printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'round cap' || { echo "::error::capped confirmation unbound_reason does not name the round cap: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; }
             rc=0; out="$(PLINTH_ROUND_CAP=5 PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
-            [ "$rc" = 0 ] || { echo "::error::unbricked recovery confirmation failed (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::recovery path not taken after the capped confirmation"; exit 1; } )
+            [ "$rc" = 0 ] || { echo "::error::unbricked recovery confirmation failed (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::recovery path not taken after the capped confirmation (UNBOUND-from-cap must recover, not reset to round 1): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(cat "$CC/state")" = 3 ] || { echo "::error::unbricked recovery did not invoke exactly one confirmation round (calls=$(cat "$CC/state"), want 3)"; exit 1; } )
           # (5) FALLBACK verify: with no usable fix-diff anchor (lastfullread gone —
           # anchor object missing/legacy state), the verify round must send the FULL
           # diff and say so.
