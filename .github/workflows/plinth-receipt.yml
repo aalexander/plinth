@@ -1,0 +1,160 @@
+name: plinth-receipt
+
+# The APPROVED-at-HEAD receipt check (auto mode, v4.7): the required status
+# check that verifies review.sh's own verdict server-side. The review loop
+# mints a plinth.review-receipt/v1 as a git note on the approved commit
+# (refs/notes/plinth-receipts); this workflow fetches that note for the PR's
+# exact head and re-derives every binding from the PR's own subject via
+# receipt-verify.sh (fetched from THIS reusable workflow's own pinned uses:
+# ref, via github.job_workflow_ref — BOTH the repository and the commit come
+# from the caller's pin, nothing else; never the PR's working tree, which is
+# PR-controlled, and never a second context value that could name a different
+# repo than the pin does).
+# Fails closed on every path: no receipt, stale receipt, non-APPROVED, subject
+# mismatch, or an override the PR body does not disclose.
+#
+# HONEST BOUND (documented everywhere this check is): this verifies that a
+# receipt was minted for exactly this subject and that its override ledger is
+# disclosed. A driver that fabricates a receipt without running the loop
+# defeats it — the check makes skipping DETECTABLE AND AUDITABLE (the notes ref
+# is append-only history), not cryptographically impossible.
+#
+# v1 LIMITS (fail closed, never silently pass):
+# - pull_request events only. GitHub merge queues rewrite SHAs into synthetic
+#   heads no local loop ever approved — exact-HEAD semantics cannot be
+#   inherited; do not enable a merge queue with this check required.
+# - Receipts are fetched from the BASE repository's notes ref. A fork driver
+#   cannot push notes there, so fork PRs fail closed — the estate's flow is
+#   same-repo branches.
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject unsupported events (fail closed)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "::error::plinth-receipt v1 verifies pull_request events only (got ${{ github.event_name }}); merge queues rewrite SHAs — the synthetic head was never approved by any loop"
+          exit 1
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+      - name: Verify the APPROVED-at-HEAD receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          JOB_WF_REF: ${{ github.job_workflow_ref }}
+        run: |
+          set -euo pipefail
+          # Verifier comes from THIS workflow's own uses: pin — BOTH halves of it.
+          # job_workflow_ref has the form `OWNER/REPO/<path>@REF`, so the repository
+          # AND the commit both come from the caller's pin and nothing else. An
+          # earlier revision took only the @REF here and built the URL from
+          # github.repository_owner (the CALLING repo's owner), which silently broke
+          # the property this docblock advertises: an org repo consuming a
+          # personally-owned plinth (or a renamed/forked source) would fetch the
+          # wrong repository — or none — even though job_workflow_ref named the right
+          # one. Never reintroduce a second source for either half.
+          [ -n "${JOB_WF_REF:-}" ] || { echo "::error::github.job_workflow_ref is empty — expected for a reusable workflow call; cannot resolve the verifier pin"; exit 1; }
+          case "$JOB_WF_REF" in
+            *@*) ref="${JOB_WF_REF##*@}" ;;
+            *) echo "::error::github.job_workflow_ref has no @ref (got ${JOB_WF_REF}) — cannot resolve the verifier pin"; exit 1 ;;
+          esac
+          [ -n "$ref" ] || { echo "::error::empty ref after last @ in job_workflow_ref (${JOB_WF_REF}) — cannot resolve the verifier pin"; exit 1; }
+          # OWNER/REPO = everything before the workflow path. Require the `/.github/`
+          # separator and an `owner/repo` shape, so a malformed value fails closed
+          # instead of composing a plausible-but-wrong URL.
+          case "$JOB_WF_REF" in
+            */.github/*) wf_nwo="${JOB_WF_REF%%/.github/*}" ;;
+            *) echo "::error::github.job_workflow_ref has no /.github/ path segment (got ${JOB_WF_REF}) — cannot resolve the verifier repository"; exit 1 ;;
+          esac
+          case "$wf_nwo" in
+            */*/*|*/) echo "::error::unexpected owner/repo in job_workflow_ref (got ${wf_nwo}) — cannot resolve the verifier repository"; exit 1 ;;
+            */*) : ;;
+            *) echo "::error::job_workflow_ref does not name owner/repo (got ${wf_nwo}) — cannot resolve the verifier repository"; exit 1 ;;
+          esac
+          # ── The verifier pin must match the BASE branch's, not the PR's ─────────────
+          # THE BYPASS THIS CLOSES: on a `pull_request` event GitHub runs the workflow
+          # files from the PR HEAD, and the CALLER (`ci.yml`) is operator-owned project
+          # code a PR may edit. So job_workflow_ref reflects whatever pin the PR chose.
+          # Without this check, a PR could repoint its own `receipt:` job at
+          # `attacker/evil-plinth/...@sha` whose receipt-verify.sh unconditionally exits
+          # 0 — and the REQUIRED `receipt / verify` context would go green with no
+          # review, no receipt, and nothing at refs/notes/plinth-receipts. That is
+          # precisely the threat auto mode exists to close, so the verifier's own
+          # provenance cannot be controlled by the PR it gates.
+          #
+          # The base branch is not PR-writable (that is what branch protection means),
+          # so the pin recorded THERE is the operator's. Require the running pin to
+          # equal it, exactly.
+          base_ci="$(git show "origin/${BASE_REF}:.github/workflows/ci.yml" 2>/dev/null || true)"
+          [ -n "$base_ci" ] || { echo "::error::cannot read .github/workflows/ci.yml from origin/${BASE_REF} — the verifier pin cannot be anchored to the base, so this check refuses to run (fail closed)"; exit 1; }
+          base_uses="$(printf '%s\n' "$base_ci" | grep -E '^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:.*plinth-receipt\.yml@' | head -1 || true)"
+          if [ -z "$base_uses" ]; then
+            echo "::error::the base branch (origin/${BASE_REF}) does not wire a plinth-receipt.yml job, so there is no operator-owned pin to anchor against — a PR-supplied pin must never be trusted. Land the receipt job in ci.yml on ${BASE_REF} FIRST, then require the 'receipt / verify' context (that is the documented enabling order)."
+            exit 1
+          fi
+          # Compare owner/repo@ref, ignoring surrounding quotes and any trailing comment.
+          base_pin="$(printf '%s' "$base_uses" | sed -E 's/^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//')"
+          run_pin="${wf_nwo}/.github/workflows/plinth-receipt.yml@${ref}"
+          [ "$base_pin" = "$run_pin" ] || {
+            echo "::error::the receipt verifier pin differs from the one on origin/${BASE_REF}."
+            echo "::error::  base (operator-owned, trusted): ${base_pin}"
+            echo "::error::  running (from this PR's ci.yml): ${run_pin}"
+            echo "::error::A PR cannot choose which verifier judges it. Revert the receipt job's uses: line, or land the repin on ${BASE_REF} first."
+            exit 1
+          }
+          # Clear first: a GitHub-hosted runner is ephemeral, but a REUSED/self-hosted one
+          # can carry a stale /tmp/plinth from a prior job (a partial failure leaves the dir
+          # behind), and `remote add origin` then dies with "already exists" — a confusing
+          # failure with nothing to do with the receipt. The canary's own fixture clears it
+          # between cases; the production step must not rely on a fresh VM to be correct.
+          rm -rf /tmp/plinth
+          git init -q /tmp/plinth
+          git -C /tmp/plinth remote add origin "https://github.com/${wf_nwo}"
+          git -C /tmp/plinth fetch -q --depth 1 origin "$ref" \
+            || { echo "::error::cannot fetch ${wf_nwo}@${ref} (both from job_workflow_ref) — missing commit, or that repo not readable from Actions"; exit 1; }
+          git -C /tmp/plinth checkout -q FETCH_HEAD
+          VERIFY=/tmp/plinth/shared/.plinth/receipt-verify.sh
+          [ -f "$VERIFY" ] || { echo "::error::pinned plinth ref (${ref}) predates the receipt check (no receipt-verify.sh) — repin uses: to v4.7+"; exit 1; }
+          chmod +x "$VERIFY"
+          # The PR head object must exist locally even for fork PRs (the base
+          # repo serves it via the pull ref); the notes ref comes from the BASE
+          # repo only — that is the point.
+          git fetch -q origin "+refs/pull/${PR_NUM}/head:refs/plinth/prhead" \
+            || { echo "::error::cannot fetch the PR head ref"; exit 1; }
+          # Distinguish "the ref is legitimately absent" from "the fetch failed" before
+          # blaming the driver. HEAL-CI asks the operator to classify a red check as
+          # transient vs real defect, which is impossible if both render as the same
+          # message — an auth blip would read as "you forgot to push your receipts".
+          if git ls-remote --exit-code origin 'refs/notes/plinth-receipts' >/dev/null 2>&1; then
+            git fetch -q origin '+refs/notes/plinth-receipts:refs/notes/plinth-receipts' \
+              || { echo "::error::refs/notes/plinth-receipts EXISTS on the remote but could not be fetched — this is an infrastructure failure (network/auth), not a missing receipt. Re-run the check; if it persists, treat it as a real defect per HEAL-CI."; exit 1; }
+          else
+            echo "::error::no refs/notes/plinth-receipts on this repository — the review loop mints it on APPROVED; push it with the branch: git push origin HEAD refs/notes/plinth-receipts"
+            exit 1
+          fi
+          git notes --ref=plinth-receipts show "$HEAD_SHA" > receipt.json 2>/dev/null || rm -f receipt.json
+          # PR body via the event payload file — never shell-interpolated.
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pr-body.txt
+          "$VERIFY" --receipt receipt.json --head-sha "$HEAD_SHA" \
+            --base-ref "$BASE_REF" --base-tip "$(git rev-parse "origin/${BASE_REF}")" \
+            --pr-body pr-body.txt --repo "${{ github.repository }}"
+          # TOCTOU: re-fetch the live PR just before success — a head or body
+          # swap mid-run must invalidate this run, not ride its green check.
+          live="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUM}" --jq '{sha: .head.sha, body: (.body // "")}')"
+          [ "$(jq -r .sha <<<"$live")" = "$HEAD_SHA" ] \
+            || { echo "::error::PR head changed while verifying — re-run the check"; exit 1; }
+          jq -r .body <<<"$live" > pr-body-live.txt
+          cmp -s pr-body.txt pr-body-live.txt \
+            || { echo "::error::PR body changed while verifying (override disclosure could differ) — re-run the check"; exit 1; }
+          echo "receipt verified: APPROVED at ${HEAD_SHA}"

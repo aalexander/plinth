@@ -36,3 +36,14 @@ jobs:
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest
+
+  # The APPROVED-at-HEAD receipt check (auto mode, v4.7+): verifies the review
+  # loop's own verdict server-side — the review-verdict gate the floor/checks
+  # contexts deliberately do not provide. Runs on pull_request events only.
+  # Require the "receipt / verify" context in branch protection once the
+  # installed instrument is v4.7+ (its review loop mints the receipt on every
+  # binding APPROVED; an older engine mints nothing and this check fails
+  # closed by design).
+  receipt:
+    if: github.event_name == 'pull_request'
+    uses: OWNER/plinth/.github/workflows/plinth-receipt.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9 (plinth init repins)

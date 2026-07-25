@@ -119,6 +119,7 @@ jobs:
           check shared/.plinth/review.sh          .plinth/review.sh
           check shared/.plinth/risk-classify.sh   .plinth/risk-classify.sh
           check shared/.plinth/lane-guard.sh       .plinth/lane-guard.sh
+          check shared/.plinth/receipt-verify.sh   .plinth/receipt-verify.sh
           check shared/.plinth/review-schema.json .plinth/review-schema.json
           check shared/.claude/hooks/guard.sh         .claude/hooks/guard.sh
           check shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
@@ -144,6 +145,7 @@ jobs:
           checkx .plinth/review.sh
           checkx .plinth/risk-classify.sh
           checkx .plinth/lane-guard.sh
+          checkx .plinth/receipt-verify.sh
           checkx .claude/hooks/guard.sh
           checkx .claude/hooks/session-start.sh
           checkx .claude/hooks/review-gate.sh

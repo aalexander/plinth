@@ -13,9 +13,10 @@
 # Everything else has working defaults.
 spec_path = MANUAL.md
 tier2_extra = (^|/)(shared|templates|bin)/
-reviewer_vendor = claude
-reviewer_model_tier1 = sonnet
-reviewer_model_tier2 = sonnet
-audit_vendor = grok
-advisor_model = opus
+reviewer_vendor = codex
+reviewer_model_tier1 = gpt-5.6-sol
+reviewer_model_tier2 = gpt-5.6-sol
+audit_vendor = claude
+advisor_model = fable
 advisor_model_max = fable
+audit_model = opus

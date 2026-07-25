@@ -33,7 +33,49 @@ jobs:
       - name: Syntax-check every shipped script
         run: |
           set -euo pipefail
-          for f in shared/.claude/hooks/*.sh shared/.plinth/review.sh shared/.plinth/risk-classify.sh bin/plinth; do bash -n "$f"; done
+          # Glob every shipped shell script rather than naming them: an explicit list
+          # silently skipped lane-guard.sh and receipt-verify.sh as they were added.
+          for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh bin/plinth; do bash -n "$f"; done
+      - name: Workflow run-blocks stay under the Actions expression limit
+        run: |
+          set -euo pipefail
+          # A `run:` block containing ANY GitHub expression is compiled as a single
+          # TEMPLATE EXPRESSION, and Actions caps one expression at 21000 chars. This
+          # canary's scaffold block is hundreds of KB, so a single expression anywhere
+          # inside it turns the whole workflow into a STARTUP FAILURE: no job is created,
+          # no log is produced, and the only diagnosis is a 422 from the dispatch API.
+          # Because `scaffold` is a required context, that silently blocks every PR.
+          # (v4.7: a fixture added two placeholders for its own sed patterns and did
+          # exactly this.) Fail here, loudly, where the message is readable.
+          python3 - <<'PYLIMIT'
+          import re, sys, glob
+          LIMIT = 21000
+          bad = 0
+          for path in sorted(glob.glob('.github/workflows/*.yml')):
+              lines = open(path).read().split('\n')
+              i = 0
+              while i < len(lines):
+                  m = re.match(r'^(\s*)run: \|', lines[i])
+                  if not m:
+                      i += 1; continue
+                  ind = len(m.group(1)); start = i + 1; body = []
+                  i += 1
+                  while i < len(lines):
+                      l = lines[i]
+                      if l.strip() and (len(l) - len(l.lstrip())) <= ind:
+                          break
+                      body.append(l); i += 1
+                  text = '\n'.join(body)
+                  # Only blocks that CONTAIN an expression are compiled as one.
+                  if '${' + '{' in text and len(text) > LIMIT:
+                      bad += 1
+                      print(f"::error::{path}:{start}: run: block is {len(text)} chars AND contains a "
+                            f"GitHub expression, exceeding the {LIMIT}-char expression limit — this "
+                            f"workflow would fail at STARTUP with no job created. Build the "
+                            f"placeholder at runtime (split the dollar-brace-brace) or move the "
+                            f"fixture into its own step.")
+          sys.exit(1 if bad else 0)
+          PYLIMIT
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -49,7 +91,16 @@ jobs:
           PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
           grep -q "plinth-floor.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable FLOOR ref to the plinth checkout SHA"; exit 1; }
           grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
-          grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
+          # EVERY reusable ref the template ships must be repinned — the receipt job's
+          # placeholder SHA predates plinth-receipt.yml, so a missed repin ships a
+          # `uses:` GitHub cannot resolve and the required check never runs (v4.7 r1).
+          grep -q "plinth-receipt.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable RECEIPT ref — the receipt job's template placeholder predates plinth-receipt.yml, so an unrepinned ref cannot resolve"; exit 1; }
+          # Generalised: NO shipped reusable plinth ref may survive init unpinned.
+          # Catches the next workflow added to the template without a repin line.
+          for uref in $(grep -o 'plinth-[a-z]*\.yml@[^ ]*' .github/workflows/ci.yml | sort -u); do
+            case "$uref" in *"@${PSHA}") ;; *) echo "::error::init left a reusable ref unrepinned: ${uref} (add it to the repin sed in copy_templates_if_absent)"; exit 1 ;; esac
+          done
+          grep -Eq 'plinth-(floor|checks|receipt)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
           # v4 model wiring: the scaffold's audit seat is claude — a different family than
           # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
@@ -92,6 +143,17 @@ jobs:
           printf '%s' "$rpout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-checks" || { echo "::error::stale checks-only warning lacks a repin command targeting plinth-checks with this SHA"; exit 1; }
           printf '%s' "$rpout" | grep -q 'sed -i.bak.*plinth-(floor|checks)' && { echo "::error::checks-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
           grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          # a stale RECEIPT ref alone must warn too — it is a REQUIRED context wherever the
+          # operator enabled it, so an unrepinned ref runs an older verifier or fails to
+          # resolve; floor/checks-only tracking left it stale forever (v4.7 r1 minor).
+          RPDR="$(mktemp -d)"; ( cd "$RPDR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPDR" >/dev/null 2>&1 )
+          sed -i "s|plinth-receipt.yml@${PSHA}|plinth-receipt.yml@v3.14|" "$RPDR/.github/workflows/ci.yml"
+          ( cd "$RPDR" && git add -A && git commit -qm base >/dev/null )
+          rrout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDR" 2>&1)"
+          printf '%s' "$rrout" | grep -q "pins the reusable" || { echo "::error::plinth update did not WARN about a stale reusable RECEIPT ref"; exit 1; }
+          printf '%s' "$rrout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-receipt" || { echo "::error::stale receipt warning lacks a repin command targeting plinth-receipt with this SHA"; exit 1; }
+          printf '%s' "$rrout" | grep -q "sed -i.bak.*plinth-floor" && { echo "::error::receipt-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
+          grep -q "plinth-receipt.yml@v3.14" "$RPDR/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml while warning about the receipt ref"; exit 1; }
           # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
           RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|; s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD3/.github/workflows/ci.yml"
@@ -852,12 +914,16 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::same-sha re-invocation after APPROVED did not exit 0 (rc=$rc)"; exit 1; }
             printf '%s' "$out" | grep -q 'Nothing new to review' || { echo "::error::same-sha re-invocation did not take the idempotent fast path (out: $(printf '%s' "$out" | tail -c 160))"; exit 1; }
             [ "$(cat "$VC/state")" = 2 ] || { echo "::error::same-sha re-invocation burned a reviewer round (calls=$(cat "$VC/state"))"; exit 1; } )
-          # (2) Tier-2 once-per-loop confirmation: verify-approve -> clean-slate runs
-          # (and FAILS the approval), fix, verify-approve again -> confirmation is
-          # SKIPPED (marker), the skip recorded in verdict.json.
+          # (2) Tier-2 clean-slate confirmation runs before EVERY non-fresh approval
+          # binds (upstream #27). v4.6 armed a once-per-loop skip as soon as a
+          # confirmation RAN, whatever its verdict — so the fixes answering a
+          # confirmation's OWN findings could never get a frontier re-read. Sequence:
+          # verify-approve -> confirmation runs and FAILS -> fix -> verify-approve
+          # again -> a SECOND confirmation must run (call 5) and only then bind.
           T2="$(mktemp -d)"; mkstate "$T2"; mk_cap_codex "$T2"
           printf '%s' "$CNF" > "$T2/verdict-1"; printf '%s' "$APF" > "$T2/verdict-2"
           printf '%s' "$CNF" > "$T2/verdict-3"; printf '%s' "$APF" > "$T2/verdict-4"
+          printf '%s' "$APF" > "$T2/verdict-5"
           td="$(mktemp -d)"
           ( cd "$td"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$td" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
@@ -865,28 +931,35 @@ jobs:
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
             PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .risk.tier "$vj")" = 2 ] || { echo "::error::fixture (2) is not Tier 2 (tier=$(jq -r .risk.tier "$vj")) — the confirmation rule under test is Tier-2 only"; exit 1; }
             echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] || { echo "::error::Tier-2 confirmation (call 3, CN) should have failed the loop (rc=$rc)"; exit 1; }
-            [ -f .plinth/session/review/feat/confirmed ] || { echo "::error::once-per-loop confirmation marker not written after the clean-slate ran"; exit 1; }
+            [ "$(cat "$T2/state")" = 3 ] || { echo "::error::expected 3 reviewer calls through the failed confirmation (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::a CHANGES_NEEDED confirmation armed a once-per-loop skip (upstream #27) — the marker must never be written"; exit 1; }
             echo fix2 >> SPEC.md; git add -A; git commit -qm f2 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
-            vj=".plinth/session/review/feat/verdict.json"
-            [ "$rc" = 0 ] || { echo "::error::second Tier-2 verify approval did not bind via the marker (rc=$rc)"; exit 1; }
-            [ "$(cat "$T2/state")" = 4 ] || { echo "::error::confirmation ran AGAIN despite the once-per-loop marker (calls=$(cat "$T2/state"))"; exit 1; }
-            jq -r '.confirmation // empty' "$vj" | grep -q 'skipped-once-per-loop' || { echo "::error::the confirmation skip was not recorded in verdict.json"; exit 1; }
+            [ "$rc" = 0 ] || { echo "::error::the confirmed Tier-2 approval did not conclude the loop (rc=$rc)"; exit 1; }
+            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::the second Tier-2 approval bound WITHOUT its own clean-slate confirmation (calls=$(cat "$T2/state"), want 5) — upstream #27"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::the binding round was '$(jq -r .mode "$vj")', not the clean-slate 'fresh' confirmation"; exit 1; }
+            [ "$(jq -r '.confirmation // "-"' "$vj")" = "-" ] || { echo "::error::verdict.json still records a once-per-loop skip — the retired mechanism is back"; exit 1; }
             # (2b) NEW-LOOP reset: after the concluded (APPROVED) loop, the next
             # commit starts a fresh loop — the per-loop markers AND the usage.jsonl
             # override ledger must be cleared (a stale ledger would leak a prior
             # loop's override rows into the disclosure trace). Sentinel row stands
             # in for the old loop's ledger content (stub rounds may not write one).
             echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
-            printf '%s' "$CNF" > "$T2/verdict-5"
+            # A v4.6 instrument could have left a `confirmed` marker in this session
+            # dir; the reset must still sweep it (nothing reads it any more, but a
+            # leftover would be a misleading artifact).
+            : > .plinth/session/review/feat/confirmed
+            printf '%s' "$CNF" > "$T2/verdict-6"
             echo fix3 >> SPEC.md; git add -A; git commit -qm f3 >/dev/null
             rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] || { echo "::error::new-loop round 1 should be CHANGES_NEEDED (rc=$rc)"; exit 1; }
-            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
-            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::confirmed marker survived the new-loop reset"; exit 1; }
+            [ "$(cat "$T2/state")" = 6 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::a stale v4.6 confirmed marker survived the new-loop reset"; exit 1; }
             ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::stale usage.jsonl ledger survived the new-loop reset"; exit 1; } )
           # (3) round_cap circuit breaker: base config round_cap=1 -> round 2 refuses
           # (exit 2, breaker message), and the policy file / loop state are untouched.
@@ -993,6 +1066,469 @@ jobs:
             rc=0; PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 0 ] || { echo "::error::ledger fixture loop failed (rc=$rc)"; exit 1; }
             jq -r 'select(.round == 1) | .overrides.reviewer_model // empty' .plinth/session/review/feat/usage.jsonl | grep -qx xmodel || { echo "::error::a non-final round's override left no trace in the usage.jsonl ledger (disclosure rule unimplementable)"; exit 1; } )
+          # (4f) audit prompt carries the tooling-commit labels (upstream #28): on a
+          # Tier-2 approval whose range includes a labeled tooling commit, the audit
+          # prompt (findings-audit-N.json.prompt) must contain the COMMITS IN RANGE
+          # list — without it the auditor is told to check labels it cannot see and
+          # false-flags every legitimate instrument refresh.
+          AUD="$(mktemp -d)"; mkstate "$AUD"; mk_cap_codex "$AUD"
+          cp "$OV/claude" "$AUD/claude"
+          printf '%s' "$APF" > "$AUD/verdict-1"
+          audd="$(mktemp -d)"
+          ( cd "$audd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$audd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            printf '\n# canary probe comment\n' >> .plinth/review.sh
+            git add -A; git commit -qm 'plinth: instrument comment probe' >/dev/null
+            rc=0; PATH="$AUD:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(4f) labeled-tooling Tier-2 approval failed (rc=$rc)"; exit 1; }
+            ap=".plinth/session/review/feat/findings-audit-1.json.prompt"
+            [ -f "$ap" ] || { echo "::error::(4f) audit prompt file not written"; exit 1; }
+            grep -q 'TOOLING COMMITS IN RANGE' "$ap" || { echo "::error::audit prompt lacks the COMMITS IN RANGE section (#28 regressed)"; exit 1; }
+            grep -q 'plinth: instrument comment probe' "$ap" || { echo "::error::audit prompt lacks the tooling commit label line (#28)"; exit 1; } )
+          # (4g) resume carries the reviewer model (upstream #25): with a per-tier model
+          # pinned, the round-2 RESUME invocation must pass -m <model> to codex — a
+          # resumed thread silently continuing on its original model while the ledger
+          # records the pin as applied corrupts the disclosure trail.
+          RM="$(mktemp -d)"; mkstate "$RM"
+          cat > "$RM/codex" <<CX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$RM/state") + 1 )); echo \$n > "$RM/state"
+          printf '%s\n' "\$@" > "$RM/args-\$n"
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          if [ "\$n" = 1 ]; then b='{"verdict":"CHANGES_NEEDED","summary":"r","findings":[{"file":"app.py","line":1,"severity":"major","description":"b","status":"open"}]}'; else b='{"verdict":"APPROVED","summary":"r","findings":[]}'; fi
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"cs"}'; echo '{"type":"turn.completed","usage":{"input_tokens":10}}'
+          CX
+          chmod +x "$RM/codex"
+          rmd="$(mktemp -d)"
+          ( cd "$rmd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'reviewer_model_tier1 = tinymodel\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$RM:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$RM:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(4g) resume-model loop did not approve (rc=$rc)"; exit 1; }
+            grep -qx resume "$RM/args-2" || { echo "::error::(4g) round 2 was not a resume — fixture premise broken"; exit 1; }
+            awk '/^-m$/{getline nx; if(nx=="tinymodel") ok=1} END{exit ok?0:1}' "$RM/args-2" || { echo "::error::resume invocation dropped the pinned reviewer model (#25 regressed)"; exit 1; } )
+          # (4h) mid-loop reviewer-vendor swap re-anchors with a FRESH round (upstream
+          # #26). A swap makes the prior session unresumable, and the loop used to fall
+          # through to a scoped VERIFY — which at Tier 1 BINDS. The justification for
+          # binding ("round 1 already read the full branch") is false across a swap:
+          # $SDIR/lastfullread records THAT a full read happened, never WHO did it, so
+          # the newcomer would bind having seen only the fix slice. Tier 1 on purpose:
+          # Tier 2 was never exposed (it forces a confirmation regardless).
+          SW="$(mktemp -d)"; mkstate "$SW"; mk_cap_codex "$SW"
+          cat > "$SW/claude" <<CL
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$SW/state") + 1 )); echo \$n > "$SW/state"
+          cat >/dev/null
+          printf '{"session_id":"cls","structured_output":{"verdict":"APPROVED","summary":"s","findings":[]},"usage":{"input_tokens":999999999}}'
+          CL
+          chmod +x "$SW/claude"
+          printf '%s' "$CNF" > "$SW/verdict-1"
+          swd="$(mktemp -d)"
+          ( cd "$swd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$swd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'reviewer_vendor = codex\n' >> .plinth/config
+            echo REQ > SPEC.md; echo x > app.py; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PATH="$SW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            # The config knob is read from the BASE branch, so the on-the-fly env
+            # override is the real mid-loop swap mechanism (and the one #26 reports).
+            rc=0; out="$(PLINTH_REVIEWER_VENDOR=claude PATH="$SW:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$rc" = 0 ] || { echo "::error::(4h) post-swap round failed (rc=$rc)"; exit 1; }
+            [ "$(jq -r .risk.tier "$vj")" = 1 ] || { echo "::error::(4h) fixture is not Tier 1 (tier=$(jq -r .risk.tier "$vj")) — the binding claim under test is Tier-1 specific"; exit 1; }
+            [ "$(jq -r .vendor "$vj")" = claude ] || { echo "::error::(4h) the vendor swap did not take effect (vendor=$(jq -r .vendor "$vj")) — fixture premise broken"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::post-swap round was '$(jq -r .mode "$vj")', must be 'fresh' — a verify BINDS at Tier 1 on the PRIOR vendor's full read (#26 regressed)"; exit 1; }
+            printf '%s' "$out" | grep -q 'reviewer vendor changed mid-loop' || { echo "::error::(4h) the mid-loop vendor swap was not announced to the operator"; exit 1; } )
+          # (9) receipt minting + server verification (auto mode, v4.7): a binding
+          # APPROVED mints a plinth.review-receipt/v1 git note on the approved SHA;
+          # receipt-verify.sh accepts exactly that subject, enforces override
+          # disclosure both ways, and rejects a drifted head. Uses the REAL product
+          # scripts end-to-end (mint by review.sh, verify by receipt-verify.sh).
+          RC="$(mktemp -d)"; mkstate "$RC"; mk_cap_codex "$RC"
+          printf '%s' "$APF" > "$RC/verdict-1"
+          rcd="$(mktemp -d)"
+          ( cd "$rcd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rcd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin git@github.com:canary/receipt.git
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; PLINTH_ROUND_CAP=9 PATH="$RC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9) approval run failed (rc=$rc)"; exit 1; }
+            rsha=$(git rev-parse HEAD)
+            git notes --ref=plinth-receipts show "$rsha" > receipt.json 2>/dev/null || { echo "::error::(9) binding APPROVED minted no receipt note"; exit 1; }
+            jq -e '.schema=="plinth.review-receipt/v1" and .verdict=="APPROVED"' receipt.json >/dev/null || { echo "::error::(9) receipt malformed"; exit 1; }
+            [ "$(jq -r .head_sha receipt.json)" = "$rsha" ] || { echo "::error::(9) receipt head_sha != approved HEAD"; exit 1; }
+            jq -e '.override_ledger == [{"round":1,"name":"PLINTH_ROUND_CAP","value":"9"}]' receipt.json >/dev/null || { echo "::error::(9) override ledger missing the PLINTH_ROUND_CAP tuple (disclosure trail broken)"; exit 1; }
+            V="$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh"; chmod +x "$V"
+            echo "PLINTH-OVERRIDE: PLINTH_ROUND_CAP=9 (round 1)" > body.txt
+            "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body body.txt --repo canary/receipt >/dev/null || { echo "::error::(9) verifier rejected a valid, disclosed receipt"; exit 1; }
+            : > empty.txt
+            rc2=0; "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body empty.txt --repo canary/receipt >/dev/null 2>&1 || rc2=$?
+            [ "$rc2" = 1 ] || { echo "::error::(9) UNDISCLOSED override did not fail closed (rc=$rc2)"; exit 1; }
+            printf 'PLINTH-OVERRIDE: PLINTH_ROUND_CAP=9 (round 1)\nPLINTH-OVERRIDE: PLINTH_AUDIT_VENDOR=grok (round 2)\n' > phantom.txt
+            rc3=0; "$V" --receipt receipt.json --head-sha "$rsha" --base-ref main --base-tip "$(git rev-parse main)" --pr-body phantom.txt --repo canary/receipt >/dev/null 2>&1 || rc3=$?
+            [ "$rc3" = 1 ] || { echo "::error::(9) PHANTOM disclosure (unbacked by the ledger) did not fail closed (rc=$rc3)"; exit 1; }
+            echo drift >> app.py; git add -A; git commit -qm drift >/dev/null
+            rc4=0; "$V" --receipt receipt.json --head-sha "$(git rev-parse HEAD)" --base-ref main --base-tip "$(git rev-parse main)" --pr-body body.txt --repo canary/receipt >/dev/null 2>&1 || rc4=$?
+            [ "$rc4" = 1 ] || { echo "::error::(9) receipt verified against a DRIFTED head (approve-then-push bypass)"; exit 1; } )
+          # (9b) Tier-0 approvals mint too — a docs-only diff gets its deterministic
+          # APPROVED and must still produce a receipt, or Tier-0 PRs would fail the
+          # required receipt context.
+          t0d="$(mktemp -d)"
+          ( cd "$t0d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$t0d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            git remote add origin git@github.com:canary/tier0.git
+            echo REQ > SPEC.md; echo readme > README.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo docs >> README.md; git add -A; git commit -qm docs >/dev/null
+            rc=0; ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9b) Tier-0 run failed (rc=$rc)"; exit 1; }
+            git notes --ref=plinth-receipts show "$(git rev-parse HEAD)" > t0receipt.json 2>/dev/null || { echo "::error::(9b) Tier-0 APPROVED minted no receipt"; exit 1; }
+            jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' t0receipt.json >/dev/null || { echo "::error::(9b) Tier-0 receipt fields wrong"; exit 1; } )
+          # (9c) REMINT recovery. Every other receipt fixture adds `origin` BEFORE
+          # reviewing, so none exercised the degraded-mint path the cross-vendor audit
+          # found: with no resolvable origin the loop must mint NOTHING (a repo:"" note
+          # would exist yet never verify — worse than absent), and re-running at the
+          # SAME approved SHA once the remote exists must mint it WITHOUT burning a
+          # paid round. Before the fix the fast path returned "Nothing new to review"
+          # and the receipt stayed missing until an empty commit forced a new loop.
+          RM9="$(mktemp -d)"; mkstate "$RM9"; mk_cap_codex "$RM9"
+          printf '%s' "$APF" > "$RM9/verdict-1"
+          rmd9="$(mktemp -d)"
+          ( cd "$rmd9"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmd9" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9c) review with no origin should still APPROVE (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'no resolvable' || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) minted a receipt with no resolvable origin — a repo:\"\" note can never verify and is worse than none"; exit 1; } || true
+            git remote add origin git@github.com:canary/remint.git
+            rc=0; PATH="$RM9:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9c) same-SHA re-run after adding origin failed (rc=$rc)"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD > r9.json 2>/dev/null || { echo "::error::(9c) same-SHA re-run did NOT remint — receipt/verify would stay red at this SHA forever (cross-vendor audit, round 4)"; exit 1; }
+            [ "$(jq -r .repo r9.json)" = "canary/remint" ] || { echo "::error::(9c) reminted receipt has the wrong repo NWO: $(jq -r .repo r9.json)"; exit 1; }
+            [ "$(cat "$RM9/state")" = 1 ] || { echo "::error::(9c) the remint burned a PAID reviewer round (calls=$(cat "$RM9/state"), want 1)"; exit 1; } )
+          # (9d) the plinth-receipt.yml "Verify the APPROVED-at-HEAD receipt" step's own
+          # bash has never run anywhere — new trust-boundary-crossing code (parses
+          # job_workflow_ref, fetches the verifier binary over the network, reads
+          # PR-supplied body text, TOCTOU re-checks a live API call) that shipped
+          # unexercised. EXTRACT the real script from the workflow YAML at fixture
+          # runtime (never reimplement it — a copy rots) and drive it against a local
+          # git-only stand-in for Actions + GitHub: a `url.insteadOf` rewrite stands in
+          # for the network fetch of this repo's own pinned commit, and a `gh` stub
+          # stands in for the TOCTOU re-fetch. No real network access.
+          R9D_WD="$(mktemp -d)"
+          python3 - "$GITHUB_WORKSPACE/.github/workflows/plinth-receipt.yml" <<'PY' > "$R9D_WD/step.sh.raw"
+          import re, sys
+          lines = open(sys.argv[1]).read().split('\n')
+          blocks=[]; i=0
+          while i < len(lines):
+              m = re.match(r'^(\s*)run: \|', lines[i])
+              if m:
+                  ind=len(m.group(1)); body=[]; i+=1
+                  while i < len(lines):
+                      l=lines[i]
+                      if l.strip() and (len(l)-len(l.lstrip())) <= ind: break
+                      body.append(l); i+=1
+                  ne=[b for b in body if b.strip()]
+                  d=min(len(b)-len(b.lstrip()) for b in ne) if ne else 0
+                  blocks.append('\n'.join(b[d:] if b.strip() else '' for b in body)); continue
+              i+=1
+          print(blocks[-1])
+          PY
+          python3 - "$GITHUB_WORKSPACE/.github/workflows/plinth-receipt.yml" <<'PY' > "$R9D_WD/guard.sh.raw"
+          import re, sys
+          lines = open(sys.argv[1]).read().split('\n')
+          blocks=[]; i=0
+          while i < len(lines):
+              m = re.match(r'^(\s*)run: \|', lines[i])
+              if m:
+                  ind=len(m.group(1)); body=[]; i+=1
+                  while i < len(lines):
+                      l=lines[i]
+                      if l.strip() and (len(l)-len(l.lstrip())) <= ind: break
+                      body.append(l); i+=1
+                  ne=[b for b in body if b.strip()]
+                  d=min(len(b)-len(b.lstrip()) for b in ne) if ne else 0
+                  blocks.append('\n'.join(b[d:] if b.strip() else '' for b in body)); continue
+              i+=1
+          print(blocks[0])
+          PY
+          [ -s "$R9D_WD/step.sh.raw" ] || { echo "::error::(9d) extractor found no run: block in plinth-receipt.yml"; exit 1; }
+          [ -s "$R9D_WD/guard.sh.raw" ] || { echo "::error::(9d) extractor found no event-guard run: block in plinth-receipt.yml"; exit 1; }
+          # UNIQUE per run. `git config --global url.<base>.insteadOf` is MULTI-VALUED:
+          # a fixed owner name appends another mapping for the same URL on every run,
+          # and git then resolves to the FIRST (stale, deleted) temp dir — the fixture
+          # passes once on a fresh runner and fails forever after with "not our ref",
+          # while permanently dirtying the developer's ~/.gitconfig. Unique name +
+          # explicit cleanup at the end keeps re-runs correct and the machine clean.
+          R9D_OWNER="plinth-canary-9d-$$"
+          R9D_NWO="canary/receipt9d"
+          # Build the GitHub-expression placeholders at RUNTIME. Writing them literally
+          # here would be a workflow-breaking bug, not a style nit: a `run:` block that
+          # contains ANY GitHub expression (dollar-brace-brace) is compiled as one
+          # TEMPLATE EXPRESSION, and Actions
+          # caps a single expression at 21000 chars. This block is ~377K, so two literal
+          # placeholders turned the whole canary into a startup failure —
+          # "Exceeded max expression length 21000" — with NO job ever created, which then
+          # blocked the PR because `scaffold` is a required context. Keep `${`+`{` split.
+          R9D_L='${'; R9D_OPEN="${R9D_L}{"
+          sed "s|${R9D_OPEN} github.repository }}|$R9D_NWO|g; s|${R9D_OPEN} github.event_name }}|pull_request|g" "$R9D_WD/step.sh.raw" > "$R9D_WD/step.sh"
+          sed "s|${R9D_OPEN} github.event_name }}|workflow_dispatch|g" "$R9D_WD/guard.sh.raw" > "$R9D_WD/guard.sh"
+          # fake-plinth: a real repo standing in for THIS repo's own pinned commit.
+          # One commit WITHOUT receipt-verify.sh (case 4: an old v4.6 pin), one WITH it
+          # (the happy path). Local fetch of an arbitrary commit SHA needs the upload-pack
+          # ACLs GitHub sets server-side for public repos — off by default for a plain
+          # local repo, so grant them here.
+          R9D_FP="$(mktemp -d)"
+          ( cd "$R9D_FP" && git init -qb main . >/dev/null )
+          git -C "$R9D_FP" config uploadpack.allowReachableSHA1InWant true
+          git -C "$R9D_FP" config uploadpack.allowAnySHA1InWant true
+          ( cd "$R9D_FP" && echo old > README.md && git add -A && git commit -qm "pre-receipt-check pin" >/dev/null )
+          R9D_OLD_SHA="$(git -C "$R9D_FP" rev-parse HEAD)"
+          ( cd "$R9D_FP" && mkdir -p shared/.plinth
+            cp "$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh" shared/.plinth/receipt-verify.sh
+            chmod +x shared/.plinth/receipt-verify.sh
+            git add -A && git commit -qm "add receipt-verify.sh" >/dev/null )
+          R9D_GOOD_SHA="$(git -C "$R9D_FP" rev-parse HEAD)"
+          git config --global url."file://$R9D_FP".insteadOf "https://github.com/${R9D_OWNER}/plinth"
+          # fixture project repo: a bare "origin" plays the base-repository role the
+          # step fetches from (PR head ref + notes ref), matching what actions/checkout
+          # + a real PR would already have in place before this step runs.
+          R9D_PROJ="$(mktemp -d)"
+          R9D_GOODPIN="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}"
+          R9D_OLDPIN="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_OLD_SHA}"
+          ( cd "$R9D_PROJ" && git init -qb main . >/dev/null
+            echo base > SPEC.md
+            mkdir -p .github/workflows
+            printf 'jobs:\n  receipt:\n    uses: %s\n' "$R9D_GOODPIN" > .github/workflows/ci.yml
+            git add -A && git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo change >> SPEC.md && git add -A && git commit -qm change >/dev/null )
+          # Re-point the BASE branch's pin. Lands as a NEW commit on main, which moves
+          # the base TIP but not the merge base (feat already diverged), so the minted
+          # receipt's merge_base_sha stays valid.
+          r9d_base_pin() {  # r9d_base_pin <pin>
+            ( cd "$R9D_PROJ" && git checkout -q main
+              printf 'jobs:\n  receipt:\n    uses: %s\n' "$1" > .github/workflows/ci.yml
+              git add -A && git commit -qm "repin" >/dev/null
+              git push -q origin main
+              git checkout -q feat
+              git fetch -q origin '+main:refs/remotes/origin/main' )
+          }
+          R9D_HEAD="$(git -C "$R9D_PROJ" rev-parse HEAD)"
+          R9D_BARE="$(mktemp -d)/proj.git"
+          git init -q --bare "$R9D_BARE"
+          git -C "$R9D_PROJ" remote add origin "$R9D_BARE"
+          git -C "$R9D_PROJ" push -q origin main feat
+          git -C "$R9D_BARE" update-ref refs/pull/1/head "$R9D_HEAD"
+          git -C "$R9D_PROJ" fetch -q origin main:refs/remotes/origin/main
+          # Mint the receipt by hand — jq -cn with the exact fields mint_receipt() builds
+          # (shared/.plinth/review.sh) and the exact subject digest receipt-verify.sh
+          # re-derives, rather than running the whole review loop just to get one note.
+          R9D_HTREE="$(git -C "$R9D_PROJ" rev-parse HEAD^{tree})"
+          R9D_MB="$(git -C "$R9D_PROJ" merge-base main feat)"
+          if command -v shasum >/dev/null 2>&1; then R9D_SHA256() { shasum -a 256 | cut -d' ' -f1; }
+          else R9D_SHA256() { sha256sum | cut -d' ' -f1; }
+          fi
+          R9D_SUBJ="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$R9D_NWO" main "$R9D_MB" "$R9D_HEAD" "$R9D_HTREE" | R9D_SHA256)"
+          R9D_RECEIPT="$(jq -cn --arg repo "$R9D_NWO" --arg hs "$R9D_HEAD" --arg ht "$R9D_HTREE" \
+            --arg br main --arg mb "$R9D_MB" --arg sd "sha256:${R9D_SUBJ}" \
+            --argjson round 1 --argjson ledger '[]' \
+            '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+              base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+              round:$round, override_ledger:$ledger}')"
+          git -C "$R9D_PROJ" notes --ref=plinth-receipts add -m "$R9D_RECEIPT" "$R9D_HEAD"
+          git -C "$R9D_PROJ" push -q origin refs/notes/plinth-receipts
+          echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
+          # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
+          # the happy path's live re-check matches.
+          R9D_GHDIR="$(mktemp -d)"
+          cat > "$R9D_GHDIR/gh" <<GHEOF
+          #!/usr/bin/env bash
+          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          GHEOF
+          chmod +x "$R9D_GHDIR/gh"
+          # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
+          # Clear /tmp/plinth first: the step script hardcodes that path, so a leftover
+          # from an earlier run (or an earlier case) makes `git remote add origin` fail
+          # with "already exists" and the case fails for a reason unrelated to the code
+          # under test. Each fetching case clears it.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::(9d) happy-path receipt-verify step failed (rc=$rc): $out"; exit 1; }
+          printf '%s' "$out" | grep -q 'receipt verified' || { echo "::error::(9d) happy path did not print 'receipt verified'"; exit 1; }
+          # 2: EMPTY job_workflow_ref.
+          rc=0
+          out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) empty job_workflow_ref did not fail"; exit 1; }
+          printf '%s' "$out" | grep -q 'job_workflow_ref' || { echo "::error::(9d) empty job_workflow_ref failure did not name job_workflow_ref"; exit 1; }
+          # 3: job_workflow_ref with NO @ref.
+          rc=0
+          out="$(JOB_WF_REF="norefhere" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no @ did not fail"; exit 1; }
+          # 4: pinned ref PREDATES receipt-verify.sh — must fail closed and say so.
+          # The base pin is moved to match, so this exercises the "predates" branch and
+          # not the base-anchor check that now precedes it.
+          r9d_base_pin "$R9D_OLDPIN"
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_OLD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a plinth pin predating receipt-verify.sh did not fail"; exit 1; }
+          printf '%s' "$out" | grep -q 'v4.7+' || { echo "::error::(9d) predating-pin failure did not tell the operator to repin to v4.7+"; exit 1; }
+          r9d_base_pin "$R9D_GOODPIN"
+          # 5: non-pull_request EVENT — the event-guard step must reject it.
+          rc=0
+          out="$(bash "$R9D_WD/guard.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) event guard did not reject a non-pull_request event"; exit 1; }
+          printf '%s' "$out" | grep -q 'got workflow_dispatch' || { echo "::error::(9d) event guard failure did not name the actual event"; exit 1; }
+          # 6: the verifier REPOSITORY must come from job_workflow_ref too, not from any
+          # other context value. Point JOB_WF_REF at a DIFFERENT owner/repo than the one
+          # the url.insteadOf rewrite maps: the fetch must follow job_workflow_ref (and
+          # therefore fail, since nothing maps that name) rather than silently resolving
+          # the "right" repo from elsewhere. The earlier revision took only the @REF from
+          # job_workflow_ref and built the URL from github.repository_owner, so a consumer
+          # whose owner differed from the plinth source's owner fetched the wrong repo —
+          # and the fixture could not see it, because it set both to the same value.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="someone-else/other-plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a job_workflow_ref naming a DIFFERENT owner/repo still resolved a verifier — the repository half is not anchored to the pin"; exit 1; }
+          printf '%s' "$out" | grep -q 'someone-else/other-plinth' || { echo "::error::(9d) the fetch did not follow job_workflow_ref's owner/repo (error did not name it): $out"; exit 1; }
+          # 7: malformed job_workflow_ref with no /.github/ path segment must fail closed.
+          rc=0
+          out="$(JOB_WF_REF="owner/repo@abc123" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no /.github/ segment did not fail"; exit 1; }
+          # 8: THE BYPASS. On a pull_request event GitHub runs workflow files from the PR
+          # HEAD, and ci.yml is operator-owned project code a PR may edit — so
+          # job_workflow_ref carries whatever pin the PR chose. A PR that repoints its own
+          # receipt job at an attacker-controlled fork whose receipt-verify.sh exits 0
+          # would turn the REQUIRED context green with no review and no receipt at all.
+          # The step must refuse any pin differing from the one on the BASE branch, which
+          # a PR cannot write.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="attacker/evil-plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a PR-supplied verifier pin that DIFFERS from the base branch's was accepted — the required receipt context can be bypassed by editing ci.yml"; exit 1; }
+          printf '%s' "$out" | grep -q 'differs from the one on origin/main' || { echo "::error::(9d) the base-pin mismatch was not reported as such: $out"; exit 1; }
+          # 9: a base branch with NO receipt job has no operator-owned pin to trust — must
+          # fail closed rather than fall back to the PR's pin.
+          ( cd "$R9D_PROJ" && git checkout -q main
+            printf 'jobs:\n  build:\n    runs-on: ubuntu-latest\n' > .github/workflows/ci.yml
+            git add -A && git commit -qm "drop receipt job" >/dev/null
+            git push -q origin main; git checkout -q feat
+            git fetch -q origin '+main:refs/remotes/origin/main' )
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="$R9D_GOODPIN" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a base branch with no receipt job still trusted the PR's pin"; exit 1; }
+          printf '%s' "$out" | grep -q 'does not wire a plinth-receipt.yml job' || { echo "::error::(9d) missing base pin was not reported as such: $out"; exit 1; }
+          r9d_base_pin "$R9D_GOODPIN"
+          # CLEAN UP the global URL rewrite this fixture installed. On a CI runner this is
+          # cosmetic (ephemeral machine), but the canary is also run locally against a
+          # working tree, and a leaked mapping there breaks the NEXT run and every other
+          # git operation that touches that URL. Unique-per-run naming (above) means a
+          # mid-fixture failure can leave at most one mapping that can never collide.
+          git config --global --unset-all url."file://$R9D_FP".insteadOf 2>/dev/null || true
+          rm -rf /tmp/plinth
+          # (9e) receipt-verify.sh REJECTION BRANCHES, driven one at a time. This script is
+          # the security boundary the whole v4.7 feature exists to add, yet only its happy
+          # path, the override-disclosure branch, and a head-drift case (which conflates
+          # head_sha with tree) had coverage — every other fail-closed branch was exercised
+          # only implicitly. Each case below mutates EXACTLY ONE field of an otherwise-valid
+          # receipt, so a passing case proves that branch specifically rejects, not that some
+          # earlier check happened to fire first. Uses the real shipped script.
+          R9E_V="$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh"
+          R9E="$(mktemp -d)"
+          ( cd "$R9E" && git init -qb main . >/dev/null
+            echo base > SPEC.md && git add -A && git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo change >> SPEC.md && git add -A && git commit -qm change >/dev/null )
+          R9E_HEAD="$(git -C "$R9E" rev-parse HEAD)"
+          R9E_TREE="$(git -C "$R9E" rev-parse HEAD^{tree})"
+          R9E_MB="$(git -C "$R9E" merge-base main feat)"
+          R9E_NWO="canary/receipt9e"
+          if command -v shasum >/dev/null 2>&1; then R9E_S() { shasum -a 256 | cut -d' ' -f1; }
+          else R9E_S() { sha256sum | cut -d' ' -f1; }
+          fi
+          R9E_SUBJ="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$R9E_NWO" main "$R9E_MB" "$R9E_HEAD" "$R9E_TREE" | R9E_S)"
+          r9e_receipt() {  # r9e_receipt [jq-filter-applied-to-the-valid-receipt]
+            jq -cn --arg repo "$R9E_NWO" --arg hs "$R9E_HEAD" --arg ht "$R9E_TREE" \
+              --arg br main --arg mb "$R9E_MB" --arg sd "sha256:${R9E_SUBJ}" \
+              '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+                base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+                round:1, override_ledger:[]}' | jq -c "${1:-.}"
+          }
+          : > "$R9E/body.txt"
+          r9e_run() {  # r9e_run <receipt-file> ; echoes exit code
+            local rc=0
+            ( cd "$R9E" && bash "$R9E_V" --receipt "$1" --head-sha "$R9E_HEAD" --base-ref main \
+                --base-tip "$(git -C "$R9E" rev-parse main)" --pr-body "$R9E/body.txt" \
+                --repo "$R9E_NWO" ) >/dev/null 2>&1 || rc=$?
+            echo "$rc"
+          }
+          r9e_reject() {  # r9e_reject <label> <jq-filter>
+            r9e_receipt "$2" > "$R9E/r.json"
+            local rc; rc="$(r9e_run "$R9E/r.json")"
+            [ "$rc" = 1 ] || { echo "::error::(9e) $1: expected exit 1 (reject), got $rc — this fail-closed branch of receipt-verify.sh does not reject"; exit 1; }
+          }
+          # baseline: the unmutated receipt MUST verify, or every rejection below is vacuous
+          r9e_receipt > "$R9E/r.json"
+          r9e_ok="$(r9e_run "$R9E/r.json")"
+          [ "$r9e_ok" = 0 ] || { echo "::error::(9e) baseline valid receipt did not verify (rc=$r9e_ok) — the rejection cases would pass vacuously"; exit 1; }
+          r9e_reject "repo mismatch"            '.repo = "someone/else"'
+          r9e_reject "base_ref mismatch"        '.base_ref = "release"'
+          r9e_reject "head_sha mismatch"        '.head_sha = "0000000000000000000000000000000000000000"'
+          r9e_reject "head_tree mismatch"       '.head_tree_sha = "1111111111111111111111111111111111111111"'
+          r9e_reject "merge_base stale"         '.merge_base_sha = "2222222222222222222222222222222222222222"'
+          r9e_reject "tampered subject_digest"  '.subject_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"'
+          r9e_reject "verdict not APPROVED"     '.verdict = "CHANGES_NEEDED"'
+          r9e_reject "wrong schema id"          '.schema = "plinth.review-receipt/v2"'
+          r9e_reject "missing required field"   'del(.merge_base_sha)'
+          r9e_reject "non-allowlisted override" '.override_ledger = [{round:1, name:"PLINTH_ANYTHING", value:"x"}]'
+          r9e_reject "override value w/ space"  '.override_ledger = [{round:1, name:"PLINTH_REVIEWER_MODEL", value:"gpt 5.6"}]'
+          r9e_reject "empty repo"               '.repo = ""'
+          # size bound: >64KB must be rejected before any field is trusted
+          r9e_receipt > "$R9E/big.json"
+          python3 - "$R9E/big.json" <<'R9EPY'
+          import sys, json
+          p = sys.argv[1]; d = json.load(open(p))
+          d["pad"] = "x" * 70000
+          json.dump(d, open(p, "w"))
+          R9EPY
+          r9e_big="$(r9e_run "$R9E/big.json")"
+          [ "$r9e_big" = 1 ] || { echo "::error::(9e) oversized receipt (>64KB) was not rejected (rc=$r9e_big)"; exit 1; }
+          # a MISSING receipt is a reject (1), never an infra pass
+          r9e_missing="$(r9e_run "$R9E/definitely-absent.json")"
+          [ "$r9e_missing" = 1 ] || { echo "::error::(9e) a MISSING receipt did not reject with exit 1 (rc=$r9e_missing)"; exit 1; }
+          # an UNDISCLOSED override: ledger has a row, PR body declares nothing
+          r9e_reject "undisclosed override"     '.override_ledger = [{round:1, name:"PLINTH_ROUND_CAP", value:"99"}]'
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
@@ -1148,22 +1684,24 @@ jobs:
           echo "RV canary block OK"
           # binds_directly() decides whether a round's APPROVED binds or needs a
           # clean-slate confirmation; bind_note() must tell the reviewer the matching
-          # truth. v4.6 semantics: Tier-1 approvals bind in EVERY mode (the round-1
-          # fresh pass carries branch coverage); Tier-2 non-fresh approvals need the
-          # once-per-loop clean-slate pass — bind_note reads the $SDIR/confirmed
-          # marker and must flip its truth once the confirmation has run.
-          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^effective_binds() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          # truth. Tier-1 approvals bind in EVERY mode (the round-1 fresh pass carries
+          # branch coverage); a Tier-2 non-fresh approval ALWAYS gets a clean-slate
+          # confirmation first. v4.6's once-per-loop skip (and the $SDIR/confirmed
+          # marker bind_note used to consult) is retired — upstream #27.
+          FNS="$(sed -n '/^binds_directly() {/,/^}/p; /^bind_note() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
           bash -c "$FNS; binds_directly fresh 2"  || { echo "::error::a fresh full review must bind"; exit 1; }
           bash -c "$FNS; binds_directly resume 1" || { echo "::error::a Tier-1 resume (warm thread) must bind directly"; exit 1; }
           bash -c "$FNS; binds_directly resume 2" && { echo "::error::a Tier-2 resume must get a clean-slate confirmation"; exit 1; } || true
           bash -c "$FNS; binds_directly verify 1" || { echo "::error::a Tier-1 verify must bind directly (v4.6: round-1 fresh pass carries branch coverage)"; exit 1; }
-          bash -c "$FNS; binds_directly verify 2" && { echo "::error::a Tier-2 verify must not bind before the once-per-loop clean-slate pass"; exit 1; } || true
+          bash -c "$FNS; binds_directly verify 2" && { echo "::error::a Tier-2 verify must not bind before its clean-slate confirmation"; exit 1; } || true
           bash -c "$FNS; bind_note resume 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 resume it binds directly"; exit 1; }
           bash -c "$FNS; bind_note verify 1" | grep -qi 'binds directly' || { echo "::error::bind_note must tell a Tier-1 verify it binds directly (v4.6)"; exit 1; }
           BNTD="$(mktemp -d)"
-          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-2 verify (no confirmation yet) its verdict does not bind alone"; exit 1; }
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::bind_note must tell a Tier-2 verify its verdict does not bind alone"; exit 1; }
+          # A leftover v4.6 `confirmed` marker must NOT resurrect the retired skip:
+          # bind_note has to keep telling a Tier-2 verify it does not bind (#27).
           echo sha > "$BNTD/confirmed"
-          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'binds directly' || { echo "::error::bind_note must flip to binding once the once-per-loop confirmation marker exists"; exit 1; }
+          bash -c "SDIR=\"$BNTD\"; $FNS; bind_note verify 2" | grep -qi 'does not bind' || { echo "::error::a stale 'confirmed' marker flipped bind_note back to binding — the retired once-per-loop skip is back (#27)"; exit 1; }
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.
@@ -1851,7 +2389,7 @@ jobs:
           # gcmd drives guard.sh with PreToolUse JSON exactly as Claude Code would invoke it, so this
           # proves the guard LOGIC blocks the plain ship command. It does NOT — and cannot — assert
           # that codex or grok invoke `.claude/` hooks: whether they do is PROBEABLE, not assumed
-          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.93 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.93.txt]), so a non-Claude
+          # (codex uses its own hook system; probe with plinth hookprobe — grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]), so a non-Claude
           # driver whose CLI does not execute hooks has a SERVER-SIDE ship gate, not this hook. Deliberate
           # obfuscation is out of scope (a client hook cannot win that race).
           GD="$(mktemp -d)"; mkdir -p "$GD/.plinth/session/review/feat-x"
@@ -1987,15 +2525,24 @@ jobs:
           for v in claude codex grok agy; do
             cat > "$AB/$v" <<EOF
           #!/usr/bin/env bash
-          printf '$v %s\n' "\$*" >> "$ACAP"; cat >/dev/null 2>/dev/null || true; echo "advice-from-$v"
+          printf '$v %s\n' "\$*" >> "$ACAP"; cat >> "$ACAP" 2>/dev/null || true; echo "advice-from-$v"
           EOF
             chmod +x "$AB/$v"
           done
-          adv() {  # <config-lines-file-content> <args...> -> runs advise, echoes captured argv
+          # The capture holds argv AND stdin, because the prompt reaches different
+          # vendors by different routes: claude/codex receive it on STDIN (v4.7 — the
+          # claude branch had to move off a positional argument, which the variadic
+          # --allowed-tools was swallowing), grok/agy on argv. An argv-only capture
+          # made these assertions read "the prompt vanished" the moment that fix
+          # landed, even though delivery was correct.
+          # </dev/null: for the argv vendors the stub's `cat` would otherwise inherit
+          # and block on the caller's stdin. advise supplies its own pipe for
+          # claude/codex, so stdin delivery is still genuinely exercised.
+          adv() {  # <vendor> <max-model> <args...> -> runs advise, capturing argv + stdin
             local vend="$1"; shift; local mmax="$1"; shift
             local d; d="$(mktemp -d)"; mkdir -p "$d/.plinth"
             printf 'advisor_vendor = %s\nadvisor_model = peermodel\nadvisor_model_max = %s\n' "$vend" "$mmax" > "$d/.plinth/config"
-            : > "$ACAP"; ( cd "$d" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "$@" >/dev/null 2>&1 )
+            : > "$ACAP"; ( cd "$d" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "$@" >/dev/null 2>&1 </dev/null )
           }
           # Each vendor dispatches to its OWN CLI with the right model flag (claude/agy: --model,
           # codex/grok: -m). Peer tier uses advisor_model; --impactful uses advisor_model_max.
@@ -2024,6 +2571,64 @@ jobs:
           AP="$(mktemp -d)"; mkdir -p "$AP/.plinth"; printf 'advisor_vendor = claude\n' > "$AP/.plinth/config"
           arc=0; ( cd "$AP" && PATH="$FB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "q" >/dev/null 2>&1 ) || arc=$?
           [ "$arc" = 0 ] || { echo "::error::plinth advise not non-blocking when advisor CLI fails (exit $arc)"; exit 1; }
+          # v4.7: the QUESTION must actually REACH the advisor. Every assertion above
+          # matches argv only, so `advise` stayed green while the claude branch passed
+          # the prompt as a positional AFTER --allowed-tools — a VARIADIC flag in the
+          # claude CLI (verified 2.1.220), which swallowed it. Every consult died with
+          # "Input must be provided ...", and 2>/dev/null relabelled that as the
+          # generic "CLI missing or not signed in": the advisor was silently dead for
+          # the DEFAULT advisor_vendor. Assert delivery on stdin OR argv, per vendor.
+          QB="$(mktemp -d)"; QCAP="$QB/qcap"
+          for v in claude codex grok agy; do
+            cat > "$QB/$v" <<EOF
+          #!/usr/bin/env bash
+          # Mimics a real CLI: the prompt must arrive SOMEWHERE. Record argv + stdin.
+          printf '%s\n' "\$*" >> "$QCAP"; cat >> "$QCAP" 2>/dev/null || true; echo ok
+          EOF
+            chmod +x "$QB/$v"
+          done
+          for v in claude codex grok agy; do
+            qd="$(mktemp -d)"; mkdir -p "$qd/.plinth"
+            printf 'advisor_vendor = %s\n' "$v" > "$qd/.plinth/config"
+            : > "$QCAP"
+            # </dev/null: for the vendors that take the prompt on ARGV the stub's `cat`
+            # would otherwise inherit (and block on) the caller's stdin. advise supplies
+            # its own pipe for claude/codex, so stdin delivery is still exercised.
+            ( cd "$qd" && PATH="$QB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "ZQMARKER-should-reach-the-advisor" >/dev/null 2>&1 </dev/null )
+            grep -q 'ZQMARKER-should-reach-the-advisor' "$QCAP" \
+              || { echo "::error::advise: the DECISION never reached the '$v' advisor CLI (neither argv nor stdin) — the consult would fail at runtime"; exit 1; }
+          done
+          # The assertion that actually catches the regression: a stub modelling the REAL
+          # claude CLI contract. --allowed-tools is VARIADIC, so it swallows every
+          # following non-flag token — a prompt passed as a positional AFTER it is
+          # consumed as a tool name, and with -p and nothing left on argv or stdin the
+          # CLI exits nonzero. (An argv-only assertion cannot catch this: under the
+          # broken wiring the prompt IS present in argv, just not where it is read.)
+          SB="$(mktemp -d)"
+          cat > "$SB/claude" <<'SCL'
+          #!/usr/bin/env bash
+          p=""; expect_val=0; in_tools=0
+          for a in "$@"; do
+            if [ "$expect_val" = 1 ]; then expect_val=0; continue; fi
+            case "$a" in
+              --allowed-tools) in_tools=1; continue ;;
+              --model|--permission-mode|--resume|--output-format|--json-schema) in_tools=0; expect_val=1; continue ;;
+              -*) in_tools=0; continue ;;
+            esac
+            [ "$in_tools" = 1 ] && continue   # swallowed by the variadic flag
+            p="$a"
+          done
+          s="$(cat 2>/dev/null || true)"
+          [ -n "$p$s" ] || { echo "Error: Input must be provided either through stdin or as a prompt argument when using --print" >&2; exit 1; }
+          echo "advice-ok"
+          SCL
+          chmod +x "$SB/claude"
+          sd="$(mktemp -d)"; mkdir -p "$sd/.plinth"; printf 'advisor_vendor = claude\n' > "$sd/.plinth/config"
+          sout="$( cd "$sd" && PATH="$SB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "a real question" 2>/dev/null </dev/null )"
+          printf '%s' "$sout" | grep -q 'advice-ok' \
+            || { echo "::error::advise: claude advisor returned no advice against a prompt-requiring CLI (got: $(printf '%s' "$sout" | tail -c 120)) — the prompt is not reaching it"; exit 1; }
+          printf '%s' "$sout" | grep -q 'advisor unavailable' \
+            && { echo "::error::advise: claude advisor reported 'unavailable' though the CLI is present and working — a wiring failure is being masked as a missing CLI"; exit 1; } || true
 
           # ── v4.4.0: cross-vendor auditor runs ISOLATED (empty cwd) — grok/codex/agy/claude (round-24) ──
           audit_iso() {  # <primary_reviewer_vendor> <audit_vendor>
@@ -2196,7 +2801,7 @@ jobs:
           printf '%s' "$awcodex" | grep -qi 'no cross-vendor second opinion' || { echo "::error::codex-primary audit warning must state Tier 2 gets NO cross-vendor second opinion"; exit 1; }
 
           # ── v4.5: plinth watch renders FEEDLESS (a driver whose hooks are not executing — e.g. grok,
-          # probed at 0.2.93: no execution — receipt: docs/receipts/hookprobe-grok-0.2.93.txt; the vendor-behavior verification is
+          # probed at 0.2.112: no execution — receipt: docs/receipts/hookprobe-grok-0.2.112.txt; the vendor-behavior verification is
           # the MANUAL's local marker-hook probe, not this canary, which has no grok CLI) ──
           FWD="$(mktemp -d)"; ( cd "$FWD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             "$GITHUB_WORKSPACE/bin/plinth" init "$FWD" >/dev/null 2>&1
@@ -2225,7 +2830,7 @@ jobs:
           esac
           GHS
           chmod +x "$PFG/gh"
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
           pf_probe() {  # <protection-json> <expect-grep> <label>
             local d j="$PFG/p.json"; d="$(mktemp -d)"; printf '%s' "$1" > "$j"
             ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
@@ -2233,7 +2838,7 @@ jobs:
             out="$(GHP_JSON="$j" GHC_NAMES="$PFG/names" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
             printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           }
-          FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]'
+          FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]'
           pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
           # ONE floor job present is NOT a gated floor — each of the four is independent:
           pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
@@ -2260,13 +2865,13 @@ jobs:
           pf_probe '{"required_status_checks":{"contexts":[]}}' 'NO required status checks' empty
           # a DIRECT checks job (template-supported: in-line steps) has context exactly "checks" —
           # must read HEALTHY. Its context is cross-checked against the check-runs:
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks"]}}' 'required: floor / secrets' direct-checks-job
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\nreceipt / verify\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks","receipt / verify"]}}' 'required: floor / secrets' direct-checks-job
           # GHOST floor gate: a required floor context whose job is NOT among the actual check-runs
           # (job removed/renamed) must read MISSING, not healthy:
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
+          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
           # WORKFLOW-PREFIXED contexts ("CI / floor / secrets") do NOT exist on GitHub — must read MISSING:
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / checks"]}}' 'MISSING: floor/secrets' workflow-prefixed-is-invalid
           # a QUOTED workflow name (name: "CI") must not break matching (contexts are job-name based,
@@ -2285,7 +2890,7 @@ jobs:
             echo '    for i in $(seq 1 40); do echo "noise-$i"; done'
             echo '    case "$*" in *--paginate*)'
             echo '      echo "floor / secrets"; echo "floor / sast"; echo "floor / dependencies / osv-scan"'
-            echo '      echo "floor / harness"; echo "checks / checks" ;; esac ;;'
+            echo '      echo "floor / harness"; echo "checks / checks"; echo "receipt / verify" ;; esac ;;'
             echo '  *) echo "{}" ;;'
             echo 'esac'
           } > "$PGB/gh"
@@ -2293,10 +2898,10 @@ jobs:
           dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
             sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks"]}}' > "$pj"
+          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' > "$pj"
           out="$(GHP_JSON="$pj" PATH="$PGB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
           printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy WITHOUT effective pagination (--paginate missing): $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
-          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\n' > "$PFG/names"
+          printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
 
           # ── v4.5: plinth hookprobe — vendor hook-execution is PROBED per EVENT, not asserted ──
           # The vendor behavior itself is only testable against the real CLI (run locally:
@@ -2768,10 +3373,21 @@ jobs:
             printf '%s' "$HP" | grep -qF "$want" || { echo "::error::HARNESS_PATHS omits the pinned tooling file '$want' (tamper arithmetic / tooling-commit list would miss it)"; exit 1; }
           done
           printf '%s\n' '.plinth/lane-guard.sh' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies .plinth/lane-guard.sh as tooling (a lane-guard edit would be treated as project code)"; exit 1; }
+          # GENERIC anti-drift: EVERY file shipped into .plinth/ from shared/.plinth/ is
+          # version-pinned tooling, so BOTH enumerations must cover it. v4.7 shipped
+          # receipt-verify.sh and updated four other pinned-tooling lists but missed these
+          # two — leaving the script that server-side verifies the review receipt outside
+          # its own tamper net. A per-file allowlist would have missed it the same way;
+          # deriving the list from what is actually installed cannot.
+          for sf in "$GITHUB_WORKSPACE"/shared/.plinth/*; do
+            b=".plinth/$(basename "$sf")"
+            printf '%s\n' "$b" | grep -Eq "$HRE" || { echo "::error::HARNESS_RE does not classify shipped tooling '$b' as tooling — an edit to it would be reviewed as ordinary project code, outside the tamper net"; exit 1; }
+            printf '%s' "$HP" | grep -qF "$b" || { echo "::error::HARNESS_PATHS omits shipped tooling '$b' — tamper arithmetic and the tooling-commit list would never see a commit touching it"; exit 1; }
+          done
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
-          # UNAUTHENTICATED grok — grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but
+          # UNAUTHENTICATED grok — grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but
           # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }
@@ -3353,7 +3969,12 @@ jobs:
             printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
             r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
-          # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
+          # plinth advise applies the verdict-not-survey discipline to EVERY vendor, and the
+          # prompt must actually ARRIVE by that vendor's route: claude=STDIN (v4.7 — it was a
+          # positional argument until the variadic --allowed-tools was found to swallow it,
+          # silently disabling the advisor for the DEFAULT vendor), codex=stdin, grok/agy=arg.
+          # If a vendor's delivery route ever changes again, change its `how` here — a probe
+          # left pointing at the old route reports a working advisor as broken.
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"
             case "$how" in
@@ -3369,7 +3990,7 @@ jobs:
             grep -q "Give a VERDICT, not a survey" "$cap" || { echo "::error::advise: $v did not receive the verdict-not-survey discipline"; exit 1; }
             grep -q "route the auth module" "$cap" || { echo "::error::advise: $v dropped the question"; exit 1; }
           }
-          adv_cap claude last
+          adv_cap claude stdin
           adv_cap codex stdin
           adv_cap grok afterp
           adv_cap agy afterp

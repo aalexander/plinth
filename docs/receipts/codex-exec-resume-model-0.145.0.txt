@@ -1,0 +1,27 @@
+# codex `exec resume -m` receipt — codex-cli 0.145.0
+# date: 2026-07-25  host: darwin 25.5.0 (maintainer workstation)
+# why: shared/.plinth/review.sh passes the pinned/override reviewer model to the
+#      RESUME invocation (upstream #25). That is a vendor-behavior claim about an
+#      external CLI, so it carries a receipt like the hookprobe claims do.
+# Re-run after CLI upgrades. If a build ever rejects the flag, review.sh degrades
+# via `|| return 1` to a verify round, which applies the model in a fresh session.
+
+$ codex --version
+codex-cli 0.145.0
+
+$ codex exec resume --help | grep -E '^\s*-m|--model'
+  -m, --model <MODEL>
+
+Result: `codex exec resume` ACCEPTS -m/--model on 0.145.0.
+
+SCOPE OF THIS EVIDENCE (read before relying on it). This shows the flag is
+ACCEPTED, not that it changes the model of an already-open resumed thread. The
+two hookprobe receipts capture the actual behavior they claim; this one does not,
+and the review flagged the asymmetry. It matters because if codex silently
+accepted-but-ignored -m on resume, an override would be recorded in the ledger
+(and disclosed in the PR body) as APPLIED while the round in fact ran on the
+thread's original model — a dishonest disclosure trail, not just a degraded one.
+Bounded: the code falls back to a fresh verify round if the flag is REJECTED, and
+a fresh session always applies the model. Strengthening this to a behavioral probe
+(two resumed rounds with different -m values, assert the recorded model differs)
+is tracked in MANUAL's `## Noticed`.

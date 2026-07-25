@@ -13,9 +13,9 @@
 # fallback only when no incremental anchor exists) — or a clean-slate full
 # review when there are no prior findings to verify. Tier-1 approvals bind in
 # every mode (the round-1 fresh pass read the full branch); a Tier-2 non-fresh
-# approval gets a clean-slate full confirmation before it binds, at most once
-# per loop (the confirmed marker records it; later skips are recorded in
-# verdict.json). round_cap (default 8) is a hard circuit breaker: a loop that
+# approval gets a clean-slate full confirmation before it binds (always — v4.6's
+# once-per-loop skip is retired, upstream #27).
+# round_cap (default 8) is a hard circuit breaker: a loop that
 # has not converged by then stops (exit 2) and surfaces to the human.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
@@ -365,11 +365,11 @@ sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || re
 # NB: protected-paths is DELIBERATELY NOT here — the reviewer contract
 # (.plinth/reviewer.md) excludes it from the UPSTREAM/tooling exemption, so a bad
 # protected-paths change must stay blocking.
-HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implementer)\.md$|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|lane-guard\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
+HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implementer)\.md$|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|lane-guard\.sh|receipt-verify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
 # The SAME tooling set as HARNESS_RE, in git pathspec form. Feeds BOTH the tamper arithmetic
 # and the COMMITS IN RANGE prompt list, so the reviewer is shown exactly (and completely) the
 # commits that touch version-pinned tooling — the set the tamper policy judges by label.
-HARNESS_PATHS='.claude/hooks .claude/agents/grok-implementer.md .claude/agents/codex-implementer.md .claude/settings.json .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md'
+HARNESS_PATHS='.claude/hooks .claude/agents/grok-implementer.md .claude/agents/codex-implementer.md .claude/settings.json .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/receipt-verify.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"
@@ -410,6 +410,82 @@ fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
 
+# ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
+# Every BINDING APPROVED (including Tier 0's deterministic one) mints — BEST-EFFORT, see
+# the failure returns below, each of which ANNOUNCES rather than silently skipping — a
+# plinth.review-receipt/v1 as a git note on the approved commit
+# (refs/notes/plinth-receipts) — out-of-band of the commit so HEAD never moves,
+# keyed to the exact SHA the verdict binds. The server-side receipt check
+# (plinth-receipt.yml + receipt-verify.sh) re-derives every field from the PR's
+# own subject and fails closed on any mismatch. Minting is best-effort here (a
+# repo without notes support still reviewed fine — the SERVER check is the
+# enforcer), but failure is announced, never swallowed silently.
+mint_receipt() {  # mint_receipt <round>
+  local mround="$1" repo_nwo htree mb ledger subj receipt
+  # LOWERCASED on both sides of the boundary. GitHub owner/repo names are
+  # case-insensitive for routing, but the verifier compares this field with `=`
+  # AND folds it into the subject digest — both case-SENSITIVE. A remote written
+  # as git@github.com:MyOrg/Repo.git would then never match the API's canonical
+  # `myorg/repo`, failing a legitimate PR closed. receipt-verify.sh lowercases
+  # --repo identically; change one and you must change the other.
+  repo_nwo="$(git config --get remote.origin.url 2>/dev/null \
+    | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' \
+    | tr '[:upper:]' '[:lower:]')" || repo_nwo=""
+  # No resolvable origin => no verifiable receipt. Writing one anyway would record
+  # repo:"" — a note that EXISTS but can never satisfy the server check, which is
+  # strictly worse than none (it looks minted and reads as tampering-adjacent).
+  # Announce and skip; the remint on the same-SHA fast path picks it up once the
+  # remote exists. Local-only repos still review and approve normally.
+  [ -n "$repo_nwo" ] || { echo "Plinth review: NOTE — receipt not minted (no resolvable 'origin' remote, so it could not bind a repository). Add the remote and re-run ./.plinth/review.sh to mint it; 'receipt / verify' fails closed until then."; return 0; }
+  htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
+  mb="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
+  # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
+  # to {round, name, value} tuples — the disclosure set the server check holds
+  # the PR body to (exact tuple-set equality).
+  # ABSENT ledger is legitimate and means "no overrides": Tier 0 mints before any round
+  # runs, and a loop with no override rows never creates the file. A ledger that EXISTS
+  # but cannot be read or parsed is different — collapsing that to [] would be a
+  # fail-OPEN on the disclosure guarantee, because `git notes add -f` would overwrite a
+  # good receipt with an empty-ledger one and a PR body disclosing nothing would then
+  # verify. Reachable on the remint fast path, where verdict.json can survive while the
+  # per-loop ledger is lost. (jq exits 2 on a missing file and 5 on malformed input, but
+  # still prints [] for the missing case — so the file test, not jq's stdout, decides.)
+  if [ -f "$SDIR/usage.jsonl" ]; then
+    ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
+        {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
+        "$SDIR/usage.jsonl" 2>/dev/null)" || ledger=""
+    if [ -z "$ledger" ]; then
+      echo "Plinth review: NOTE — receipt NOT minted: the per-loop override ledger (${SDIR}/usage.jsonl) exists but could not be parsed, and minting an empty ledger could drop a real override from the disclosure the server check enforces. Re-run the loop, or restore session state."
+      return 0
+    fi
+  else
+    ledger="[]"
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | shasum -a 256 | cut -d' ' -f1)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | sha256sum | cut -d' ' -f1)"
+  else
+    echo "Plinth review: NOTE — receipt not minted (no sha256 tool)."; return 0
+  fi
+  receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
+    --arg br "${baseref#origin/}" --arg mb "$mb" --arg sd "sha256:${subj}" \
+    --argjson round "$mround" --argjson ledger "$ledger" \
+    '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+      base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+      round:$round, override_ledger:$ledger}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+  # -f replaces THIS commit's note on re-approval; other commits' notes are
+  # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
+  # and `git notes merge` first (the driver rules carry the recipe).
+  if git notes --ref=plinth-receipts add -f -m "$receipt" "$sha" 2>/dev/null; then
+    echo "Plinth review: receipt minted on ${sha:0:12} (refs/notes/plinth-receipts) — push it WITH the branch: git push origin HEAD refs/notes/plinth-receipts"
+  else
+    echo "Plinth review: NOTE — receipt note could not be written (git notes failed); the server receipt check will fail closed until a receipt exists at HEAD."
+  fi
+}
+
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
@@ -420,6 +496,7 @@ if [ "$RISK" = "0" ]; then
           round:0, session_id:"", model:"deterministic-floor", risk:$risk,
           diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error"
+  mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
 fi
@@ -457,8 +534,10 @@ fi
 #   convergence on the strength of the round-1 full read, acceptable for
 #   ordinary code with a bound digest.
 # Tier 2 (high-consequence): the frontier reviewer, a clean-slate confirmation
-#   before a non-fresh approval binds — at most ONCE per loop (later skips are
-#   recorded in verdict.json) — and, when a genuinely cross-vendor auditor is
+#   before EVERY non-fresh approval binds (v4.6's once-per-loop skip and its
+#   verdict.json 'skipped' record are RETIRED — see binds_directly below for why
+#   the corrected marker was dead rather than merely narrowed) — and, when a
+#   genuinely cross-vendor auditor is
 #   configured (audit_vendor != reviewer_vendor), a cross-vendor second opinion
 #   on EVERY Tier-2 approval (not just every 5th). Config knobs
 #   reviewer_model_tier1/tier2 select models; unset => the vendor default.
@@ -506,12 +585,22 @@ resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <base
 # full round-1 read in its thread, and a VERIFY is a fresh session anchored on the
 # prior open findings — both trust the round-1 full read for branch coverage, so
 # BOTH bind directly on Tier 1 (ordinary code; an anchored-fresh verify is no less
-# independent than a warm resume). Tier 2 (high-consequence) still requires a
-# clean-slate confirmation (full diff, NO prior findings — an unbiased read) —
-# but at most ONCE per loop: after one clean-slate pass has run on this branch
-# (the $SDIR/confirmed marker), later non-binding approvals bind with the skip
-# recorded in verdict.json. Single source of truth for both the post-round gate
-# and the reviewer-facing note. Pure fn -> testable.
+# independent than a warm resume). Tier 2 (high-consequence) ALWAYS requires a
+# clean-slate confirmation (full diff, NO prior findings — an unbiased read)
+# before a non-fresh approval binds.
+#
+# v4.6 tried to run that confirmation at most ONCE per loop, via a $SDIR/confirmed
+# marker written whenever a confirmation RAN. Upstream #27 showed that inverts the
+# guarantee: the fixes answering a confirmation's OWN findings are by definition
+# absent from the read that produced them — the likeliest place for a fresh
+# regression became the code that could never get a frontier re-read. Restricting
+# the marker to APPROVING confirmations fixes that but makes the marker DEAD: an
+# approving confirmation ends the loop (exit 0), and any later commit starts a new
+# loop that clears the marker, so nothing could ever read one that was still set.
+# The whole once-per-loop mechanism is therefore GONE rather than left dormant —
+# dead machinery whose comments describe live behavior is how #27 comes back.
+# Single source of truth for both the post-round gate and the reviewer-facing
+# note. Pure fn -> testable.
 binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = needs clean-slate)
   case "${1:-}" in
     fresh)         return 0 ;;
@@ -519,24 +608,13 @@ binds_directly() {  # binds_directly <mode> <risk-tier>  (exit 0 = binds, 1 = ne
     *)             return 1 ;;
   esac
 }
-# The ONE effective-binding predicate: mode/tier says it binds, OR the
-# once-per-loop clean-slate has already run (the confirmed marker). Both the
-# post-round gate and the reviewer-facing note MUST call this — hand-expanding
-# the disjunction at either site is how the two drift and the note starts
-# lying to the reviewer about its stakes.
-effective_binds() {  # effective_binds <mode> <risk-tier>
-  binds_directly "${1:-}" "${2:-}" && return 0
-  [ -f "${SDIR:-/nonexistent}/confirmed" ]
-}
 
 # Tell the reviewer the TRUTH about its stakes so it neither relaxes rigor
 # expecting a later pass that won't come, nor treats a non-binding round as final.
-# The once-per-loop confirmation marker changes the truth: after a clean-slate
-# pass has run, a later non-binding approval binds, and the note must say so.
 bind_note() {  # bind_note <mode> <risk-tier>
-  if effective_binds "${1:-}" "${2:-}"; then
+  if binds_directly "${1:-}" "${2:-}"; then
     case "${1:-}" in
-      verify) printf '%s' "The round-1 fresh pass already read the full branch (and any required clean-slate confirmation has run): your verdict on these fixes BINDS DIRECTLY — no further pass follows, so verify each fix and its blast radius with full rigor now." ;;
+      verify) printf '%s' "The round-1 fresh pass already read the full branch: your verdict on these fixes BINDS DIRECTLY — no further pass follows, so verify each fix and its blast radius with full rigor now." ;;
       *)      printf '%s' "You hold the full diff from your first pass in this thread and no further confirmation follows: your verdict BINDS DIRECTLY — apply full first-pass rigor now." ;;
     esac
   else
@@ -564,7 +642,16 @@ if [ -f "$SDIR/verdict.json" ]; then
     echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
   fi
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
-    if effective_binds "$prev_mode" "$RISK"; then
+    if binds_directly "$prev_mode" "$RISK"; then
+      # REMINT before the fast path returns. Minting is best-effort (a repo with no
+      # origin, no notes support, or no sha256 tool still reviews fine), so a binding
+      # APPROVED can be recorded with NO receipt — or, worse, one carrying an empty
+      # repo NWO that can never verify. Without this, the fast path made that
+      # permanent: the operator adds the remote, re-runs, and gets "Nothing new to
+      # review" while `receipt / verify` stays red at that SHA until an empty commit
+      # forces a new loop. `git notes add -f` is idempotent, so reminting an already
+      # correct receipt is a no-op. Found by the cross-vendor audit (round 4).
+      mint_receipt "$prev_round"
       echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
       exit 0
     fi
@@ -585,8 +672,8 @@ if [ -f "$SDIR/verdict.json" ]; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
     # Resume only when it can plausibly work; otherwise a verify round (fresh
     # session, SCOPED: open prior findings + the cumulative fix diff since the
-    # last full read; Tier-1 verify binds, Tier-2 verify binds after the
-    # once-per-loop clean-slate) instead of a warm re-read.
+    # last full read; Tier-1 verify binds, a Tier-2 verify binds only after its
+    # clean-slate confirmation) instead of a warm re-read.
     fallback="fresh"
     [ -f "$SDIR/findings-${prev_round}.json" ] && fallback="verify"
     if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
@@ -606,13 +693,30 @@ if [ -f "$SDIR/verdict.json" ]; then
     # findings on the SAME base exist → a scoped verify round continues the fix
     # loop (open findings + the cumulative fix diff since the last full read).
     mode="verify"; round=$((prev_round + 1))
+    # …UNLESS the reviewer vendor changed mid-loop (upstream #26). A scoped
+    # verify is only sound because SOME earlier round read the whole branch:
+    # $SDIR/lastfullread records THAT a full read happened, never WHO did it, so
+    # a swap would silently transfer one vendor's coverage credit to another and
+    # (Tier 1) let the newcomer's first-ever round BIND having seen only the fix
+    # slice. Checking the immediately-preceding round's vendor is sufficient AND
+    # complete: markers are cleared when a new loop starts, only fresh rounds
+    # write the anchor, and a mismatch re-anchors here — so "every consecutive
+    # pair matched" transitively means the anchor is the running vendor's own
+    # full read. Empty prev_vendor (pre-v4.6 verdict.json) fails CLOSED, as in
+    # resumable_prev. Round numbering and the per-loop override ledger continue
+    # (this is the same loop with a new seat) — only the coverage credit resets.
+    if [ "${prev_vendor:-}" != "${REVIEWER_VENDOR:-}" ]; then
+      echo "Plinth review: reviewer vendor changed mid-loop ('${prev_vendor:-unknown}' → '${REVIEWER_VENDOR}') — the full-branch read on file is the PRIOR vendor's, so '${REVIEWER_VENDOR}' runs a fresh full round before any of its verdicts can bind."
+      mode="fresh"
+    fi
   else
     # A NEW loop starts here: clear the per-loop markers too — a stale
-    # `confirmed` would turn "once per loop" into "once per branch-slug
-    # lifetime" and let a later Tier-2 approval bind with zero clean-slate
-    # reads this loop; a stale `lastfullread` would anchor scoped verifies at
-    # a long-gone milestone; a stale `usage.jsonl` would leak a prior loop's
-    # override rows into the ledger the PR-body disclosure rule reads.
+    # `lastfullread` would anchor scoped verifies at a long-gone milestone, and
+    # a stale `usage.jsonl` would leak a prior loop's override rows into the
+    # ledger the PR-body disclosure rule reads. `confirmed` is v4.6's retired
+    # once-per-loop marker (upstream #27): nothing reads it any more, but a
+    # session directory written by a v4.6 instrument can still hold one, so it
+    # is swept here rather than left behind as a misleading artifact.
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
           "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
   fi
@@ -643,7 +747,15 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
   # contract passed in the prompt, not on driver instructions. (Verified: codex 0.142.5.)
   local m="$1" margs=(); [ -n "${RV_MODEL:-}" ] && margs=(-m "$RV_MODEL")
   if [ "$m" = "resume" ]; then
-    printf '%s' "$prompt" | codex exec resume "$s" -c 'sandbox_mode="read-only"' -c project_doc_max_bytes=0 --json \
+    # margs on resume too (upstream #25): a same-vendor model override must reach
+    # the resumed thread — silently continuing on the thread's original model
+    # while the ledger records the override as applied corrupts the disclosure
+    # trail. -m on `exec resume` verified against codex-cli 0.145.0 — receipt:
+    # docs/receipts/codex-exec-resume-model-0.145.0.txt (vendor-behavior claims
+    # carry evidence files here, same standard as the hookprobe receipts). If a
+    # vendor build rejects it the `|| return 1` falls back to a verify round, which
+    # applies the override in a fresh session — degraded, never dishonest.
+    printf '%s' "$prompt" | codex exec resume "$s" ${margs[@]+"${margs[@]}"} -c 'sandbox_mode="read-only"' -c project_doc_max_bytes=0 --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" || return 1
   else
     printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
@@ -955,22 +1067,14 @@ case "$mode" in
   *)
     run_round "$mode" "$round" "" ;;
 esac
-# A recovery round IS the loop's clean-slate confirmation — mark it so the
-# once-per-loop accounting holds if it returned CHANGES_NEEDED and the loop
-# continues.
-if [ "${recovery:-0}" = 1 ]; then echo "$sha" > "$SDIR/confirmed"; fi
-
 # Confirmation gate. Tier-1 approvals bind directly in every mode (fresh read
 # happened round 1; resume carries it warm, verify anchors on it). A Tier-2
 # non-fresh approval gets a clean-slate full pass (full diff, no prior findings)
-# so neither continuity nor an anchored view can soften the adversarial read —
-# but at most ONCE per loop: the $SDIR/confirmed marker records that this branch
-# already got its unanchored confirmation read, and later non-binding approvals
-# bind with the skip recorded in verdict.json (repeated full re-reads were the
-# main cost driver on long loops). The marker is written when the confirmation
-# RUNS, whatever its verdict — it marks the unanchored read, not the approval.
-# effective_binds() is the single source of truth, shared with the reviewer note.
-if [ "$RVERDICT" = "APPROVED" ] && ! effective_binds "$RMODE" "$RISK"; then
+# so neither continuity nor an anchored view can soften the adversarial read.
+# EVERY such approval gets one — v4.6's once-per-loop skip is gone (upstream #27;
+# see binds_directly above for why the corrected marker was also dead code).
+# COST: a Tier-2 loop pays one fresh round per non-fresh approval, as in v4.5.
+if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
   # The cap is HARD here too: the confirmation is a fresh full-diff frontier
   # round — the most expensive kind — and the docs promise round_cap has no
   # carve-outs. Dying here is safe: the non-binding APPROVED is already
@@ -983,13 +1087,6 @@ if [ "$RVERDICT" = "APPROVED" ] && ! effective_binds "$RMODE" "$RISK"; then
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""
-  echo "$sha" > "$SDIR/confirmed"
-elif [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
-  # effective_binds passed only via the once-per-loop marker: record the skip.
-  conf_at="$(cat "$SDIR/confirmed" 2>/dev/null || echo unknown)"
-  echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — clean-slate confirmation already ran this loop (at ${conf_at}); binding directly (once-per-loop), recorded in verdict.json."
-  jq --arg at "$conf_at" '. + {confirmation: ("skipped-once-per-loop; clean-slate ran at " + $at)}' \
-    "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
 fi
 
 echo "Plinth review — round ${round}: ${RVERDICT} at ${sha} vs ${baseref}"
@@ -1041,6 +1138,9 @@ $(inline_spec)
 === OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)
 
+=== TOOLING COMMITS IN RANGE (${baseref}..HEAD — COMPLETE list of commits touching version-pinned tooling, for the tamper policy; judge each by its subject label) ===
+$(git log --format='%h %s' "${baseref}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
+
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${baseref}...HEAD")"
     if run_auditor "$aprompt" "$afind"; then
@@ -1079,5 +1179,6 @@ elif [ "$RISK" = "2" ]; then
   # primary + the default audit_vendor=claude).
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
 fi
+mint_receipt "$round"
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 exit 0
