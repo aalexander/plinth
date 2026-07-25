@@ -15,8 +15,9 @@
 # every mode (the round-1 fresh pass read the full branch); a Tier-2 non-fresh
 # approval gets a clean-slate full confirmation before it binds (always — v4.6's
 # once-per-loop skip is retired, upstream #27).
-# round_cap (default 8) is a hard circuit breaker: a loop that
-# has not converged by then stops (exit 2) and surfaces to the human.
+# round_cap is an OPT-IN circuit breaker: UNSET (the default) means NO CAP — the loop
+# runs until it converges. Set a positive integer and a loop that has not converged by
+# then stops (exit 2) and surfaces to the human; 0 is also "no cap".
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -136,7 +137,20 @@ ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND
 # post-approval clean-slate confirmation (a capped confirmation dies with the
 # non-binding APPROVED persisted; the unconfirmed-approval recovery runs it on
 # the next invocation once the operator unbricks with PLINTH_ROUND_CAP).
-ROUND_CAP="$(bcfg round_cap)"; case "$ROUND_CAP" in ''|*[!0-9]*) ROUND_CAP=8 ;; esac
+# UNSET MEANS NO CAP (v4.7.1). It used to mean 8, which made removing the knob from
+# .plinth/config look like disabling the breaker while silently restoring the default —
+# a loop would run to 8 and stop, with the config offering no evidence why. Opt IN to a
+# cap by setting round_cap; leave it out and the loop runs until it converges. The
+# breaker is a deliberate cost ceiling for an operator who wants one, not a default
+# ceiling on convergence: a long loop is a signal to fix the CONVERGENCE (enumerate the
+# whole finding-class, batch every fix into one commit per round), not to stop reviewing.
+# A MALFORMED value is NOT silently reinterpreted as a number — that is how a typo
+# ('round_cap = eight') would quietly disable a breaker the operator believed was armed.
+ROUND_CAP="$(bcfg round_cap)"
+case "$ROUND_CAP" in
+  '')       ROUND_CAP=0 ;;
+  *[!0-9]*) die_infra "round_cap in .plinth/config must be a non-negative integer (got '$ROUND_CAP'). Leave it unset or set 0 to disable the breaker; set a positive integer to cap the loop." ;;
+esac
 ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal and crash the -gt test
 # PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
 # read from the BASE branch, so raising it on the feature branch does nothing;
@@ -425,26 +439,41 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # and call THIS function rather than restate its logic — a fixture that re-implements
 # the rule cannot detect the rule changing underneath it.
 #
-# ONE anchored pattern, not a pipeline of strips. Three rounds of review found holes in
-# the sequential-stripping approach — `/tmp/proj.git`, `../canary/receipt.git`,
+# ONE anchored pattern, not a pipeline of strips. Earlier rounds found holes in the
+# sequential-stripping approach — `/tmp/proj.git`, `../canary/receipt.git`,
 # `https:///owner/repo`, `ssh://git@/owner/repo`, `C:/owner/repo` all reduced to a
 # plausible-looking pair — because each strip only removed a prefix it recognised and
 # whatever survived was accepted. Anchoring the WHOLE string means anything not matched
 # is refused by construction, which is the property that kept failing to hold.
 #
-# Accepted, and nothing else:
-#   [scheme://][user@]host[:port]/owner/repo[.git][/]     scheme = http(s)|git|(git+)ssh
-#   [user@]host:owner/repo[.git][/]                       scp-style (host REQUIRED)
-# host is [A-Za-z0-9][A-Za-z0-9._-]* or a bracketed IPv6 literal. UNDERSCORES are
-# allowed because SSH config aliases routinely use them (`gh_work:owner/repo`), and an
-# alias is resolved by ssh, not DNS — applying hostname rules to it rejects valid
-# remotes. IPv6 needs the bracket form since a bare literal's colons are ambiguous with
-# the port separator. owner and repo are [A-Za-z0-9._-]+. A single-character host is
-# ACCEPTED on purpose — an SSH config alias like `g:owner/repo` is a legitimate remote.
-# The Windows drive form `C:/owner/repo` is still refused, and without needing a length
-# rule: the scp branch's owner group cannot match a leading slash after the colon. An
-# earlier revision required >=2 chars, which refused valid alias remotes to exclude a
-# form that was already excluded.
+# THE ACCEPTED GRAMMAR IS A CLOSED LIST — not "whatever git accepts". Git's URL syntax is
+# strictly wider than this, and the difference is deliberate. Exactly two forms parse:
+#
+#   scheme://[user@]host[:port]/owner/repo[.git][/]   scheme = http|https|git|ssh|git+ssh
+#   [user@]host:owner/repo[.git][/]                   scp-style; host REQUIRED, path RELATIVE
+#
+# host is [A-Za-z0-9][A-Za-z0-9._-]*, or — IN THE SCHEME FORM ONLY — a bracketed IPv6
+# literal (`ssh://git@[2001:db8::1]:22/owner/repo` parses). owner and repo are
+# [A-Za-z0-9._-]+. UNDERSCORES are allowed in the host because SSH config aliases
+# routinely use them (`gh_work:owner/repo`) and an alias is resolved by ssh, not DNS, so
+# hostname rules would reject valid remotes. A single-character host is ACCEPTED on
+# purpose — `g:owner/repo` is a legitimate alias remote.
+#
+# REFUSED ON PURPOSE, each one a form git itself would accept:
+#   ftp://, ftps://          documented git schemes; no receipt use case, so not carried
+#   host/owner/repo          schemeless — indistinguishable from a relative local path
+#   host:/owner/repo         scp-style with an ABSOLUTE path — ambiguous with the Windows
+#                            drive form `C:/owner/repo`, which must stay refused; refusing
+#                            both is why the scp branch's owner group rejects a leading
+#                            slash, and why no host-length rule is needed
+#   [::1]:owner/repo         scp-style IPv6 — the scp branch takes no brackets
+# plus file://, absolute/relative/tilde paths, hostless URLs, and >2 path segments.
+#
+# CONSEQUENCE, stated plainly: a repo whose origin is any refused form mints NO receipt.
+# The review still runs and can still APPROVE; the loop announces the non-mint; and where
+# `receipt / verify` is required, that PR fails closed until origin names an accepted
+# form. That is the honest trade — a narrow parser that never mints a wrong identity,
+# rather than a wide one that mints pairs the server can never match.
 #
 # The HOST IS NOT PART OF THE IDENTITY, deliberately, and this function does NOT check
 # that it is github.com. Requiring that would break GitHub Enterprise, whose remotes
@@ -452,8 +481,9 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # compared by receipt-verify.sh against ${{ github.repository }} on the server. A
 # gitlab.com or unrelated-host remote therefore yields a pair that simply fails that
 # comparison — fail-closed at the gate rather than refused here. What this function
-# guarantees is narrower than "a GitHub repo": it is "an owner/repo pair extracted from
-# a host-based remote URL". Do not describe it as more.
+# guarantees is narrower than "a GitHub repo", and narrower than "a host-based URL": it
+# is "an owner/repo pair extracted from one of the two forms listed above". Do not
+# describe it as more.
 receipt_nwo() {
   local url="$1" core rest
   [ -n "$url" ] || return 0
@@ -499,7 +529,7 @@ mint_receipt() {  # mint_receipt <round>
   # is; naming the remote instead of reproducing its URL removes the entire leak class
   # rather than enumerating it.
   [ -n "$repo_nwo" ] || {
-    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL carries no owner/repo pair (local paths, file:// and hostless URLs have no repository identity to bind). Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Set an origin remote whose URL names a host and an owner/repo, then re-run ./.plinth/review.sh to mint."
+    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
     return 0
   }
   htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
@@ -525,7 +555,18 @@ mint_receipt() {  # mint_receipt <round>
     echo "Plinth review: NOTE — receipt NOT minted: the per-loop override ledger (${SDIR}/usage.jsonl) is missing or does not cover every round up to ${mround} — an append was lost. Minting from it would drop overrides from the disclosure the server check enforces, and would overwrite a correct receipt. Restore session state, or re-run the loop from a clean round 1."
     return 0
   fi
-  if [ -f "$SDIR/usage.jsonl" ]; then
+  # ROUND 0 (Tier 0) NEVER reads a ledger file. Round 0 means no round has run in THIS
+  # loop, so any usage.jsonl present is a PRIOR loop's — and Tier 0 mints and exits
+  # BEFORE the round-bookkeeping that clears per-loop markers, so reusing a branch after
+  # its base advances would otherwise mint a round-0 receipt carrying the old loop's
+  # override tuples. The server check compares that ledger to the PR body for exact
+  # tuple-set equality, so a stale row fails a legitimately clean Tier-0 PR (and an
+  # operator who then "fixes" the body by adding the phantom line has disclosed an
+  # override that never applied). By definition there are no overrides to disclose at
+  # round 0: the empty ledger is the only correct answer, not a fallback.
+  if [ "${mround:-0}" = "0" ]; then
+    ledger="[]"
+  elif [ -f "$SDIR/usage.jsonl" ]; then
     ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
         {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
         "$SDIR/usage.jsonl" 2>/dev/null)" || ledger=""
@@ -716,7 +757,22 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_in" -gt "$ROUND_BUDGET" ]; then
     echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
   fi
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
+  # Say so when the base is why the free remint did not happen — otherwise an operator
+  # following the notes-recovery recipe with the wrong base silently buys a full round.
+  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] && [ "$prev_base" != "$baseref" ]; then
+    echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}', but this run targets '${baseref}'. A verdict binds a DIFF, so that approval does not carry over and no receipt is reminted for it. Running a full round against '${baseref}'. If you meant to remint the existing receipt, re-run with the base you reviewed: ./.plinth/review.sh ${prev_base#origin/}"
+  fi
+  # The stored BASE must match too, not just the SHA. A verdict is a statement about a
+  # DIFF, and the receipt's subject digest binds the base ref and merge-base — so an
+  # APPROVED recorded against `develop` says nothing about the same commit read against
+  # `main`. Without this test, the documented notes-recovery recipe (fetch, merge, re-run
+  # review.sh to remint) reminted through the fast path using whatever base the re-run
+  # defaulted to: `./.plinth/review.sh` with no argument means `main`, so a develop-based
+  # loop would mint a receipt claiming a `main` review that never happened — and the
+  # server check would happily verify it. Mismatch falls through to the new-loop branch
+  # below, which clears the per-loop markers and runs a real round 1 against the new base
+  # (correct: different base, different diff, different subject, fresh ledger).
+  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] && [ "$prev_base" = "$baseref" ]; then
     if binds_directly "$prev_mode" "$RISK"; then
       # REMINT before the fast path returns. Minting is best-effort (a repo with no
       # origin, no notes support, or no sha256 tool still reviews fine), so a binding

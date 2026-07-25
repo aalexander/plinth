@@ -1,9 +1,14 @@
 # Plinth changelog
 
 ## v4.7.1 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
-Seven review rounds were spent here because early fixes addressed the named instance
-rather than the class. Recording
-what actually shipped, including the parts that were wrong on the way:
+Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
+instance the reviewer named rather than the class it belonged to, so the next round found
+the next instance. (A hard round count is deliberately not quoted here — an exact tally in
+release prose goes stale on the very next round, which is itself a finding this release
+collected twice.) The convergence lever now lives in `shared/reviewer.md`: the reviewer is
+instructed to enumerate every instance of a class it finds, and to say so explicitly when
+it has checked a class and found only one. Recording what actually shipped, including the
+parts that were wrong on the way:
 - **`receipt_nwo()` — one anchored pattern, extracted and testable.** Repository identity
   is now derived by matching the WHOLE origin URL against two anchored forms
   (`scheme://[user@]host[:port]/owner/repo` and scp-style `[user@]host:owner/repo`),
@@ -31,16 +36,42 @@ what actually shipped, including the parts that were wrong on the way:
   instead of a copy. Now `[![:print:]]`.
 - **Fixture (9f) extracts `receipt_nwo` and `ledger_complete` from the shipped script**
   rather than restating them — an earlier version duplicated the logic and was rightly
-  rejected, since a copy cannot detect the original changing. It covers the accepted URL forms
-  (12 direct assertions plus a combinatorial sweep), 9 that must not, the ledger matrix including the missing-earlier-round case,
-  and asserts the diagnostic still refuses to interpolate the URL.
-- **Scope of `receipt_nwo`, stated honestly.** It extracts an owner/repo pair from a
-  HOST-BASED remote URL; it does NOT verify the host is github.com. Requiring that would
-  break GitHub Enterprise, and it is unnecessary — the recorded `repo` is compared against
-  `${{ github.repository }}` on the server, so an unrelated host yields a pair that simply
-  fails there. The earlier contract and diagnostic said "GitHub repository", which claimed
-  more than the code does; both now say what it actually guarantees, and the fixture
-  asserts a gitlab.com remote IS accepted so the scope cannot quietly drift back.
+  rejected, since a copy cannot detect the original changing. It covers the accepted URL
+  forms and the refused ones by direct assertion plus a combinatorial sweep, the ledger
+  matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
+  to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
+  stale the moment the fixture grew, and were wrong twice.)
+- **`round_cap` is now OPT-IN: unset means NO CAP (was 8).** Removing the knob from
+  `.plinth/config` used to look like disabling the breaker while silently restoring a
+  default of 8 — the loop would stop at round 8 and the config held no evidence why. This
+  was hit for real: the cap had been deliberately removed from config, and the loop was
+  still capped. A long loop is a signal to fix CONVERGENCE (enumerate the whole
+  finding-class instead of the named instance, batch every round's fixes into ONE commit,
+  parallelise independent work) — not a reason to stop reviewing. Setting `round_cap` to a
+  positive integer still arms the breaker exactly as before. A MALFORMED value is now
+  refused loudly (exit 2, before any round is spent) rather than silently reinterpreted as
+  a number, so a typo like `round_cap = eight` cannot quietly disarm a breaker the operator
+  believed was set. Fixtures (3b)/(3c) drive nine rounds with no knob to prove the breaker
+  never trips, prove an explicit cap still trips, and prove the malformed case aborts
+  without invoking the reviewer — closing the `round_cap = 0` fixture gap that `## Noticed`
+  had recorded since v4.6.
+- **Scope of `receipt_nwo` is a CLOSED LIST, stated honestly.** It accepts exactly two
+  forms — `scheme://[user@]host[:port]/owner/repo` (scheme = http, https, git, ssh,
+  git+ssh) and scp-style `[user@]host:owner/repo` — which is deliberately NARROWER than
+  git's documented URL syntax. `ftp://`, `ftps://`, a schemeless `host/owner/repo`,
+  scp-style with an absolute path (`host:/owner/repo`, ambiguous with the `C:/` drive form
+  that must stay refused) and scp-style IPv6 are all refused ON PURPOSE; each now has a
+  regression assertion, so the boundary cannot drift without the suite saying so. Bracketed
+  IPv6 IS supported in the scheme form, with and without a port — also now asserted.
+  Consequence, stated rather than implied: a repo whose origin is a refused form mints NO
+  receipt, the loop announces it, and where `receipt / verify` is required that PR fails
+  closed until origin names an accepted form. Successive rounds each named one more missing
+  form because the CLAIM ("every git URL that names a host") was wider than the code; the
+  fix was to narrow the claim to the code, not to keep widening the regex. It still does
+  NOT verify the host is github.com — that would break GitHub Enterprise, and is
+  unnecessary since the recorded `repo` is compared against `${{ github.repository }}` on
+  the server, so an unrelated host yields a pair that simply fails there. The fixture
+  asserts a gitlab.com remote IS accepted so that scope cannot quietly drift back either.
 - **The fixtures now test the WIRING, not only the rules.** Calling the extracted helpers
   proved they were correct but not that anything used them — deleting `mint_receipt`'s
   calls left every negative case green. (9f) now asserts those call sites exist, and (9c)
@@ -70,7 +101,49 @@ what actually shipped, including the parts that were wrong on the way:
   trusting any refusal, and fails loudly as a broken harness otherwise.
 - The documented notes recovery was unusable: `git notes --ref=X merge` exits "must specify
   a notes ref to merge". Corrected in `shared/plinth-rules.md` and `NEEDS-HUMAN.md` to the
-  three-command form (fetch to a NAMED side ref, merge that ref, push), verified end to end.
+  four-command form (fetch to a NAMED side ref, merge that ref with `-s theirs`, re-run
+  `review.sh` against the SAME base, push). The recipe is covered by two fixtures, split by
+  what each can actually prove. (9h) drives its GIT-NOTES half against a real remote — a
+  divergent non-conflicting note AND a same-object conflict — asserting the
+  non-fast-forward precondition really occurs, that no receipt is lost, and that each
+  commit ends with exactly ONE receipt object; it also COUNTER-PROVES the `-s theirs`
+  choice by merging the same conflict with `cat_sort_uniq` and showing it concatenates, so
+  the documented rationale is tested rather than asserted. (9i) covers the `review.sh`
+  step, which (9h) deliberately omits: it runs the REAL loop and proves the same-base
+  re-run remints for FREE (reviewer not re-invoked) while a different-base re-run refuses
+  to inherit the approval, announces why, and runs a real round.
+- **Credential safety is proven for ACCEPTED origins too, and at the LOOP level.** (9g)
+  previously exercised only origins that fail to parse, which is the easy half. The
+  dangerous shape is a valid credential-bearing remote (`https://oauth2:TOKEN@host/o/r`,
+  the everyday CI checkout form): it travels the whole minting path AND produces a note
+  that gets PUSHED, so a leak there is published rather than merely logged. Three such
+  origins now assert the token reaches neither the output nor the receipt, and that the
+  receipt still records the right identity. (9g) drives the extracted `mint_receipt`, so
+  it can only speak for the minting path — a claim that "nothing leaks from the loop"
+  rested on evidence that did not cover the loop. (9i) supplies that: it runs the real
+  `./.plinth/review.sh` against a credential-bearing origin and asserts on ALL of its
+  output plus the minted note.
+- **A Tier-0 receipt could inherit a PREVIOUS loop's override ledger.** Round 0 mints and
+  exits before the round-bookkeeping that clears per-loop markers, so reusing a branch
+  after its base advanced left a stale `usage.jsonl` in place and `mint_receipt` read it —
+  stamping override tuples that never applied into the receipt. The server check compares
+  that ledger to the PR body for exact tuple-set equality, so it failed a legitimately
+  clean Tier-0 PR, and "fixing" the body to match would have disclosed a phantom override.
+  Round 0 now always mints an empty ledger: by definition no round has run, so there is
+  nothing to disclose. Both prior Tier-0 fixtures used an ABSENT ledger and so could not
+  catch it; the new case supplies a populated stale one.
+- **The protected-paths backfill fixture asserts the WHOLE managed list.** It hand-listed
+  four patterns, so `receipt-verify.sh` was pinned in v4.7 and silently never asserted. The
+  expected list is now EXTRACTED from `bin/plinth`'s own `PATTERNS` heredoc — with a
+  self-check that fails loudly if the markers move and the extraction goes empty — so a
+  newly pinned file cannot be added to the tool and missed by the fixture again. Same
+  lesson the shipped-script syntax check learned when an explicit list skipped
+  `lane-guard.sh` and `receipt-verify.sh`.
+- **The remint fast path ignored the reviewed BASE.** `already APPROVED at <sha>` matched on
+  SHA and verdict alone, so re-running against a different base re-minted a receipt whose
+  subject binds THAT base — a verdict that read the `develop` diff could mint a receipt
+  attesting a `main` review, which the server check would then verify as sound. The fast
+  path now requires the stored base to match; a mismatch says so and runs a real round.
 
 ### Earlier in this release (superseded above, kept for the record)
 Found by the FIRST review run under the v4.7 engine and the new seats (codex/gpt-5.6-sol

@@ -70,9 +70,11 @@
 
   **Then, every branch:** push the notes ref alongside it, or the check fails closed with
   nothing to verify: `git push origin HEAD refs/notes/plinth-receipts`. Never force-push
-  that ref. On a non-fast-forward rejection, recover with these three commands —
+  that ref. On a non-fast-forward rejection, recover with these four commands, in order —
   `git notes merge` needs the side ref NAMED (bare `git notes --ref=X merge` exits
-  "must specify a notes ref to merge"), which the earlier wording here got wrong:
+  "must specify a notes ref to merge"), which the earlier wording here got wrong. Pass
+  the SAME base you reviewed against: the re-run re-mints for free only when the stored
+  verdict's base matches, and bare `./.plinth/review.sh` means `main`:
   ```
   git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
   git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts

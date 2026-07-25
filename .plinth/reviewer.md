@@ -142,4 +142,6 @@ version works and its utility is proven. Reviews serve that order.
   observation against lines unchanged since the round that first saw them —
   file it as MINOR → `## Noticed` instead.
 - A clean loop is 2–3 rounds. Past round 4 on new non-blocking classes, prefer
-  Noticed over escalation. (The loop itself enforces a hard `round_cap`.)
+  Noticed over escalation. There is NO default round cap to fall back on, so a loop
+  ends when you stop finding blocking defects — which is why enumerating a whole
+  class in one round (above) matters more than any per-round budget.

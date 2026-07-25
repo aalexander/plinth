@@ -374,9 +374,12 @@ Two operator chores the rules generate:
    verify approvals bind directly, Tier-2 ones only after a clean-slate confirmation
    pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
-   does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
-   knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
-   surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
+   does not transfer between models), 2 = the review DID NOT RUN. The `round_cap` circuit
+   breaker is OPT-IN: unset (the default) or 0 means NO CAP, and a positive integer stops
+   a loop that has not converged by then — exit 2, surface to the human. A malformed value
+   is refused loudly rather than silently reinterpreted. There is deliberately no default
+   cap: a long loop means fix the CONVERGENCE (enumerate whole finding-classes, batch each
+   round's fixes into one commit, parallelise independent work), not stop reviewing. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
    `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
    credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
@@ -693,6 +696,19 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **The dirty-tree gate blames the wrong thing for a nested subagent worktree.** An
+  agent harness that creates git worktrees UNDER the repo (Claude Code uses
+  `.claude/worktrees/`) makes `review.sh` refuse with "working tree is dirty" for as
+  long as any subagent is alive — which is exactly when parallel review is wanted.
+  Observed 2026-07-25: it silently blocked running the reviewer alongside two worker
+  lanes. Patched by ignoring that path in this repo's `.gitignore` and in
+  `templates/.gitignore`, but that hardcodes a directory name the harness chose and
+  can rename. STURDIER FIX, deliberately not built yet (no second observation): have
+  the dirty-tree check detect that an untracked entry is itself a git worktree (its
+  `.git` is a file pointing into the superproject) and either exclude it or name it
+  precisely in the error, instead of reporting generic dirt. A worktree's own changes
+  are invisible to the superproject's `git status`, so excluding it cannot weaken the
+  SHA binding. True root cause is the harness placing worktrees inside the repo.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
