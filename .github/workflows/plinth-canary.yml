@@ -980,6 +980,27 @@ jobs:
             rc=0; PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 0 ] || { echo "::error::ledger fixture loop failed (rc=$rc)"; exit 1; }
             jq -r 'select(.round == 1) | .overrides.reviewer_model // empty' .plinth/session/review/feat/usage.jsonl | grep -qx xmodel || { echo "::error::a non-final round's override left no trace in the usage.jsonl ledger (disclosure rule unimplementable)"; exit 1; } )
+          # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
+          # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
+          # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
+          CC="$(mktemp -d)"; mkstate "$CC"; mk_cap_codex "$CC"
+          printf '%s' "$CNF" > "$CC/verdict-1"; printf '%s' "$APF" > "$CC/verdict-2"; printf '%s' "$APF" > "$CC/verdict-3"
+          ccd="$(mktemp -d)"
+          ( cd "$ccd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$ccd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            printf 'round_cap = 2\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$CC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; out="$(PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::capped Tier-2 confirmation did not trip the breaker (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'confirmation would be round 3' || { echo "::error::capped confirmation did not name itself"; exit 1; }
+            [ "$(cat "$CC/state")" = 2 ] || { echo "::error::the capped confirmation still invoked the reviewer"; exit 1; }
+            rc=0; out="$(PLINTH_ROUND_CAP=5 PATH="$CC:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::unbricked recovery confirmation failed (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::recovery path not taken after the capped confirmation"; exit 1; } )
           # (5) FALLBACK verify: with no valid fix-diff anchor (lastfullread gone —
           # rebase/legacy state), the verify round must send the FULL diff and say so.
           FB="$(mktemp -d)"; mkstate "$FB"; mk_cap_codex "$FB"

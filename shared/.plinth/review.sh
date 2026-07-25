@@ -132,17 +132,17 @@ EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
 # Round CIRCUIT BREAKER (hard, unlike the advisory token budget): a loop that has
 # not converged by round_cap is a design problem — more paid rounds will not fix
-# it. 0 disables. Checked before launching a round; within an invocation the
-# post-approval clean-slate confirmation is not cut off mid-bind. (A crashed
-# confirmation retried on a LATER invocation goes through normal bookkeeping and
-# IS subject to the cap — fails safe; the operator unbricks with
-# PLINTH_ROUND_CAP.)
+# it. 0 disables. Checked before EVERY round launch, including the
+# post-approval clean-slate confirmation (a capped confirmation dies with the
+# non-binding APPROVED persisted; the unconfirmed-approval recovery runs it on
+# the next invocation once the operator unbricks with PLINTH_ROUND_CAP).
 ROUND_CAP="$(bcfg round_cap)"; case "$ROUND_CAP" in ''|*[!0-9]*) ROUND_CAP=8 ;; esac
+ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal and crash the -gt test
 # PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
 # read from the BASE branch, so raising it on the feature branch does nothing;
 # the env is the unbrick path when a capped loop must legitimately continue.
 if [ -n "${PLINTH_ROUND_CAP:-}" ]; then
-  case "$PLINTH_ROUND_CAP" in *[!0-9]*) die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;; *) ROUND_CAP="$PLINTH_ROUND_CAP" ;; esac
+  case "$PLINTH_ROUND_CAP" in *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;; *) ROUND_CAP=$((10#$PLINTH_ROUND_CAP)) ;; esac
   echo "Plinth review: OVERRIDE — round_cap=${ROUND_CAP} from PLINTH_ROUND_CAP (this run only)."
 fi
 AUDIT_MODEL="$(bcfg audit_model)"
@@ -968,6 +968,15 @@ if [ "${recovery:-0}" = 1 ]; then echo "$sha" > "$SDIR/confirmed"; fi
 # RUNS, whatever its verdict — it marks the unanchored read, not the approval.
 # effective_binds() is the single source of truth, shared with the reviewer note.
 if [ "$RVERDICT" = "APPROVED" ] && ! effective_binds "$RMODE" "$RISK"; then
+  # The cap is HARD here too: the confirmation is a fresh full-diff frontier
+  # round — the most expensive kind — and the docs promise round_cap has no
+  # carve-outs. Dying here is safe: the non-binding APPROVED is already
+  # persisted, and the unconfirmed-approval recovery path runs the
+  # confirmation on the next invocation once the operator unbricks with
+  # PLINTH_ROUND_CAP.
+  if [ "$ROUND_CAP" -gt 0 ] && [ $((round + 1)) -gt "$ROUND_CAP" ]; then
+    die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED is recorded but NON-BINDING until the confirmation runs — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
+  fi
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""

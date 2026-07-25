@@ -684,6 +684,10 @@ installed copies.
   "cumulative fix diff" can diff unrelated trees. Add a `git merge-base
   --is-ancestor` guard routing to the full-diff fallback. (v4.6 round 1, minor —
   pre-existing pattern, hardening backlog per the phase charter.)
+- **Leading-zero octal footgun in numeric knob parsing** (pre-existing:
+  ROUND_BUDGET, RESUME_MAX use digit-only case checks; a value like `08` then
+  crashes bash arithmetic as invalid octal). round_cap now normalizes with
+  `$((10#...))`; apply the same to the sibling knobs. (v4.6 round 10, minor.)
 - **v4.6 canary gaps (round 6 minors):** no fixture for a NON-NUMERIC
   PLINTH_ROUND_CAP (must die_infra); no end-to-end two-round fixture proving a
   mid-loop PLINTH_REVIEWER_VENDOR swap falls back to a scoped verify rather than
