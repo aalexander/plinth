@@ -2403,15 +2403,24 @@ jobs:
           for v in claude codex grok agy; do
             cat > "$AB/$v" <<EOF
           #!/usr/bin/env bash
-          printf '$v %s\n' "\$*" >> "$ACAP"; cat >/dev/null 2>/dev/null || true; echo "advice-from-$v"
+          printf '$v %s\n' "\$*" >> "$ACAP"; cat >> "$ACAP" 2>/dev/null || true; echo "advice-from-$v"
           EOF
             chmod +x "$AB/$v"
           done
-          adv() {  # <config-lines-file-content> <args...> -> runs advise, echoes captured argv
+          # The capture holds argv AND stdin, because the prompt reaches different
+          # vendors by different routes: claude/codex receive it on STDIN (v4.7 — the
+          # claude branch had to move off a positional argument, which the variadic
+          # --allowed-tools was swallowing), grok/agy on argv. An argv-only capture
+          # made these assertions read "the prompt vanished" the moment that fix
+          # landed, even though delivery was correct.
+          # </dev/null: for the argv vendors the stub's `cat` would otherwise inherit
+          # and block on the caller's stdin. advise supplies its own pipe for
+          # claude/codex, so stdin delivery is still genuinely exercised.
+          adv() {  # <vendor> <max-model> <args...> -> runs advise, capturing argv + stdin
             local vend="$1"; shift; local mmax="$1"; shift
             local d; d="$(mktemp -d)"; mkdir -p "$d/.plinth"
             printf 'advisor_vendor = %s\nadvisor_model = peermodel\nadvisor_model_max = %s\n' "$vend" "$mmax" > "$d/.plinth/config"
-            : > "$ACAP"; ( cd "$d" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "$@" >/dev/null 2>&1 )
+            : > "$ACAP"; ( cd "$d" && PATH="$AB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" advise "$@" >/dev/null 2>&1 </dev/null )
           }
           # Each vendor dispatches to its OWN CLI with the right model flag (claude/agy: --model,
           # codex/grok: -m). Peer tier uses advisor_model; --impactful uses advisor_model_max.
