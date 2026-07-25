@@ -2292,6 +2292,49 @@ jobs:
             out4="$(PATH="$R9M:$PATH" ./.plinth/review.sh refs/remotes/origin/main 2>&1)" || true
             printf '%s' "$out4" | grep -q 'Nothing new to review' || { echo "::error::(9k3) 'refs/remotes/origin/main' was not recognised as the same base as 'main': $(printf '%s' "$out4" | tail -c 200)"; exit 1; }
             r9m_check_subject "after refs/remotes/origin/main"
+            # BOTH PRODUCTION BACKENDS, forced. Everything above ran with the normal PATH, so
+            # mint_receipt always took its `shasum` branch and the `sha256sum` branch never
+            # executed — computing the expectation with sha256sum separately only proved the two
+            # external tools agree, which is not the same as proving production's second branch
+            # is correct. A defect there (a different subject string, a missing canon_base) would
+            # have gone unseen on every runner that has shasum.
+            # A curated PATH is the only way to hide a tool from `command -v`: shadowing does not
+            # work, because command -v skips a non-executable and finds the real one further along.
+            r9m_curated() {  # r9m_curated <dir> <backend-to-EXPOSE>
+              local d="$1" keep="$2" t src
+              mkdir -p "$d"
+              for t in git jq sed grep awk cut tr wc sort head tail cat mv rm mkdir date mktemp basename dirname find chmod; do
+                src="$(command -v "$t" 2>/dev/null)" || continue
+                ln -sf "$src" "$d/$t" 2>/dev/null || true
+              done
+              src="$(command -v "$keep" 2>/dev/null)" || return 1
+              ln -sf "$src" "$d/$keep" 2>/dev/null || true
+            }
+            for r9m_be in shasum sha256sum; do
+              command -v "$r9m_be" >/dev/null 2>&1 || { echo "::notice::(9k3) $r9m_be absent — cannot force that branch here"; continue; }
+              r9m_bd="$(mktemp -d)"
+              r9m_curated "$r9m_bd/bin" "$r9m_be" || { echo "::error::(9k3) could not build a curated PATH exposing only $r9m_be"; exit 1; }
+              # Prove the OTHER backend is genuinely invisible, or this forces nothing.
+              r9m_other=sha256sum; [ "$r9m_be" = sha256sum ] && r9m_other=shasum
+              PATH="$r9m_bd/bin" command -v "$r9m_other" >/dev/null 2>&1 && { echo "::error::(9k3) the curated PATH still exposes $r9m_other, so mint_receipt would not be forced onto the $r9m_be branch and this case proves nothing"; exit 1; } || true
+              PATH="$r9m_bd/bin" command -v "$r9m_be" >/dev/null 2>&1 || { echo "::error::(9k3) the curated PATH lost $r9m_be itself"; exit 1; }
+              # Re-mint through the REAL function with only this backend visible.
+              git notes --ref=plinth-receipts remove HEAD >/dev/null 2>&1 || true
+              ( eval "$(sed -n '/^canon_base() {/,/^}/p; /^receipt_nwo() {/,/^}/p; /^ledger_complete() {/,/^}/p; /^mint_receipt() {/,/^}/p' .plinth/review.sh)"
+                sha="$(git rev-parse HEAD)"; baseref=refs/heads/main; SDIR=".plinth/session/review/feat"
+                PATH="$r9m_bd/bin" mint_receipt 1 >/dev/null 2>&1 )
+              r9m_dg="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.subject_digest // empty')"
+              [ -n "$r9m_dg" ] || { echo "::error::(9k3) forcing the $r9m_be backend minted no receipt at all — production's $r9m_be branch is broken or unreachable"; exit 1; }
+              eval "r9m_dg_$r9m_be=\$r9m_dg"
+            done
+            # Both branches must produce the SAME canonical digest. If they differ, one of them
+            # is hashing a different subject — and only one of the two is ever exercised on a
+            # given runner, so the broken one ships silently.
+            if [ -n "${r9m_dg_shasum:-}" ] && [ -n "${r9m_dg_sha256sum:-}" ]; then
+              [ "${r9m_dg_shasum}" = "${r9m_dg_sha256sum}" ] || { echo "::error::(9k3) production's two sha256 backends disagree: shasum gave ${r9m_dg_shasum}, sha256sum gave ${r9m_dg_sha256sum}. Only one runs on any given runner, so the wrong one would ship undetected and its receipts would fail server verification"; exit 1; }
+            else
+              echo "::notice::(9k3) only one sha256 backend is present here; the cross-backend comparison runs where both exist"
+            fi
             [ "$(cat "$R9M/state")" = "$b4" ] || { echo "::error::(9k3) 'refs/remotes/origin/main' billed a round"; exit 1; }
             r9mnote2="$(git notes --ref=plinth-receipts show HEAD 2>/dev/null | jq -r '.base_ref // empty')"
             [ "$r9mnote2" = "main" ] || { echo "::error::(9k3) after 'refs/remotes/origin/main' the receipt recorded base_ref '$r9mnote2', expected the canonical 'main' (order-sensitive strip of refs/remotes/ before origin/)"; exit 1; } )
