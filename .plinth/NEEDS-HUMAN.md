@@ -36,8 +36,11 @@
 
 - [ ] **Turn ON the v4.7 receipt gate (per repo).** v4.7 ships the server-verifiable
   APPROVED-at-HEAD receipt check, but SHIPPING IT IS NOT ENABLING IT: it gates only
-  where the `receipt` job is wired into that repo's `ci.yml` (done by `plinth update`)
-  AND the `receipt / verify` context is added to branch protection's required checks.
+  where the `receipt` job is wired into that repo's `ci.yml` AND the `receipt / verify`
+  context is added to branch protection's required checks. `ci.yml` is per-project and
+  is NEVER rewritten by `plinth update` — for an EXISTING project you add the job by
+  hand (copy it from `templates/.github/workflows/ci.yml`, and pin its `uses:` ref to
+  this release's commit SHA; only a freshly `plinth init`-ed ci.yml is pinned for you).
   Until then the review verdict still has no server-side verifier and a non-Claude or
   delegated driver stays contract-bound. Do this only for repos whose reviewed
   branches run a v4.7+ instrument (older instruments mint no receipt, so the check

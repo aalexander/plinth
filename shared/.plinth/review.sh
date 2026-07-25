@@ -365,11 +365,11 @@ sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || re
 # NB: protected-paths is DELIBERATELY NOT here — the reviewer contract
 # (.plinth/reviewer.md) excludes it from the UPSTREAM/tooling exemption, so a bad
 # protected-paths change must stay blocking.
-HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implementer)\.md$|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|lane-guard\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
+HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implementer)\.md$|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|lane-guard\.sh|receipt-verify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
 # The SAME tooling set as HARNESS_RE, in git pathspec form. Feeds BOTH the tamper arithmetic
 # and the COMMITS IN RANGE prompt list, so the reviewer is shown exactly (and completely) the
 # commits that touch version-pinned tooling — the set the tamper policy judges by label.
-HARNESS_PATHS='.claude/hooks .claude/agents/grok-implementer.md .claude/agents/codex-implementer.md .claude/settings.json .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md'
+HARNESS_PATHS='.claude/hooks .claude/agents/grok-implementer.md .claude/agents/codex-implementer.md .claude/settings.json .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/receipt-verify.sh .plinth/review-schema.json .plinth/plinth-rules.md .plinth/MODELS.md .plinth/reviewer.md CLAUDE.md AGENTS.md'
 
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
 slug="$(printf '%s' "$branch" | tr '/ ' '--')"

@@ -49,7 +49,16 @@ jobs:
           PSHA="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
           grep -q "plinth-floor.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable FLOOR ref to the plinth checkout SHA"; exit 1; }
           grep -q "plinth-checks.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable CHECKS ref to the plinth checkout SHA"; exit 1; }
-          grep -Eq 'plinth-(floor|checks)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
+          # EVERY reusable ref the template ships must be repinned — the receipt job's
+          # placeholder SHA predates plinth-receipt.yml, so a missed repin ships a
+          # `uses:` GitHub cannot resolve and the required check never runs (v4.7 r1).
+          grep -q "plinth-receipt.yml@${PSHA}" .github/workflows/ci.yml || { echo "::error::init did not SHA-pin the reusable RECEIPT ref — the receipt job's template placeholder predates plinth-receipt.yml, so an unrepinned ref cannot resolve"; exit 1; }
+          # Generalised: NO shipped reusable plinth ref may survive init unpinned.
+          # Catches the next workflow added to the template without a repin line.
+          for uref in $(grep -o 'plinth-[a-z]*\.yml@[^ ]*' .github/workflows/ci.yml | sort -u); do
+            case "$uref" in *"@${PSHA}") ;; *) echo "::error::init left a reusable ref unrepinned: ${uref} (add it to the repin sed in copy_templates_if_absent)"; exit 1 ;; esac
+          done
+          grep -Eq 'plinth-(floor|checks|receipt)\.yml@v[0-9]' .github/workflows/ci.yml && { echo "::error::init left a mutable @v tag on a reusable-workflow ref"; exit 1; } || true
           grep -q nosemgrep .github/workflows/ci.yml && { echo "::error::generated ci.yml still suppresses the mutable-action-tag rule"; exit 1; } || true
           # v4 model wiring: the scaffold's audit seat is claude — a different family than
           # BOTH the default codex reviewer and the v4 grok driver (MODELS.md seat table).
@@ -92,6 +101,17 @@ jobs:
           printf '%s' "$rpout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-checks" || { echo "::error::stale checks-only warning lacks a repin command targeting plinth-checks with this SHA"; exit 1; }
           printf '%s' "$rpout" | grep -q 'sed -i.bak.*plinth-(floor|checks)' && { echo "::error::checks-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
           grep -q "plinth-checks.yml@v3.14" "$RPD/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml (contract: it must not)"; exit 1; }
+          # a stale RECEIPT ref alone must warn too — it is a REQUIRED context wherever the
+          # operator enabled it, so an unrepinned ref runs an older verifier or fails to
+          # resolve; floor/checks-only tracking left it stale forever (v4.7 r1 minor).
+          RPDR="$(mktemp -d)"; ( cd "$RPDR"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPDR" >/dev/null 2>&1 )
+          sed -i "s|plinth-receipt.yml@${PSHA}|plinth-receipt.yml@v3.14|" "$RPDR/.github/workflows/ci.yml"
+          ( cd "$RPDR" && git add -A && git commit -qm base >/dev/null )
+          rrout="$("$GITHUB_WORKSPACE/bin/plinth" update "$RPDR" 2>&1)"
+          printf '%s' "$rrout" | grep -q "pins the reusable" || { echo "::error::plinth update did not WARN about a stale reusable RECEIPT ref"; exit 1; }
+          printf '%s' "$rrout" | grep -F "$PSHA" | grep -q "sed -i.bak.*plinth-receipt" || { echo "::error::stale receipt warning lacks a repin command targeting plinth-receipt with this SHA"; exit 1; }
+          printf '%s' "$rrout" | grep -q "sed -i.bak.*plinth-floor" && { echo "::error::receipt-only repin command wrongly also rewrites the current floor ref"; exit 1; } || true
+          grep -q "plinth-receipt.yml@v3.14" "$RPDR/.github/workflows/ci.yml" || { echo "::error::plinth update REWROTE the operator-owned ci.yml while warning about the receipt ref"; exit 1; }
           # a DECOY current ref in a comment must NOT suppress the warning while the real uses: is stale:
           RPD3="$(mktemp -d)"; ( cd "$RPD3"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$RPD3" >/dev/null 2>&1 )
           sed -i "s|plinth-floor.yml@${PSHA}|plinth-floor.yml@v3.14|; s|plinth-checks.yml@${PSHA}|plinth-checks.yml@v3.14|" "$RPD3/.github/workflows/ci.yml"
@@ -2967,6 +2987,17 @@ jobs:
             printf '%s' "$HP" | grep -qF "$want" || { echo "::error::HARNESS_PATHS omits the pinned tooling file '$want' (tamper arithmetic / tooling-commit list would miss it)"; exit 1; }
           done
           printf '%s\n' '.plinth/lane-guard.sh' | grep -Eq "$HRE" || { echo "::error::HARNESS_RE no longer classifies .plinth/lane-guard.sh as tooling (a lane-guard edit would be treated as project code)"; exit 1; }
+          # GENERIC anti-drift: EVERY file shipped into .plinth/ from shared/.plinth/ is
+          # version-pinned tooling, so BOTH enumerations must cover it. v4.7 shipped
+          # receipt-verify.sh and updated four other pinned-tooling lists but missed these
+          # two — leaving the script that server-side verifies the review receipt outside
+          # its own tamper net. A per-file allowlist would have missed it the same way;
+          # deriving the list from what is actually installed cannot.
+          for sf in "$GITHUB_WORKSPACE"/shared/.plinth/*; do
+            b=".plinth/$(basename "$sf")"
+            printf '%s\n' "$b" | grep -Eq "$HRE" || { echo "::error::HARNESS_RE does not classify shipped tooling '$b' as tooling — an edit to it would be reviewed as ordinary project code, outside the tamper net"; exit 1; }
+            printf '%s' "$HP" | grep -qF "$b" || { echo "::error::HARNESS_PATHS omits shipped tooling '$b' — tamper arithmetic and the tooling-commit list would never see a commit touching it"; exit 1; }
+          done
           # lane-guard BEHAVIOR — the enforcement is a real script, so it is tested, not just grepped:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }

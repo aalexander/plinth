@@ -35,7 +35,12 @@
    posts comments — advisory, not a requirable check. To put the review VERDICT
    under branch protection too, wire the `receipt` job in `ci.yml` and add the
    `receipt / verify` context to the required list — auto mode, v4.7; it needs an
-   instrument that mints receipts, i.e. v4.7+ on the branch being reviewed.)
+   instrument that mints receipts, i.e. v4.7+ on the branch being reviewed.
+   `plinth init` pins that job's `uses:` ref for a ci.yml it creates; `ci.yml` is
+   yours and is never rewritten afterwards, so if you add the job to an EXISTING
+   ci.yml, copy it from `templates/.github/workflows/ci.yml` and pin the ref to
+   your Plinth release commit SHA yourself — an unpinned or placeholder ref does
+   not resolve and the job never runs. `plinth update` warns if it goes stale.)
 6. Daily driving happens in Claude Code (the architect-resident default):
    `/model` -> Opus 4.8 (Fable 5 by exception, credits); `/effort` -> ultracode
    for big tasks; the grok worker lane carries the typing. The grok CLI as the
