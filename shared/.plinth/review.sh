@@ -534,8 +534,10 @@ fi
 #   convergence on the strength of the round-1 full read, acceptable for
 #   ordinary code with a bound digest.
 # Tier 2 (high-consequence): the frontier reviewer, a clean-slate confirmation
-#   before a non-fresh approval binds — at most ONCE per loop (later skips are
-#   recorded in verdict.json) — and, when a genuinely cross-vendor auditor is
+#   before EVERY non-fresh approval binds (v4.6's once-per-loop skip and its
+#   verdict.json 'skipped' record are RETIRED — see binds_directly below for why
+#   the corrected marker was dead rather than merely narrowed) — and, when a
+#   genuinely cross-vendor auditor is
 #   configured (audit_vendor != reviewer_vendor), a cross-vendor second opinion
 #   on EVERY Tier-2 approval (not just every 5th). Config knobs
 #   reviewer_model_tier1/tier2 select models; unset => the vendor default.

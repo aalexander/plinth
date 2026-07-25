@@ -1307,10 +1307,26 @@ jobs:
           # step fetches from (PR head ref + notes ref), matching what actions/checkout
           # + a real PR would already have in place before this step runs.
           R9D_PROJ="$(mktemp -d)"
+          R9D_GOODPIN="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}"
+          R9D_OLDPIN="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_OLD_SHA}"
           ( cd "$R9D_PROJ" && git init -qb main . >/dev/null
-            echo base > SPEC.md && git add -A && git commit -qm base >/dev/null
+            echo base > SPEC.md
+            mkdir -p .github/workflows
+            printf 'jobs:\n  receipt:\n    uses: %s\n' "$R9D_GOODPIN" > .github/workflows/ci.yml
+            git add -A && git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1
             echo change >> SPEC.md && git add -A && git commit -qm change >/dev/null )
+          # Re-point the BASE branch's pin. Lands as a NEW commit on main, which moves
+          # the base TIP but not the merge base (feat already diverged), so the minted
+          # receipt's merge_base_sha stays valid.
+          r9d_base_pin() {  # r9d_base_pin <pin>
+            ( cd "$R9D_PROJ" && git checkout -q main
+              printf 'jobs:\n  receipt:\n    uses: %s\n' "$1" > .github/workflows/ci.yml
+              git add -A && git commit -qm "repin" >/dev/null
+              git push -q origin main
+              git checkout -q feat
+              git fetch -q origin '+main:refs/remotes/origin/main' )
+          }
           R9D_HEAD="$(git -C "$R9D_PROJ" rev-parse HEAD)"
           R9D_BARE="$(mktemp -d)/proj.git"
           git init -q --bare "$R9D_BARE"
@@ -1367,6 +1383,9 @@ jobs:
           out="$(JOB_WF_REF="norefhere" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no @ did not fail"; exit 1; }
           # 4: pinned ref PREDATES receipt-verify.sh — must fail closed and say so.
+          # The base pin is moved to match, so this exercises the "predates" branch and
+          # not the base-anchor check that now precedes it.
+          r9d_base_pin "$R9D_OLDPIN"
           rm -rf /tmp/plinth
           rc=0
           out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
@@ -1375,6 +1394,7 @@ jobs:
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) a plinth pin predating receipt-verify.sh did not fail"; exit 1; }
           printf '%s' "$out" | grep -q 'v4.7+' || { echo "::error::(9d) predating-pin failure did not tell the operator to repin to v4.7+"; exit 1; }
+          r9d_base_pin "$R9D_GOODPIN"
           # 5: non-pull_request EVENT — the event-guard step must reject it.
           rc=0
           out="$(bash "$R9D_WD/guard.sh" 2>&1)" || rc=$?
@@ -1400,6 +1420,36 @@ jobs:
           rc=0
           out="$(JOB_WF_REF="owner/repo@abc123" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no /.github/ segment did not fail"; exit 1; }
+          # 8: THE BYPASS. On a pull_request event GitHub runs workflow files from the PR
+          # HEAD, and ci.yml is operator-owned project code a PR may edit — so
+          # job_workflow_ref carries whatever pin the PR chose. A PR that repoints its own
+          # receipt job at an attacker-controlled fork whose receipt-verify.sh exits 0
+          # would turn the REQUIRED context green with no review and no receipt at all.
+          # The step must refuse any pin differing from the one on the BASE branch, which
+          # a PR cannot write.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="attacker/evil-plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a PR-supplied verifier pin that DIFFERS from the base branch's was accepted — the required receipt context can be bypassed by editing ci.yml"; exit 1; }
+          printf '%s' "$out" | grep -q 'differs from the one on origin/main' || { echo "::error::(9d) the base-pin mismatch was not reported as such: $out"; exit 1; }
+          # 9: a base branch with NO receipt job has no operator-owned pin to trust — must
+          # fail closed rather than fall back to the PR's pin.
+          ( cd "$R9D_PROJ" && git checkout -q main
+            printf 'jobs:\n  build:\n    runs-on: ubuntu-latest\n' > .github/workflows/ci.yml
+            git add -A && git commit -qm "drop receipt job" >/dev/null
+            git push -q origin main; git checkout -q feat
+            git fetch -q origin '+main:refs/remotes/origin/main' )
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="$R9D_GOODPIN" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a base branch with no receipt job still trusted the PR's pin"; exit 1; }
+          printf '%s' "$out" | grep -q 'does not wire a plinth-receipt.yml job' || { echo "::error::(9d) missing base pin was not reported as such: $out"; exit 1; }
+          r9d_base_pin "$R9D_GOODPIN"
           # CLEAN UP the global URL rewrite this fixture installed. On a CI runner this is
           # cosmetic (ephemeral machine), but the canary is also run locally against a
           # working tree, and a leaked mapping there breaks the NEXT run and every other

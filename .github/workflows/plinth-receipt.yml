@@ -82,6 +82,37 @@ jobs:
             */*) : ;;
             *) echo "::error::job_workflow_ref does not name owner/repo (got ${wf_nwo}) — cannot resolve the verifier repository"; exit 1 ;;
           esac
+          # ── The verifier pin must match the BASE branch's, not the PR's ─────────────
+          # THE BYPASS THIS CLOSES: on a `pull_request` event GitHub runs the workflow
+          # files from the PR HEAD, and the CALLER (`ci.yml`) is operator-owned project
+          # code a PR may edit. So job_workflow_ref reflects whatever pin the PR chose.
+          # Without this check, a PR could repoint its own `receipt:` job at
+          # `attacker/evil-plinth/...@sha` whose receipt-verify.sh unconditionally exits
+          # 0 — and the REQUIRED `receipt / verify` context would go green with no
+          # review, no receipt, and nothing at refs/notes/plinth-receipts. That is
+          # precisely the threat auto mode exists to close, so the verifier's own
+          # provenance cannot be controlled by the PR it gates.
+          #
+          # The base branch is not PR-writable (that is what branch protection means),
+          # so the pin recorded THERE is the operator's. Require the running pin to
+          # equal it, exactly.
+          base_ci="$(git show "origin/${BASE_REF}:.github/workflows/ci.yml" 2>/dev/null || true)"
+          [ -n "$base_ci" ] || { echo "::error::cannot read .github/workflows/ci.yml from origin/${BASE_REF} — the verifier pin cannot be anchored to the base, so this check refuses to run (fail closed)"; exit 1; }
+          base_uses="$(printf '%s\n' "$base_ci" | grep -E '^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:.*plinth-receipt\.yml@' | head -1 || true)"
+          if [ -z "$base_uses" ]; then
+            echo "::error::the base branch (origin/${BASE_REF}) does not wire a plinth-receipt.yml job, so there is no operator-owned pin to anchor against — a PR-supplied pin must never be trusted. Land the receipt job in ci.yml on ${BASE_REF} FIRST, then require the 'receipt / verify' context (that is the documented enabling order)."
+            exit 1
+          fi
+          # Compare owner/repo@ref, ignoring surrounding quotes and any trailing comment.
+          base_pin="$(printf '%s' "$base_uses" | sed -E 's/^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//')"
+          run_pin="${wf_nwo}/.github/workflows/plinth-receipt.yml@${ref}"
+          [ "$base_pin" = "$run_pin" ] || {
+            echo "::error::the receipt verifier pin differs from the one on origin/${BASE_REF}."
+            echo "::error::  base (operator-owned, trusted): ${base_pin}"
+            echo "::error::  running (from this PR's ci.yml): ${run_pin}"
+            echo "::error::A PR cannot choose which verifier judges it. Revert the receipt job's uses: line, or land the repin on ${BASE_REF} first."
+            exit 1
+          }
           # Clear first: a GitHub-hosted runner is ephemeral, but a REUSED/self-hosted one
           # can carry a stale /tmp/plinth from a prior job (a partial failure leaves the dir
           # behind), and `remote add origin` then dies with "already exists" — a confusing
