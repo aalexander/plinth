@@ -1,6 +1,20 @@
 # Plinth changelog
 
 ## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
+- **Changelog fragments (`changelog.d/`) — mechanism only; VERSION left at 4.7.0
+  (bootstrap exception).** Parallel product branches collide when every branch
+  edits `VERSION` and the top of `CHANGELOG.md` from the same base. Adds the
+  towncrier-style collate path: `changelog.d/<slug>.md` with
+  `bump: patch|minor|major` + bullet body; `plinth changelog-collate
+  [<target-repo>]` folds fragments (highest bump wins), updates
+  `VERSION`/`CHANGELOG.md`, and drains fragments. Empty dir is a no-op;
+  invalid/missing `bump:`, empty/non-bullet body, bad slug, or malformed VERSION
+  aborts without rewriting either release file. See `changelog.d/README.md`.
+  Record each later change once (dual-write **or** fragment+collate in the same
+  ship, never both). This bullet is the sole record of the mechanism — amended
+  into the existing v4.7.0 section with no VERSION bump and no pending fragment,
+  so landing the serial-work fix does not itself race on VERSION. Ordinary
+  product PRs after this do not inherit that exception.
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified
   that an adversarial review had actually APPROVED the commit being merged — the loop was
