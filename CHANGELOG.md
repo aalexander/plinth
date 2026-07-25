@@ -1,5 +1,50 @@
 # Plinth changelog
 
+## v4.8.0 — the lane delegation receipt: "grok typed it" becomes checkable — July 25, 2026
+- **Upstream #32 — a lane implemented a task ITSELF and still emitted a well-formed
+  report.** The whole point of the implementer seat is that a DIFFERENT model family
+  types the volume; a lane that quietly becomes "same family, in a subagent" removes
+  that diversity while the driver believes delegation happened. The lane contract
+  forbade it in prose, and prose was all there was: nothing sat between "preflight
+  passed" and "the delegate produced the diff". The observed self-implemented output
+  then carried two real defects its own "verified, passes" claim missed.
+- **`lane-guard.sh delegation <vendor> <cli-rc> <transcript>` — a precondition, not a
+  reminder.** Both lanes (`grok-implementer`, `codex-implementer` — one class, same
+  gate) must now run it after the scope check: it copies the delegate CLI's OWN
+  transcript and exit code to an artifact under `.plinth/session/lanes/` and prints one
+  `delegation recorded: ...` line carrying the artifact path, the transcript's sha256,
+  and the delegate's self-reported model (the lane's spec asks the CLI to end with
+  `MODEL: <id>`; absent → `unreported`, which is not a failure). A missing or EMPTY
+  transcript exits 3 with an `unavailable:` reason — no receipt, no `STATUS: complete`.
+  The report gained a `DELEGATION:` line so the driver can open the artifact instead of
+  trusting the narrative.
+- **HONEST BOUND, in the contract text itself.** The receipt proves a non-empty
+  transcript EXISTS and preserves it for the driver to read. It does NOT prove which
+  model wrote the diff: `model=` is the delegate's self-report, and an agent that
+  implemented the task itself could write a file. This is the same shape as the receipt
+  check's residual — a skipped delegation becomes DETECTABLE (no artifact, no receipt,
+  nothing to open), not impossible. A subagent's compliance with prose cannot be
+  enforced by more prose; what changed is that the omission now leaves a hole.
+- **Preflight failure reasons are disambiguated (diagnostic only).** A driver reported
+  `unavailable: grok not signed in` on a first call and `ready` on three re-runs, with
+  grok authenticated — unattributable, because a fast auth failure and a 30s wall-clock
+  cap hit printed the same reason. Both vendors now name which one happened. Explicitly
+  NOT a fix for that flake and not a retry: it is not reproducible here, and a blind
+  retry would double the bound on a hanging CLI and weaken the fixtures that prove the
+  auth check is capped. Logged under `## Noticed` for the next occurrence.
+- **Canary coverage in both directions** (`plinth-canary.yml`): artifact present and
+  non-empty → receipt permitted; artifact missing or empty → exit 3; a nonzero CLI rc
+  still records (timeout/partial keeps its evidence); a non-numeric rc is a usage error;
+  an absent `MODEL:` line reads as `unreported` rather than a fabricated model. Plus
+  contract fixtures that keep both lanes wired to the receipt, carrying the
+  `DELEGATION:` line, asking for the model — and keeping the honest bound in the text
+  (a fixture goes red if the doc starts claiming it proves authorship).
+- **The artifact never dirties the tree.** `delegation` may be the first thing to create
+  `.plinth/session/` in a fresh clone, so it writes the same self-ignoring
+  `.plinth/session/.gitignore` (`*`) that `bin/plinth`, `review.sh`, and the session
+  hooks already write — otherwise a lane run would leave an untracked file and
+  `review.sh`, which refuses a dirty tree, would block the review of the lane's own work.
+
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is

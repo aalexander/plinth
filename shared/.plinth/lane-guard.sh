@@ -38,6 +38,20 @@
 #       as the gitlink change. A submodule is a separate repo with its own review; treat its contents
 #       as out-of-scope for the superproject lane (the gitlink change itself IS caught).
 #
+#   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>
+#       The DELEGATION RECEIPT. Copies the delegate CLI's own transcript (with its exit code)
+#       to an artifact under `.plinth/session/lanes/` and prints a one-line receipt naming the
+#       artifact, the transcript's sha256, and the delegate's SELF-REPORTED model. Exits 3
+#       ("unavailable: ...") when the transcript is missing or EMPTY — nothing then shows the
+#       delegate ran, so the lane must report STATUS: unavailable instead of complete.
+#       Run it AFTER `scope`: the artifact lands under `.plinth/session/`, which the pre-run
+#       snapshot covers, so recording it earlier would read as a sensitive-path violation.
+#       WHAT IT DOES NOT GUARANTEE (say it plainly, do not let this claim grow): it proves a
+#       non-empty transcript EXISTS and preserves it for the driver to read. It does NOT prove
+#       which model produced the diff — `model=` is whatever the transcript says, and a lane
+#       that implemented the task itself could write a file. A skipped delegation becomes
+#       DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not impossible.
+#
 #   lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>...
 #       After the run: every TRACKED change + NEW (non-ignored) file (vs baseref) must be a spec
 #       file AND must not match a protected pattern; AND, given the pre-run --snapshot, no SENSITIVE
@@ -374,14 +388,63 @@ case "$sub" in
         # code alone does NOT verify auth — inspect the OUTPUT. A nonzero exit (hung/killed/other) is
         # also unavailable. Only a zero exit with NO "not authenticated" marker counts as signed in.
         _go="$(_cap 30 grok models 2>&1)"; _grc=$?
+        # DISAMBIGUATE the failure. One lumped reason ("not signed in (or failed/hung)") cost a
+        # driver a session: a first-call unavailable followed by clean re-runs was unattributable,
+        # so it could not tell a cold-start cap hit from a real auth failure. 124/137/142 = the
+        # wall-clock cap fired (see _cap); anything else is the CLI's own answer. This is a
+        # DIAGNOSTIC split only — no retry, no change to what counts as authenticated.
+        case "$_grc" in
+          124|137|142) echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock cap — a COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"; exit 3 ;;
+        esac
         { [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; } \
-          || { echo "unavailable: grok not signed in (or auth check failed/hung) — run 'grok login'"; exit 3; } ;;
+          || { echo "unavailable: grok not signed in (auth check rc=$_grc) — run 'grok login'"; exit 3; } ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
-        _cap 30 codex login status >/dev/null 2>&1 || { echo "unavailable: codex not signed in (or auth check hung) — run 'codex login'"; exit 3; } ;;
+        _cap 30 codex login status >/dev/null 2>&1; _crc=$?
+        case "$_crc" in
+          0) : ;;
+          124|137|142) echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock cap — a COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"; exit 3 ;;
+          *) echo "unavailable: codex not signed in (auth check rc=$_crc) — run 'codex login'"; exit 3 ;;
+        esac ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
     echo "ready: $v" ;;
+
+  delegation)
+    # PROOF-OF-ARTIFACT, not proof-of-authorship (see the header). The lane's value is that a
+    # DIFFERENT model family typed the diff; a lane that quietly implements the task itself
+    # removes that while the driver believes delegation happened. Nothing here can prove who
+    # typed it — what it CAN do is make the delegate's own transcript a precondition the driver
+    # can open and read, so a skipped delegation leaves a hole instead of a clean report.
+    dv="${1:-}"; dcrc="${2:-}"; dtr="${3:-}"
+    _dusage() { echo "usage: lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>"; exit 2; }
+    # vendor is a free token (vendor-neutral: any delegate CLI), constrained to filename-safe chars:
+    printf '%s' "$dv"   | grep -Eq '^[A-Za-z0-9._-]+$' || _dusage
+    printf '%s' "$dcrc" | grep -Eq '^[0-9]+$'          || _dusage   # the CLI's real rc, not a narrative
+    [ -n "$dtr" ] || _dusage
+    # THE GATE. A missing or EMPTY transcript means nothing shows the delegate ran at all.
+    { [ -f "$dtr" ] && [ -s "$dtr" ]; } || {
+      echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
+    droot="$(git rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$droot" ] || { echo "unavailable: not inside a git repo — cannot record the delegation artifact"; exit 3; }
+    ddir="$droot/.plinth/session/lanes"
+    mkdir -p "$ddir" || { echo "unavailable: cannot create '$ddir' for the delegation artifact"; exit 3; }
+    # Session state SELF-IGNORES (`*`), the same as every other component that may create this dir
+    # (bin/plinth, review.sh, the session-start/pulse hooks). Without it a lane artifact lands as an
+    # untracked file — and review.sh refuses a dirty tree, so a lane run would block its own review.
+    [ -f "$droot/.plinth/session/.gitignore" ] || printf '*\n' > "$droot/.plinth/session/.gitignore"
+    dhash="$(hashof "$dtr")"; dbytes="$(wc -c < "$dtr" | tr -d '[:space:]')"
+    { [ -n "$dhash" ] && [ -n "$dbytes" ]; } || { echo "unavailable: cannot hash/size the transcript '$dtr'"; exit 3; }
+    # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to end with `MODEL: <id>`.
+    # Sanitized to one bare token. It is what the transcript SAYS — never proof of what served the
+    # request; absent (or a CLI that ignored the instruction) -> unreported, which is not a failure.
+    dmodel="$(grep -m1 -E '^[[:space:]]*MODEL:' "$dtr" 2>/dev/null | sed -E 's/^[[:space:]]*MODEL:[[:space:]]*//' | tr -cd 'A-Za-z0-9._:/-' | cut -c1-64)"
+    [ -n "$dmodel" ] || dmodel=unreported
+    dart="$(mktemp "$ddir/${dv}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")" || { echo "unavailable: cannot create the delegation artifact under '$ddir'"; exit 3; }
+    { printf '# plinth lane delegation v1: vendor=%s rc=%s bytes=%s sha256=%s model=%s recorded=%s\n' \
+        "$dv" "$dcrc" "$dbytes" "$dhash" "$dmodel" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      cat "$dtr"; } > "$dart" || { echo "unavailable: cannot write the delegation artifact '$dart'"; exit 3; }
+    echo "delegation recorded: vendor=$dv rc=$dcrc bytes=$dbytes sha256=$dhash model=$dmodel artifact=$dart" ;;
 
   snapshot)
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "snapshot: not inside a git repo" >&2; exit 5; }
@@ -593,5 +656,5 @@ STAGEDSENS
       echo "scope ok: tracked changes + new files within the spec; no protected path. NOTE: no --snapshot given — gitignored sensitive paths (secrets, .plinth/session/) were NOT verified"
     fi ;;
 
-  *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>..."; exit 2 ;;
+  *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>... | delegation <vendor> <cli-exit-code> <transcript-file>"; exit 2 ;;
 esac

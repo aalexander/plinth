@@ -648,13 +648,17 @@ it has run green with a real smoke_cmd.
 - **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
   the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
-  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
+  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in v4.7.1 —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
-  instead of delegating, which its contract forbids) remains open. Until it lands, treat
-  "grok typed it" as a claim to verify, not an
-  assumption — check the report, and prefer typing it yourself over believing a lane
-  that may have silently self-implemented.
+  25k ignored files with byte-identical output. Upstream #32 (the lane implemented a
+  task itself instead of delegating) is addressed in v4.8.0 by the DELEGATION RECEIPT:
+  the lane must record the delegate's own transcript under `.plinth/session/lanes/`
+  before it may report `STATUS: complete`, and the report carries the artifact path
+  plus the delegate's self-reported model. Check the receipt — open the artifact —
+  rather than trusting the narrative. What it does NOT do is prove which model
+  produced the diff: a lane that self-implemented could write a file. It makes the
+  omission detectable, so "grok typed it" is now a claim with an artifact behind it,
+  not an assumption.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -680,12 +684,15 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
-   implement the task itself, but nothing structurally enforces that; a lane that
-   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
-   require a grok-invocation artifact (transcript + exit) under the session dir before
-   the lane may report `STATUS: complete`, and surface the delegate model in the report
-   so "typed by grok-4.5" is verifiable rather than asserted.
+2. **Upstream #32 — make delegation CHECKABLE. SHIPPED in v4.8.0.** The lane contract
+   said it must never implement the task itself, but nothing structurally showed when it
+   did; a lane that struggles to drive the CLI could do the work and still emit a
+   well-formed report. `lane-guard.sh delegation <vendor> <rc> <transcript>` now records
+   the delegate's own transcript + exit code under `.plinth/session/lanes/` and prints a
+   receipt (artifact path, sha256, the delegate's self-reported model) that both lanes
+   must carry on a `DELEGATION:` line; no artifact -> exit 3 -> `STATUS: unavailable`.
+   Bound, stated in the contract itself: it proves a transcript EXISTS, never who typed
+   the diff — detectable, not impossible.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully
@@ -719,6 +726,17 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **`lane-guard preflight grok` reported a COLD-START false negative once**
+  (`shared/.plinth/lane-guard.sh` `preflight`). A driver saw `unavailable: grok not
+  signed in` on the first call and `ready: grok` on three consecutive re-runs, with grok
+  demonstrably authenticated. NOT reproducible here (four probes against grok 0.2.112,
+  all `ready` in ~0.6s), and the cause is unknown: a fast auth-check failure and a
+  30s-cap timeout printed the SAME reason, so the report cannot distinguish them.
+  v4.8.0 splits the two reasons (diagnostic only — no retry, no change to what counts as
+  authenticated), so the next occurrence says which it was. A blind retry was declined
+  deliberately: it doubles the worst-case bound on a genuinely hanging CLI and would
+  force weakening the two fixtures that prove the auth check is capped. Revisit once a
+  disambiguated report exists.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
