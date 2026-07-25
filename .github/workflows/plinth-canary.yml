@@ -2552,16 +2552,17 @@ jobs:
             [ -f "$vj" ] || { echo "::error::(9k4) verdict.json missing after mid-round move abort"; exit 1; }
             [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::(9k4) after mid-round move, verdict is '$(jq -r .verdict "$vj")' not UNBOUND — a refused approval is still readable as APPROVED"; exit 1; }
             printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'moved' || { echo "::error::(9k4) unbound_reason does not name the move: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; }
-            # NEGATIVE recovery: a moved-base UNBOUND must NOT take the confirmation
-            # recovery path (that is only for the round-cap demotion). Mutant: recovery
-            # accepts every UNBOUND → re-run greps NON-BINDING and unconfirmed / skips re-review.
+            # Recovery after moved-base UNBOUND: must start a FRESH review (real reviewer
+            # invocation), not the confirmation path and not a silent refuse. Mutants:
+            # (a) recovery accepts every UNBOUND → greps NON-BINDING / skips re-review;
+            # (b) every UNBOUND is hard-refused with exit 2 and no new round → stranding
+            # the operator (hollow if we only asserted rc!=0). Fixture leaves a nonempty
+            # remaining diff (part2.py vs C1), so a real re-review is always possible.
             b_before="$(cat "$R9K4/state")"
             rc=0; out2="$(PATH="$R9K4:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             printf '%s' "$out2" | grep -q 'NON-BINDING and unconfirmed' && { echo "::error::(9k4) moved-base UNBOUND took confirmation recovery — only a round-cap demotion is recoverable; a moved base must re-review"; exit 1; } || true
             printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k4) moved-base UNBOUND reminted / fast-pathed — an unbound approval must not mint"; exit 1; } || true
-            # Re-run must invoke a real round (or fail on empty diff after the base moved onto
-            # an ancestor that shrinks the subject). Either way it is NOT confirmation recovery.
-            [ "$(cat "$R9K4/state")" != "$b_before" ] || [ "$rc" != 0 ] || { echo "::error::(9k4) re-run after moved-base UNBOUND neither billed a round nor failed (rc=$rc state=$(cat "$R9K4/state"))"; exit 1; } )
+            [ "$(cat "$R9K4/state")" -gt "$b_before" ] || { echo "::error::(9k4) re-run after moved-base UNBOUND did not invoke a fresh reviewer round (state stayed $(cat "$R9K4/state")) — a refuse-every-UNBOUND regression would strand the operator without re-reviewing"; exit 1; } )
           # (9k4-gone) BASE DISAPPEARS mid-round. Sibling of (9k4-mint): delete the named
           # base ref after the reviewer runs; mint must demote to UNBOUND and die_infra.
           # Mutant: only "moved" is demoted → disappear still leaves APPROVED readable.
@@ -2571,9 +2572,13 @@ jobs:
           n=\$(( \$(cat "$R9K4G/state") + 1 )); echo \$n > "$R9K4G/state"
           out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
           cat >/dev/null
-          # Mid-round: remove main and origin/main so mint's re-resolve fails.
-          git update-ref -d refs/heads/main 2>/dev/null || true
-          git update-ref -d refs/remotes/origin/main 2>/dev/null || true
+          # First invocation only: remove main and origin/main so mint's re-resolve fails.
+          # Later invocations (post-restore re-review) leave the base alone so the
+          # recovered loop can complete — otherwise every re-run re-deletes the ref.
+          if [ "\$n" = 1 ]; then
+            git update-ref -d refs/heads/main 2>/dev/null || true
+            git update-ref -d refs/remotes/origin/main 2>/dev/null || true
+          fi
           b='{"verdict":"APPROVED","summary":"s","findings":[]}'
           [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
           echo '{"type":"thread.started","thread_id":"k4g"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
@@ -2596,7 +2601,18 @@ jobs:
             vj=".plinth/session/review/feat/verdict.json"
             [ -f "$vj" ] || { echo "::error::(9k4-gone) verdict.json missing after disappear abort"; exit 1; }
             [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::(9k4-gone) after disappear, verdict is '$(jq -r .verdict "$vj")' not UNBOUND — refused approval still readable as APPROVED"; exit 1; }
-            printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'disappeared' || { echo "::error::(9k4-gone) unbound_reason does not name disappearance: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; } )
+            printf '%s' "$(jq -r '.unbound_reason // empty' "$vj")" | grep -qi 'disappeared' || { echo "::error::(9k4-gone) unbound_reason does not name disappearance: $(jq -r '.unbound_reason // empty' "$vj")"; exit 1; }
+            # Restored-base re-review: put origin/main back at B0 and re-run. Must start a
+            # FRESH round (not confirmation recovery, not remint). Mutant: recovery accepts
+            # every UNBOUND, or refuse-every-UNBOUND strands the operator after the base
+            # is restored. CHANGELOG claims both recovery directions; demotion alone is not enough.
+            git update-ref refs/remotes/origin/main "$B0"
+            git branch -f main "$B0" 2>/dev/null || true
+            b_before="$(cat "$R9K4G/state")"
+            rc=0; out2="$(PATH="$R9K4G:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            printf '%s' "$out2" | grep -q 'NON-BINDING and unconfirmed' && { echo "::error::(9k4-gone) disappeared-base UNBOUND took confirmation recovery after restore — only round-cap demotion is recoverable"; exit 1; } || true
+            printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k4-gone) disappeared-base UNBOUND reminted after restore — must re-review"; exit 1; } || true
+            [ "$(cat "$R9K4G/state")" -gt "$b_before" ] || { echo "::error::(9k4-gone) re-run after restoring the disappeared base did not invoke a fresh reviewer round (state stayed $(cat "$R9K4G/state")) — refuse-every-UNBOUND would strand the operator"; exit 1; } )
           # (9k4-diff) DIFF is pinned. After the pin is captured, advance origin/main so a
           # re-resolve would drop part1.py from the subject. The reviewer prompt must still
           # contain part1.py (computed from base_tip). Reverting `git diff "${base_tip}...`

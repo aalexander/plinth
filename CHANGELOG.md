@@ -61,7 +61,10 @@ parts that were wrong on the way:
   against `"APPROVED"`, so they fail closed with no new field. Recovery admits an
   `UNBOUND` whose reason is the round cap (operator raises `PLINTH_ROUND_CAP` → pending
   confirmation runs); a moved/disappeared base stays unrecoverable (must re-review).
-  Canary covers demotion, disappearance, and both recovery directions.
+  Canary covers demotion on move and disappear; positive recovery for the round-cap
+  demotion (PLINTH_ROUND_CAP unbrick runs the pending confirmation); and negative
+  recovery for moved/disappeared UNBOUND (restored base starts a fresh re-review,
+  never confirmation recovery or remint).
 - **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
   failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
   `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now
