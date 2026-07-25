@@ -74,7 +74,9 @@ and tooling integrity; they do NOT verify the review verdict). The Codex cloud
 review is ADVISORY: it posts PR comments and exposes no status-check context that
 branch protection could require. The server-verifiable APPROVED-at-HEAD receipt
 check (auto mode, v4.7+) is the adversarial gate for delegated and non-Claude
-work: on every binding APPROVED the loop mints a receipt note
+work: on every binding APPROVED the loop mints (or refreshes) a receipt note
+— best-effort: a repo with no resolvable `origin` mints none and SAYS so, and
+re-running the review at that same approved SHA mints it once the remote exists —
 (refs/notes/plinth-receipts) and the reusable `plinth-receipt.yml` verifies it
 server-side as the requirable `receipt / verify` context. It ENFORCES only where
 that context is wired in ci.yml AND required by branch protection; elsewhere the

@@ -8,7 +8,10 @@
   APPROVED (including Tier 0's deterministic one) now mints a `plinth.review-receipt/v1`
   as a git note on the approved commit (`refs/notes/plinth-receipts`): head/tree/merge-base
   bindings, a canonical subject digest over object identities (no patch-render
-  variability), and the full per-loop override ledger. Notes are the transport because
+  variability), and the full per-loop override ledger. Minting is BEST-EFFORT and says
+  so out loud: a repo with no resolvable `origin` (or no notes/sha256 support) still
+  reviews and approves normally but mints nothing — and re-running the review at that
+  same approved SHA mints it once the remote exists, without burning a paid round. Notes are the transport because
   they are out-of-band of the commit — HEAD never moves — yet keyed to the exact SHA the
   verdict binds; a receipt COMMIT could not bind its own HEAD, and statuses or PR-body
   text are mutable assertions. (Transport confirmed by a cross-family design consult.)

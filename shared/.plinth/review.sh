@@ -411,7 +411,8 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 
 
 # ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
-# Every BINDING APPROVED (including Tier 0's deterministic one) mints a
+# Every BINDING APPROVED (including Tier 0's deterministic one) mints — BEST-EFFORT, see
+# the failure returns below, each of which ANNOUNCES rather than silently skipping — a
 # plinth.review-receipt/v1 as a git note on the approved commit
 # (refs/notes/plinth-receipts) — out-of-band of the commit so HEAD never moves,
 # keyed to the exact SHA the verdict binds. The server-side receipt check
@@ -423,6 +424,12 @@ mint_receipt() {  # mint_receipt <round>
   local mround="$1" repo_nwo htree mb ledger subj receipt
   repo_nwo="$(git config --get remote.origin.url 2>/dev/null \
     | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')" || repo_nwo=""
+  # No resolvable origin => no verifiable receipt. Writing one anyway would record
+  # repo:"" — a note that EXISTS but can never satisfy the server check, which is
+  # strictly worse than none (it looks minted and reads as tampering-adjacent).
+  # Announce and skip; the remint on the same-SHA fast path picks it up once the
+  # remote exists. Local-only repos still review and approve normally.
+  [ -n "$repo_nwo" ] || { echo "Plinth review: NOTE — receipt not minted (no resolvable 'origin' remote, so it could not bind a repository). Add the remote and re-run ./.plinth/review.sh to mint it; 'receipt / verify' fails closed until then."; return 0; }
   htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
   mb="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (no merge base with ${baseref})."; return 0; }
   # Override ledger: every PLINTH_* row from the per-loop usage.jsonl, expanded
@@ -612,6 +619,15 @@ if [ -f "$SDIR/verdict.json" ]; then
   fi
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
     if binds_directly "$prev_mode" "$RISK"; then
+      # REMINT before the fast path returns. Minting is best-effort (a repo with no
+      # origin, no notes support, or no sha256 tool still reviews fine), so a binding
+      # APPROVED can be recorded with NO receipt — or, worse, one carrying an empty
+      # repo NWO that can never verify. Without this, the fast path made that
+      # permanent: the operator adds the remote, re-runs, and gets "Nothing new to
+      # review" while `receipt / verify` stays red at that SHA until an empty commit
+      # forces a new loop. `git notes add -f` is idempotent, so reminting an already
+      # correct receipt is a no-op. Found by the cross-vendor audit (round 4).
+      mint_receipt "$prev_round"
       echo "Plinth review: already APPROVED at ${sha} (round ${prev_round}). Nothing new to review."
       exit 0
     fi

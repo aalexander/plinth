@@ -59,7 +59,7 @@ case "$rsize" in ''|*[!0-9]*) infra "cannot size receipt" ;; esac
 [ "$rsize" -le 65536 ] || fail "receipt exceeds 64KB bound (${rsize} bytes)"
 jq -e '
   (.schema == "plinth.review-receipt/v1")
-  and (.repo | type == "string")
+  and (.repo | type == "string" and length > 0)
   and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
   and (.head_tree_sha | type == "string" and test("^[0-9a-f]{40}$"))
   and (.base_ref | type == "string" and length > 0)

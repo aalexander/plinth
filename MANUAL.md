@@ -630,6 +630,19 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **The receipt WORKFLOW GLUE has no canary coverage** (`.github/workflows/plinth-receipt.yml`).
+  Fixtures (9)/(9b)/(9c) exercise minting and `receipt-verify.sh` end-to-end with the real
+  scripts, but not the workflow around them: the `git clone plinth@v${ver}` from
+  `repository_owner`, the notes fetch, `origin/${BASE_REF}` as base-tip, or the `gh` TOCTOU
+  re-fetch. Those are the residual integration risks for the requirable check. Raised by the
+  cross-vendor audit (v4.7 round 4, non-blocking). Wants a fixture or a documented RUNTIME
+  receipt from the first real PR that runs it.
+- **`plinth-receipt.yml` fetches the verifier at a PR-CONTROLLED version.** The workflow is
+  pinned by SHA in `ci.yml`, but it then clones `plinth@v${ver}` using the `.plinth-version`
+  from the PR's own checkout. A version predating `receipt-verify.sh` fails closed, so the
+  blast radius is limited to released v4.7+ verifiers, and the header documents the downgrade
+  limit — but the trust anchors are inconsistent. `github.workflow_ref` would let the workflow
+  resolve its own pinned ref instead. Found in the v4.7 self-review pre-flight.
 - **`plinth advise` still reports every failure as "CLI missing or not signed in"**
   (`bin/plinth` `run_advise`, all four vendor branches). v4.7 fixed the wiring bug
   that this message was masking, but the mask itself remains: each branch is

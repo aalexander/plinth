@@ -1154,6 +1154,31 @@ jobs:
             [ "$rc" = 0 ] || { echo "::error::(9b) Tier-0 run failed (rc=$rc)"; exit 1; }
             git notes --ref=plinth-receipts show "$(git rev-parse HEAD)" > t0receipt.json 2>/dev/null || { echo "::error::(9b) Tier-0 APPROVED minted no receipt"; exit 1; }
             jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' t0receipt.json >/dev/null || { echo "::error::(9b) Tier-0 receipt fields wrong"; exit 1; } )
+          # (9c) REMINT recovery. Every other receipt fixture adds `origin` BEFORE
+          # reviewing, so none exercised the degraded-mint path the cross-vendor audit
+          # found: with no resolvable origin the loop must mint NOTHING (a repo:"" note
+          # would exist yet never verify — worse than absent), and re-running at the
+          # SAME approved SHA once the remote exists must mint it WITHOUT burning a
+          # paid round. Before the fix the fast path returned "Nothing new to review"
+          # and the receipt stayed missing until an empty commit forced a new loop.
+          RM9="$(mktemp -d)"; mkstate "$RM9"; mk_cap_codex "$RM9"
+          printf '%s' "$APF" > "$RM9/verdict-1"
+          rmd9="$(mktemp -d)"
+          ( cd "$rmd9"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$rmd9" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+            rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9c) review with no origin should still APPROVE (rc=$rc)"; exit 1; }
+            printf '%s' "$out" | grep -q 'no resolvable' || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) minted a receipt with no resolvable origin — a repo:\"\" note can never verify and is worse than none"; exit 1; } || true
+            git remote add origin git@github.com:canary/remint.git
+            rc=0; PATH="$RM9:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::(9c) same-SHA re-run after adding origin failed (rc=$rc)"; exit 1; }
+            git notes --ref=plinth-receipts show HEAD > r9.json 2>/dev/null || { echo "::error::(9c) same-SHA re-run did NOT remint — receipt/verify would stay red at this SHA forever (cross-vendor audit, round 4)"; exit 1; }
+            [ "$(jq -r .repo r9.json)" = "canary/remint" ] || { echo "::error::(9c) reminted receipt has the wrong repo NWO: $(jq -r .repo r9.json)"; exit 1; }
+            [ "$(cat "$RM9/state")" = 1 ] || { echo "::error::(9c) the remint burned a PAID reviewer round (calls=$(cat "$RM9/state"), want 1)"; exit 1; } )
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.
