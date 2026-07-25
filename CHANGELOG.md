@@ -46,7 +46,10 @@
   overrides are ALSO appended per round to the usage.jsonl ledger (a mid-loop override
   used in a non-final round stays traceable), and the durable disclosure is the
   driver-rules requirement that the PR body's audit summary list every recorded
-  override. Auditability over prevention, per the trusted-but-fallible model; the base
+  override (contract-bound — no shipped mechanism cross-checks the PR body against
+  the ledger; the automated cross-check is designated for the receipt check, and the
+  ledger is cleared on a new-loop reset so it only ever describes the current loop).
+  Auditability over prevention, per the trusted-but-fallible model; the base
   config stays the governing default. On an ACTUAL vendor change without a model override the base
   per-tier (and audit) models are dropped — they are per-vendor names and would fail loud
   on a different CLI — while a SAME-vendor override keeps the ratified seat model. A

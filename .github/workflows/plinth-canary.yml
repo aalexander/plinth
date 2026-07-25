@@ -874,7 +874,20 @@ jobs:
             vj=".plinth/session/review/feat/verdict.json"
             [ "$rc" = 0 ] || { echo "::error::second Tier-2 verify approval did not bind via the marker (rc=$rc)"; exit 1; }
             [ "$(cat "$T2/state")" = 4 ] || { echo "::error::confirmation ran AGAIN despite the once-per-loop marker (calls=$(cat "$T2/state"))"; exit 1; }
-            jq -r '.confirmation // empty' "$vj" | grep -q 'skipped-once-per-loop' || { echo "::error::the confirmation skip was not recorded in verdict.json"; exit 1; } )
+            jq -r '.confirmation // empty' "$vj" | grep -q 'skipped-once-per-loop' || { echo "::error::the confirmation skip was not recorded in verdict.json"; exit 1; }
+            # (2b) NEW-LOOP reset: after the concluded (APPROVED) loop, the next
+            # commit starts a fresh loop — the per-loop markers AND the usage.jsonl
+            # override ledger must be cleared (a stale ledger would leak a prior
+            # loop's override rows into the disclosure trace). Sentinel row stands
+            # in for the old loop's ledger content (stub rounds may not write one).
+            echo '{"round":99,"mode":"sentinel","usage":null}' >> .plinth/session/review/feat/usage.jsonl
+            printf '%s' "$CNF" > "$T2/verdict-5"
+            echo fix3 >> SPEC.md; git add -A; git commit -qm f3 >/dev/null
+            rc=0; PATH="$T2:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::new-loop round 1 should be CHANGES_NEEDED (rc=$rc)"; exit 1; }
+            [ "$(cat "$T2/state")" = 5 ] || { echo "::error::new loop did not run exactly one fresh round (calls=$(cat "$T2/state"))"; exit 1; }
+            [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::confirmed marker survived the new-loop reset"; exit 1; }
+            ! grep -q '"mode":"sentinel"' .plinth/session/review/feat/usage.jsonl 2>/dev/null || { echo "::error::stale usage.jsonl ledger survived the new-loop reset"; exit 1; } )
           # (3) round_cap circuit breaker: base config round_cap=1 -> round 2 refuses
           # (exit 2, breaker message), and the policy file / loop state are untouched.
           CB="$(mktemp -d)"; mkstate "$CB"; mk_cap_codex "$CB"

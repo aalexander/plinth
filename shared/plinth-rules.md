@@ -155,8 +155,11 @@ reviewer, drop the cross-vendor audit, or raise the round cap is the same
 tampering class as dodging the cap, whatever the intent. Every override any round
 recorded in session state (verdict.json for the latest round; the per-round
 usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
-(seat, value, round); an override present in session state but missing from the
-PR body is a tampering-class omission. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
+(seat, value, round). HONEST BOUND: no shipped mechanism cross-checks the PR body
+against the ledger — the disclosure duty is CONTRACT-bound, auditable by the
+operator (read `usage.jsonl` under `.plinth/session/review/<slug>/`); an automated
+cross-check is designated for the server-side receipt check (auto mode), not
+claimed today. Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (under a Claude driver the guard blocks both at the tool level; for EVERY driver the
 review and CI reject such edits as tampering — so do not rely on the local hook, just
 don't do it). Verdict policy: blockers/majors in project code block;

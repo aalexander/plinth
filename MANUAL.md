@@ -374,8 +374,10 @@ Two operator chores the rules generate:
    credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
    tampering-class), every override is announced and recorded in session state
    (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
-   the PR body's audit summary, and a vendor swap never resumes the previous
-   vendor's thread.
+   the PR body's audit summary (contract-bound: nothing shipped cross-checks the
+   PR body against the ledger — the operator audits the ledger directly; the
+   automated cross-check is designated for the receipt check), and a vendor swap
+   never resumes the previous vendor's thread.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver

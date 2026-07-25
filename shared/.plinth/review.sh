@@ -611,9 +611,10 @@ if [ -f "$SDIR/verdict.json" ]; then
     # `confirmed` would turn "once per loop" into "once per branch-slug
     # lifetime" and let a later Tier-2 approval bind with zero clean-slate
     # reads this loop; a stale `lastfullread` would anchor scoped verifies at
-    # a long-gone milestone.
+    # a long-gone milestone; a stale `usage.jsonl` would leak a prior loop's
+    # override rows into the ledger the PR-body disclosure rule reads.
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
-          "$SDIR/confirmed" "$SDIR/lastfullread"
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
   fi
 fi
 
