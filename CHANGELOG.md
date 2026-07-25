@@ -40,8 +40,10 @@
   `PLINTH_ROUND_CAP` beat the ratified-base config for ONE run — OPERATOR-ONLY by rule
   (the driver setting them is tampering-class), announced on stdout and recorded in
   `verdict.json` (a single `overrides` object built once from the env; `vendor` is now
-  always recorded too). verdict.json is local session state, so the durable disclosure is
-  the driver-rules requirement that the PR body's audit summary list every recorded
+  always recorded too). verdict.json is local session state and is overwritten each round, so
+  overrides are ALSO appended per round to the usage.jsonl ledger (a mid-loop override
+  used in a non-final round stays traceable), and the durable disclosure is the
+  driver-rules requirement that the PR body's audit summary list every recorded
   override. Auditability over prevention, per the trusted-but-fallible model; the base
   config stays the governing default. On an ACTUAL vendor change without a model override the base
   per-tier (and audit) models are dropped — they are per-vendor names and would fail loud

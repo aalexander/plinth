@@ -132,8 +132,11 @@ EXEC_GATED="$(bcfg exec_gated)"
 ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND_BUDGET=4000000 ;; esac
 # Round CIRCUIT BREAKER (hard, unlike the advisory token budget): a loop that has
 # not converged by round_cap is a design problem — more paid rounds will not fix
-# it. 0 disables. Checked before launching a round; the post-approval clean-slate
-# confirmation is never cut off mid-bind.
+# it. 0 disables. Checked before launching a round; within an invocation the
+# post-approval clean-slate confirmation is not cut off mid-bind. (A crashed
+# confirmation retried on a LATER invocation goes through normal bookkeeping and
+# IS subject to the cap — fails safe; the operator unbricks with
+# PLINTH_ROUND_CAP.)
 ROUND_CAP="$(bcfg round_cap)"; case "$ROUND_CAP" in ''|*[!0-9]*) ROUND_CAP=8 ;; esac
 # PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
 # read from the BASE branch, so raising it on the feature branch does nothing;
@@ -918,8 +921,13 @@ ${inc}${evidence}${commits}"
         '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
-  jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" \
-    '{round: $round, mode: $mode, usage: $usage}' >> "$SDIR/usage.jsonl" 2>/dev/null || true
+  # usage.jsonl is the CUMULATIVE per-round ledger (verdict.json is overwritten
+  # each round): any active seat/cap override is appended here per round, so a
+  # mid-loop override used in a NON-final round still leaves a durable trace in
+  # session state for the PR-body disclosure rule to draw on.
+  jq -cn --argjson round "$r" --arg mode "$m" --argjson usage "$usage" --argjson overrides "$OVERRIDES" \
+    '{round: $round, mode: $mode, usage: $usage} + (if $overrides == {} then {} else {overrides: $overrides} end)' \
+    >> "$SDIR/usage.jsonl" 2>/dev/null || true
   # Record the sha of the last UNANCHORED full read: scoped verify rounds diff
   # from here (cumulatively), so the binding round always covers everything
   # since a full pass — not just the last fix slice.

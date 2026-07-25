@@ -340,9 +340,12 @@ Two operator chores the rules generate:
      mode: a resumed approval carries its warm first-pass full read, and a
      SCOPED verify (a fresh session used when the prior thread is too large,
      dead, or from a different vendor) reads the open findings plus the
-     CUMULATIVE fix diff since the last full read — which, together with that
-     anchored full pass, covers the whole branch (the full diff is sent only
-     when no valid anchor exists, e.g. after a rebase).
+     CUMULATIVE fix diff since the last full read — across the loop's sessions
+     the branch is fully covered (the anchor round read everything up to the
+     anchor; this session reads everything after it, with repo read access for
+     context), though the verify session itself sees only the delta and the
+     open findings; the full diff is sent only when no valid anchor exists,
+     e.g. after a rebase.
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
      approval binds only after a clean-slate full pass (a warm reviewer can't
@@ -367,9 +370,10 @@ Two operator chores the rules generate:
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
    `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
    credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
-   tampering-class), every override is announced and recorded in `verdict.json`
-   and must be listed in the PR body's audit summary, and a vendor swap never
-   resumes the previous vendor's thread.
+   tampering-class), every override is announced and recorded in session state
+   (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
+   the PR body's audit summary, and a vendor swap never resumes the previous
+   vendor's thread.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
    gate (`review-gate.sh`) refuses and sends it back with instructions. A driver

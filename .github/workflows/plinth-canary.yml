@@ -964,6 +964,22 @@ jobs:
             [ "$(jq -r '.audit.vendor // empty' "$vj")" = grok ] || { echo "::error::overridden audit vendor not the acting auditor (got $(jq -r '.audit.vendor' "$vj"))"; exit 1; }
             [ "$(jq -r '.overrides.audit_vendor // empty' "$vj")" = grok ] || { echo "::error::audit_vendor override not recorded in verdict.json"; exit 1; }
             grep -qx -- '-m' /tmp/ov-grok-args && { echo "::error::base audit_model (opus, a claude name) was passed to the grok auditor (audit drop-on-swap regressed)"; exit 1; } || true )
+          # (4e) multi-round on/off override: a round-1 override must survive in the
+          # cumulative usage.jsonl ledger after later rounds run WITHOUT it — the
+          # PR-body disclosure rule depends on this trace (verdict.json is overwritten
+          # per round).
+          LG="$(mktemp -d)"; mkstate "$LG"; mk_cap_codex "$LG"
+          printf '%s' "$CNF" > "$LG/verdict-1"; printf '%s' "$APF" > "$LG/verdict-2"
+          lgd="$(mktemp -d)"
+          ( cd "$lgd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$lgd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            PLINTH_REVIEWER_MODEL=xmodel PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
+            rc=0; PATH="$LG:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 0 ] || { echo "::error::ledger fixture loop failed (rc=$rc)"; exit 1; }
+            jq -r 'select(.round == 1) | .overrides.reviewer_model // empty' .plinth/session/review/feat/usage.jsonl | grep -qx xmodel || { echo "::error::a non-final round's override left no trace in the usage.jsonl ledger (disclosure rule unimplementable)"; exit 1; } )
           # (5) FALLBACK verify: with no valid fix-diff anchor (lastfullread gone —
           # rebase/legacy state), the verify round must send the FULL diff and say so.
           FB="$(mktemp -d)"; mkstate "$FB"; mk_cap_codex "$FB"
