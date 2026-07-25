@@ -109,7 +109,7 @@ jobs:
           [ -n "$base_ci" ] || { echo "::error::cannot read .github/workflows/ci.yml from origin/${BASE_REF} — the verifier pin cannot be anchored to the base, so this check refuses to run (fail closed)"; exit 1; }
           base_uses="$(printf '%s\n' "$base_ci" | grep -E '^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:.*plinth-receipt\.yml@' | head -1 || true)"
           if [ -z "$base_uses" ]; then
-            echo "::error::the base branch (origin/${BASE_REF}) does not wire a plinth-receipt.yml job, so there is no operator-owned pin to anchor against — a PR-supplied pin must never be trusted. Land the receipt job in ci.yml on ${BASE_REF} FIRST, then require the 'receipt / verify' context (that is the documented enabling order)."
+            echo "::error::the base branch (origin/${BASE_REF}) does not wire a plinth-receipt.yml job, so there is no operator-owned pin to anchor against — a PR-supplied pin must never be trusted. Land the receipt job in ci.yml on ${BASE_REF} FIRST, then require the 'receipt / verify' context AND set required_status_checks.strict=true (that is the documented enabling order; strict is not optional — this check verifies the subject as of execution, so without it a green result can describe a base that has since moved)."
             exit 1
           fi
           # Compare owner/repo@ref, ignoring surrounding quotes and any trailing comment.

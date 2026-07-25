@@ -284,7 +284,10 @@ Two operator chores the rules generate:
      the full hook machinery enforced, and delegates the coding volume to the
      grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
      the enforced Stop gate for wall-clock: review is contract discipline until
-     the receipt check is required in branch protection; see the known limitation.)
+     the receipt check is required in branch protection AND that protection sets
+     `required_status_checks.strict=true`. Requiring the context alone is not
+     enough — the check verifies the subject as of execution, so without strict a
+     green result can describe a base that has since moved. See the known limitation.)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
