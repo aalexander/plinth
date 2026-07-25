@@ -1010,6 +1010,24 @@ jobs:
               n=$((n + 1))
             done
             [ "$(cat "$NC/state")" = 9 ] || { echo "::error::(3b) expected 9 reviewer invocations with no cap, got $(cat "$NC/state")"; exit 1; } )
+          # PADDED-BUT-VALID values, both paths. The bound guard measures MAGNITUDE, not raw
+          # string length — an earlier revision measured the raw string and refused `0000001`,
+          # a perfectly valid 1 that the normalization right below it explicitly supports.
+          # Without these cases that regression is invisible: (3e) only drives unpadded values.
+          for r3p in "0000001" "0000100000"; do
+            PD="$(mktemp -d)"; mkstate "$PD"; mk_cap_codex "$PD"
+            pdd="$(mktemp -d)"
+            ( cd "$pdd"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$pdd" >/dev/null 2>&1
+              cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+              grep -v '^round_cap' .plinth/config > .plinth/c.t && mv .plinth/c.t .plinth/config
+              printf 'round_cap = %s\n' "$r3p" >> .plinth/config
+              echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+              git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
+              out="$(PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || true
+              printf '%s' "$out" | grep -q 'absurdly large' && { echo "::error::(3e) config round_cap='$r3p' was REFUSED as too large — leading zeros are padding, not magnitude, and the normalization below the guard supports them"; exit 1; } || true
+              out2="$(PLINTH_ROUND_CAP="$r3p" PATH="$PD:$PATH" ./.plinth/review.sh main 2>&1)" || true
+              printf '%s' "$out2" | grep -q 'absurdly large' && { echo "::error::(3e) PLINTH_ROUND_CAP='$r3p' was REFUSED as too large — the env path must bound magnitude exactly as the config path does"; exit 1; } || true )
+          done
           # (3d) EXPLICIT `round_cap = 0` also means no cap. This is a DISTINCT input from
           # (3b)'s absent knob — (3b) asserts the knob is missing, so it cannot speak for the
           # zero case, and claiming it closed that gap was wrong. Both are documented inputs
@@ -1852,7 +1870,10 @@ jobs:
           # (sha, baseref, SDIR), and asserts on whether a NOTE EXISTS. Deleting either
           # call makes a case here mint when it must not.
           R9G_SRC="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
-          R9G_FNS="$(sed -n '/^receipt_nwo() {/,/^}/p; /^ledger_complete() {/,/^}/p; /^mint_receipt() {/,/^}/p' "$R9G_SRC")"
+          # canon_base is extracted too: mint_receipt calls it for the receipt's base_ref and the
+          # subject digest, so omitting it minted receipts with an EMPTY base_ref and the
+          # assertions below would have been exercising a shape that never ships.
+          R9G_FNS="$(sed -n '/^canon_base() {/,/^}/p; /^receipt_nwo() {/,/^}/p; /^ledger_complete() {/,/^}/p; /^mint_receipt() {/,/^}/p' "$R9G_SRC")"
           printf '%s' "$R9G_FNS" | grep -q '^mint_receipt() {' || { echo "::error::(9g) could not extract mint_receipt() — re-point this fixture"; exit 1; }
           r9g_case() {  # r9g_case <label> <origin-url> <ledger-mode: full|stale|none|round0> <expect: mint|nomint>
             local label="$1" origin="$2" lmode="$3" expect="$4" d out got
@@ -1977,6 +1998,8 @@ jobs:
             # Give the ledger an override row so a survivor is unmistakable.
             printf '{"round":1,"mode":"fresh","overrides":{"round_cap":"9"}}\n' > "$G2L"
             printf 'deadbeef\n' > ".plinth/session/review/feat/lastfullread"
+            : > ".plinth/session/review/feat/confirmed"
+            [ -n "$(ls .plinth/session/review/feat/request-*.json 2>/dev/null)" ] || { echo "::error::(9g2) setup: the pre-transition round left no request-*.json, so its removal cannot be asserted"; exit 1; }
             # 2. THE TRANSITION: main advances onto the code commit; the remaining diff is docs.
             git branch -f main "$G2C"
             [ "$(./.plinth/risk-classify.sh main | jq -r .tier)" = 0 ] || { echo "::error::(9g2) after advancing the base the diff is still not Tier 0 — the transition did not occur, so the assertions below would be vacuous"; exit 1; }
@@ -1991,6 +2014,14 @@ jobs:
             [ ! -f "$G2L" ] || { echo "::error::(9g2) the ledger survived the Tier-0 transition — the PRIOR loop's override rows are still on disk, so the audit trail describes overrides that never applied to this subject"; exit 1; }
             [ ! -f ".plinth/session/review/feat/lastfullread" ] || { echo "::error::(9g2) lastfullread survived the Tier-0 transition — a stale coverage anchor would let a later scoped verify claim credit for a full read that never covered this diff"; exit 1; }
             [ ! -f ".plinth/session/review/feat/findings-1.json" ] || { echo "::error::(9g2) findings-1.json survived the Tier-0 transition"; exit 1; }
+            # EVERY reset target, not a sample. The pre-transition round creates request-*.json
+            # and events-*.jsonl naturally; `confirmed` is v4.6's retired marker, which a session
+            # directory written by an older instrument can still carry. All are deleted by the
+            # Tier-0 branch, so all are asserted — a partially-cleared session directory still
+            # describes a loop that did not review this subject.
+            [ -z "$(ls .plinth/session/review/feat/request-*.json 2>/dev/null)" ] || { echo "::error::(9g2) request-*.json survived the Tier-0 transition — the prior loop's request records still describe a diff nobody reviewed at this subject"; exit 1; }
+            [ -z "$(ls .plinth/session/review/feat/events-*.jsonl 2>/dev/null)" ] || { echo "::error::(9g2) events-*.jsonl survived the Tier-0 transition"; exit 1; }
+            [ ! -f ".plinth/session/review/feat/confirmed" ] || { echo "::error::(9g2) the legacy v4.6 'confirmed' marker survived the Tier-0 transition — a stale marker from an older instrument must not carry into a new loop"; exit 1; }
             git notes --ref=plinth-receipts show HEAD > "$R9G2/receipt.json" 2>/dev/null || { echo "::error::(9g2) Tier-0 transition minted no receipt"; exit 1; }
             jq -e '.verdict=="APPROVED" and .round==0 and .override_ledger==[]' "$R9G2/receipt.json" >/dev/null || { echo "::error::(9g2) Tier-0 transition receipt fields wrong (want APPROVED/round 0/override_ledger []): $(cat "$R9G2/receipt.json")"; exit 1; } )
           # (9h) THE NOTES-RECOVERY RECIPE, driven end to end against a real remote.
@@ -2469,14 +2500,30 @@ jobs:
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.
-          RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main resume codex" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main verify codex" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main '' codex"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main bogus codex"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED '' main main fresh codex"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh codex" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          # Extract canon_base TOO: resumable_prev calls it, and extracting only the one function
+          # left every positive case dying on "canon_base: command not found" — the block could
+          # not pass at all. A helper-dependency is part of the unit under test.
+          RP="$(sed -n '/^canon_base() {/,/^}/p; /^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          printf '%s' "$RP" | grep -q '^canon_base() {'     || { echo "::error::could not extract canon_base() — resumable_prev depends on it and the cases below would all fail on a missing helper"; exit 1; }
+          printf '%s' "$RP" | grep -q '^resumable_prev() {' || { echo "::error::could not extract resumable_prev()"; exit 1; }
+          # Args 7/8 are the merge-base anchors (v4.7.2). Positives must pass MATCHING anchors —
+          # a resume is only sound when the base has not moved under the branch.
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex MB1 MB1"  || { echo "::error::a fresh CHANGES_NEEDED session with an unmoved base must be resumable"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main resume codex MB1 MB1" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main verify codex MB1 MB1" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main '' codex MB1 MB1"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main bogus codex MB1 MB1"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED '' main main fresh codex MB1 MB1"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh codex MB1 MB1" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          # v4.7.2 anchor rules. A ref name is a moving label, so identity alone is not enough.
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex MB1 MB2" && { echo "::error::a MOVED merge base must NOT be resumable — the warm thread never read the diff the moved base produces"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex '' MB1"  && { echo "::error::an EMPTY stored anchor (pre-v4.7.2 verdict.json) must fail CLOSED, not resume on an unknown anchor"; exit 1; } || true
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex MB1 ''"  && { echo "::error::an EMPTY current anchor must fail CLOSED"; exit 1; } || true
+          # ...but equivalent SPELLINGS of one base are the same base, or an operator who fetches
+          # an origin buys a spurious full round.
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 origin/main main fresh codex MB1 MB1"      || { echo "::error::'origin/main' vs 'main' must be recognised as the SAME base"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 refs/heads/main main fresh codex MB1 MB1"  || { echo "::error::'refs/heads/main' must canonicalize to 'main'"; exit 1; }
+          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 refs/remotes/origin/main main fresh codex MB1 MB1" || { echo "::error::'refs/remotes/origin/main' must canonicalize to 'main' — stripping origin/ before refs/remotes/ leaves it wrong"; exit 1; }
           # v4.6 vendor guard: a mid-loop seat swap must never hand a foreign session id
           # to a different vendor's --resume; a missing recorded vendor fails CLOSED.
           bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
