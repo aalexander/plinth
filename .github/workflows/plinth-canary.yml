@@ -3847,7 +3847,12 @@ jobs:
             printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
             r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
-          # plinth advise applies the verdict-not-survey discipline to EVERY vendor (claude=arg, codex=stdin, grok/agy=arg):
+          # plinth advise applies the verdict-not-survey discipline to EVERY vendor, and the
+          # prompt must actually ARRIVE by that vendor's route: claude=STDIN (v4.7 — it was a
+          # positional argument until the variadic --allowed-tools was found to swallow it,
+          # silently disabling the advisor for the DEFAULT vendor), codex=stdin, grok/agy=arg.
+          # If a vendor's delivery route ever changes again, change its `how` here — a probe
+          # left pointing at the old route reports a working advisor as broken.
           adv_cap() {  # <vendor> <how: last|afterp|stdin>
             local v="$1" how="$2" B cap R; B="$(mktemp -d)"; cap="$B/p"
             case "$how" in
@@ -3863,7 +3868,7 @@ jobs:
             grep -q "Give a VERDICT, not a survey" "$cap" || { echo "::error::advise: $v did not receive the verdict-not-survey discipline"; exit 1; }
             grep -q "route the auth module" "$cap" || { echo "::error::advise: $v dropped the question"; exit 1; }
           }
-          adv_cap claude last
+          adv_cap claude stdin
           adv_cap codex stdin
           adv_cap grok afterp
           adv_cap agy afterp
