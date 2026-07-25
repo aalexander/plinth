@@ -1,0 +1,30 @@
+# claude CLI `--allowed-tools` variadic receipt — claude 2.1.220 (Claude Code)
+# date: 2026-07-25  host: darwin 25.5.0 (maintainer workstation)
+# why: bin/plinth's `plinth advise` claude branch passed the prompt as a POSITIONAL
+#      argument after --allowed-tools. That flag consumes following non-flag tokens,
+#      so it swallowed the prompt and every consult failed — while `2>/dev/null`
+#      relabelled the error as the generic "CLI missing or not signed in", hiding the
+#      outage for a full release. This receipt captures the BEHAVIOR, not just a
+#      --help listing, per the evidence standard the hookprobe receipts set.
+# Re-run after CLI upgrades.
+
+$ claude --version
+2.1.220 (Claude Code)
+
+### probe A — prompt as a positional AFTER --allowed-tools (the shipped-broken form)
+$ claude -p --safe-mode --model opus --permission-mode dontAsk --allowed-tools "Read,Grep,Glob" "Reply with exactly: OK"
+Error: Input must be provided either through stdin or as a prompt argument when using --print
+
+### probe B — identical flags, prompt via STDIN (the v4.7 fix)
+$ printf 'Reply with exactly: OK' | claude -p --safe-mode --model opus --permission-mode dontAsk --allowed-tools "Read,Grep,Glob"
+OK
+
+### probe C — prompt placed BEFORE the variadic flag (isolates the cause)
+$ claude -p --safe-mode --model opus --permission-mode dontAsk "Reply with exactly: OK" --allowed-tools "Read,Grep,Glob"
+OK
+
+Result: the prompt is consumed by --allowed-tools ONLY when it follows that flag.
+A and C differ solely in argument ORDER, which rules out the other flags and
+confirms the variadic-consumption theory rather than assuming it. The fix (B) uses
+stdin, matching the claude reviewer/auditor adapters in review.sh — which is why
+those adapters were never affected.

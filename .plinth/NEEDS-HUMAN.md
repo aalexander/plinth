@@ -17,8 +17,12 @@
     still pinned `gpt-5.6`; it also still has NO git remote (`gh repo create` is a
     separate open item below):**
     `cd ~/Dev/wren && git checkout build/async-boot-v2 && sed -i '' -e 's/^reviewer_model_tier1 = gpt-5.6$/reviewer_model_tier1 = gpt-5.6-sol/' -e 's/^reviewer_model_tier2 = gpt-5.6$/reviewer_model_tier2 = gpt-5.6-sol/' -e 's/^advisor_model = opus$/advisor_model = fable/' .plinth/config && grep -E '^(reviewer_model|advisor_model)' .plinth/config`
-  - **plinth:**
-    `cd ~/Dev/plinth && sed -i '' -e 's/^reviewer_vendor = claude/reviewer_vendor = codex/' -e 's/^reviewer_model_tier1 = sonnet/reviewer_model_tier1 = gpt-5.6-sol/' -e 's/^reviewer_model_tier2 = sonnet/reviewer_model_tier2 = gpt-5.6-sol/' -e 's/^audit_vendor = grok/audit_vendor = claude/' -e 's/^advisor_model = opus/advisor_model = fable/' .plinth/config && printf 'audit_model = opus\n' >> .plinth/config`
+  - ~~**plinth**~~ — **DONE (2026-07-25, applied by the operator).** `.plinth/config` now
+    reads reviewer_vendor = codex, reviewer_model_tier1/tier2 = gpt-5.6-sol,
+    audit_vendor = claude, audit_model = opus, advisor_model/advisor_model_max = fable.
+    It rides in the v4.7.0 PR. NOTE: seats are read from the BASE branch, so this takes
+    effect for branches cut AFTER that merge — the v4.7 branch's own review ran under
+    main's previous claude/sonnet seat.
   - **anvil:**
     `cd ~/Dev/anvil && sed -i '' -e 's/^reviewer_vendor = claude/reviewer_vendor = codex/' -e 's/^reviewer_model_tier1 = sonnet/reviewer_model_tier1 = gpt-5.6-sol/' -e 's/^reviewer_model_tier2 = sonnet/reviewer_model_tier2 = gpt-5.6-sol/' -e 's/^audit_vendor = codex/audit_vendor = claude/' -e 's/^advisor_model = opus/advisor_model = fable/' .plinth/config && printf 'audit_model = opus\n' >> .plinth/config`
   - **certeus (currently ALL-DEFAULT seats — note the cross-vendor audit is silently

@@ -83,7 +83,14 @@ r() { jq -r ".$1" "$RECEIPT"; }
 git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || infra "PR head object ${HEAD_SHA} not present in this checkout (fetch depth?)"
 
 # ── 3. Repo + base-ref binding ───────────────────────────────────────────────
-[ "$(r repo)" = "$REPO" ] || fail "receipt repo '$(r repo)' != '${REPO}' — receipt minted for a different repository"
+# Compare (and later digest) the repo NWO CASE-INSENSITIVELY. GitHub owner/repo
+# names route case-insensitively, but `=` and the sha256 subject digest are both
+# case-sensitive — so a remote written `git@github.com:MyOrg/Repo.git` would never
+# match `${{ github.repository }}`'s canonical `myorg/repo` and a legitimate PR
+# would fail closed. review.sh lowercases the minted field identically; the two
+# MUST stay in lockstep, since $REPO is folded into the digest at step 6.
+REPO="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+[ "$(r repo | tr '[:upper:]' '[:lower:]')" = "$REPO" ] || fail "receipt repo '$(r repo)' != '${REPO}' — receipt minted for a different repository"
 rbase="$(r base_ref)"; nbase="${BASE_REF#refs/heads/}"
 [ "${rbase#origin/}" = "${nbase#origin/}" ] || fail "receipt base_ref '${rbase}' != PR base '${nbase}'"
 

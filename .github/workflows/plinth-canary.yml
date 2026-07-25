@@ -1179,6 +1179,165 @@ jobs:
             git notes --ref=plinth-receipts show HEAD > r9.json 2>/dev/null || { echo "::error::(9c) same-SHA re-run did NOT remint — receipt/verify would stay red at this SHA forever (cross-vendor audit, round 4)"; exit 1; }
             [ "$(jq -r .repo r9.json)" = "canary/remint" ] || { echo "::error::(9c) reminted receipt has the wrong repo NWO: $(jq -r .repo r9.json)"; exit 1; }
             [ "$(cat "$RM9/state")" = 1 ] || { echo "::error::(9c) the remint burned a PAID reviewer round (calls=$(cat "$RM9/state"), want 1)"; exit 1; } )
+          # (9d) the plinth-receipt.yml "Verify the APPROVED-at-HEAD receipt" step's own
+          # bash has never run anywhere — new trust-boundary-crossing code (parses
+          # job_workflow_ref, fetches the verifier binary over the network, reads
+          # PR-supplied body text, TOCTOU re-checks a live API call) that shipped
+          # unexercised. EXTRACT the real script from the workflow YAML at fixture
+          # runtime (never reimplement it — a copy rots) and drive it against a local
+          # git-only stand-in for Actions + GitHub: a `url.insteadOf` rewrite stands in
+          # for the network fetch of this repo's own pinned commit, and a `gh` stub
+          # stands in for the TOCTOU re-fetch. No real network access.
+          R9D_WD="$(mktemp -d)"
+          python3 - <<'PY' > "$R9D_WD/step.sh.raw"
+          import re
+          lines = open('.github/workflows/plinth-receipt.yml').read().split('\n')
+          blocks=[]; i=0
+          while i < len(lines):
+              m = re.match(r'^(\s*)run: \|', lines[i])
+              if m:
+                  ind=len(m.group(1)); body=[]; i+=1
+                  while i < len(lines):
+                      l=lines[i]
+                      if l.strip() and (len(l)-len(l.lstrip())) <= ind: break
+                      body.append(l); i+=1
+                  ne=[b for b in body if b.strip()]
+                  d=min(len(b)-len(b.lstrip()) for b in ne) if ne else 0
+                  blocks.append('\n'.join(b[d:] if b.strip() else '' for b in body)); continue
+              i+=1
+          print(blocks[-1])
+          PY
+          python3 - <<'PY' > "$R9D_WD/guard.sh.raw"
+          import re
+          lines = open('.github/workflows/plinth-receipt.yml').read().split('\n')
+          blocks=[]; i=0
+          while i < len(lines):
+              m = re.match(r'^(\s*)run: \|', lines[i])
+              if m:
+                  ind=len(m.group(1)); body=[]; i+=1
+                  while i < len(lines):
+                      l=lines[i]
+                      if l.strip() and (len(l)-len(l.lstrip())) <= ind: break
+                      body.append(l); i+=1
+                  ne=[b for b in body if b.strip()]
+                  d=min(len(b)-len(b.lstrip()) for b in ne) if ne else 0
+                  blocks.append('\n'.join(b[d:] if b.strip() else '' for b in body)); continue
+              i+=1
+          print(blocks[0])
+          PY
+          [ -s "$R9D_WD/step.sh.raw" ] || { echo "::error::(9d) extractor found no run: block in plinth-receipt.yml"; exit 1; }
+          [ -s "$R9D_WD/guard.sh.raw" ] || { echo "::error::(9d) extractor found no event-guard run: block in plinth-receipt.yml"; exit 1; }
+          # UNIQUE per run. `git config --global url.<base>.insteadOf` is MULTI-VALUED:
+          # a fixed owner name appends another mapping for the same URL on every run,
+          # and git then resolves to the FIRST (stale, deleted) temp dir — the fixture
+          # passes once on a fresh runner and fails forever after with "not our ref",
+          # while permanently dirtying the developer's ~/.gitconfig. Unique name +
+          # explicit cleanup at the end keeps re-runs correct and the machine clean.
+          R9D_OWNER="plinth-canary-9d-$$"
+          R9D_NWO="canary/receipt9d"
+          sed "s|\${{ github.repository }}|$R9D_NWO|g; s|\${{ github.event_name }}|pull_request|g" "$R9D_WD/step.sh.raw" > "$R9D_WD/step.sh"
+          sed "s|\${{ github.event_name }}|workflow_dispatch|g" "$R9D_WD/guard.sh.raw" > "$R9D_WD/guard.sh"
+          # fake-plinth: a real repo standing in for THIS repo's own pinned commit.
+          # One commit WITHOUT receipt-verify.sh (case 4: an old v4.6 pin), one WITH it
+          # (the happy path). Local fetch of an arbitrary commit SHA needs the upload-pack
+          # ACLs GitHub sets server-side for public repos — off by default for a plain
+          # local repo, so grant them here.
+          R9D_FP="$(mktemp -d)"
+          ( cd "$R9D_FP" && git init -qb main . >/dev/null )
+          git -C "$R9D_FP" config uploadpack.allowReachableSHA1InWant true
+          git -C "$R9D_FP" config uploadpack.allowAnySHA1InWant true
+          ( cd "$R9D_FP" && echo old > README.md && git add -A && git commit -qm "pre-receipt-check pin" >/dev/null )
+          R9D_OLD_SHA="$(git -C "$R9D_FP" rev-parse HEAD)"
+          ( cd "$R9D_FP" && mkdir -p shared/.plinth
+            cp "$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh" shared/.plinth/receipt-verify.sh
+            chmod +x shared/.plinth/receipt-verify.sh
+            git add -A && git commit -qm "add receipt-verify.sh" >/dev/null )
+          R9D_GOOD_SHA="$(git -C "$R9D_FP" rev-parse HEAD)"
+          git config --global url."file://$R9D_FP".insteadOf "https://github.com/${R9D_OWNER}/plinth"
+          # fixture project repo: a bare "origin" plays the base-repository role the
+          # step fetches from (PR head ref + notes ref), matching what actions/checkout
+          # + a real PR would already have in place before this step runs.
+          R9D_PROJ="$(mktemp -d)"
+          ( cd "$R9D_PROJ" && git init -qb main . >/dev/null
+            echo base > SPEC.md && git add -A && git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo change >> SPEC.md && git add -A && git commit -qm change >/dev/null )
+          R9D_HEAD="$(git -C "$R9D_PROJ" rev-parse HEAD)"
+          R9D_BARE="$(mktemp -d)/proj.git"
+          git init -q --bare "$R9D_BARE"
+          git -C "$R9D_PROJ" remote add origin "$R9D_BARE"
+          git -C "$R9D_PROJ" push -q origin main feat
+          git -C "$R9D_BARE" update-ref refs/pull/1/head "$R9D_HEAD"
+          git -C "$R9D_PROJ" fetch -q origin main:refs/remotes/origin/main
+          # Mint the receipt by hand — jq -cn with the exact fields mint_receipt() builds
+          # (shared/.plinth/review.sh) and the exact subject digest receipt-verify.sh
+          # re-derives, rather than running the whole review loop just to get one note.
+          R9D_HTREE="$(git -C "$R9D_PROJ" rev-parse HEAD^{tree})"
+          R9D_MB="$(git -C "$R9D_PROJ" merge-base main feat)"
+          if command -v shasum >/dev/null 2>&1; then R9D_SHA256() { shasum -a 256 | cut -d' ' -f1; }
+          else R9D_SHA256() { sha256sum | cut -d' ' -f1; }
+          fi
+          R9D_SUBJ="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' "$R9D_NWO" main "$R9D_MB" "$R9D_HEAD" "$R9D_HTREE" | R9D_SHA256)"
+          R9D_RECEIPT="$(jq -cn --arg repo "$R9D_NWO" --arg hs "$R9D_HEAD" --arg ht "$R9D_HTREE" \
+            --arg br main --arg mb "$R9D_MB" --arg sd "sha256:${R9D_SUBJ}" \
+            --argjson round 1 --argjson ledger '[]' \
+            '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
+              base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+              round:$round, override_ledger:$ledger}')"
+          git -C "$R9D_PROJ" notes --ref=plinth-receipts add -m "$R9D_RECEIPT" "$R9D_HEAD"
+          git -C "$R9D_PROJ" push -q origin refs/notes/plinth-receipts
+          echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
+          # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
+          # the happy path's live re-check matches.
+          R9D_GHDIR="$(mktemp -d)"
+          cat > "$R9D_GHDIR/gh" <<GHEOF
+          #!/usr/bin/env bash
+          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          GHEOF
+          chmod +x "$R9D_GHDIR/gh"
+          # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
+          # Clear /tmp/plinth first: the step script hardcodes that path, so a leftover
+          # from an earlier run (or an earlier case) makes `git remote add origin` fail
+          # with "already exists" and the case fails for a reason unrelated to the code
+          # under test. Each fetching case clears it.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
+            PLINTH_OWNER="$R9D_OWNER" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::(9d) happy-path receipt-verify step failed (rc=$rc): $out"; exit 1; }
+          printf '%s' "$out" | grep -q 'receipt verified' || { echo "::error::(9d) happy path did not print 'receipt verified'"; exit 1; }
+          # 2: EMPTY job_workflow_ref.
+          rc=0
+          out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) empty job_workflow_ref did not fail"; exit 1; }
+          printf '%s' "$out" | grep -q 'job_workflow_ref' || { echo "::error::(9d) empty job_workflow_ref failure did not name job_workflow_ref"; exit 1; }
+          # 3: job_workflow_ref with NO @ref.
+          rc=0
+          out="$(JOB_WF_REF="norefhere" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no @ did not fail"; exit 1; }
+          # 4: pinned ref PREDATES receipt-verify.sh — must fail closed and say so.
+          rm -rf /tmp/plinth
+          rc=0
+          out="$(cd "$R9D_PROJ" && GH_TOKEN=dummy HEAD_SHA="$R9D_HEAD" BASE_REF=main PR_NUM=1 \
+            JOB_WF_REF="${R9D_OWNER}/plinth/.github/workflows/plinth-receipt.yml@${R9D_OLD_SHA}" \
+            PLINTH_OWNER="$R9D_OWNER" GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
+            PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) a plinth pin predating receipt-verify.sh did not fail"; exit 1; }
+          printf '%s' "$out" | grep -q 'v4.7+' || { echo "::error::(9d) predating-pin failure did not tell the operator to repin to v4.7+"; exit 1; }
+          # 5: non-pull_request EVENT — the event-guard step must reject it.
+          rc=0
+          out="$(bash "$R9D_WD/guard.sh" 2>&1)" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::(9d) event guard did not reject a non-pull_request event"; exit 1; }
+          printf '%s' "$out" | grep -q 'got workflow_dispatch' || { echo "::error::(9d) event guard failure did not name the actual event"; exit 1; }
+          # CLEAN UP the global URL rewrite this fixture installed. On a CI runner this is
+          # cosmetic (ephemeral machine), but the canary is also run locally against a
+          # working tree, and a leaked mapping there breaks the NEXT run and every other
+          # git operation that touches that URL. Unique-per-run naming (above) means a
+          # mid-fixture failure can leave at most one mapping that can never collide.
+          git config --global --unset-all url."file://$R9D_FP".insteadOf 2>/dev/null || true
+          rm -rf /tmp/plinth
           # (7) the cap is HARD at the confirmation too: a Tier-2 verify APPROVED at the cap
           # must NOT launch a round-cap+1 clean-slate; exit 2 with the non-binding APPROVED
           # kept, and a PLINTH_ROUND_CAP unbrick runs the recovery confirmation.

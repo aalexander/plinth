@@ -422,8 +422,15 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # enforcer), but failure is announced, never swallowed silently.
 mint_receipt() {  # mint_receipt <round>
   local mround="$1" repo_nwo htree mb ledger subj receipt
+  # LOWERCASED on both sides of the boundary. GitHub owner/repo names are
+  # case-insensitive for routing, but the verifier compares this field with `=`
+  # AND folds it into the subject digest — both case-SENSITIVE. A remote written
+  # as git@github.com:MyOrg/Repo.git would then never match the API's canonical
+  # `myorg/repo`, failing a legitimate PR closed. receipt-verify.sh lowercases
+  # --repo identically; change one and you must change the other.
   repo_nwo="$(git config --get remote.origin.url 2>/dev/null \
-    | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')" || repo_nwo=""
+    | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' \
+    | tr '[:upper:]' '[:lower:]')" || repo_nwo=""
   # No resolvable origin => no verifiable receipt. Writing one anyway would record
   # repo:"" — a note that EXISTS but can never satisfy the server check, which is
   # strictly worse than none (it looks minted and reads as tampering-adjacent).

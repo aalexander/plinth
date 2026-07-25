@@ -1419,7 +1419,9 @@ $question"
   case "$vendor" in
     claude) [ -n "$use" ] && margs=(--model "$use")
       # Prompt via STDIN, never as a positional after --allowed-tools: that flag is
-      # VARIADIC in the claude CLI (verified 2.1.220), so it swallowed the prompt
+      # VARIADIC in the claude CLI (verified 2.1.220 — receipt:
+      # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt, which captures the
+      # behavior by argument ORDER rather than asserting it), so it swallowed the prompt
       # argument and every consult died with "Input must be provided either through
       # stdin or as a prompt argument" — which 2>/dev/null turned into the generic
       # "CLI missing or not signed in". The advisor was silently unavailable for the
