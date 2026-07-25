@@ -616,15 +616,24 @@ it has run green with a real smoke_cmd.
   `plinth update` each project when YOU choose. Nothing propagates silently.
 - **Plinth product changes (`shared/`, `bin/`) — changelog fragments (transition).**
   Parallel branches that each edit `VERSION` and the top of `CHANGELOG.md` collide
-  (same next number, same insert point). The intended end state is: each branch
-  adds only `changelog.d/<slug>.md` (`bump: patch|minor|major` + bullet body);
-  the release operator runs `plinth changelog-collate`, then tags
-  `v$(cat VERSION)`. **Until a follow-up removes the old enforcement**, the
-  ratified project rule still requires a CHANGELOG entry and a VERSION bump that
-  matches the top changelog section — collate is how a release PR produces both
-  from pending fragments without every feature branch racing the same two files.
-  See `changelog.d/README.md`. Switching CI/review enforcement off the dual-write
-  rule is deliberately out of scope of the collate mechanism itself.
+  (same next number, same insert point). Fragments fix that: unique files under
+  `changelog.d/`, number computed at release. **Two-step transition (do not mix
+  representations for the same change):**
+  1. **Now (this release):** collate + fragment format land. A product change is
+     recorded **exactly once** — either the legacy dual-write (`CHANGELOG.md` top
+     section + matching `VERSION` bump on that PR) **or** a single
+     `changelog.d/<slug>.md` fragment (consumed later by collate), never both.
+     Dual-write still satisfies the still-ratified project notes rule; fragment-
+     only is valid once a follow-up updates that rule and review/CI. Until then,
+     prefer dual-write for ordinary product PRs, and use fragments only when you
+     are also cutting a release that runs `plinth changelog-collate` in the same
+     ship (so the PR that merges carries the collated VERSION/CHANGELOG).
+  2. **Follow-up (out of scope here):** switch review/CI + project notes to
+     "fragment required; no hand-edit of VERSION/CHANGELOG on feature branches",
+     then feature PRs are fragment-only and the release operator runs collate
+     before tagging `v$(cat VERSION)`.
+  See `changelog.d/README.md`. Never leave both a hand-written CHANGELOG bullet
+  and a pending fragment for the same change — collate would record it twice.
 
 ## Watch list
 - **First PR per repo**: confirm the Codex review actually posts (connection

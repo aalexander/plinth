@@ -1655,21 +1655,24 @@ run_changelog_collate() {
 
   [ -f "$vfile" ] || { echo "changelog-collate: missing VERSION at $vfile" >&2; exit 1; }
   [ -f "$clfile" ] || { echo "changelog-collate: missing CHANGELOG.md at $clfile" >&2; exit 1; }
-  # One line, exact MAJOR.MINOR.PATCH — no whitespace stripping (would turn
-  # "1. 2.3" into a false positive) and no empty components ("1..2").
-  local oldver
-  IFS= read -r oldver < "$vfile" || { echo "changelog-collate: failed to read $vfile" >&2; exit 1; }
-  case "$oldver" in
-    [0-9]*.[0-9]*.[0-9]*) : ;;
-    *) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;;
+  # Entire file is exactly MAJOR.MINOR.PATCH with at most one trailing newline —
+  # no whitespace stripping (would turn "1. 2.3" into a false positive), no
+  # second line/junk, no empty components ("1..2"). A missing trailing newline is fine.
+  local raw oldver
+  raw="$(cat "$vfile")" || { echo "changelog-collate: failed to read $vfile" >&2; exit 1; }
+  case "$raw" in
+    *$'\n'?*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
+    *$'\n'*$'\n'*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
+    *$'\n') oldver="${raw%$'\n'}" ;;
+    *) oldver="$raw" ;;
   esac
   local major minor patch
   major="${oldver%%.*}"
   local rest="${oldver#*.}"
   minor="${rest%%.*}"
   patch="${rest#*.}"
-  # Each component: non-empty digits only; reassemble must equal the raw line
-  # (rejects "1..2", "1.2.", ".1.2", "1.2.3.4", trailing junk).
+  # Each component: non-empty digits only; reassemble must equal the parsed line
+  # (rejects "1..2", "1.2.", ".1.2", "1.2.3.4", trailing junk on the line).
   case "$major" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
   case "$minor" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
   case "$patch" in ''|*[!0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
@@ -1699,9 +1702,11 @@ run_changelog_collate() {
     if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
       echo "changelog-collate: empty body in $f (need one or more bullet lines after ---)" >&2; exit 1
     fi
-    printf '%s\n' "$body" | grep -q '^- ' || {
-      echo "changelog-collate: body in $f has no bullet line (expected lines starting with '- ')" >&2; exit 1
-    }
+    # Heredoc (not printf|grep) so pipefail never sees SIGPIPE from grep -q
+    # closing early on a large body.
+    grep -q '^- ' <<EOF || { echo "changelog-collate: body in $f has no bullet line (expected lines starting with '- ')" >&2; exit 1; }
+$body
+EOF
     slug="$(basename "$f" .md)"
     if [ "$rank" -gt "$win_rank" ]; then win_rank=$rank; win_bump=$bump; fi
     if [ -n "$slugs" ]; then slugs="$slugs, $slug"; else slugs="$slug"; fi
@@ -1711,10 +1716,11 @@ $frags
 EOF
 
   local newver
+  # 10# forces decimal (leading-zero components must not be parsed as octal).
   case "$win_bump" in
-    major) newver="$((major + 1)).0.0" ;;
-    minor) newver="$major.$((minor + 1)).0" ;;
-    patch) newver="$major.$minor.$((patch + 1))" ;;
+    major) newver="$((10#$major + 1)).0.0" ;;
+    minor) newver="$major.$((10#$minor + 1)).0" ;;
+    patch) newver="$major.$minor.$((10#$patch + 1))" ;;
     *) echo "changelog-collate: internal error: no winning bump" >&2; exit 1 ;;
   esac
 

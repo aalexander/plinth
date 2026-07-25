@@ -4058,33 +4058,106 @@ jobs:
           printf '%s' "$out" | grep -q 'bad-frag.md' || { echo "::error::changelog-collate invalid-bump error did not name the fragment file — operator cannot find the offender"; exit 1; }
           cmp -s "$CLCB/VERSION.bak" "$CLCB/VERSION" || { echo "::error::changelog-collate rewrote VERSION after an invalid fragment — partial write"; exit 1; }
           cmp -s "$CLCB/CHANGELOG.md.bak" "$CLCB/CHANGELOG.md" || { echo "::error::changelog-collate rewrote CHANGELOG.md after an invalid fragment — partial write"; exit 1; }
-          # Missing bump: line (no "bump:" at all) is the same hard-error class.
+          # Missing bump: line (no "bump:" at all) is the same hard-error class; CHANGELOG
+          # must stay byte-identical too (not just VERSION).
           printf 'not a bump header\n---\n- **x.**\n' > "$CLCB/changelog.d/missing-bump.md"
           rm -f "$CLCB/changelog.d/bad-frag.md"
           r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCB" 2>&1)" || r=$?
           [ "$r" != 0 ] || { echo "::error::changelog-collate accepted a fragment with no bump: line"; exit 1; }
           printf '%s' "$out" | grep -q 'missing-bump.md' || { echo "::error::missing-bump error did not name the file"; exit 1; }
           cmp -s "$CLCB/VERSION.bak" "$CLCB/VERSION" || { echo "::error::missing-bump path rewrote VERSION"; exit 1; }
+          cmp -s "$CLCB/CHANGELOG.md.bak" "$CLCB/CHANGELOG.md" || { echo "::error::missing-bump path rewrote CHANGELOG.md"; exit 1; }
           # Empty body after --- must abort (would bump VERSION with no prose).
           CLCeb="$(mktemp -d)"; printf '1.0.0\n' > "$CLCeb/VERSION"
           printf '# Plinth changelog\n\nold\n' > "$CLCeb/CHANGELOG.md"
           mkdir -p "$CLCeb/changelog.d"
           printf 'bump: patch\n---\n' > "$CLCeb/changelog.d/empty-body.md"
-          cp "$CLCeb/VERSION" "$CLCeb/VERSION.bak"
+          cp "$CLCeb/VERSION" "$CLCeb/VERSION.bak"; cp "$CLCeb/CHANGELOG.md" "$CLCeb/CHANGELOG.md.bak"
           r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCeb" 2>&1)" || r=$?
           [ "$r" != 0 ] || { echo "::error::changelog-collate accepted an empty body (would ship a silent VERSION bump)"; exit 1; }
           printf '%s' "$out" | grep -q 'empty-body.md' || { echo "::error::empty-body error did not name the file"; exit 1; }
           cmp -s "$CLCeb/VERSION.bak" "$CLCeb/VERSION" || { echo "::error::empty-body path rewrote VERSION"; exit 1; }
-          # Malformed VERSION must fail closed before any write (empty components / whitespace).
+          cmp -s "$CLCeb/CHANGELOG.md.bak" "$CLCeb/CHANGELOG.md" || { echo "::error::empty-body path rewrote CHANGELOG.md"; exit 1; }
+          # Body with prose but no bullet line must abort (documented format requires bullets).
+          CLCnb="$(mktemp -d)"; printf '1.0.0\n' > "$CLCnb/VERSION"
+          printf '# Plinth changelog\n\nold\n' > "$CLCnb/CHANGELOG.md"
+          mkdir -p "$CLCnb/changelog.d"
+          printf 'bump: patch\n---\nno bullet here\n' > "$CLCnb/changelog.d/no-bullet.md"
+          cp "$CLCnb/VERSION" "$CLCnb/VERSION.bak"; cp "$CLCnb/CHANGELOG.md" "$CLCnb/CHANGELOG.md.bak"
+          r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCnb" 2>&1)" || r=$?
+          [ "$r" != 0 ] || { echo "::error::changelog-collate accepted a body with no bullet line"; exit 1; }
+          printf '%s' "$out" | grep -q 'no-bullet.md' || { echo "::error::no-bullet error did not name the file"; exit 1; }
+          cmp -s "$CLCnb/VERSION.bak" "$CLCnb/VERSION" || { echo "::error::no-bullet path rewrote VERSION"; exit 1; }
+          cmp -s "$CLCnb/CHANGELOG.md.bak" "$CLCnb/CHANGELOG.md" || { echo "::error::no-bullet path rewrote CHANGELOG.md"; exit 1; }
+          # Missing --- separator aborts.
+          CLCsep="$(mktemp -d)"; printf '1.0.0\n' > "$CLCsep/VERSION"
+          printf '# Plinth changelog\n\nold\n' > "$CLCsep/CHANGELOG.md"
+          mkdir -p "$CLCsep/changelog.d"
+          printf 'bump: patch\n- **no separator.**\n' > "$CLCsep/changelog.d/no-sep.md"
+          cp "$CLCsep/VERSION" "$CLCsep/VERSION.bak"; cp "$CLCsep/CHANGELOG.md" "$CLCsep/CHANGELOG.md.bak"
+          r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCsep" 2>&1)" || r=$?
+          [ "$r" != 0 ] || { echo "::error::changelog-collate accepted a fragment missing the --- separator"; exit 1; }
+          printf '%s' "$out" | grep -q 'no-sep.md' || { echo "::error::no-sep error did not name the file"; exit 1; }
+          cmp -s "$CLCsep/VERSION.bak" "$CLCsep/VERSION" || { echo "::error::no-sep path rewrote VERSION"; exit 1; }
+          cmp -s "$CLCsep/CHANGELOG.md.bak" "$CLCsep/CHANGELOG.md" || { echo "::error::no-sep path rewrote CHANGELOG.md"; exit 1; }
+          # Bad slug (uppercase / leading underscore) must abort.
+          for badslug in 'BadSlug.md' '_leading.md'; do
+            CLCs="$(mktemp -d)"; printf '1.0.0\n' > "$CLCs/VERSION"
+            printf '# Plinth changelog\n\nold\n' > "$CLCs/CHANGELOG.md"
+            mkdir -p "$CLCs/changelog.d"
+            printf 'bump: patch\n---\n- **x.**\n' > "$CLCs/changelog.d/$badslug"
+            cp "$CLCs/VERSION" "$CLCs/VERSION.bak"; cp "$CLCs/CHANGELOG.md" "$CLCs/CHANGELOG.md.bak"
+            r=0; out="$("$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCs" 2>&1)" || r=$?
+            [ "$r" != 0 ] || { echo "::error::changelog-collate accepted invalid slug '$badslug'"; exit 1; }
+            printf '%s' "$out" | grep -q "$badslug" || { echo "::error::bad-slug error did not name $badslug"; exit 1; }
+            cmp -s "$CLCs/VERSION.bak" "$CLCs/VERSION" || { echo "::error::bad-slug $badslug rewrote VERSION"; exit 1; }
+            cmp -s "$CLCs/CHANGELOG.md.bak" "$CLCs/CHANGELOG.md" || { echo "::error::bad-slug $badslug rewrote CHANGELOG.md"; exit 1; }
+          done
+          # Malformed VERSION must fail closed before any write (empty components / whitespace /
+          # multi-line junk). CHANGELOG and VERSION both stay byte-identical.
           for badver in '1..2' '1.2.' '.1.2' '1. 2.3' '1.2.3.4' 'abc'; do
             CLCv="$(mktemp -d)"; printf '%s\n' "$badver" > "$CLCv/VERSION"
             printf '# Plinth changelog\n\nold\n' > "$CLCv/CHANGELOG.md"
             mkdir -p "$CLCv/changelog.d"
             printf 'bump: patch\n---\n- **x.**\n' > "$CLCv/changelog.d/x.md"
+            cp "$CLCv/VERSION" "$CLCv/VERSION.bak"; cp "$CLCv/CHANGELOG.md" "$CLCv/CHANGELOG.md.bak"
             r=0; "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCv" >/dev/null 2>&1 || r=$?
             [ "$r" != 0 ] || { echo "::error::changelog-collate accepted malformed VERSION '$badver'"; exit 1; }
-            [ "$(cat "$CLCv/VERSION")" = "$badver" ] || { echo "::error::malformed VERSION '$badver' was rewritten"; exit 1; }
+            cmp -s "$CLCv/VERSION.bak" "$CLCv/VERSION" || { echo "::error::malformed VERSION '$badver' was rewritten"; exit 1; }
+            cmp -s "$CLCv/CHANGELOG.md.bak" "$CLCv/CHANGELOG.md" || { echo "::error::malformed VERSION '$badver' rewrote CHANGELOG.md"; exit 1; }
           done
+          # Trailing junk after a valid first line must fail (reader must not ignore line 2).
+          CLCj="$(mktemp -d)"; printf '1.2.3\njunk\n' > "$CLCj/VERSION"
+          printf '# Plinth changelog\n\nold\n' > "$CLCj/CHANGELOG.md"
+          mkdir -p "$CLCj/changelog.d"
+          printf 'bump: patch\n---\n- **x.**\n' > "$CLCj/changelog.d/x.md"
+          cp "$CLCj/VERSION" "$CLCj/VERSION.bak"; cp "$CLCj/CHANGELOG.md" "$CLCj/CHANGELOG.md.bak"
+          r=0; "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCj" >/dev/null 2>&1 || r=$?
+          [ "$r" != 0 ] || { echo "::error::changelog-collate accepted VERSION with trailing junk after the first line"; exit 1; }
+          cmp -s "$CLCj/VERSION.bak" "$CLCj/VERSION" || { echo "::error::trailing-junk VERSION was rewritten"; exit 1; }
+          cmp -s "$CLCj/CHANGELOG.md.bak" "$CLCj/CHANGELOG.md" || { echo "::error::trailing-junk rewrote CHANGELOG.md"; exit 1; }
+          # Missing trailing newline on a valid VERSION must still succeed (not a hard-error path).
+          CLCnl="$(mktemp -d)"; printf '5.0.0' > "$CLCnl/VERSION"   # no trailing newline
+          printf '# Plinth changelog\n\n## v5.0.0 — base — January 01, 2020\n- base\n' > "$CLCnl/CHANGELOG.md"
+          mkdir -p "$CLCnl/changelog.d"
+          printf 'bump: patch\n---\n- **no-nl ok.**\n' > "$CLCnl/changelog.d/no-nl.md"
+          "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCnl" >/dev/null
+          [ "$(cat "$CLCnl/VERSION")" = "5.0.1" ] || { echo "::error::changelog-collate rejected or mis-bumped a VERSION file without trailing newline (got $(cat "$CLCnl/VERSION"))"; exit 1; }
+          # Leading-zero components must not blow up as octal (10# arithmetic).
+          CLCoct="$(mktemp -d)"; printf '1.08.0\n' > "$CLCoct/VERSION"
+          printf '# Plinth changelog\n\n## v1.08.0 — base — January 01, 2020\n- base\n' > "$CLCoct/CHANGELOG.md"
+          mkdir -p "$CLCoct/changelog.d"
+          printf 'bump: minor\n---\n- **octal-safe.**\n' > "$CLCoct/changelog.d/octal-safe.md"
+          "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCoct" >/dev/null
+          [ "$(cat "$CLCoct/VERSION")" = "1.9.0" ] || { echo "::error::changelog-collate mishandled leading-zero component (want 1.9.0, got $(cat "$CLCoct/VERSION")) — octal arithmetic?"; exit 1; }
+          # Default CWD target (no path arg) must collate the current directory.
+          CLCwd="$(mktemp -d)"; printf '6.0.0\n' > "$CLCwd/VERSION"
+          printf '# Plinth changelog\n\n## v6.0.0 — base — January 01, 2020\n- base\n' > "$CLCwd/CHANGELOG.md"
+          mkdir -p "$CLCwd/changelog.d"
+          printf 'bump: patch\n---\n- **cwd.**\n' > "$CLCwd/changelog.d/cwd-frag.md"
+          ( cd "$CLCwd" && "$GITHUB_WORKSPACE/bin/plinth" changelog-collate >/dev/null )
+          [ "$(cat "$CLCwd/VERSION")" = "6.0.1" ] || { echo "::error::changelog-collate without args did not collate CWD (got $(cat "$CLCwd/VERSION"))"; exit 1; }
+          [ ! -e "$CLCwd/changelog.d/cwd-frag.md" ] || { echo "::error::CWD collate left the fragment"; exit 1; }
           # Extra args must not be silently ignored (destructive release helper).
           r=0; "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLC0" extra >/dev/null 2>&1 || r=$?
           [ "$r" != 0 ] || { echo "::error::changelog-collate accepted surplus args (would collate with a silent ignore)"; exit 1; }

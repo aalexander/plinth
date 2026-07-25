@@ -4,18 +4,15 @@
 - **Changelog fragments (`changelog.d/`) — mechanism only; VERSION unchanged.**
   Parallel product branches collide when every branch edits `VERSION` and the top
   of `CHANGELOG.md` from the same base. This release adds the towncrier-style
-  alternative: a branch writes `changelog.d/<slug>.md` with `bump:
-  patch|minor|major` and the bullet body; `plinth changelog-collate
-  [<target-repo>]` folds fragments at release time (highest bump wins), updates
-  `VERSION`/`CHANGELOG.md`, and drains the fragments. Empty `changelog.d/` is a
-  no-op; invalid/missing `bump:`, empty body, or bad slug aborts and names the
-  file without rewriting either release file. See `changelog.d/README.md`. The
-  existing "CHANGELOG entry + VERSION bump" *enforcement* is not removed here —
-  only the collate mechanism and docs land; a follow-up switches the contract.
-  Transition: feature branches add a fragment (and, until enforcement changes,
-  still satisfy the current VERSION/CHANGELOG rule on the PR that ships the
-  release — typically the release PR that runs collate). This bullet is the
-  CHANGELOG entry for the mechanism itself; VERSION stays 4.7.0 by design.
+  collate path: `changelog.d/<slug>.md` with `bump: patch|minor|major` + bullet
+  body; `plinth changelog-collate [<target-repo>]` folds fragments (highest bump
+  wins), updates `VERSION`/`CHANGELOG.md`, and drains fragments. Empty dir is a
+  no-op; invalid/missing `bump:`, empty/non-bullet body, bad slug, or malformed
+  VERSION aborts without rewriting either release file. See
+  `changelog.d/README.md`. Enforcement still expects dual-write until a follow-up
+  switches it; record each change once (dual-write **or** fragment, never both).
+  This bullet is the sole record of the mechanism itself (no pending fragment);
+  VERSION stays 4.7.0 by design of this bootstrap.
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified
   that an adversarial review had actually APPROVED the commit being merged — the loop was

@@ -23,10 +23,12 @@ bump: patch|minor|major
 - `---` on its own line separates the header from the body.
 - The body MUST contain one or more bullet lines (lines starting with `- `).
 - The `<slug>` in the filename must match `[a-z0-9][a-z0-9._-]*`.
-- Feature branches add a fragment so they do not race on `VERSION` /
-  `CHANGELOG.md`. Collate computes both at release. Until enforcement is switched
-  (a separate change), the release PR that runs collate is what satisfies the
-  still-ratified "CHANGELOG + VERSION" project rule.
+- Record each change **exactly once**: either a fragment (this file) **or** a
+  hand-written CHANGELOG/VERSION dual-write, never both for the same change
+  (collate would double-record). Until review/CI switches to fragment-only
+  (a separate change), ordinary product PRs keep dual-write; use fragments when
+  the same ship runs `plinth changelog-collate` so VERSION/CHANGELOG are produced
+  from pending intent without every branch racing the same two files.
 
 ## Release
 
