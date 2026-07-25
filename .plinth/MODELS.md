@@ -254,6 +254,18 @@ because a near-full thread silently auto-compacts away the original diff context
 ## Reviewer assignment across vendors (all subscription-authenticated, no per-use cost)
 Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 (default codex); assign by their observed strengths:
+
+**Seat economics (2026-07-24, maintainer-ratified):** every seat is
+subscription-billed, so assign purely by fit — the fastest model that is capable
+enough for the role, with the deep model reserved for what actually needs depth
+(Tier-2 tooling, declared hardening passes, the binding confirmation). The loop's
+cost controls do the rest: scoped verify rounds, a once-per-loop clean-slate
+confirmation, and the `round_cap` circuit breaker. When a vendor becomes
+unavailable mid-loop (credits, outage), switch seats ON THE FLY with the operator
+env overrides (`PLINTH_REVIEWER_VENDOR` / `PLINTH_REVIEWER_MODEL` /
+`PLINTH_AUDIT_VENDOR` / `PLINTH_AUDIT_MODEL`) — one run, announced and recorded
+in `verdict.json`; land the config change on main to make it stick.
+
 - **codex** — goes DEEPEST. The DEFAULT primary at all tiers, and does the
   binding clean-slate confirmation. Slower. Runs GPT-5.5 (the vendor default)
   until your account is GPT-5.6-eligible (GA July 9 2026; Codex CLI >= 0.144.0),
