@@ -5,10 +5,11 @@ name: plinth-receipt
 # mints a plinth.review-receipt/v1 as a git note on the approved commit
 # (refs/notes/plinth-receipts); this workflow fetches that note for the PR's
 # exact head and re-derives every binding from the PR's own subject via
-# receipt-verify.sh (fetched from the PINNED plinth release, same trust anchor
-# as the floor's harness byte-check — never the PR's working tree, which is
-# PR-controlled). Fails closed on every path: no receipt, stale receipt,
-# non-APPROVED, subject mismatch, or an override the PR body does not disclose.
+# receipt-verify.sh (fetched from THIS reusable workflow's own pinned uses:
+# ref, via github.job_workflow_ref — the same SHA the caller pinned when they
+# called this workflow; never the PR's working tree, which is PR-controlled).
+# Fails closed on every path: no receipt, stale receipt, non-APPROVED, subject
+# mismatch, or an override the PR body does not disclose.
 #
 # HONEST BOUND (documented everywhere this check is): this verifies that a
 # receipt was minted for exactly this subject and that its override ledger is
@@ -49,18 +50,26 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUM: ${{ github.event.pull_request.number }}
+          JOB_WF_REF: ${{ github.job_workflow_ref }}
+          PLINTH_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Verifier comes from the pinned release — same anchor and same known
-          # downgrade limit as the floor harness (a .plinth-version change
-          # outside a plinth-update commit is reviewed as tampering).
-          ver="$(cat .plinth-version 2>/dev/null || true)"
-          [ -n "$ver" ] || { echo "::error::no .plinth-version — not a Plinth project?"; exit 1; }
-          git clone --depth 1 --branch "v${ver}" \
-            "https://github.com/${{ github.repository_owner }}/plinth" /tmp/plinth \
-            || { echo "::error::cannot fetch plinth@v${ver} — missing tag, or plinth repo not readable from Actions"; exit 1; }
+          # Verifier comes from THIS workflow's own uses: pin (job_workflow_ref),
+          # not from any file in the PR checkout — same trust anchor the caller
+          # chose when they pinned this reusable workflow.
+          [ -n "${JOB_WF_REF:-}" ] || { echo "::error::github.job_workflow_ref is empty — expected for a reusable workflow call; cannot resolve the verifier pin"; exit 1; }
+          case "$JOB_WF_REF" in
+            *@*) ref="${JOB_WF_REF##*@}" ;;
+            *) echo "::error::github.job_workflow_ref has no @ref (got ${JOB_WF_REF}) — cannot resolve the verifier pin"; exit 1 ;;
+          esac
+          [ -n "$ref" ] || { echo "::error::empty ref after last @ in job_workflow_ref (${JOB_WF_REF}) — cannot resolve the verifier pin"; exit 1; }
+          git init -q /tmp/plinth
+          git -C /tmp/plinth remote add origin "https://github.com/${PLINTH_OWNER}/plinth"
+          git -C /tmp/plinth fetch -q --depth 1 origin "$ref" \
+            || { echo "::error::cannot fetch plinth@${ref} (from job_workflow_ref) — missing commit, or plinth repo not readable from Actions"; exit 1; }
+          git -C /tmp/plinth checkout -q FETCH_HEAD
           VERIFY=/tmp/plinth/shared/.plinth/receipt-verify.sh
-          [ -f "$VERIFY" ] || { echo "::error::plinth v${ver} predates the receipt check (no receipt-verify.sh) — update the instrument before requiring this check"; exit 1; }
+          [ -f "$VERIFY" ] || { echo "::error::pinned plinth ref (${ref}) predates the receipt check (no receipt-verify.sh) — repin uses: to v4.7+"; exit 1; }
           chmod +x "$VERIFY"
           # The PR head object must exist locally even for fork PRs (the base
           # repo serves it via the pull ref); the notes ref comes from the BASE

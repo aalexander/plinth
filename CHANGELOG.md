@@ -18,7 +18,9 @@
 - **`receipt / verify` — the new reusable check.** `shared/.plinth/receipt-verify.sh`
   re-derives every field from the PR's own subject and fails closed on any mismatch;
   `.github/workflows/plinth-receipt.yml` runs it as the requirable context. Hardening:
-  the verifier is fetched from the PINNED release (the harness trust anchor), the notes
+  the verifier is fetched at the workflow's OWN pinned ref — `github.job_workflow_ref`, i.e.
+  the exact SHA the caller's `uses:` line pins, never a version string read from the PR's
+  checkout (that would let the PR pick its own verifier), the notes
   ref is fetched from the BASE repo only, the PR body comes from the event payload and is
   never shell-interpolated, and head + body are re-fetched before success (TOCTOU).
   `pull_request` events only — merge queues rewrite SHAs, unsupported in v1, fail closed.
