@@ -712,6 +712,13 @@ installed copies.
   binding session is structurally guaranteed to re-read. Distinct from the
   resolved-findings-drop tradeoff above (that is about dropped FINDINGS; this is
   about never-re-read CODE). (v4.6 round 12, minor.)
+- **Review-prompt payload duplication in this repo: reviewer.md phase/convergence
+  charter also lives in `.plinth/AGENTS-project.md`.** v4.6 promoted the "Review
+  phases" / "Convergence — bound the loop" sections into `shared/reviewer.md`, but
+  this repo's ratified `.plinth/AGENTS-project.md` still carries them verbatim;
+  `inline_contract()` concatenates both, so every review prompt here includes the
+  charter twice. No functional impact — trim the duplicate from AGENTS-project.md
+  on the next ratified charter touch. (v4.6 post-approval fresh round, minor.)
 - **`plinth update` cannot complete the driver-shell migration autonomously.**
   The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
   delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
