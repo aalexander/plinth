@@ -881,3 +881,8 @@ installed copies.
   installed, a retry can double-insert a section. The command reports the
   condition; a transactional rollback or a collate lockfile would harden
   environment failures. (changelog-fragments review round 1, minor.)
+- **`changelog-collate` accepts a 9-digit component that increments past its own
+  next-read bound.** Components of 10+ digits are rejected on input, but
+  `999999999` + 1 produces a 10-digit VERSION the next collate will refuse.
+  Reserve increment headroom (reject 9-digit all-nines) or accept the generated
+  range on read. (changelog-fragments review round 6, minor.)

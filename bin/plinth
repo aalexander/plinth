@@ -1638,7 +1638,10 @@ run_changelog_collate() {
     # hard-errors on directories / broken links so release prose cannot hide.
     # Capture find status: a failed find must not become a successful no-op.
     _flist="$(mktemp)" || { echo "changelog-collate: mktemp failed while listing fragments" >&2; exit 1; }
-    if ! find "$cdir" -maxdepth 1 -name '*.md' -print > "$_flist"; then
+    # -H: follow a command-line starting-point that is itself a symlink to a
+    # directory (default find does not, and would silently no-op on a linked
+    # changelog.d/). Do not use -L (would also follow links inside the tree).
+    if ! find -H "$cdir" -maxdepth 1 -name '*.md' -print > "$_flist"; then
       rm -f "$_flist"
       echo "changelog-collate: failed to list $cdir/*.md" >&2
       exit 1

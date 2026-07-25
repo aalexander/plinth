@@ -4198,6 +4198,15 @@ jobs:
           [ "$r" != 0 ] || { echo "::error::changelog-collate accepted/skipped a .md directory"; exit 1; }
           printf '%s' "$out" | grep -q 'not-a-file.md' || { echo "::error::.md-directory error did not name the path"; exit 1; }
           cmp -s "$CLCdir/VERSION.bak" "$CLCdir/VERSION" || { echo "::error::.md-directory path rewrote VERSION"; exit 1; }
+          # changelog.d as a symlink to a directory must still collate (find without -H no-ops).
+          CLCld="$(mktemp -d)"; reald="$(mktemp -d)"
+          printf '8.0.0\n' > "$CLCld/VERSION"
+          printf '# Plinth changelog\n\n## v8.0.0 — base — January 01, 2020\n- base\n' > "$CLCld/CHANGELOG.md"
+          printf 'bump: patch\n---\n- **linked dir.**\n' > "$reald/linked-dir.md"
+          ln -s "$reald" "$CLCld/changelog.d"
+          "$GITHUB_WORKSPACE/bin/plinth" changelog-collate "$CLCld" >/dev/null
+          [ "$(cat "$CLCld/VERSION")" = "8.0.1" ] || { echo "::error::changelog-collate no-op'd when changelog.d is a symlink to a directory (got $(cat "$CLCld/VERSION")) — need find -H"; exit 1; }
+          grep -qF 'linked dir' "$CLCld/CHANGELOG.md" || { echo "::error::linked changelog.d body missing from CHANGELOG"; exit 1; }
           # Missing trailing newline on a valid VERSION must still succeed (not a hard-error path).
           CLCnl="$(mktemp -d)"; printf '5.0.0' > "$CLCnl/VERSION"   # no trailing newline
           printf '# Plinth changelog\n\n## v5.0.0 — base — January 01, 2020\n- base\n' > "$CLCnl/CHANGELOG.md"
