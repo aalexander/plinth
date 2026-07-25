@@ -41,6 +41,26 @@ die() { echo "PLINTH REVIEW FAILED: $*" >&2; exit 2; }
 # review gate releases the session instead of trapping it on something only the
 # human can fix. Discipline refusals (dirty tree, empty diff, unchanged HEAD)
 # use plain die — they must NOT open the gate.
+# unbind_verdict <why> — a persisted APPROVED that never finished BINDING must not stay
+# readable as APPROVED. mint_receipt aborting on a moved base, or a capped Tier-2
+# confirmation, both exit 2 AFTER verdict.json is written; leaving it APPROVED@HEAD meant
+# guard.sh's ship gate and the Stop gate would release on a verdict the loop had just
+# refused to bind. Demote the `verdict` field to UNBOUND and record why, preserving
+# `reviewer_verdict` for the audit trail. Consumers compare against "APPROVED", so they all
+# fail closed on this without learning a new field.
+unbind_verdict() {
+  local why="${1:-binding gate failed}" tmp
+  [ -n "${SDIR:-}" ] && [ -f "$SDIR/verdict.json" ] || return 0
+  tmp="$SDIR/verdict.json.unbind"
+  if jq --arg w "$why" '.verdict = "UNBOUND" | .unbound_reason = $w' "$SDIR/verdict.json" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$SDIR/verdict.json"
+  else
+    rm -f "$tmp"
+    # Cannot rewrite it — removing it is still fail-closed (no verdict reads as no approval).
+    rm -f "$SDIR/verdict.json"
+  fi
+}
+
 die_infra() {
   # Always print and exit 2. When SDIR is set, also write last-error so the Stop
   # gate can take its immediate infra escape. When SDIR is still empty (only the
@@ -616,8 +636,12 @@ mint_receipt() {  # mint_receipt <round>
   if [ -n "$pinned" ]; then
     live_tip="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
       || die_infra "base ref '${baseref}' disappeared during this review — re-run ./.plinth/review.sh"
-    [ "$live_tip" = "$pinned" ] \
-      || die_infra "base ref '${baseref}' moved during this review (${pinned:0:12} → ${live_tip:0:12}). The reviewed subject is no longer the one that would be minted — re-run ./.plinth/review.sh."
+    # BOTH actions, or neither: demote the persisted APPROVED *and* abort. Splitting them
+    # made die_infra unconditional, which would have aborted every mint.
+    [ "$live_tip" = "$pinned" ] || {
+      unbind_verdict "the base ref moved during the round, so this approval never bound to a mintable subject"
+      die_infra "base ref '${baseref}' moved during this review (${pinned:0:12} → ${live_tip:0:12}). The reviewed subject is no longer the one that would be minted — re-run ./.plinth/review.sh."
+    }
   else
     pinned="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
       || { echo "Plinth review: NOTE — receipt not minted (cannot resolve ${baseref})."; return 0; }
@@ -1356,6 +1380,7 @@ if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
   # confirmation on the next invocation once the operator unbricks with
   # PLINTH_ROUND_CAP.
   if [ "$ROUND_CAP" -gt 0 ] && [ $((round + 1)) -gt "$ROUND_CAP" ]; then
+    unbind_verdict "the Tier-2 clean-slate confirmation could not run (round cap), so this approval never bound"
     die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED is recorded but NON-BINDING until the confirmation runs — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
   fi
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."

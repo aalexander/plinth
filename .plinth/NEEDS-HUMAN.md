@@ -51,7 +51,11 @@
   **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
   per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand
   (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the release
-  SHA — for v4.7.0 that is `ed8d75b2b90685eddbebb24bd11c2770ed489341`. Merge that PR
+  SHA — for v4.7.0 that is `ed8d75b2b90685eddbebb24bd11c2770ed489341`. **Pin the release you are RUNNING, not v4.7.0.** That SHA delivers v4.7.0's
+  verifier, which predates this release's live base-SHA check, notes-probe error
+  classification, strict-enablement diagnostic and repo-mismatch redaction — so a
+  v4.7.2 rollout that keeps it silently ships the older verifier. After tagging,
+  take the SHA with `git rev-parse v<version>` and pin that. Merge that PR
   before doing step 2.
 
   Why the order is not optional: the check reads the receipt job's pin from the BASE
