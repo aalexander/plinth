@@ -1229,9 +1229,9 @@ jobs:
           # for the network fetch of this repo's own pinned commit, and a `gh` stub
           # stands in for the TOCTOU re-fetch. No real network access.
           R9D_WD="$(mktemp -d)"
-          python3 - <<'PY' > "$R9D_WD/step.sh.raw"
-          import re
-          lines = open('.github/workflows/plinth-receipt.yml').read().split('\n')
+          python3 - "$GITHUB_WORKSPACE/.github/workflows/plinth-receipt.yml" <<'PY' > "$R9D_WD/step.sh.raw"
+          import re, sys
+          lines = open(sys.argv[1]).read().split('\n')
           blocks=[]; i=0
           while i < len(lines):
               m = re.match(r'^(\s*)run: \|', lines[i])
@@ -1247,9 +1247,9 @@ jobs:
               i+=1
           print(blocks[-1])
           PY
-          python3 - <<'PY' > "$R9D_WD/guard.sh.raw"
-          import re
-          lines = open('.github/workflows/plinth-receipt.yml').read().split('\n')
+          python3 - "$GITHUB_WORKSPACE/.github/workflows/plinth-receipt.yml" <<'PY' > "$R9D_WD/guard.sh.raw"
+          import re, sys
+          lines = open(sys.argv[1]).read().split('\n')
           blocks=[]; i=0
           while i < len(lines):
               m = re.match(r'^(\s*)run: \|', lines[i])
