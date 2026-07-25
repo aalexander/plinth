@@ -3838,6 +3838,28 @@ jobs:
             bash "$LG" snapshot > "$TGI/sn" 2>/dev/null; echo b >> app.py
             r=0; PATH="$GRPB:$PATH" bash "$LG" scope HEAD --snapshot "$TGI/sn" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 5 ] || { echo "::error::scope did not fail closed when grep (classification) errored (rc=$r) — would scope ok despite an un-classifiable sensitive path"; exit 1; } )
+          # sibling, TARGETED at the v4.7.1 bulk prefilter: the shim above fails EVERY grep, so
+          # validate_prot_pats aborts BEFORE `sens_prefilter`'s `grep -E -f` is ever reached —
+          # meaning deleting the prefilter's own `_gvrc >= 2` gate would leave this canary green.
+          # This shim delegates ordinary greps to the real one and fails ONLY the `-f` invocation,
+          # so the prefilter is the single failing step and its fail-closed path is what is proven.
+          REALGREP="$(command -v grep)"
+          PFB="$(mktemp -d)"
+          { printf '#!/usr/bin/env bash\n'
+            printf 'for a in "$@"; do [ "$a" = "-f" ] && exit 2; done\n'
+            printf 'exec %s "$@"\n' "$REALGREP"; } > "$PFB/grep"
+          chmod +x "$PFB/grep"
+          TPF="$(mktemp -d)"; ( cd "$TPF"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '(^|/)secret\\.txt$\n' > .plinth/protected-paths
+            echo real > secret.txt; echo a > app.py; git add -A; git commit -qm base >/dev/null
+            # A bare failing command would abort under `set -e` before any check ran, so every
+            # invocation here uses the `r=0; ... || r=$?` idiom the sibling fixtures use.
+            r=0; PATH="$PFB:$PATH" bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" -ne 0 ] || { echo "::error::(prefilter fail-closed) snapshot SUCCEEDED while the bulk prefilter's grep was rigged to fail. Two possible causes, both bad: the prefilter's fail-closed gate has been removed (a grep error now silently empties the sensitive baseline, which later reads as 'scope ok'), or the '-f' invocation was never reached and this fixture proves nothing"; exit 1; }
+            [ "$r" = 5 ] || { echo "::error::(prefilter fail-closed) snapshot returned $r, expected 5, when ONLY the bulk 'grep -E -f' prefilter failed — a prefilter error must never silently empty the sensitive baseline (it would later read as 'scope ok')"; exit 1; }
+            bash "$LG" snapshot > "$TPF/sn" 2>/dev/null; echo b >> app.py
+            r=0; PATH="$PFB:$PATH" bash "$LG" scope HEAD --snapshot "$TPF/sn" app.py >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::(prefilter fail-closed) scope returned $r, expected 5, when ONLY the bulk prefilter failed — the re-snapshot would compare against an empty sensitive set"; exit 1; } )
           # sibling: a shadowed failing `sed` (the tag/extraction transforms) must ALSO fail closed.
           # CRITICAL: test sed EXIT 1 too — native BSD/macOS sed returns rc=1 on a real error, which in
           # a `grep | sed` pipeline is indistinguishable from grep's legitimate empty rc=1 and would be
@@ -3969,7 +3991,7 @@ jobs:
             printf '# narrowed away\n' > .plinth/protected-paths; echo STOLEN > secret.txt   # lane narrows policy + edits the secret
             r=0; bash "$LG" scope HEAD app.py secret.txt .plinth/protected-paths >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope let a lane NARROW protected-paths and edit the un-protected secret (rc=$r) — must read policy from base"; exit 1; } )
-          # LARGE IGNORED TREE (v4.7.2): the snapshot must stay O(sensitive files), WITHOUT narrowing
+          # LARGE IGNORED TREE (v4.7.1): the snapshot must stay fast WITHOUT narrowing
           # what it sees. Classification used to fork two greps per pattern per path over the FULL
           # ignored listing, so a repo with a real node_modules/ paid minutes (232s measured on a
           # 25k-file ignored tree) and lanes stalled. Both halves are asserted here, because the

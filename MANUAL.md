@@ -624,11 +624,12 @@ it has run green with a real smoke_cmd.
   Same hazard as grok printing "You are not authenticated." on exit 0.
 - **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
   the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
-  `.plinth/lane-guard.sh preflight grok`. Two open defects currently make it
-  unreliable — upstream #19 (lane-guard's sensitive-path snapshot enumerates EVERY
-  ignored file, stalling minutes on any repo with `node_modules`/`.venv`) and #32
-  (the lane implemented a task itself instead of delegating, which its contract
-  forbids). Until both are fixed, treat "grok typed it" as a claim to verify, not an
+  `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
+  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
+  the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
+  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
+  instead of delegating, which its contract forbids) remains open. Until it lands, treat
+  "grok typed it" as a claim to verify, not an
   assumption — check the report, and prefer typing it yourself over believing a lane
   that may have silently self-implemented.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
@@ -642,16 +643,20 @@ Ratified 2026-07-25, in this order. The ordering is the point: items 1 and 2 com
 first because item 3 is meant to be BUILT through the lane, and building it through
 a lane that stalls or silently self-implements would defeat the exercise twice.
 
-1. **Upstream #19 — the lane-guard stall.** `sens_snapshot` enumerates every ignored
-   file (`git ls-files -o -i --exclude-standard`) and then classifies/hashes each with
-   a fork apiece, so cost is O(all ignored files) rather than O(sensitive files). Any
-   repo with `node_modules`/`.venv` pays minutes per lane invocation — certeus measured
-   ~6 minutes across ~28,000 files, before the lane ever reached grok. Plinth itself is
-   fast only because it has almost no ignored tree, which is exactly why its own
-   dogfooding never surfaced this. Fix: push the filtering into git by passing the
-   sensitive pathspecs to `git ls-files`, so matching happens in C and only candidates
-   come back. This touches the boundary deciding what a delegated lane may not alter —
-   it wants its own focused Tier-2 review, not a ride-along.
+1. **Upstream #19 — the lane-guard stall. RESOLVED in v4.7.1.** `sens_snapshot`
+   classified each enumerated path with a `printf | grep` pair PER PATTERN, so cost was
+   O(ignored files x patterns) in PROCESSES — certeus measured ~6 minutes across ~28,000
+   files before the lane ever reached grok. The fix is a bulk ERE prefilter: one
+   `grep -E -f` running the same pattern set (`active_pats` plus the builtin secret
+   constants) over the whole list, with `sens_match` still run on every survivor as the
+   sole classification authority, so the filter can only ever be a SUPERSET. Measured
+   232s -> 0.43s on 25k ignored files, byte-identical output.
+   NOTE, because the original plan here was WRONG: this deliberately does NOT push
+   pathspecs into `git ls-files`. The enumeration was never the cost (~31ms), and
+   `.plinth/protected-paths` entries are `grep -E` REGEXES, not git pathspecs — a
+   pathspec-derived candidate list would be faster AND silently blind to any path that
+   is sensitive only by project policy. The full ignored listing is retained: that IS
+   the security property.
 2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
    implement the task itself, but nothing structurally enforces that; a lane that
    struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
