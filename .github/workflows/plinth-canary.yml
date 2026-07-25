@@ -3314,6 +3314,21 @@ jobs:
             grep -q '^    DELEGATION:' "$A" || { echo "::error::${a}-implementer's report block has no DELEGATION line — the driver would get no receipt to check"; exit 1; }
             grep -q 'MODEL: <the model id you are running as>' "$A" || { echo "::error::${a}-implementer's spec no longer asks the delegate to self-report its MODEL — the report's model= could only ever be 'unreported'"; exit 1; }
             grep -q 'does NOT prove which model' "$A" || { echo "::error::${a}-implementer dropped the honest bound on the delegation receipt (it proves a transcript exists, not who typed the diff) — overclaiming is this repo's most-cited defect class"; exit 1; }
+            # ORDERING + REAL VARIABLES (not a whole-file string presence): the documented
+            # delegation invocation must appear AFTER the documented scope invocation, and must
+            # pass the run's rc and transcript path (RUN_RC / OUT) — not a hardcoded 0 or fixed path.
+            # A whole-file grep for "delegation" still passes if those lines swapped or used literals.
+            _scope_ln="$(grep -nE 'lane-guard\.sh scope ' "$A" | head -1 | cut -d: -f1)"
+            _del_ln="$(grep -nE "lane-guard\.sh delegation $a " "$A" | head -1 | cut -d: -f1)"
+            { [ -n "$_scope_ln" ] && [ -n "$_del_ln" ]; } || { echo "::error::${a}-implementer missing scope or delegation command line for order check"; exit 1; }
+            [ "$_del_ln" -gt "$_scope_ln" ] || { echo "::error::${a}-implementer runs delegation (line $_del_ln) BEFORE scope (line $_scope_ln) — artifact under .plinth/session/ would trip the pre-run snapshot"; exit 1; }
+            # Extract the FIRST documented delegation invocation line (indented command, not prose):
+            _dline="$(grep -E "lane-guard\.sh delegation $a " "$A" | head -1)"
+            printf '%s' "$_dline" | grep -q 'RUN_RC' || { echo "::error::${a}-implementer delegation does not pass the run's RUN_RC (got: $_dline) — a hardcoded rc would hide timeouts"; exit 1; }
+            printf '%s' "$_dline" | grep -q 'OUT' || { echo "::error::${a}-implementer delegation does not pass the run's OUT transcript path (got: $_dline) — a fixed path is not the delegate's output"; exit 1; }
+            # Reject a literal numeric rc or a hardcoded absolute path in the invocation template:
+            printf '%s' "$_dline" | grep -Eq "delegation $a [0-9]+ " && { echo "::error::${a}-implementer hardcodes a numeric CLI rc in the delegation invocation (got: $_dline)"; exit 1; } || true
+            printf '%s' "$_dline" | grep -Eq 'delegation '"$a"' /' && { echo "::error::${a}-implementer hardcodes an absolute transcript path in the delegation invocation (got: $_dline)"; exit 1; } || true
           done
           # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
           # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
@@ -3396,39 +3411,76 @@ jobs:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
           # UNAUTHENTICATED grok — grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but
-          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
+          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable.
+          # CAPTURE the diagnostic (do not discard): a clean auth failure must report "not signed in".
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
-          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }
+          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?
+          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r out=$(printf '%s' "$out" | tr '\n' ' ')) — exit code alone is not auth / diagnostic discarded"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1; exit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
-          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r)"; exit 1; }
+          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?
+          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           # AUTHENTICATED grok — a real model list, no 'not authenticated' marker -> ready:
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { printf "grok-4.5\\n"; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
           # codex preflight: same three states — codex auth (login status) is safety-critical and must be tested too
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING codex (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 1; exit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
-          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
+          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight codex 2>&1)" || r=$?
+          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
-          # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
-          # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
+          # PREFLIGHT DIAGNOSTICS (both vendors): rc 124/137/142 alone is NOT "cap fired" — _cap returns
+          # 124 immediately with no cap tool, and a child may exit 124 itself. Only ELAPSED time lets
+          # the diagnostic claim the wall-clock cap. Assert the TEXT (not discarded) for:
+          #   (i)  stub exiting 124 IMMEDIATELY → must NOT claim cap, must say "too fast"
+          #   (ii) stub that genuinely exceeds the 30s cap → MUST claim cap fired + report elapsed
+          #   (iii) clean auth failure still reports "not signed in" (covered above)
+          for _v in grok codex; do
+            _fast="$(mktemp -d)"
+            if [ "$_v" = grok ]; then
+              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 124\n' > "$_fast/grok"; chmod +x "$_fast/grok"
+            else
+              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 124; exit 0\n' > "$_fast/codex"; chmod +x "$_fast/codex"
+            fi
+            r=0; out="$(PATH="$_fast:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-124: want rc=3 got $r"; exit 1; }
+            printf '%s' "$out" | grep -qi 'too fast to be the 30s cap' || { echo "::error::preflight[$_v] fast-124: diagnostic must say too-fast-to-be-cap (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock cap' && { echo "::error::preflight[$_v] fast-124: wrongly claimed the wall-clock cap fired (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+          done
+          # AUTH-CHECK WALL-CLOCK CAP (round-41 + diagnostic text): a HANGING auth check must be
+          # bounded AND the diagnostic must claim the cap fired with elapsed time. SLOW (~30s) by
+          # design — the production auth cap is fixed at 30s; do not skip.
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
-          as="$(date +%s)"; r=0; PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; ae="$(date +%s)"
+          as="$(date +%s)"; r=0; out="$(PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?; ae="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging grok auth check (rc=$r elapsed=$(( ae - as ))s) — auth preflight uncapped"; exit 1; }
+          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock cap' || { echo "::error::preflight[grok] real-cap: diagnostic must claim the wall-clock cap fired (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s' || { echo "::error::preflight[grok] real-cap: diagnostic must report elapsed time (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -qi 'too fast to be the 30s cap' && { echo "::error::preflight[grok] real-cap: wrongly said too-fast for a genuine hang (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+          # codex genuine-cap (slow, ~30s) — same diagnostic contract:
+          LHC="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = login ] && { trap "" TERM; sleep 90; }\n' > "$LHC/codex"; chmod +x "$LHC/codex"
+          as="$(date +%s)"; r=0; out="$(PATH="$LHC:$PATH" bash "$LG" preflight codex 2>&1)" || r=$?; ae="$(date +%s)"
+          { [ "$r" = 3 ] && [ "$(( ae - as ))" -ge 20 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging codex auth check (rc=$r elapsed=$(( ae - as ))s)"; exit 1; }
+          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock cap' || { echo "::error::preflight[codex] real-cap: diagnostic must claim the wall-clock cap fired (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s' || { echo "::error::preflight[codex] real-cap: diagnostic must report elapsed time (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           # `_cap` itself, not just the agent caps, must bound via its PYTHON fallback (timeout hidden)
-          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep + hanging grok, plus
+          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep/date + hanging grok, plus
           # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps:
-          CPY="$(mktemp -d)"; for b in bash grep sleep python3; do ln -s "$(command -v "$b")" "$CPY/$b"; done
+          CPY="$(mktemp -d)"; for b in bash grep sleep python3 date; do ln -s "$(command -v "$b")" "$CPY/$b"; done
           printf '#!/usr/bin/env bash\ncase "$1" in models) trap "" TERM; sleep 90;; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
-          ps="$(date +%s)"; r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; pe="$(date +%s)"
+          ps="$(date +%s)"; r=0; out="$(PATH="$CPY" bash "$LG" preflight grok 2>&1)" || r=$?; pe="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging auth check (rc=$r elapsed=$(( pe - ps ))s; want 3 and a real ~30s bound, not an instant fail)"; exit 1; }
+          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock cap' || { echo "::error::_cap python fallback real-cap diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           # authed via the python path -> ready (0):
           printf '#!/usr/bin/env bash\ncase "$1" in models) printf "grok-4.5\\n";; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
           r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::_cap python path rejected an authenticated grok (rc=$r)"; exit 1; }
-          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3:
-          CNO="$(mktemp -d)"; for b in bash grep; do ln -s "$(command -v "$b")" "$CNO/$b"; done
+          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3,
+          # and the diagnostic must say too-fast (instant 124), NOT claim the 30s cap fired:
+          CNO="$(mktemp -d)"; for b in bash grep date; do ln -s "$(command -v "$b")" "$CNO/$b"; done
           printf '#!/usr/bin/env bash\ncase "$1" in models) echo ok;; esac\n' > "$CNO/grok"; chmod +x "$CNO/grok"
-          r=0; PATH="$CNO" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
+          r=0; out="$(PATH="$CNO" bash "$LG" preflight grok 2>&1)" || r=$?
+          [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
+          printf '%s' "$out" | grep -qi 'too fast to be the 30s cap' || { echo "::error::_cap no-tool: diagnostic must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock cap' && { echo "::error::_cap no-tool: wrongly claimed wall-clock cap fired for an instant refuse (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), NEVER run UNCAPPED, when
           # neither timeout/gtimeout nor python3 exists. EXECUTE the shipped cap() (not just grep) with a
           # CLEAN PATH that has bash + a sentinel-touching model stub but NO timeout/gtimeout/python3, and
@@ -3676,49 +3728,117 @@ jobs:
           # still emits a well-formed report removes that diversity while the driver believes
           # delegation happened. `delegation` makes the delegate's OWN transcript a precondition of
           # STATUS: complete, so a skipped delegation leaves a hole the driver can see. BOTH
-          # directions are asserted — a gate that cannot REFUSE is not a gate. ──
+          # directions are asserted — a gate that cannot REFUSE is not a gate.
+          # Integrity is asserted ON DISK (receipt line alone is hollow): header agrees with receipt,
+          # recomputed body sha256/byte count match, transcript preserved BYTE-FOR-BYTE. ──
           LGD="$(mktemp -d)"; ( cd "$LGD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             mkdir -p .plinth; printf '(^|/)\.plinth/session/\n' > .plinth/protected-paths
             # NOTE the .gitignore deliberately does NOT list .plinth/session/ — a fresh clone has no
             # session dir at all, so the self-ignore `delegation` writes is what must keep it clean:
             printf 'node_modules/\n' > .gitignore; echo a > app.py; git add -A; git commit -qm base >/dev/null
-            # (1) transcript PRESENT and non-empty -> receipt, rc 0: STATUS: complete is permitted.
-            TR="$(mktemp)"; printf 'grok ran\nverification: ok\nMODEL: grok-4.5\n' > "$TR"
+            # (1) ARTIFACT INTEGRITY on a pathological transcript: blank lines, trailing whitespace,
+            # a tab, a UTF-8 character, and NO trailing newline. A summary/re-wrap must fail the
+            # byte-for-byte body check. Hash/size are computed from the SOURCE before recording.
+            TR="$(mktemp)"
+            # shellcheck disable=SC2059
+            printf 'line1\n\nline with trailing spaces  \n\tindented tab line\nUTF-8: caf\xc3\xa9\nverification: ok\nMODEL: grok-4.5' > "$TR"
+            EXP_BYTES="$(wc -c < "$TR" | tr -d '[:space:]')"
+            EXP_HASH="$(shasum -a 256 "$TR" 2>/dev/null | cut -d' ' -f1 || sha256sum "$TR" | cut -d' ' -f1)"
             r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
             [ "$r" = 0 ] || { echo "::error::lane-guard delegation rejected a PRESENT non-empty transcript (rc=$r) — an honest lane could never report complete"; exit 1; }
             printf '%s' "$out" | grep -q '^delegation recorded: ' || { echo "::error::delegation printed no receipt line for the lane to report and the driver to check"; exit 1; }
-            printf '%s' "$out" | grep -q 'model=grok-4.5' || { echo "::error::delegation did not surface the delegate's SELF-REPORTED model — 'typed by grok-4.5' stays an assumption the driver cannot check"; exit 1; }
             ART="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"
-            { [ -n "$ART" ] && [ -s "$ART" ]; } || { echo "::error::the delegation receipt names no non-empty artifact — nothing is preserved for the driver to read"; exit 1; }
+            { [ -n "$ART" ] && [ -s "$ART" ] && [ -f "$ART" ]; } || { echo "::error::the delegation receipt names no non-empty artifact FILE — nothing is preserved for the driver to read"; exit 1; }
             case "$ART" in *"/.plinth/session/lanes/"*) : ;; *) echo "::error::delegation artifact is not under .plinth/session/lanes/ ($ART) — the driver would not know where to look"; exit 1 ;; esac
-            grep -q 'verification: ok' "$ART" || { echo "::error::the delegation artifact does not carry the delegate's transcript verbatim — it is the evidence, not a summary"; exit 1; }
-            grep -q 'rc=0' "$ART" || { echo "::error::the delegation artifact does not record the delegate CLI's exit code"; exit 1; }
+            # Parse receipt LINE fields:
+            R_RC="$(printf '%s' "$out" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
+            R_BYTES="$(printf '%s' "$out" | sed -n 's/.* bytes=\([^ ]*\).*/\1/p')"
+            R_HASH="$(printf '%s' "$out" | sed -n 's/.* sha256=\([^ ]*\).*/\1/p')"
+            R_MODEL="$(printf '%s' "$out" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
+            # Parse artifact HEADER (first line) — must agree with the receipt:
+            HDR="$(head -n1 "$ART")"
+            printf '%s' "$HDR" | grep -q '^# plinth lane delegation v1:' || { echo "::error::artifact header missing '# plinth lane delegation v1:' (got: $HDR)"; exit 1; }
+            H_RC="$(printf '%s' "$HDR" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
+            H_BYTES="$(printf '%s' "$HDR" | sed -n 's/.* bytes=\([^ ]*\).*/\1/p')"
+            H_HASH="$(printf '%s' "$HDR" | sed -n 's/.* sha256=\([^ ]*\).*/\1/p')"
+            H_MODEL="$(printf '%s' "$HDR" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
+            [ "$R_RC" = "0" ] && [ "$H_RC" = "0" ] || { echo "::error::rc disagrees receipt/header (receipt rc=$R_RC header rc=$H_RC)"; exit 1; }
+            [ "$R_BYTES" = "$H_BYTES" ] || { echo "::error::bytes disagrees receipt/header (receipt=$R_BYTES header=$H_BYTES)"; exit 1; }
+            [ "$R_HASH" = "$H_HASH" ] || { echo "::error::sha256 disagrees receipt/header (receipt=$R_HASH header=$H_HASH)"; exit 1; }
+            [ "$R_MODEL" = "$H_MODEL" ] || { echo "::error::model disagrees receipt/header (receipt=$R_MODEL header=$H_MODEL)"; exit 1; }
+            [ "$R_BYTES" = "$EXP_BYTES" ] || { echo "::error::recorded bytes=$R_BYTES != real transcript bytes=$EXP_BYTES"; exit 1; }
+            [ "$R_HASH" = "$EXP_HASH" ] || { echo "::error::recorded sha256=$R_HASH != recomputed transcript sha256=$EXP_HASH"; exit 1; }
+            [ "$R_MODEL" = "grok-4.5" ] || { echo "::error::model not grok-4.5 in both places (got receipt=$R_MODEL header=$H_MODEL)"; exit 1; }
+            # Body = everything after the first newline of the artifact; must equal the transcript
+            # BYTE-FOR-BYTE (blank lines, trailing spaces, tab, UTF-8, no final newline):
+            BODY="$(mktemp)"; tail -n +2 "$ART" > "$BODY"
+            BODY_HASH="$(shasum -a 256 "$BODY" 2>/dev/null | cut -d' ' -f1 || sha256sum "$BODY" | cut -d' ' -f1)"
+            BODY_BYTES="$(wc -c < "$BODY" | tr -d '[:space:]')"
+            [ "$BODY_HASH" = "$EXP_HASH" ] || { echo "::error::artifact BODY sha256=$BODY_HASH != transcript $EXP_HASH — body not preserved (summary/re-wrap would fail here)"; exit 1; }
+            [ "$BODY_BYTES" = "$EXP_BYTES" ] || { echo "::error::artifact BODY bytes=$BODY_BYTES != transcript $EXP_BYTES"; exit 1; }
+            cmp -s "$TR" "$BODY" || { echo "::error::artifact BODY is not byte-for-byte identical to the transcript (cmp failed)"; exit 1; }
+            # recorded sha256 must equal a sha256 recomputed from the artifact body (the integrity claim):
+            [ "$R_HASH" = "$BODY_HASH" ] || { echo "::error::receipt sha256 does not match sha256 recomputed from artifact body"; exit 1; }
             # the artifact must not DIRTY the tree: `delegation` may be the first thing to create
             # .plinth/session/ in a fresh clone, and review.sh refuses a dirty tree — a lane run
             # would otherwise block the review of its own work:
             grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation did not write the self-ignoring .plinth/session/.gitignore — the lane artifact would leave the tree dirty and review.sh would refuse"; exit 1; }
             [ -z "$(git status --porcelain)" ] || { echo "::error::recording a delegation receipt left the working tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
             # (2) transcript MISSING -> exit 3. THIS is the gate: a lane that skipped the delegation
-            # (and did the work itself) can obtain no receipt, so complete is not available to it:
-            r=0; out="$(bash "$LG" delegation grok 0 "$LGD/nope.log" 2>&1)" || r=$?
+            # (and did the work itself) can obtain no receipt, so complete is not available to it.
+            # Paths live OUTSIDE the fixture repo so later dirty-tree checks stay non-hollow:
+            r=0; out="$(bash "$LG" delegation grok 0 "/no/such/transcript-$$.log" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::lane-guard delegation ACCEPTED a MISSING transcript (rc=$r, want 3) — nothing then stops a self-implementing lane from reporting STATUS: complete"; exit 1; }
             printf '%s' "$out" | grep -q '^unavailable: ' || { echo "::error::delegation's refusal does not print the 'unavailable:' reason the lane is required to report"; exit 1; }
             # (3) transcript EMPTY -> exit 3: a zero-byte file is a `touch`, not evidence the CLI ran:
-            : > "$LGD/empty.log"
-            r=0; bash "$LG" delegation grok 0 "$LGD/empty.log" >/dev/null 2>&1 || r=$?
+            EMPTY="$(mktemp)"; : > "$EMPTY"
+            r=0; bash "$LG" delegation grok 0 "$EMPTY" >/dev/null 2>&1 || r=$?
             [ "$r" = 3 ] || { echo "::error::lane-guard delegation ACCEPTED an EMPTY transcript (rc=$r, want 3) — non-empty is the whole precondition"; exit 1; }
-            # (4) a NONZERO CLI rc still RECORDS (a timeout/partial report needs its evidence too),
-            # but the rc must be the CLI's real numeric exit — not a narrative word:
+            # (4) NONZERO CLI rc still RECORDS, and rc+model must agree in receipt AND artifact header
+            # (checking only the receipt line is hollow — a header that lies would pass):
+            r=0; out="$(bash "$LG" delegation codex 7 "$TR" 2>&1)" || r=$?
+            [ "$r" = 0 ] || { echo "::error::delegation refused to record a NONZERO-rc delegate run (rc=$r)"; exit 1; }
+            ART7="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"
+            HDR7="$(head -n1 "$ART7")"
+            R7="$(printf '%s' "$out" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
+            H7="$(printf '%s' "$HDR7" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
+            RM7="$(printf '%s' "$out" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
+            HM7="$(printf '%s' "$HDR7" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
+            { [ "$R7" = "7" ] && [ "$H7" = "7" ]; } || { echo "::error::nonzero rc not agreed in receipt+header (receipt rc=$R7 header rc=$H7)"; exit 1; }
+            { [ "$RM7" = "grok-4.5" ] && [ "$HM7" = "grok-4.5" ]; } || { echo "::error::model not agreed in receipt+header for nonzero-rc run (receipt=$RM7 header=$HM7)"; exit 1; }
             r=0; out="$(bash "$LG" delegation codex 124 "$TR" 2>&1)" || r=$?
             { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'rc=124'; } || { echo "::error::delegation refused to record (or mis-recorded) a TIMED-OUT delegate run (rc=$r) — timeout/partial reports would lose their evidence"; exit 1; }
+            ART124="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDR124="$(head -n1 "$ART124")"
+            printf '%s' "$HDR124" | grep -q 'rc=124' || { echo "::error::timeout rc=124 present in receipt but missing from artifact header"; exit 1; }
             r=0; bash "$LG" delegation grok complete "$TR" >/dev/null 2>&1 || r=$?
             [ "$r" = 2 ] || { echo "::error::delegation accepted a non-numeric CLI exit code (rc=$r, want 2) — the recorded rc must be the CLI's real exit"; exit 1; }
-            # (5) no MODEL: line -> model=unreported, still recorded. The self-report is a courtesy,
-            # not the gate: a CLI that ignores the instruction must not fail an HONEST delegation,
-            # and the receipt must not claim a model it never saw:
-            printf 'ran, said nothing about its model\n' > "$LGD/nomodel.log"
-            out="$(bash "$LG" delegation grok 0 "$LGD/nomodel.log" 2>&1)" || { echo "::error::delegation failed on a transcript with no MODEL: line — an honest delegation must still record"; exit 1; }
-            printf '%s' "$out" | grep -q 'model=unreported' || { echo "::error::delegation did not report an ABSENT model self-report as 'unreported'"; exit 1; }
+            # (5) no MODEL: line -> model=unreported in BOTH receipt and artifact header.
+            NOMODEL="$(mktemp)"; printf 'ran, said nothing about its model\n' > "$NOMODEL"
+            out="$(bash "$LG" delegation grok 0 "$NOMODEL" 2>&1)" || { echo "::error::delegation failed on a transcript with no MODEL: line — an honest delegation must still record"; exit 1; }
+            ARTU="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDRU="$(head -n1 "$ARTU")"
+            printf '%s' "$out" | grep -q 'model=unreported' || { echo "::error::delegation did not report an ABSENT model self-report as 'unreported' in the receipt"; exit 1; }
+            printf '%s' "$HDRU" | grep -q 'model=unreported' || { echo "::error::artifact header did not record model=unreported for a transcript with no MODEL: line (got: $HDRU)"; exit 1; }
+            # (6) PRE-EXISTING empty or non-matching .plinth/session/.gitignore must not leave the
+            # tree dirty — previously only a MISSING file was repaired; empty/wrong content was trusted:
+            rm -rf .plinth/session
+            mkdir -p .plinth/session; : > .plinth/session/.gitignore   # empty pre-existing
+            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with empty pre-existing session .gitignore"; exit 1; }
+            grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation left empty pre-existing .plinth/session/.gitignore unrepaired (tree would go dirty)"; exit 1; }
+            [ -z "$(git status --porcelain)" ] || { echo "::error::empty pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
+            printf 'node_modules/\n' > .plinth/session/.gitignore   # non-matching content
+            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with non-matching pre-existing session .gitignore"; exit 1; }
+            grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation left non-matching .plinth/session/.gitignore unrepaired (got: $(cat .plinth/session/.gitignore | tr '\n' ' '))"; exit 1; }
+            [ -z "$(git status --porcelain)" ] || { echo "::error::non-matching pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
+            # (7) SYMLINKED lanes directory is an escape — artifact would land outside the repo.
+            # Must refuse (exit 3) and not write through the symlink:
+            rm -rf .plinth/session
+            mkdir -p .plinth/session
+            EXT="$(mktemp -d)"; ln -s "$EXT" .plinth/session/lanes
+            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED lanes directory (rc=$r, want 3) — artifact escape outside the repository"; exit 1; }
+            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::delegation refusal for symlinked lanes did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            # nothing should have been written through the symlink:
+            [ -z "$(ls -A "$EXT" 2>/dev/null)" ] || { echo "::error::delegation wrote through the symlinked lanes dir into $EXT: $(ls -A "$EXT")"; exit 1; }
             )
           # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
           # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each

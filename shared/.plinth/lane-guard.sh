@@ -387,24 +387,40 @@ case "$sub" in
         # grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
         # code alone does NOT verify auth — inspect the OUTPUT. A nonzero exit (hung/killed/other) is
         # also unavailable. Only a zero exit with NO "not authenticated" marker counts as signed in.
-        _go="$(_cap 30 grok models 2>&1)"; _grc=$?
+        _gt0=$(date +%s); _go="$(_cap 30 grok models 2>&1)"; _grc=$?; _gel=$(( $(date +%s) - _gt0 ))
         # DISAMBIGUATE the failure. One lumped reason ("not signed in (or failed/hung)") cost a
-        # driver a session: a first-call unavailable followed by clean re-runs was unattributable,
-        # so it could not tell a cold-start cap hit from a real auth failure. 124/137/142 = the
-        # wall-clock cap fired (see _cap); anything else is the CLI's own answer. This is a
-        # DIAGNOSTIC split only — no retry, no change to what counts as authenticated.
+        # driver a session: a first-call unavailable followed by clean re-runs was unattributable.
+        # The exit CODE alone cannot do it: _cap returns 124 IMMEDIATELY when no cap tool exists,
+        # and the child may exit 124/137/142 on its own — so a code-only split reported a "30s cap
+        # hit" for failures that took under a second. ELAPSED TIME is what separates them, so the
+        # cap claim is only made when the clock agrees (>= the cap, allowing 2s of slack for the
+        # TERM->KILL escalation). Everything else says what it actually knows.
+        # DIAGNOSTIC only — no retry, no change to what counts as authenticated.
         case "$_grc" in
-          124|137|142) echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock cap — a COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"; exit 3 ;;
+          124|137|142)
+            if [ "$_gel" -ge 28 ]; then
+              echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock cap (elapsed ${_gel}s) — a COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
+            else
+              echo "unavailable: the grok auth check terminated with rc=$_grc after only ${_gel}s — too fast to be the 30s cap, so this is NOT a slow cold start. Either no wall-clock cap tool is installed (python3 missing: _cap refuses to run uncapped and returns 124) or 'grok models' itself exited with that code. Check 'command -v python3' and run 'grok models' directly."
+            fi
+            exit 3 ;;
         esac
         { [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; } \
-          || { echo "unavailable: grok not signed in (auth check rc=$_grc) — run 'grok login'"; exit 3; } ;;
+          || { echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"; exit 3; } ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
-        _cap 30 codex login status >/dev/null 2>&1; _crc=$?
+        _ct0=$(date +%s); _cap 30 codex login status >/dev/null 2>&1; _crc=$?; _cel=$(( $(date +%s) - _ct0 ))
         case "$_crc" in
           0) : ;;
-          124|137|142) echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock cap — a COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"; exit 3 ;;
-          *) echo "unavailable: codex not signed in (auth check rc=$_crc) — run 'codex login'"; exit 3 ;;
+          124|137|142)
+            # Same rule as grok: only claim the cap fired if the clock agrees (see above).
+            if [ "$_cel" -ge 28 ]; then
+              echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock cap (elapsed ${_cel}s) — a COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
+            else
+              echo "unavailable: the codex auth check terminated with rc=$_crc after only ${_cel}s — too fast to be the 30s cap. Either no wall-clock cap tool is installed (python3 missing: _cap refuses to run uncapped and returns 124) or 'codex login status' itself exited with that code. Check 'command -v python3' and run 'codex login status' directly."
+            fi
+            exit 3 ;;
+          *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
         esac ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
@@ -427,12 +443,35 @@ case "$sub" in
       echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
     droot="$(git rev-parse --show-toplevel 2>/dev/null)"
     [ -n "$droot" ] || { echo "unavailable: not inside a git repo — cannot record the delegation artifact"; exit 3; }
-    ddir="$droot/.plinth/session/lanes"
-    mkdir -p "$ddir" || { echo "unavailable: cannot create '$ddir' for the delegation artifact"; exit 3; }
+    # Session dir first: gitignore + lanes path must live under a real session tree inside the repo.
+    mkdir -p "$droot/.plinth/session" || { echo "unavailable: cannot create '$droot/.plinth/session' for the delegation artifact"; exit 3; }
     # Session state SELF-IGNORES (`*`), the same as every other component that may create this dir
     # (bin/plinth, review.sh, the session-start/pulse hooks). Without it a lane artifact lands as an
     # untracked file — and review.sh refuses a dirty tree, so a lane run would block its own review.
-    [ -f "$droot/.plinth/session/.gitignore" ] || printf '*\n' > "$droot/.plinth/session/.gitignore"
+    # Trusting a PRE-EXISTING empty or non-matching .gitignore left the tree dirty; ensure `*` is present.
+    dig="$droot/.plinth/session/.gitignore"
+    if ! { [ -f "$dig" ] && grep -qxF '*' "$dig"; }; then
+      printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
+    fi
+    ddir="$droot/.plinth/session/lanes"
+    # A SYMLINKED `lanes` (or anything that is not a real directory) redirects the artifact outside
+    # the repository — an escape. Refuse before write; after mkdir, re-check and require the
+    # resolved path stays under the repo root.
+    if [ -L "$ddir" ]; then
+      echo "unavailable: '$ddir' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
+    fi
+    if [ -e "$ddir" ] && [ ! -d "$ddir" ]; then
+      echo "unavailable: '$ddir' exists and is not a directory — refusing to write the delegation artifact"; exit 3
+    fi
+    mkdir -p "$ddir" || { echo "unavailable: cannot create '$ddir' for the delegation artifact"; exit 3; }
+    if [ -L "$ddir" ] || [ ! -d "$ddir" ]; then
+      echo "unavailable: '$ddir' is not a real directory inside the repository — refusing to write the delegation artifact"; exit 3
+    fi
+    dreal="$(cd "$ddir" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$ddir'"; exit 3; }
+    case "$dreal" in
+      "$droot"|"$droot"/*) : ;;
+      *) echo "unavailable: lanes directory resolves outside the repository ('$dreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
+    esac
     dhash="$(hashof "$dtr")"; dbytes="$(wc -c < "$dtr" | tr -d '[:space:]')"
     { [ -n "$dhash" ] && [ -n "$dbytes" ]; } || { echo "unavailable: cannot hash/size the transcript '$dtr'"; exit 3; }
     # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to end with `MODEL: <id>`.
