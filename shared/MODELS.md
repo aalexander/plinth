@@ -43,8 +43,8 @@ Under the grok-RESIDENT alternative the implementer lanes are dormant (they are 
 subagents) — and mostly moot, since the driver already is the cheap fast typist.
 Under the architect-resident DEFAULT they are the worker seat. A grok-resident driver
 that wants a second implementation shells out to `codex` directly with the same
-five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope are
-vendor-neutral shell).
+five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope /
+delegation are vendor-neutral shell).
 
 What a non-Claude driver does and doesn't get: grok reads the driver contract
 (both contract files); whether it EXECUTES `.claude/` hooks is probeable, not
@@ -197,6 +197,15 @@ hook execution) typically does not run the `.claude/` guard, so each lane enforc
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets/keys,
 protected — even gitignored) may have been added/changed/repointed by the lane (else SCOPE VIOLATION,
 not accepted; it fails loud if the diff is uncomputable or a sensitive file is unhashable).
+After scope, the lane records a **delegation receipt**
+(`lane-guard.sh delegation <vendor> <cli-rc> <transcript>`) and puts the printed
+`delegation recorded: ...` line on the report's `DELEGATION:` field. That is the
+checkable hole: a lane that skipped the external CLI and implemented the task itself
+cannot produce a non-empty delegate transcript, so it cannot honestly report
+`STATUS: complete`. As the driver, treat a complete report without a `DELEGATION:`
+line (or with an unreadable/missing artifact under `.plinth/session/lanes/`) as
+incomplete — open the artifact; do not trust the narrative alone. HONEST BOUND: the
+receipt proves a transcript exists, not which model typed the diff.
 `.plinth/session/` verdict/receipt state is compared too — a delegated CLI bypasses the `.claude/`
 guard, so scope is what stops it forging a fake approval; only the hook-appended
 `.plinth/session/events.jsonl` (pulse.sh, every tool use) is excluded to avoid false-flagging every

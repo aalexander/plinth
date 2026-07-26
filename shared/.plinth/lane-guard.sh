@@ -390,38 +390,39 @@ case "$sub" in
         _gt0=$(date +%s); _go="$(_cap 30 grok models 2>&1)"; _grc=$?; _gel=$(( $(date +%s) - _gt0 ))
         # DISAMBIGUATE the failure. One lumped reason ("not signed in (or failed/hung)") cost a
         # driver a session: a first-call unavailable followed by clean re-runs was unattributable.
-        # HONEST BOUND on the timeout claim (GNU coreutils `timeout` + our python fallback):
-        #   - Elapsed time first: an INSTANT 124 is not a timeout (_cap returns 124 immediately
-        #     when no cap tool exists; a child may exit 124/137/142 itself).
-        #   - rc=124 + elapsed≈cap: wall-clock TIMEOUT. GNU timeout exits 124 when the child dies
-        #     on the initial TERM; the python fallback always exits 124 on cap fire. Residual: a
-        #     CLI that itself exits 124 after ~30s is not distinguishable.
-        #   - rc=137 + elapsed≈cap: CONSISTENT WITH timeout after -k KILL escalation (GNU timeout
-        #     returns 137 when it sends SIGKILL — see coreutils timeout-invocation), OR external
-        #     SIGKILL / CLI self-exit 137. Never label 137 as timeout-ONLY; never label it as
-        #     "NOT a timeout" either (Ubuntu's genuine hang path is 137).
-        #   - rc=142 + elapsed≈cap: SIGALRM — not the standard GNU timeout/python cap signature.
-        # DIAGNOSTIC only — no retry, no change to what counts as authenticated.
+        # HONEST BOUND on the timeout claim (GNU coreutils `timeout -k 5` + our python fallback):
+        #   - Elapsed first: an INSTANT 124/137/142 is not a completed cap (_cap returns 124 when no
+        #     cap tool exists; a child may self-exit 124/137/142).
+        #   - rc=124 + elapsed≈cap: CONSISTENT WITH wall-clock timeout (GNU timeout 124 on TERM-death;
+        #     python fallback always 124). Residual: CLI self-exit 124 after ~30s is indistinguishable.
+        #   - rc=137: GNU -k KILL lands around cap+5 (~35s). Elapsed≥33 is consistent with that path
+        #     OR CLI/external SIGKILL; 28–32s is past TERM but early for completed -k, so prefer
+        #     self-exit/external wording. Never timeout-ONLY; never absolute "NOT a timeout".
+        #   - rc=142: often 128+14 (SIGALRM), not the standard 124/137 cap signature; residual self-exit.
+        # DIAGNOSTIC only — no automatic retry (a blind retry doubles the hang bound), no change to
+        # what counts as authenticated. Operators may re-run deliberately; the text does not instruct it.
         case "$_grc" in
           124)
             if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock timeout (exit 124, elapsed ${_gel}s) — GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire. A COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
+              echo "unavailable: the grok auth check ('grok models') ended rc=124 after ${_gel}s — consistent with the 30s wall-clock timeout (GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire). Residual: a CLI that itself exits 124 after ~30s is not distinguishable from the wrapper."
             else
               echo "unavailable: the grok auth check terminated with rc=124 after only ${_gel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'grok models' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'grok models' directly."
             fi
             exit 3 ;;
           137)
-            if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — consistent with the 30s wall-clock cap after -k KILL escalation (GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis. A COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
+            if [ "$_gel" -ge 33 ]; then
+              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
+            elif [ "$_gel" -ge 28 ]; then
+              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — past the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
             else
-              echo "unavailable: the grok auth check terminated with rc=137 after only ${_gel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
+              echo "unavailable: the grok auth check terminated with rc=137 after only ${_gel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
             fi
             exit 3 ;;
           142)
             if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=142 after ${_gel}s — SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Investigate the process, not only a cold start."
+              echo "unavailable: the grok auth check ('grok models') ended rc=142 after ${_gel}s — often SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Residual: a CLI may also self-exit 142. Investigate the process, not only a cold start."
             else
-              echo "unavailable: the grok auth check terminated with rc=142 after only ${_gel}s — too fast to be the 30s wall-clock cap; rc=142 is SIGALRM (128+14), not a timeout wrapper exit."
+              echo "unavailable: the grok auth check terminated with rc=142 after only ${_gel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
             fi
             exit 3 ;;
         esac
@@ -433,25 +434,27 @@ case "$sub" in
         case "$_crc" in
           0) : ;;
           124)
-            # Same honest bound as grok (see above): 124+elapsed = timeout; 137+elapsed = -k-or-signal.
+            # Same honest bound as grok (see above).
             if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock timeout (exit 124, elapsed ${_cel}s) — GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire. A COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
+              echo "unavailable: the codex auth check ('codex login status') ended rc=124 after ${_cel}s — consistent with the 30s wall-clock timeout (GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire). Residual: a CLI that itself exits 124 after ~30s is not distinguishable from the wrapper."
             else
               echo "unavailable: the codex auth check terminated with rc=124 after only ${_cel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'codex login status' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'codex login status' directly."
             fi
             exit 3 ;;
           137)
-            if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — consistent with the 30s wall-clock cap after -k KILL escalation (GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis. A COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
+            if [ "$_cel" -ge 33 ]; then
+              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
+            elif [ "$_cel" -ge 28 ]; then
+              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — past the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
             else
-              echo "unavailable: the codex auth check terminated with rc=137 after only ${_cel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
+              echo "unavailable: the codex auth check terminated with rc=137 after only ${_cel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
             fi
             exit 3 ;;
           142)
             if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=142 after ${_cel}s — SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Investigate the process, not only a cold start."
+              echo "unavailable: the codex auth check ('codex login status') ended rc=142 after ${_cel}s — often SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Residual: a CLI may also self-exit 142. Investigate the process, not only a cold start."
             else
-              echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is SIGALRM (128+14), not a timeout wrapper exit."
+              echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
             fi
             exit 3 ;;
           *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
@@ -477,17 +480,45 @@ case "$sub" in
       echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
     droot="$(git rev-parse --show-toplevel 2>/dev/null)"
     [ -n "$droot" ] || { echo "unavailable: not inside a git repo — cannot record the delegation artifact"; exit 3; }
-    # Session dir first: gitignore + lanes path must live under a real session tree inside the repo.
-    mkdir -p "$droot/.plinth/session" || { echo "unavailable: cannot create '$droot/.plinth/session' for the delegation artifact"; exit 3; }
-    # Session state SELF-IGNORES (`*`), the same as every other component that may create this dir
-    # (bin/plinth, review.sh, the session-start/pulse hooks). Without it a lane artifact lands as an
-    # untracked file — and review.sh refuses a dirty tree, so a lane run would block its own review.
-    # Trusting a PRE-EXISTING empty or non-matching .gitignore left the tree dirty; ensure `*` is present.
-    dig="$droot/.plinth/session/.gitignore"
-    if ! { [ -f "$dig" ] && grep -qxF '*' "$dig"; }; then
-      printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
+    # CONTAINMENT BEFORE ANY WRITE. A symlinked `.plinth`, `.plinth/session`, or session
+    # `.gitignore` redirects gitignore/lanes outside the repository (data-loss / escape). Refuse
+    # first — mkdir/printf after a symlink check that only looked at `lanes` was too late.
+    dsess="$droot/.plinth/session"
+    if [ -L "$droot/.plinth" ]; then
+      echo "unavailable: '$droot/.plinth' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
     fi
-    ddir="$droot/.plinth/session/lanes"
+    if [ -L "$dsess" ]; then
+      echo "unavailable: '$dsess' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
+    fi
+    if [ -e "$dsess" ] && [ ! -d "$dsess" ]; then
+      echo "unavailable: '$dsess' exists and is not a directory — refusing to write the delegation artifact"; exit 3
+    fi
+    if [ -d "$dsess" ]; then
+      _sreal="$(cd "$dsess" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$dsess'"; exit 3; }
+      case "$_sreal" in
+        "$droot"|"$droot"/*) : ;;
+        *) echo "unavailable: session directory resolves outside the repository ('$_sreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
+      esac
+    fi
+    mkdir -p "$dsess" || { echo "unavailable: cannot create '$dsess' for the delegation artifact"; exit 3; }
+    if [ -L "$dsess" ] || [ ! -d "$dsess" ]; then
+      echo "unavailable: '$dsess' is not a real directory inside the repository — refusing to write the delegation artifact"; exit 3
+    fi
+    _sreal="$(cd "$dsess" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$dsess'"; exit 3; }
+    case "$_sreal" in
+      "$droot"|"$droot"/*) : ;;
+      *) echo "unavailable: session directory resolves outside the repository ('$_sreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
+    esac
+    # Session state SELF-IGNORES with an EXACT `*` file (same contract as bin/plinth / review.sh /
+    # session hooks). Merely finding a `*` line is not enough: `*`, `!lanes/`, `!lanes/**` leaves
+    # lanes tracked and dirties the tree. Always rewrite to exactly one `*` line. Refuse a
+    # symlinked .gitignore so we never follow an external target.
+    dig="$dsess/.gitignore"
+    if [ -L "$dig" ]; then
+      echo "unavailable: '$dig' is a symlink — refusing to follow an external session .gitignore"; exit 3
+    fi
+    printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
+    ddir="$dsess/lanes"
     # A SYMLINKED `lanes` (or anything that is not a real directory) redirects the artifact outside
     # the repository — an escape. Refuse before write; after mkdir, re-check and require the
     # resolved path stays under the repo root.
@@ -508,10 +539,10 @@ case "$sub" in
     esac
     dhash="$(hashof "$dtr")"; dbytes="$(wc -c < "$dtr" | tr -d '[:space:]')"
     { [ -n "$dhash" ] && [ -n "$dbytes" ]; } || { echo "unavailable: cannot hash/size the transcript '$dtr'"; exit 3; }
-    # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to end with `MODEL: <id>`.
-    # Sanitized to one bare token. It is what the transcript SAYS — never proof of what served the
-    # request; absent (or a CLI that ignored the instruction) -> unreported, which is not a failure.
-    dmodel="$(grep -m1 -E '^[[:space:]]*MODEL:' "$dtr" 2>/dev/null | sed -E 's/^[[:space:]]*MODEL:[[:space:]]*//' | tr -cd 'A-Za-z0-9._:/-' | cut -c1-64)"
+    # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to END with `MODEL: <id>`.
+    # Take the LAST matching line (terminal self-report), not the first — an earlier decoy MODEL:
+    # must not win. Sanitized to one bare token. Absent -> unreported (not a failure).
+    dmodel="$(grep -E '^[[:space:]]*MODEL:' "$dtr" 2>/dev/null | tail -n1 | sed -E 's/^[[:space:]]*MODEL:[[:space:]]*//' | tr -cd 'A-Za-z0-9._:/-' | cut -c1-64)"
     [ -n "$dmodel" ] || dmodel=unreported
     dart="$(mktemp "$ddir/${dv}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")" || { echo "unavailable: cannot create the delegation artifact under '$ddir'"; exit 3; }
     { printf '# plinth lane delegation v1: vendor=%s rc=%s bytes=%s sha256=%s model=%s recorded=%s\n' \

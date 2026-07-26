@@ -3453,25 +3453,29 @@ jobs:
             r=0; out="$(PATH="$_fast:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-124: want rc=3 got $r"; exit 1; }
             printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock timeout' || { echo "::error::preflight[$_v] fast-124: diagnostic must say too-fast-to-be-timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-124: wrongly claimed the wall-clock timeout fired (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-124: wrongly claimed the wall-clock timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
           # AUTH-CHECK WALL-CLOCK CAP: a HANGING (TERM-ignoring) auth check must be bounded AND the
           # diagnostic must be cap-related with elapsed. On Ubuntu, GNU timeout -k returns 137 after
           # KILL; on the python fallback, 124. SLOW (~30s+) by design — do not skip.
           # Helper: accept either timeout signature; reject "too fast" and reject "NOT a timeout".
+          # 124 path must say "consistent with" (not a definite "hit") and name the residual.
           _assert_real_cap_diag() {  # $1=vendor label, $2=out
             # "not a timeout-only" is the 137 residual phrasing and must NOT trip this guard —
             # only an absolute "NOT a timeout" / "NOT a wall-clock timeout" denial is wrong for a hang.
             printf '%s' "$2" | grep -Eqi 'too fast' && { echo "::error::preflight[$1] real-cap: wrongly said too-fast for a genuine hang (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$2" | grep -Eqi 'NOT a (wall-clock )?timeout([^a-z-]|$)' && { echo "::error::preflight[$1] real-cap: genuine hang must not be absolutely labeled NOT-a-timeout (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
-            if printf '%s' "$2" | grep -qi 'hit the 30s wall-clock timeout'; then
-              printf '%s' "$2" | grep -Eqi 'exit 124' || { echo "::error::preflight[$1] real-cap 124-path: must name exit 124 (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-              printf '%s' "$2" | grep -Eqi 'elapsed [0-9]+s' || { echo "::error::preflight[$1] real-cap 124-path: must report elapsed (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$2" | grep -qi 're-run preflight' && { echo "::error::preflight[$1] real-cap: diagnostics must not instruct a re-run (blind retry doubles the hang bound) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
+            if printf '%s' "$2" | grep -qi 'consistent with the 30s wall-clock timeout'; then
+              printf '%s' "$2" | grep -Eqi 'rc=124|exit 124' || { echo "::error::preflight[$1] real-cap 124-path: must name exit/rc 124 (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
+              printf '%s' "$2" | grep -Eqi 'elapsed [0-9]+s|after [0-9]+s' || { echo "::error::preflight[$1] real-cap 124-path: must report elapsed (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
+              printf '%s' "$2" | grep -qi 'Residual' || { echo "::error::preflight[$1] real-cap 124-path: must name Residual (self-exit indistinguishability) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
+              printf '%s' "$2" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$1] real-cap 124-path: must not claim definite 'hit' (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
             elif printf '%s' "$2" | grep -Eqi 'rc=137|ended rc=137'; then
               printf '%s' "$2" | grep -qi 'KILL' || { echo "::error::preflight[$1] real-cap 137-path: must name -k KILL residual (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
               printf '%s' "$2" | grep -qi 'not a timeout-only' || { echo "::error::preflight[$1] real-cap 137-path: must refuse timeout-only claim (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
             else
-              echo "::error::preflight[$1] real-cap: diagnostic must claim timeout (124) or -k-KILL-consistent (137) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1
+              echo "::error::preflight[$1] real-cap: diagnostic must claim consistent-with-timeout (124) or -k-KILL-consistent (137) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1
             fi
           }
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
@@ -3495,9 +3499,11 @@ jobs:
             fi
             r=0; out="$(PATH="$_slow:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] slow-137: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-137: must not use the timeout-only 124 phrasing for rc=137 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-137: must not use the timeout-only 124 phrasing for rc=137 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'not a timeout-only' || { echo "::error::preflight[$_v] slow-137: must refuse timeout-only claim (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'KILL|self-exit' || { echo "::error::preflight[$_v] slow-137: must name -k KILL / self-exit residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            # sleep 28 is past TERM but early for -k KILL (~35s) — must NOT claim completed -k consistency alone:
+            printf '%s' "$out" | grep -Eqi 'self-exit|earlier than the typical' || { echo "::error::preflight[$_v] slow-137@28s: must name self-exit / early-for-KILL residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -qi 're-run preflight' && { echo "::error::preflight[$_v] slow-137: must not instruct re-run (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
           # Instant 137: too-fast, never a completed cap / timeout-fired claim.
           for _v in grok codex; do
@@ -3509,12 +3515,12 @@ jobs:
             fi
             r=0; out="$(PATH="$_f137:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-137: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-137: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-137: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-137: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'not a completed timeout' || { echo "::error::preflight[$_v] fast-137: must say not a completed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           done
-          # rc=142 (SIGALRM): not the standard GNU timeout/python cap signature. Pin both directions
-          # and both vendors — fast is too-fast; slow names SIGALRM and must not use timeout-only phrasing.
+          # rc=142: often SIGALRM, not the standard GNU timeout/python cap signature. Pin both
+          # directions and both vendors — fast is too-fast; slow names SIGALRM + residual self-exit.
           for _v in grok codex; do
             _f142="$(mktemp -d)"
             if [ "$_v" = grok ]; then
@@ -3524,7 +3530,7 @@ jobs:
             fi
             r=0; out="$(PATH="$_f142:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-142: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-142: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-142: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-142: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'SIGALRM' || { echo "::error::preflight[$_v] fast-142: must name SIGALRM (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           done
@@ -3537,22 +3543,24 @@ jobs:
             fi
             r=0; out="$(PATH="$_s142:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] slow-142: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-142: must not use timeout-only 124 phrasing for rc=142 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-142: must not use timeout-only 124 phrasing for rc=142 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'SIGALRM' || { echo "::error::preflight[$_v] slow-142: must name SIGALRM (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'not the standard wall-clock-cap signature' || { echo "::error::preflight[$_v] slow-142: must say not the standard cap signature (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -qi 'Residual' || { echo "::error::preflight[$_v] slow-142: must name Residual (self-exit) (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           done
           # `_cap` itself, not just the agent caps, must bound via its PYTHON fallback (timeout hidden)
           # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep/date + hanging grok, plus
           # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps
-          # and the diagnostic uses the 124 timeout path (python always exits 124):
+          # and the diagnostic uses the 124 consistent-with-timeout path (python always exits 124):
           CPY="$(mktemp -d)"; for b in bash grep sleep python3 date; do ln -s "$(command -v "$b")" "$CPY/$b"; done
           printf '#!/usr/bin/env bash\ncase "$1" in models) trap "" TERM; sleep 90;; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
           ps="$(date +%s)"; r=0; out="$(PATH="$CPY" bash "$LG" preflight grok 2>&1)" || r=$?; pe="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging auth check (rc=$r elapsed=$(( pe - ps ))s; want 3 and a real ~30s bound, not an instant fail)"; exit 1; }
-          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' || { echo "::error::_cap python fallback real-cap diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -qi 'consistent with the 30s wall-clock timeout' || { echo "::error::_cap python fallback real-cap diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           # Assert BOTH fields separately — alternation would let either alone pass (hollow).
-          printf '%s' "$out" | grep -qi 'exit 124' || { echo "::error::_cap python fallback real-cap must name exit 124 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s' || { echo "::error::_cap python fallback real-cap must report elapsed (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -Eqi 'rc=124|exit 124' || { echo "::error::_cap python fallback real-cap must name exit/rc 124 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s|after [0-9]+s' || { echo "::error::_cap python fallback real-cap must report elapsed (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          printf '%s' "$out" | grep -qi 'Residual' || { echo "::error::_cap python fallback real-cap must name Residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
           # authed via the python path -> ready (0):
           printf '#!/usr/bin/env bash\ncase "$1" in models) printf "grok-4.5\\n";; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
           r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::_cap python path rejected an authenticated grok (rc=$r)"; exit 1; }
@@ -3902,17 +3910,37 @@ jobs:
             printf '%s' "$out" | grep -q 'model=unreported' || { echo "::error::delegation did not report an ABSENT model self-report as 'unreported' in the receipt"; exit 1; }
             printf '%s' "$HDRU" | grep -q 'model=unreported' || { echo "::error::artifact header did not record model=unreported for a transcript with no MODEL: line (got: $HDRU)"; exit 1; }
             # (6) PRE-EXISTING empty or non-matching .plinth/session/.gitignore must not leave the
-            # tree dirty — previously only a MISSING file was repaired; empty/wrong content was trusted:
+            # tree dirty — rewrite to EXACT `*` (a lone `*` line among un-ignores is not enough):
             rm -rf .plinth/session
             mkdir -p .plinth/session; : > .plinth/session/.gitignore   # empty pre-existing
             out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with empty pre-existing session .gitignore"; exit 1; }
-            grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation left empty pre-existing .plinth/session/.gitignore unrepaired (tree would go dirty)"; exit 1; }
+            # file must be EXACTLY one `*` line (not merely contain a `*` line among un-ignores):
+            _assert_exact_star_gi() {
+              local f=.plinth/session/.gitignore
+              { [ "$(wc -l < "$f" | tr -d '[:space:]')" = "1" ] \
+                && [ "$(wc -c < "$f" | tr -d '[:space:]')" = "2" ] \
+                && grep -qxF '*' "$f"; } \
+                || { echo "::error::$1 (got bytes=$(wc -c < "$f" | tr -d '[:space:]') content=$(cat "$f" | tr '\n' '|'))"; exit 1; }
+            }
+            _assert_exact_star_gi "delegation did not rewrite empty session .gitignore to exact '*\\n'"
             [ -z "$(git status --porcelain)" ] || { echo "::error::empty pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
             printf 'node_modules/\n' > .plinth/session/.gitignore   # non-matching content
             out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with non-matching pre-existing session .gitignore"; exit 1; }
-            grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation left non-matching .plinth/session/.gitignore unrepaired (got: $(cat .plinth/session/.gitignore | tr '\n' ' '))"; exit 1; }
+            _assert_exact_star_gi "delegation left non-matching .gitignore unrepaired"
             [ -z "$(git status --porcelain)" ] || { echo "::error::non-matching pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            # (7) SYMLINKED lanes directory is an escape — artifact would land outside the repo.
+            # Effective-rule case: `*` plus later `!lanes/` un-ignores — must rewrite and stay clean:
+            printf '*\n!lanes/\n!lanes/**\n' > .plinth/session/.gitignore
+            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with un-ignore session .gitignore"; exit 1; }
+            _assert_exact_star_gi "delegation left un-ignore rules in session .gitignore — effective ignore broken"
+            [ -z "$(git status --porcelain)" ] || { echo "::error::un-ignore .gitignore left tree DIRTY after rewrite: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
+            # (7) TERMINAL MODEL self-report: first decoy must not win over the last MODEL: line:
+            MULTI="$(mktemp)"; printf 'MODEL: decoy-model\nwork done\nMODEL: actual-terminal-model\n' > "$MULTI"
+            out="$(bash "$LG" delegation grok 0 "$MULTI" 2>&1)" || { echo "::error::delegation failed on multi-MODEL transcript"; exit 1; }
+            printf '%s' "$out" | grep -q 'model=actual-terminal-model' || { echo "::error::delegation recorded first MODEL decoy instead of terminal self-report (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -q 'model=decoy-model' && { echo "::error::delegation recorded decoy MODEL (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+            ARTM="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDRM="$(head -n1 "$ARTM")"
+            printf '%s' "$HDRM" | grep -q 'model=actual-terminal-model' || { echo "::error::artifact header did not use terminal MODEL (got: $HDRM)"; exit 1; }
+            # (8) SYMLINKED lanes directory is an escape — artifact would land outside the repo.
             # Must refuse (exit 3) and not write through the symlink:
             rm -rf .plinth/session
             mkdir -p .plinth/session
@@ -3922,6 +3950,21 @@ jobs:
             printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::delegation refusal for symlinked lanes did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             # nothing should have been written through the symlink:
             [ -z "$(ls -A "$EXT" 2>/dev/null)" ] || { echo "::error::delegation wrote through the symlinked lanes dir into $EXT: $(ls -A "$EXT")"; exit 1; }
+            # (9) SYMLINKED session dir: refuse BEFORE writing .gitignore or lanes (no external write):
+            rm -rf .plinth/session
+            EXT2="$(mktemp -d)"; ln -s "$EXT2" .plinth/session
+            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED .plinth/session (rc=$r, want 3)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::session-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            [ -z "$(ls -A "$EXT2" 2>/dev/null)" ] || { echo "::error::delegation wrote through symlinked session into $EXT2: $(ls -A "$EXT2")"; exit 1; }
+            # (10) SYMLINKED session .gitignore: refuse before following:
+            rm -rf .plinth/session
+            mkdir -p .plinth/session
+            EXT3="$(mktemp -d)"; printf 'pre\n' > "$EXT3/gitignore"; ln -s "$EXT3/gitignore" .plinth/session/.gitignore
+            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED session .gitignore (rc=$r, want 3)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::gitignore-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            grep -qx 'pre' "$EXT3/gitignore" || { echo "::error::delegation overwrote external gitignore through symlink"; exit 1; }
             )
           # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
           # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each

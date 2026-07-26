@@ -730,17 +730,18 @@ installed copies.
   (`shared/.plinth/lane-guard.sh` `preflight`). A driver saw `unavailable: grok not
   signed in` on the first call and `ready: grok` on three consecutive re-runs, with grok
   demonstrably authenticated. NOT reproducible here (four probes against grok 0.2.112,
-  all `ready` in ~0.6s). v4.8.0 disambiguates the preflight diagnostic (no retry, no
-  change to what counts as authenticated) with an HONEST BOUND aligned to GNU coreutils
-  `timeout`: **elapsed first** (instant 124/137/142 is "too fast" — no-tool refuse or
-  child self-exit); **rc=124 + elapsed ≈ cap** is the wall-clock **timeout** (child died
-  on TERM, or the python fallback); **rc=137 + elapsed ≈ cap** is *consistent with*
-  timeout after `-k` KILL escalation (GNU timeout returns 137 when it sends SIGKILL) **or**
-  external/CLI SIGKILL — never timeout-only, never "NOT a timeout"; **rc=142** is SIGALRM,
-  not the standard cap signature. Residual: a CLI that itself exits 124 (or 137) after
-  ~30s is not distinguishable from the wrapper. A blind retry was declined deliberately —
-  it doubles the worst-case bound on a genuinely hanging CLI and would weaken the
-  fixtures that prove the auth check is capped.
+  all `ready` in ~0.6s). v4.8.0 disambiguates the preflight diagnostic (no automatic
+  retry, no change to what counts as authenticated) with an HONEST BOUND aligned to GNU
+  coreutils `timeout -k 5`: **elapsed first** (instant 124/137/142 is "too fast" —
+  no-tool refuse or child self-exit); **rc=124 + elapsed ≈ cap** is *consistent with*
+  the wall-clock timeout (TERM-death or python fallback), residual CLI self-exit 124;
+  **rc=137**: `-k` KILL lands ~cap+5 (~35s) — elapsed≥33 is *consistent with* that path
+  **or** external/CLI SIGKILL; 28–32s is past TERM but early for completed `-k`, so
+  prefers self-exit wording; never timeout-only, never absolute "NOT a timeout";
+  **rc=142** is *often* SIGALRM (128+14), not the standard 124/137 cap signature,
+  residual self-exit 142. Diagnostics do **not** instruct a re-run — a blind/automatic
+  retry was declined deliberately because it doubles the hang bound and would weaken the
+  cap fixtures; an operator may still re-run deliberately after reading the residual.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

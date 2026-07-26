@@ -26,28 +26,38 @@
   nothing to open), not impossible. A subagent's compliance with prose cannot be
   enforced by more prose; what changed is that the omission now leaves a hole.
 - **Preflight failure reasons are disambiguated (diagnostic only), with an honest
-  timeout bound aligned to GNU `timeout`.** A driver reported `unavailable: grok not
+  timeout bound aligned to GNU `timeout -k 5`.** A driver reported `unavailable: grok not
   signed in` on a first call and `ready` on three re-runs, with grok authenticated —
   unattributable, because a fast auth failure and a 30s wall-clock timeout printed the
   same reason. Both vendors now split by **elapsed then exit code**: instant 124/137/142
-  is "too fast"; **rc=124 + elapsed ≈ cap** is the wall-clock **timeout** (TERM-death or
-  python fallback); **rc=137 + elapsed ≈ cap** is *consistent with* `-k` KILL escalation
-  (GNU timeout returns 137 when it sends SIGKILL) **or** external/CLI SIGKILL — never
-  timeout-only, never "NOT a timeout"; **rc=142** is SIGALRM, not the standard cap
-  signature. Residual: a CLI that itself exits 124/137 after ~30s is not distinguishable.
-  Explicitly NOT a fix for that flake and not a retry. Logged under `## Noticed`.
+  is "too fast"; **rc=124 + elapsed ≈ cap** is *consistent with* the wall-clock timeout
+  (TERM-death or python fallback), residual CLI self-exit 124; **rc=137**: `-k` KILL
+  lands ~cap+5 (~35s) — elapsed≥33 *consistent with* that path or external/CLI SIGKILL;
+  28–32s prefers self-exit wording (past TERM, early for completed `-k`); never
+  timeout-only, never absolute "NOT a timeout"; **rc=142** is *often* SIGALRM, not the
+  standard 124/137 signature, residual self-exit. Diagnostics never instruct a re-run
+  (a blind retry doubles the hang bound). Explicitly NOT a fix for that flake. Logged
+  under `## Noticed`.
 - **Canary coverage in both directions** (`plinth-canary.yml`): artifact present and
   non-empty → receipt permitted; artifact missing or empty → exit 3; a nonzero CLI rc
   still records (timeout/partial keeps its evidence); a non-numeric rc is a usage error;
-  an absent `MODEL:` line reads as `unreported` rather than a fabricated model. Plus
-  contract fixtures that keep both lanes wired to the receipt, carrying the
+  an absent `MODEL:` line reads as `unreported` rather than a fabricated model; the
+  **terminal** `MODEL:` line wins over an earlier decoy; symlinked `session` /
+  `.gitignore` / `lanes` refuse before any external write; a `*`+`!lanes/` gitignore is
+  rewritten to exact `*`. Plus contract fixtures that keep both lanes wired to the
+  receipt with **positional** `RUN_RC` then `OUT` after the vendor, carrying the
   `DELEGATION:` line, asking for the model — and keeping the honest bound in the text
   (a fixture goes red if the doc starts claiming it proves authorship).
 - **The artifact never dirties the tree.** `delegation` may be the first thing to create
-  `.plinth/session/` in a fresh clone, so it writes the same self-ignoring
-  `.plinth/session/.gitignore` (`*`) that `bin/plinth`, `review.sh`, and the session
-  hooks already write — otherwise a lane run would leave an untracked file and
-  `review.sh`, which refuses a dirty tree, would block the review of the lane's own work.
+  `.plinth/session/` in a fresh clone, so it writes an **exact** self-ignoring
+  `.plinth/session/.gitignore` (`*\n` only — not merely a `*` line among later
+  un-ignores) that `bin/plinth`, `review.sh`, and the session hooks already write —
+  otherwise a lane run would leave an untracked file and `review.sh`, which refuses a
+  dirty tree, would block the review of the lane's own work. Containment checks run
+  **before** any write so a symlinked session/gitignore cannot redirect them.
+- **Driver contract names the fourth lane-guard step.** `shared/plinth-rules.md` and
+  `shared/MODELS.md` now require `delegation` alongside preflight/snapshot/scope and tell
+  the driver to treat a complete report without a `DELEGATION:` receipt as incomplete.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
