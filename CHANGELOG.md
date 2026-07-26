@@ -9,8 +9,9 @@
   Word-concat/mixed delims, ANSI-C, continued/incomplete/outer-nested headers (open
   `$(…)` / `<(…)` / backticks, including depth opened on prior lines), executable
   consumers, unquoted bodies, and other ambiguous parses stay fully scanned (fail closed).
-  Shell comments (`#`) do not count as incomplete. Not the over-broad “any quoted heredoc”
-  suppress.
+  Shell comments (`#` after whitespace or metacharacters) do not count as incomplete. Same-line
+  outer expansions before `<<`, mixed `X'Y'` delimiters, and unterminated dollar-quotes also
+  fail closed. Not the over-broad “any quoted heredoc” suppress.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

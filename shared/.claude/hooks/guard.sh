@@ -164,7 +164,8 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          # Bash: # starts a comment at BOL, after IFS whitespace, or after a metachar.
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { st="bt"; continue }
@@ -191,7 +192,7 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
@@ -223,7 +224,7 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
@@ -280,11 +281,8 @@ case "$tool" in
       # qst / exp_depth / bt_open: cross-line shell state (quotes, $(/<(/>(), backticks).
       # cont: previous physical line ended with unquoted \.
       # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
-      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest) {
-        n=length(line); st=qst
-        # Already inside an incomplete outer construct — any << here is not a simple header.
-        if (cont || exp_depth>0 || bt_open || qst!="") force_no_suppress=1
-        else force_no_suppress=0
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest,depth,bt,closed) {
+        n=length(line); st=qst; depth=exp_depth; bt=bt_open
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -293,29 +291,44 @@ case "$tool" in
             if (c=="\"") st=""
             continue
           }
+          if (bt) {
+            if (c=="\\") { i++; continue }
+            if (c=="`") bt=0
+            continue
+          }
+          prev=(i==1 ? "" : substr(line,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
+          # track same-line expansions/quotes before we consider <<
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
+          if (c=="`") { bt=1; continue }
+          if (c=="$" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="<" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
+          if (c==">" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
+          if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c==")") { depth--; continue }
           if (c=="\\") { i++; continue }
-          prev=(i==1 ? "" : substr(line,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          # heredoc << (not <<<)
           if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") continue
           j=i+2; t=0
           if (substr(line,j,1)=="-") { t=1; j++ }
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
           d=""; q=0; dst=""; ok=1; reliable=1
-          if (force_no_suppress) ok=0
-          # dollar-quoted delim — suppress only pure literals (any backslash => fail closed; no hex olympics)
+          # incomplete outer state (prior lines or same-line so far) => never suppress
+          if (cont || depth>0 || bt || st!="") ok=0
+          # dollar-quoted delim — suppress only pure literals; require closed quote on this line
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
-            q=1; qch=substr(line,j+1,1); j+=2
+            q=1; qch=substr(line,j+1,1); j+=2; closed=0
             while (j<=n) {
               c=substr(line,j,1)
-              if (c==qch) { j++; break }
+              if (c==qch) { j++; closed=1; break }
               if (c=="\\") { reliable=0; ok=0; j++; if (j<=n) j++; continue }
               d=d c; j++
             }
+            if (!closed) { reliable=0; ok=0; d="" }
             if (!reliable) d=""
             # concatenated segments after a dollar-quoted piece → fail closed
-            if (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
+            if (closed && j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
           } else while (j<=n) {
             c=substr(line,j,1)
             if (dst=="sq") {
@@ -350,6 +363,8 @@ case "$tool" in
             if (c ~ /[[:space:];&|()<>]/) break
             # mid-word $ starts a concat / ANSI-C segment we do not fully decode
             if (c=="$") { reliable=0; ok=0; d=""; break }
+            # unquoted prefix already in d then a quote => mixed X'Y' / X"Y" → fail closed
+            if ((c=="\047" || c=="\"") && d!="") { reliable=0; ok=0; d=""; break }
             if (c=="\047") { q=1; dst="sq"; j++; continue }
             if (c=="\"") { q=1; dst="dq"; j++; continue }
             if (c=="\\") { ok=0; reliable=0; j++; if (j<=n) j++; break }
@@ -377,7 +392,6 @@ case "$tool" in
           # unreliable delim decode: no enqueue — every following line stays fully scanned
           i=j-1
         }
-        # Note: qst is updated via advance_globals on the full line after scan returns
       }
       BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0 }
       {
