@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 0; fi
-  shift
-done
-echo "stub-grok: missing --prompt-file" >&2; exit 2

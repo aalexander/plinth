@@ -92,27 +92,42 @@ jobs:
           }
           code_block_lines() {
             # Indented code (4+ spaces or tabs) PLUS fenced blocks — both are shell source.
-            # Fences: ``` or ~~~, optional 1–3 leading spaces (CommonMark), optional language tag.
+            # CommonMark-ish fences: optional blockquote prefixes, 0–3 spaces, ```/~~~ of
+            # length N>=3; close only with same char, length >= N, only trailing spaces after.
             {
               grep -E '^( {4,}|\t+)' "$1" || true
               python3 - "$1" <<'PY'
           import re, sys
           text = open(sys.argv[1], encoding="utf-8").read().splitlines()
-          fence_re = re.compile(r"^( {0,3})(`{3,}|~{3,})")
+          # Optional repeated blockquote markers, then 0–3 spaces, then fence run.
+          open_re = re.compile(
+              r"^(?P<prefix>(?: {0,3}> ?)*)(?P<indent> {0,3})(?P<fence>(`{3,}|~{3,}))(?P<info>[^\n]*)$"
+          )
           in_fence = False
           fence_ch = ""
+          fence_len = 0
           for line in text:
-              m = fence_re.match(line)
+              m = open_re.match(line)
               if m:
-                  ch = m.group(2)[0]
+                  run = m.group("fence")
+                  ch = run[0]
+                  info = m.group("info")
                   if not in_fence:
-                      in_fence = True
-                      fence_ch = ch
-                      continue
-                  if ch == fence_ch:
-                      in_fence = False
-                      fence_ch = ""
-                      continue
+                      # opener: info may have language; must not start with the fence char
+                      if info.startswith(ch):
+                          pass  # not a valid opener; treat as content if somehow inside
+                      else:
+                          in_fence = True
+                          fence_ch = ch
+                          fence_len = len(run)
+                          continue
+                  else:
+                      # closer: same char, length >= opener, only spaces after the run
+                      if ch == fence_ch and len(run) >= fence_len and info.strip() == "":
+                          in_fence = False
+                          fence_ch = ""
+                          fence_len = 0
+                          continue
               if in_fence:
                   print(line)
           PY
@@ -202,6 +217,8 @@ jobs:
           # constraints the canary can enforce without a live Claude Code session.
           PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
           owned_dirs=("$PD")
+          cleanup_owned() { rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true; }
+          trap cleanup_owned EXIT
           mkdir -p "$PD/bin" "$PD/mock-plinth"
           # lane-guard stub so extracted step-0 allocation can run.
           cat > "$PD/mock-plinth/lane-guard.sh" <<'LG'
@@ -373,6 +390,10 @@ jobs:
           fail_neg fenced-bash $'```bash\n: > "$SPEC"\n```'
           fail_neg fenced-indented $'   ```bash\n   : > "$SPEC"\n   ```'
           fail_neg fenced-tilde $'~~~bash\n: > "$SPEC"\n~~~'
+          fail_neg fenced-4tick $'````bash\n: > "$SPEC"\n````'
+          fail_neg fenced-blockquote $'> ```bash\n> : > "$SPEC"\n> ```'
+          # shorter closer must NOT close a longer opener — content after false-close still scanned
+          fail_neg fenced-short-closer $'````bash\n: > "$SPEC"\n```\nstill-inside\n````'
           # tools: line must not treat a comment "# Write" as granting the Write tool.
           {
             cp "$GA" "$NEG/grok-tools.md"

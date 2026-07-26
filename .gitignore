@@ -12,8 +12,8 @@ Thumbs.db
 # Temp files from bin/plinth's portable in-place edits
 *.plinth-tmp
 
-# Implementer-lane prompt dirs (mktemp under project CWD for Write authorization)
-.plinth-lane.*
+# Implementer-lane prompt dirs + canary scratch (project-local Write paths)
+.plinth-lane*
 
 # Editor droppings
 *.swp
