@@ -2536,7 +2536,7 @@ jobs:
           [ "$(gcmd $'cat <<\'X\'$\'Y\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat 'X'\$'Y' delim left post-body rm unscanned"; exit 1; }
           [ "$(gcmd $'cat <<X$\'\\x59\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat X\$'\\x59' delim left post-body rm unscanned"; exit 1; }
           [ "$(gcmd $'bash <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: queued bash heredocs first-body rm not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 0 ] || { echo "::error::heredoc-matrix: queued cat heredocs inert body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: multi-heredoc is not simple-form (should full-scan)"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' $(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open \$(...) header then | bash not blocked"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' `\necho x\n` | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open backtick header then | bash not blocked"; exit 1; }
           # Outer expansion opened before << (cross-line depth), process-sub, and comment-not-incomplete.
@@ -2585,7 +2585,8 @@ jobs:
           [ "$(gcmd $'select x in a; do\ncat <<\'S\'\nrm -rf build\nS\nbreak; done | bash')" = 2 ] || { echo "::error::heredoc-matrix: select/done | bash hid body"; exit 1; }
           [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi > >(cat)')" = 2 ] || { echo "::error::heredoc-matrix: if/fi > >(cat) hid body"; exit 1; }
           # Independent pipeline must not force full-scan false positives on inert cat.
-          [ "$(gcmd $'echo a | cat\ncat <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: unrelated pipeline forced false-positive on inert cat body"; exit 1; }
+          # Multi-statement commands are not the simple form — full scan (fail closed).
+          [ "$(gcmd $'echo a | cat\ncat <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: multi-statement should full-scan inert body (fail closed)"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

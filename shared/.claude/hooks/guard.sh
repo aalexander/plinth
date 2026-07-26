@@ -86,7 +86,9 @@ ship_gate() {  # <what> — called only when the command is a ship action
 
 case "$tool" in
   Bash)
-    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+    # Preserve trailing newlines (<<'' terminator is an empty line at EOF).
+    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty'; printf x)
+    cmd=${cmd%x}
     # Heredoc body handling. Quoting a delimiter only disables shell expansion —
     # it does NOT make the body non-executable (`bash <<'E'` still runs the body;
     # `sqlite3 <<'E'` still runs SQL). Suppress body lines from BOTH pattern scans
@@ -457,16 +459,66 @@ case "$tool" in
         advance_globals($0)
       }
     ')"
-    # Fail-closed: if residual (non-suppressed) text still shows a compound closer
-    # feeding a pipeline or process-sub (fi|bash, }|bash, ) > >(bash), …), body
-    # suppression is unsafe — rescan the full command. Unrelated pipelines elsewhere
-    # in the command do not trip this.
-    if printf '%s\n' "$inert_stripped" | grep -Eq \
-      '(^|[[:space:];&|])(fi|done|esac)[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()' \
-      || printf '%s\n' "$inert_stripped" | grep -Eq \
-      '(\}|\) )[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()' \
-      || printf '%s\n' "$inert_stripped" | grep -Eq \
-      '(\}|\))[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()'; then
+    # Strict simple-form gate (prefer fail-closed over a full shell parser): keep
+    # body suppression ONLY when the whole command is one standalone cat/tee
+    # heredoc (optional blank lines, optional prefixes). Anything else → full scan.
+    # Awk program uses \047 for quotes so it can live inside bash single quotes.
+    if ! printf '%s\n' "$cmd" | awk '
+      BEGIN { state=0; delim=""; tabs=0; q=sprintf("%c",39) }
+      {
+        line=$0
+        if (state==0) {
+          if (line ~ /^[[:space:]]*$/) next
+          # must contain << then a simple quoted delimiter; reject pipes/groups on header
+          if (line ~ /[|;&(){}]/ && line !~ /#.*[|;&(){}]/) {
+            # allow only if the meta appears solely inside a trailing # comment
+            h=line; sub(/#.*/,"",h)
+            if (h ~ /[|;&(){}]/) exit 1
+          }
+          if (line !~ /(^|[[:space:]])(cat|tee)([[:space:]]|$)/) exit 1
+          if (line !~ /<</) exit 1
+          tabs=(line ~ /<<-/)
+          # first << only (not the last — cat <<'A' <<'B' is not simple-form)
+          if (!match(line, /<</)) exit 1
+          rest=substr(line, RSTART+2)
+          if (substr(rest,1,1)=="-") rest=substr(rest,2)
+          sub(/^[[:space:]]+/, "", rest)
+          if (substr(rest,1,1)==q) {
+            rest=substr(rest,2)
+            p=index(rest,q); if (p==0) exit 1
+            delim=substr(rest,1,p-1)
+            rest=substr(rest,p+1)
+          } else if (substr(rest,1,2)=="$" q) {
+            rest=substr(rest,3)
+            p=index(rest,q); if (p==0) exit 1
+            delim=substr(rest,1,p-1)
+            if (delim ~ /\\/) exit 1
+            rest=substr(rest,p+1)
+          } else if (substr(rest,1,1)=="\"") {
+            rest=substr(rest,2)
+            p=index(rest,"\""); if (p==0) exit 1
+            delim=substr(rest,1,p-1)
+            if (delim ~ /\\/) exit 1
+            rest=substr(rest,p+1)
+          } else exit 1
+          sub(/^[[:space:]]+/, "", rest)
+          if (rest!="" && rest !~ /^#/) exit 1
+          state=1
+          next
+        }
+        if (state==1) {
+          cmp=line
+          if (tabs) sub(/^\t*/, "", cmp)
+          if (cmp==delim) { state=2; next }
+          next
+        }
+        if (state==2) {
+          if (line ~ /^[[:space:]]*$/) next
+          exit 1
+        }
+      }
+      END { exit (state==2) ? 0 : 1 }
+    '; then
       inert_stripped=$(printf '%s\n' "$cmd")
     fi
     # rm/git patterns are anchored to command position. Upstream issue #1

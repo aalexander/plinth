@@ -3,17 +3,11 @@
 ## Unreleased
 - **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
   destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
-  *narrow simple form*: delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''` (not locale
-  `$"D"`); consumer
-  basename `cat`/`tee`; complete single physical header (no trailing `\`, no open quote
-  after `<<`, not a `\`-continuation of a prior line); no pipe/process-sub on that segment.
-  Word-concat/mixed delims, ANSI-C, continued/incomplete/outer-nested headers (open
-  `$(…)` / `<(…)` / backticks, including depth opened on prior lines), executable
-  consumers, unquoted bodies, and other ambiguous parses stay fully scanned (fail closed).
-  Shell comments (`#` after whitespace or metacharacters) do not count as incomplete. Same-line
-  outer expansions before `<<`, mixed `X'Y'` delimiters, unterminated dollar-quotes, and an
-  unreliable earlier delimiter that would desync a later queued inert heredoc also fail
-  closed. Not the over-broad “any quoted heredoc” suppress.
+  *strict simple form* for the **whole command**: one standalone `cat`/`tee` heredoc with a
+  simple quoted delimiter (`'D'` / pure `"D"` / pure `$'D'` / `<<''`), optional prefixes and
+  trailing `#` comment on the header. Multi-statement/compound/pipeline wrappers,
+  multi-heredoc headers, locale `$"D"`, unquoted delims, and executable consumers stay fully
+  scanned (fail closed). Not the over-broad “any quoted heredoc” suppress.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

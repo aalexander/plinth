@@ -571,20 +571,13 @@ it has run green with a real smoke_cmd.
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
-  those text scans only for a *narrow simple form*: inert consumer (`cat`/`tee`), a single
-  simple quoted delimiter (`'D'`, pure `"D"`, pure `$'D'` with no backslash, or `<<''` —
-  not `$"D"`, which Bash locale-translates), a
-  *complete* simple header: no trailing unquoted `\`, no unclosed quote / `$(…)` / `${…}` /
-  `<(…)` / `>(…)` / backtick after `<<` (tokens after unquoted `#` are comments and
-  ignored — including `# |` / `# <(`), and not nested inside a still-open outer
-  quote/expansion from a prior physical line. No pipe/process-sub on that header segment
-  outside comments. Word-concat or mixed delimiters, incomplete or outer-nested headers
-  (incl. `${…}`, `{ … }` / `( … )` groups that may later be piped), executable consumers,
-  unquoted bodies, and other ambiguous parses stay fully scanned (fail closed). Cross-line
-  quote, expansion, and compound-group depth are tracked so a heredoc-looking token inside
-  an unclosed construct is not treated as a simple inert header. `#` starts a comment only
-  after whitespace or `;`/`&`/`|` (not glued `)#suffix`). The header line itself
-  (including redirect targets) is always part of the scan. The guard is a
+  those text scans only for a *strict simple form*: the **entire** command is one
+  standalone `cat`/`tee` heredoc (optional leading prefixes like `sudo`, one simple quoted
+  delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''`, optional trailing `#` comment on the
+  header, optional blank lines around the block). Multi-statement commands, compounds,
+  pipelines, multi-heredoc headers, `$"D"`, unquoted delimiters, executable consumers, and
+  other ambiguous forms stay fully scanned (fail closed). The header line itself (including
+  redirect targets) is always part of the scan. The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
