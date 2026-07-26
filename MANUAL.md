@@ -758,6 +758,15 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **`plinth dash` audit minors (v4.8 round-8 cross-vendor):** (a) loopback bind is
+  code-enforced (HOST + `LoopbackServer.server_bind`) but the smoke only greps the
+  banner for `127.0.0.1` — add a non-loopback connect-refused assertion when a
+  second local address is available. (b) `/api/snapshot` under ThreadingHTTPServer
+  has no concurrency limit / single-flight cache — loopback-only hardening; a
+  generation-keyed cache would collapse fan-out. (c) a discovered path with
+  `.plinth/config` but no git repo paints `stale ≠ HEAD` with branch `detached`
+  rather than "git unavailable" — distinguish no-git from stale. Raised by the
+  Tier-2 audit on feat/html-dashboard (findings-audit-8.json).
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

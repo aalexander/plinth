@@ -267,7 +267,9 @@ jq -e '
 
 # ── Pure UI card render (node + __plinthDash seam) ───────────────────────────
 # Fails if error tone or no-review suppression is broken — not just source greps.
-PLINTH_DASH_HTML="$ROOT/shared/dashboard/index.html" node <<'NODE'
+UI_OUT="$FIX/ui-unit.out"
+PLINTH_DASH_HTML="$ROOT/shared/dashboard/index.html" node <<'NODE' >"$UI_OUT"
+
 const fs = require("fs");
 const vm = require("vm");
 const path = process.env.PLINTH_DASH_HTML;
@@ -450,6 +452,9 @@ setTimeout(() => {
   }, 0);
 }, 0);
 NODE
+grep -q 'ui-card-unit: OK' "$UI_OUT" \
+  || { echo "smoke-snapshot: node UI unit did not print success marker" >&2; cat "$UI_OUT" >&2; exit 1; }
+cat "$UI_OUT"
 
 # Empty roots still valid JSON
 export PLINTH_DASH_ROOTS="/nonexistent/path/nope"

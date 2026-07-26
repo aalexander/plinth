@@ -1832,7 +1832,14 @@ EOF
 # Serves only on 127.0.0.1. Read-only. --snapshot prints JSON and exits (CI/smoke).
 
 _dash_mtime() {  # epoch seconds or 0
-  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+  # Prefer GNU -c (Linux). BSD/macOS -f second. NEVER try -f first: GNU
+  # `stat -f` is filesystem status and prints `?` with exit 0 for unknown
+  # formats, so the -c branch would never run and activity age would be 0
+  # on every Linux host (including the canary runner).
+  local t
+  t="$(stat -c '%Y' "$1" 2>/dev/null || true)"
+  case "$t" in ''|*[!0-9]*) t="$(stat -f '%m' "$1" 2>/dev/null || true)" ;; esac
+  case "$t" in ''|*[!0-9]*) echo 0 ;; *) printf '%s\n' "$t" ;; esac
 }
 
 _dash_realpath() {
@@ -1844,7 +1851,9 @@ _dash_realpath() {
 discover_dashboard_projects() {
   local p cfg="$HOME/.config/plinth/dashboard-projects" line rp
   if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
+    # set -f: unquoted colon-split must not pathname-expand roots that contain * ? [.
     local IFS=':'
+    set -f
     for p in $PLINTH_DASH_ROOTS; do
       [ -n "$p" ] || continue
       [ -d "$p" ] || continue
@@ -1852,6 +1861,7 @@ discover_dashboard_projects() {
       rp="$(_dash_realpath "$p")" || continue
       printf '%s\n' "$rp"
     done
+    set +f
     return 0
   fi
   if [ -f "$cfg" ]; then
@@ -1894,13 +1904,32 @@ _dash_latest_request() {
   done | sort -n -k1,1 | tail -1 | cut -f2-
 }
 
+# Bound how much of unbounded session files the wallboard re-parses every poll.
+# Full-history slurp of events.jsonl + multi-MB Claude transcripts every 2s is
+# not viable for a multi-project dashboard (audit: events grow without bound).
+_DASH_EV_TAIL=500
+_DASH_TR_TAIL=300
+
 # One project card as a compact JSON object on stdout (single line).
 # Always emits a card (error field on render failure) so projects are never dropped.
 snapshot_one_project() {
   local dir="$1" NOW
   NOW="$(date +%s)"
-  local feedless=0 EV="$dir/.plinth/session/events.jsonl"
-  if [ ! -f "$EV" ]; then feedless=1; EV=/dev/null; fi
+  local feedless=0 EV_RAW="$dir/.plinth/session/events.jsonl"
+  local EV=/dev/null ev_tmp="" tr_tmp=""
+  if [ ! -f "$EV_RAW" ]; then
+    feedless=1
+  else
+    # Tail only — wallboard needs recent session/task/transcript path, not the
+    # full session history. Cleaned up after jq.
+    ev_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-ev.XXXXXX")" || ev_tmp=""
+    if [ -n "$ev_tmp" ]; then
+      tail -n "$_DASH_EV_TAIL" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
+      EV="$ev_tmp"
+    else
+      EV="$EV_RAW"
+    fi
+  fi
 
   local head head_full branch slug
   head_full="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo '')"
@@ -1920,7 +1949,7 @@ snapshot_one_project() {
 
   local activity_ago=null events_mtime=0
   if [ "$feedless" -eq 0 ]; then
-    events_mtime="$(_dash_mtime "$dir/.plinth/session/events.jsonl")"
+    events_mtime="$(_dash_mtime "$EV_RAW")"
     case "$events_mtime" in ''|*[!0-9]*) events_mtime=0 ;; esac
     if [ "$events_mtime" -gt 0 ] 2>/dev/null; then
       activity_ago=$((NOW - events_mtime))
@@ -1942,12 +1971,21 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Optional driver burn from Claude transcript (same 5-min window as watch). Absent → null.
+  # Optional driver burn from Claude transcript (same 5-min window as watch).
+  # Resolve path from the tailed events; only tail the transcript (not full MB).
   local transcript=/dev/null
-  if [ "$feedless" -eq 0 ]; then
+  if [ "$feedless" -eq 0 ] && [ -f "$EV" ] && [ "$EV" != /dev/null ]; then
     transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' \
-      "$dir/.plinth/session/events.jsonl" 2>/dev/null || true)"
-    [ -n "$transcript" ] && [ -f "$transcript" ] || transcript=/dev/null
+      "$EV" 2>/dev/null || true)"
+    if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+      tr_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-tr.XXXXXX")" || tr_tmp=""
+      if [ -n "$tr_tmp" ]; then
+        tail -n "$_DASH_TR_TAIL" "$transcript" > "$tr_tmp" 2>/dev/null || : > "$tr_tmp"
+        transcript="$tr_tmp"
+      fi
+    else
+      transcript=/dev/null
+    fi
   fi
 
   jq -nc --slurpfile ev "$EV" --slurpfile vd "$vfile" \
@@ -2020,6 +2058,10 @@ snapshot_one_project() {
         error:"snapshot_render_failed",
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+  # Drop tailed temps (keep going even if jq failed above).
+  [ -n "$ev_tmp" ] && rm -f "$ev_tmp"
+  [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
+  return 0
 }
 
 build_dashboard_snapshot() {
@@ -2031,8 +2073,15 @@ build_dashboard_snapshot() {
     [ -n "$dir" ] || continue
     snapshot_one_project "$dir" >> "$tmp" || true
   done <<< "$roots"
-  # jq -s on an empty file yields []; --slurpfile errors on empty.
-  projects_json="$(jq -s '.' "$tmp" 2>/dev/null || echo '[]')"
+  # jq -s on an empty file yields []; if the slurp itself fails, surface a top-level
+  # error rather than a silent empty wallboard (looks-idle-while-broken).
+  local top_err=""
+  if projects_json="$(jq -s '.' "$tmp" 2>/dev/null)"; then
+    :
+  else
+    projects_json='[]'
+    top_err="projects_aggregate_failed"
+  fi
   rm -f "$tmp"
   if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
     discovery="env:PLINTH_DASH_ROOTS"
@@ -2041,9 +2090,15 @@ build_dashboard_snapshot() {
   else
     discovery="default:~/Dev/*/.plinth/config"
   fi
-  jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
-     --arg discovery "$discovery" \
-     '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+  if [ -n "$top_err" ]; then
+    jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
+       --arg discovery "$discovery" --arg error "$top_err" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error}'
+  else
+    jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
+       --arg discovery "$discovery" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+  fi
 }
 
 run_dashboard() {
