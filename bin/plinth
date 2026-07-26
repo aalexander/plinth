@@ -2014,8 +2014,10 @@ snapshot_one_project() {
             | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
           end
         )
-        | .cur as $sid
-        | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
+        # Empty or sid-less feed is healthy-but-empty, not a render failure.
+        | if .cur == null then {sid:null, t0:null, task:null, tr:null}
+          else ((.by[.cur] // {t0:null, task:null, tr:null}) + {sid: .cur})
+          end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
       rm -f "$ev_tmp"

@@ -277,6 +277,11 @@ mk_git "$N"
 printf 'not-json{\n' > "$N/.plinth/session/events.jsonl"
 printf '%s\n' '- [ ] [BLOCKING] open through bad events' > "$N/.plinth/NEEDS-HUMAN.md"
 
+# ── Fixture N2: empty events.jsonl is healthy-but-empty (not error) ──────────
+N2="$FIX/xi-empty"
+mk_git "$N2"
+: > "$N2/.plinth/session/events.jsonl"
+
 # ── Fixture O: first-round last-error (no verdict yet) ───────────────────────
 O="$FIX/omicron-firsterr"
 mk_git "$O"
@@ -346,7 +351,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$M:$N:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -362,7 +367,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 18' "$OUT" >/dev/null
+jq -e '(.projects | length) == 19' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -500,6 +505,15 @@ jq -e '
   | .error == "snapshot_render_failed"
   and .needs_human.open == 1
   and .needs_human.blocking == 1
+' "$OUT" >/dev/null
+
+# Empty events.jsonl is healthy (not snapshot_render_failed)
+jq -e '
+  .projects[] | select(.name == "xi-empty")
+  | (.error == null or .error == "")
+  and .feedless == false
+  and .task == null
+  and .session_secs == null
 ' "$OUT" >/dev/null
 
 # First-round last-error (no prior verdict)
