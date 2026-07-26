@@ -128,125 +128,136 @@ case "$tool" in
         }
         return last
       }
-      function has_unquoted_pipe_or_procsub(s,    i,n,c,st,prev) {
-        n=length(s); st=""
+      function has_unquoted_pipe_or_procsub(s,    i,n,c,st,prev,prev_esc) {
+        n=length(s); st=""; prev=""; prev_esc=0
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
           if (st=="dq") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="\"") st=""
-            continue
+            prev=c; prev_esc=0; continue
           }
-          prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="\\") { i++; continue }
+          if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
           if (c=="|") return 1
           if (c==">" && i<n && substr(s,i+1,1)=="(") return 1
           if (c=="<" && i<n && substr(s,i+1,1)=="(") return 1
+          prev=c; prev_esc=0
         }
         return 0
       }
       # Unquoted trailing \ => physical line continues. Stops at unquoted # (comment).
-      function unquoted_line_continues(s,    i,n,c,st,prev) {
-        n=length(s); st=""
+      function unquoted_line_continues(s,    i,n,c,st,prev,prev_esc) {
+        n=length(s); st=""; prev=""; prev_esc=0
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
           if (st=="dq") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="\"") st=""
-            continue
+            prev=c; prev_esc=0; continue
           }
           if (st=="bt") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="`") st=""
+            prev=c; prev_esc=0; continue
+          }
+          if (c=="\\") {
+            if (i==n) return 1
+            i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 }
             continue
           }
-          prev=(i==1 ? "" : substr(s,i-1,1))
-          # Bash: # starts a comment at BOL, after IFS whitespace, or after a metachar.
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="`") { st="bt"; continue }
-          if (c=="\\" && i==n) return 1
-          if (c=="\\") { i++; continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
+          if (c=="`") { st="bt"; prev=c; prev_esc=0; continue }
+          prev=c; prev_esc=0
         }
         return 0
       }
+      # Keyword compound openers/closers at line start (if/while/for/case/select … fi/done/esac).
+      function update_kw_depth(line,    s) {
+        s=line
+        sub(/^[[:space:]]+/,"",s)
+        if (s ~ /^(if|while|until|for|case|select)([^[:alnum:]_]|$)/) kw_depth++
+        if (s ~ /^(fi|done|esac)([^[:alnum:]_]|$)/ && kw_depth>0) kw_depth--
+      }
       # Advance global qst / exp_depth / bt_open / brace_depth / paren_depth over s.
       # depth: $(...) / ${...} / <(...) / >(...). brace/paren: {…} / (… ) compound groups.
-      function advance_globals(s,    i,n,c,st,depth,bt,br,pa,prev) {
+      function advance_globals(s,    i,n,c,st,depth,bt,br,pa,prev,prev_esc) {
         n=length(s); st=qst; depth=exp_depth; bt=bt_open; br=brace_depth; pa=paren_depth
+        prev=""; prev_esc=0
+        update_kw_depth(s)
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
           if (st=="dq") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="\"") st=""
-            continue
+            prev=c; prev_esc=0; continue
           }
           if (bt) {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="`") bt=0
-            continue
+            prev=c; prev_esc=0; continue
           }
-          prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="`") { bt=1; continue }
-          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
-          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; continue }
-          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
-          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
+          if (c=="`") { bt=1; prev=c; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; prev="{"; prev_esc=0; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
           # << is a heredoc op, not process-sub; skip the extra <
-          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
-          if (depth>0 && c=="(") { depth++; continue }
-          if (depth>0 && c=="{") { depth++; continue }
-          if (depth>0 && c==")") { depth--; continue }
-          if (depth>0 && c=="}") { depth--; continue }
-          if (c=="{") { br++; continue }
-          if (c=="}" && br>0) { br--; continue }
-          if (c=="(") { pa++; continue }
-          if (c==")" && pa>0) { pa--; continue }
-          if (c=="\\") { i++; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; prev="<"; prev_esc=0; continue }
+          if (depth>0 && c=="(") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="{") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c==")") { depth--; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="}") { depth--; prev=c; prev_esc=0; continue }
+          if (c=="{") { br++; prev=c; prev_esc=0; continue }
+          if (c=="}" && br>0) { br--; prev=c; prev_esc=0; continue }
+          if (c=="(") { pa++; prev=c; prev_esc=0; continue }
+          if (c==")" && pa>0) { pa--; prev=c; prev_esc=0; continue }
+          prev=c; prev_esc=0
         }
         qst=st; exp_depth=depth; bt_open=bt; brace_depth=br; paren_depth=pa
       }
       # Incomplete open quote/expansion/backtick in s alone (fresh state; comment-aware).
-      function has_incomplete_local(s,    i,n,c,st,depth,bt,prev) {
-        n=length(s); st=""; depth=0; bt=0
+      function has_incomplete_local(s,    i,n,c,st,depth,bt,prev,prev_esc) {
+        n=length(s); st=""; depth=0; bt=0; prev=""; prev_esc=0
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
           if (st=="dq") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="\"") st=""
-            continue
+            prev=c; prev_esc=0; continue
           }
           if (bt) {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
             if (c=="`") bt=0
-            continue
+            prev=c; prev_esc=0; continue
           }
-          prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="`") { bt=1; continue }
-          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
-          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; continue }
-          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
-          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
-          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
-          if (depth>0 && c=="(") { depth++; continue }
-          if (depth>0 && c=="{") { depth++; continue }
-          if (depth>0 && c==")") { depth--; continue }
-          if (depth>0 && c=="}") { depth--; continue }
-          if (c=="\\") { i++; continue }
+          if (c=="\\") { i++; if (i<=n) { prev=substr(s,i,1); prev_esc=1 } continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
+          if (c=="`") { bt=1; prev=c; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; prev="{"; prev_esc=0; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; prev="<"; prev_esc=0; continue }
+          if (depth>0 && c=="(") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="{") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c==")") { depth--; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="}") { depth--; prev=c; prev_esc=0; continue }
+          prev=c; prev_esc=0
         }
         return (st!="" || bt || depth>0)
       }
@@ -293,48 +304,51 @@ case "$tool" in
       # qst / exp_depth / bt_open: cross-line shell state (quotes, $(/<(/>(), backticks).
       # cont: previous physical line ended with unquoted \.
       # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
-      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest,depth,bt,br,pa,closed) {
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest,depth,bt,br,pa,closed,prev_esc) {
         n=length(line); st=qst; depth=exp_depth; bt=bt_open; br=brace_depth; pa=paren_depth
+        prev=""; prev_esc=0
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
           if (st=="dq") {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(line,i,1); prev_esc=1 } continue }
             if (c=="\"") st=""
-            continue
+            prev=c; prev_esc=0; continue
           }
           if (bt) {
-            if (c=="\\") { i++; continue }
+            if (c=="\\") { i++; if (i<=n) { prev=substr(line,i,1); prev_esc=1 } continue }
             if (c=="`") bt=0
-            continue
+            prev=c; prev_esc=0; continue
           }
-          prev=(i==1 ? "" : substr(line,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
+          if (c=="\\") { i++; if (i<=n) { prev=substr(line,i,1); prev_esc=1 } continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
           # track same-line expansions/quotes/groups before we consider <<
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="`") { bt=1; continue }
-          if (c=="$" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
-          if (c=="$" && i<n && substr(line,i+1,1)=="{") { depth++; i++; continue }
-          if (c=="<" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
-          if (c==">" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
-          if (depth>0 && c=="(") { depth++; continue }
-          if (depth>0 && c=="{") { depth++; continue }
-          if (depth>0 && c==")") { depth--; continue }
-          if (depth>0 && c=="}") { depth--; continue }
-          if (c=="{") { br++; continue }
-          if (c=="}" && br>0) { br--; continue }
-          if (c=="(") { pa++; continue }
-          if (c==")" && pa>0) { pa--; continue }
-          if (c=="\\") { i++; continue }
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
+          if (c=="`") { bt=1; prev=c; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(line,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c=="$" && i<n && substr(line,i+1,1)=="{") { depth++; i++; prev="{"; prev_esc=0; continue }
+          if (c=="<" && i<n && substr(line,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (c==">" && i<n && substr(line,i+1,1)=="(") { depth++; i++; prev="("; prev_esc=0; continue }
+          if (depth>0 && c=="(") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="{") { depth++; prev=c; prev_esc=0; continue }
+          if (depth>0 && c==")") { depth--; prev=c; prev_esc=0; continue }
+          if (depth>0 && c=="}") { depth--; prev=c; prev_esc=0; continue }
+          if (c=="{") { br++; prev=c; prev_esc=0; continue }
+          if (c=="}" && br>0) { br--; prev=c; prev_esc=0; continue }
+          if (c=="(") { pa++; prev=c; prev_esc=0; continue }
+          if (c==")" && pa>0) { pa--; prev=c; prev_esc=0; continue }
           # heredoc << (not <<<)
-          if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") continue
+          if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") { prev=c; prev_esc=0; continue }
           j=i+2; t=0
           if (substr(line,j,1)=="-") { t=1; j++ }
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
           d=""; q=0; dst=""; ok=1; reliable=1
           # incomplete outer state (prior lines or same-line so far) => never suppress
-          if (cont || depth>0 || bt || st!="" || br>0 || pa>0) ok=0
+          if (cont || depth>0 || bt || st!="" || br>0 || pa>0 || kw_depth>0) ok=0
+          # same-line keyword compound opener before <<
+          pref=substr(line,1,i-1)
+          if (pref ~ /(^|[[:space:];&|({])(if|while|until|for|case|select)([^[:alnum:]_]|$)/) ok=0
           # dollar-quoted delim: $'D' pure literal only (closed, no backslash).
           # $"D" is locale-translated by Bash — never suppress (cannot know the real terminator).
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && substr(line,j+1,1)=="\"") {
@@ -405,7 +419,6 @@ case "$tool" in
           # rest of physical line still incomplete (quote / $( / <( / >( / backtick); # ends rest
           rest=substr(line,j)
           if (has_incomplete_local(rest)) ok=0
-          pref=substr(line,1,i-1)
           sep=last_unquoted_sep(pref)
           simple=(sep>0)?substr(pref,sep+1):pref
           if (has_unquoted_pipe_or_procsub(simple) || has_unquoted_pipe_or_procsub(substr(line,j))) ok=0
@@ -425,7 +438,7 @@ case "$tool" in
           i=j-1
         }
       }
-      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0; brace_depth=0; paren_depth=0; no_suppress_rest=0 }
+      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0; brace_depth=0; paren_depth=0; kw_depth=0; no_suppress_rest=0 }
       {
         if (head<=tail) {
           body=$0; cmp=body

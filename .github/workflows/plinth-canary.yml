@@ -2572,6 +2572,9 @@ jobs:
           [ "$(gcmd $'{\ncat <<\'S\'\nrm -rf build\nS\n} | bash')" = 2 ] || { echo "::error::heredoc-matrix: brace-group | bash hid body"; exit 1; }
           [ "$(gcmd $'(\ncat <<\'S\'\nrm -rf build\nS\n) | bash')" = 2 ] || { echo "::error::heredoc-matrix: subshell | bash hid body"; exit 1; }
           [ "$(gcmd $'tee <<\'S\' $(printf /dev/null)#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: )#suffix not a comment; pipe to bash missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\ #suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-space #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: if/fi | bash hid body"; exit 1; }
+          [ "$(gcmd $'while false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: while/done | bash hid body"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
