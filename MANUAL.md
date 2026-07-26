@@ -297,7 +297,9 @@ Two operator chores the rules generate:
      the full hook machinery enforced, and delegates the coding volume to the
      grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
      the enforced Stop gate for wall-clock: review is contract discipline until
-     the receipt check is required in branch protection; see the known limitation.)
+     auto mode is fully enabled — `receipt / verify` wired, required with
+     `strict:true`, and the real verifier still running (caller-control bound;
+     see intro / known limitation).)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
@@ -375,22 +377,30 @@ Two operator chores the rules generate:
      existence-checked only; the ancestry guard is backlog (see `## Noticed`).
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
-     approval binds only after a clean-slate full pass (a warm reviewer can't
+     approval is required to take a clean-slate full pass (a warm reviewer can't
      approve its own checklist) — **every** non-fresh Tier-2 approval requires
-     that confirmation (v4.7+ retired the once-per-loop skip). When a cross-vendor auditor is
+     that confirmation (v4.7+ retired the once-per-loop skip). Process window:
+     `review.sh` may write `APPROVED` to `verdict.json` before the confirmation
+     round runs; round-cap paths demote to `UNBOUND`, and a re-run at the same SHA
+     runs a pending confirmation. An intermediate kill can leave `APPROVED@HEAD`
+     that ship/Stop gates accept if they only read the verdict field — residual
+     fix is persist UNBOUND/pending until confirmation succeeds (NEEDS-HUMAN).
+     When a cross-vendor auditor is
      configured (`audit_vendor` — new projects default to `claude`, the v4
      audit seat; on an upgraded project you add the line yourself, and `plinth
      update` reminds you if it is unset), every Tier-2 approval also gets a
      best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
-   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
+   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved
+   after any required Tier-2 confirmation for this run has completed (see process
+   window above for intermediate state),
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is
    too large or dead — a SCOPED verify round that reads
    the open findings plus the cumulative fix diff since the last full read; Tier-1
-   verify approvals bind directly, Tier-2 ones only after a clean-slate confirmation
-   pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
+   verify approvals bind directly, Tier-2 ones require a clean-slate confirmation
+   pass every time (process window above). A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
    does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
    knob: opt-in — unset or 0 means no cap; set a positive integer to cap) stops a loop that has not converged — exit 2,
