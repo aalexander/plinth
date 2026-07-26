@@ -479,9 +479,13 @@ plinth dash --port 7349  # pick a free high port (1–65535)
 plinth dash --snapshot   # print the same JSON the UI polls (offline / CI)
 ```
 
+Requires **python3** on PATH to serve the UI (`--snapshot` is bash+jq only).
 The server binds **127.0.0.1 only**, is read-only, and serves a single static
-page plus `GET /api/snapshot`. It does **not** replace `plinth watch` — the TTY
-dashboard stays the per-session deep view.
+page plus `GET /api/snapshot`. Observed burn/tokens come from a **recent
+transcript tail** (not full session history). A review round is RUNNING only
+while a request outruns the verdict **and** no `last-error` is present (infra
+failures do not stick as RUNNING). It does **not** replace `plinth watch` — the
+TTY dashboard stays the per-session deep view.
 
 **Discovery** (first match wins):
 

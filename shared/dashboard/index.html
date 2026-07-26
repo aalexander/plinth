@@ -279,6 +279,8 @@
     if (r) {
       if (r.running) {
         chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
+      } else if (r.last_error) {
+        chips.push('<span class="chip red">review infra error</span>');
       } else if (r.verdict === "APPROVED") {
         chips.push('<span class="chip green">APPROVED</span>');
       } else if (r.verdict === "CHANGES_NEEDED") {
@@ -310,7 +312,9 @@
       p.model_driver ? "drv " + p.model_driver : null,
       p.model_reviewer ? "rev " + p.model_reviewer : null,
     ].filter(Boolean).join(" · ") || "—";
-    const tokens = p.tokens_total != null ? humK(p.tokens_total) + " observed" : "unknown";
+    const tokens = p.tokens_total != null
+      ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
+      : "unknown";
 
     return (
       '<article class="card ' + tone + '">' +

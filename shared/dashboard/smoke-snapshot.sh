@@ -134,7 +134,7 @@ printf 'not-json{\n' > "$G/.plinth/session/review/feat-bad/usage.jsonl"
 printf '%s\n' '- [ ] [BLOCKING] still open after bad usage' \
   > "$G/.plinth/NEEDS-HUMAN.md"
 
-# ── Fixture H: transcript burn (observed tokens) ─────────────────────────────
+# ── Fixture H: transcript burn (all token categories, recent window) ─────────
 H="$FIX/theta-burn"
 mk_git "$H"
 git -C "$H" checkout -qb feat/burn
@@ -143,9 +143,10 @@ git -C "$H" add -A
 git -C "$H" commit -qm "work"
 HTR="$H/.plinth/session/transcript.jsonl"
 # One assistant usage line within the 5-min window (epoch now).
+# Includes cache_read so the total is not under-counted.
 TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 jq -nc --arg ts "$TS" \
-  '{type:"assistant",timestamp:$ts,message:{model:"claude-test",usage:{input_tokens:100,output_tokens:50,cache_creation_input_tokens:0}}}' \
+  '{type:"assistant",timestamp:$ts,message:{model:"claude-test",usage:{input_tokens:100,output_tokens:50,cache_creation_input_tokens:0,cache_read_input_tokens:10000}}}' \
   > "$HTR"
 jq -nc --argjson epoch "$NOW" --arg tr "$HTR" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-burn",transcript:$tr,tool:null,detail:null,rc:null}' \
@@ -163,7 +164,60 @@ printf 'not-json{\n' > "$I/.plinth/session/review/feat-badv/verdict.json"
 printf '%s\n' '- [ ] [BLOCKING] keep me through render failure' \
   > "$I/.plinth/NEEDS-HUMAN.md"
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I"
+# ── Fixture J: long session — task + session start before a flood of tools ───
+J="$FIX/kappa-long"
+mk_git "$J"
+git -C "$J" checkout -qb feat/long
+echo j > "$J/j.txt"
+git -C "$J" add -A
+git -C "$J" commit -qm "work"
+J_T0=$((NOW - 10000))
+{
+  jq -nc --argjson epoch "$J_T0" \
+    '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-long",transcript:null,tool:null,detail:null,rc:null}'
+  jq -nc --argjson epoch "$((J_T0 + 1))" \
+    '{ts:"2026-01-01T00:00:01Z",epoch:$epoch,event:"UserPromptSubmit",sid:"sid-long",transcript:null,tool:null,detail:"long session task",rc:null}'
+  # 600 tool events after the prompt — a naive tail would drop SessionStart + task.
+  n=0
+  while [ "$n" -lt 600 ]; do
+    jq -nc --argjson epoch "$((J_T0 + 2 + n))" --argjson n "$n" \
+      '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"PostToolUse",sid:"sid-long",transcript:null,tool:"Bash",detail:("tool-"+($n|tostring)),rc:0}'
+    n=$((n + 1))
+  done
+} > "$J/.plinth/session/events.jsonl"
+
+# ── Fixture K: last-error means NOT running despite newer request ────────────
+K="$FIX/lambda-err"
+mk_git "$K"
+git -C "$K" checkout -qb feat/err
+echo k > "$K/k.txt"
+git -C "$K" add -A
+git -C "$K" commit -qm "work"
+KFULL="$(git -C "$K" rev-parse HEAD)"
+mkdir -p "$K/.plinth/session/review/feat-err"
+jq -nc --arg sha "$KFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$K/.plinth/session/review/feat-err/verdict.json"
+jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
+  > "$K/.plinth/session/review/feat-err/request-2.json"
+printf '2026-01-01T00:00:00Z reviewer CLI missing\n' \
+  > "$K/.plinth/session/review/feat-err/last-error"
+
+# ── Fixture L: stale verdict (SHA deliberately wrong) ────────────────────────
+L="$FIX/mu-stale"
+mk_git "$L"
+git -C "$L" checkout -qb feat/stale
+echo l > "$L/l.txt"
+git -C "$L" add -A
+git -C "$L" commit -qm "work"
+mkdir -p "$L/.plinth/session/review/feat-stale"
+jq -nc \
+  '{verdict:"APPROVED",sha:"0000000000000000000000000000000000000000",round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$L/.plinth/session/review/feat-stale/verdict.json"
+
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -179,7 +233,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 9' "$OUT" >/dev/null
+jq -e '(.projects | length) == 12' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -197,6 +251,9 @@ jq -e --arg head "$HEAD" '
   and .quota.available == false
   and (.quota.note | type == "string")
   and (.activity_secs_ago != null)
+  and (.activity_secs_ago | type == "number")
+  and .activity_secs_ago >= 0
+  and .activity_secs_ago < 120
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
 
@@ -248,11 +305,12 @@ jq -e '
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
 
-# Transcript burn observed
+# Transcript burn: all categories (incl. cache_read 10000) + exact burn window
 jq -e '
   .projects[] | select(.name == "theta-burn")
-  | .tokens_total == 150
-  and .burn_per_min != null
+  | .tokens_total == 10150
+  and .tokens_window == "recent_transcript_tail"
+  and .burn_per_min == 2030
   and .model_driver == "claude-test"
 ' "$OUT" >/dev/null
 
@@ -263,6 +321,29 @@ jq -e '
   and .needs_human.open == 1
   and .needs_human.blocking == 1
   and .review == null
+' "$OUT" >/dev/null
+
+# Long session: task + ~10000s session survive 600 trailing tool events
+jq -e --argjson now "$NOW" --argjson t0 "$J_T0" '
+  .projects[] | select(.name == "kappa-long")
+  | .task == "long session task"
+  and .session_secs != null
+  and (((.session_secs - ($now - $t0)) | if . < 0 then -. else . end) <= 5)
+' "$OUT" >/dev/null
+
+# last-error: request outruns verdict but NOT running
+jq -e '
+  .projects[] | select(.name == "lambda-err")
+  | .review.running == false
+  and .review.last_error == true
+  and .review.verdict == "CHANGES_NEEDED"
+' "$OUT" >/dev/null
+
+# Explicit stale=true
+jq -e '
+  .projects[] | select(.name == "mu-stale")
+  | .review.stale == true
+  and .review.verdict == "APPROVED"
 ' "$OUT" >/dev/null
 
 # ── Pure UI card render (node + __plinthDash seam) ───────────────────────────
@@ -421,7 +502,7 @@ setTimeout(() => {
     const fullHtml = api.cardHTML(full);
     for (const needle of [
       "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
-      "12/min", "1.5k observed", "r2",
+      "12/min", "1.5k recent", "r2",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
@@ -605,6 +686,17 @@ nf_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SRV_PORT}/
 # Banner claims loopback
 grep -q '127.0.0.1' "$FIX/srv.out" \
   || { echo "smoke-snapshot: server banner missing 127.0.0.1" >&2; exit 1; }
+# Behavioral bind: listener is on 127.0.0.1, not 0.0.0.0 / *
+if command -v lsof >/dev/null 2>&1; then
+  bind_info="$(lsof -nP -iTCP:"$SRV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  printf '%s\n' "$bind_info" | grep -q "127.0.0.1:${SRV_PORT}" \
+    || { echo "smoke-snapshot: listener not on 127.0.0.1:$SRV_PORT:" >&2; printf '%s\n' "$bind_info" >&2; exit 1; }
+  if printf '%s\n' "$bind_info" | grep -qE "0\\.0\\.0\\.0:${SRV_PORT}|\\*:${SRV_PORT}"; then
+    echo "smoke-snapshot: listener appears non-loopback:" >&2
+    printf '%s\n' "$bind_info" >&2
+    exit 1
+  fi
+fi
 srv_cleanup
 # Assert nothing is still listening on the port
 if command -v lsof >/dev/null 2>&1; then
