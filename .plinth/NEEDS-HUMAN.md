@@ -34,6 +34,12 @@
   sensitive canary for `lane-guard.sh delegation` (missing/empty transcript, exact
   header identity, containment, agent wiring order) — #41 shipped the gate without one.
 
+- [ ] **Tier-2 confirmation process window:** non-fresh Tier-2 approval may leave
+  `verdict.json` as APPROVED before the clean-slate confirmation finishes; ship gates
+  that only check the field can accept that intermediate state. Fix: persist
+  pending/UNBOUND until confirmation succeeds; canary the ship gate in the
+  failed-confirmation state. MANUAL documents the bound; code residual.
+
 - [ ] **Instrument lag (v4.8.0 tag-locked install):** product `shared/.claude/hooks/guard.sh`
   comments now qualify receipt enablement (strict + caller-control). Installed
   `.claude/hooks/guard.sh` still matches tagged **v4.8.0** (floor byte-cmp). Next
