@@ -102,32 +102,32 @@ jobs:
               echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
               echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            # $SPEC in code blocks is allowlist-only (Write creates the file; shell must not).
-            # Allowed: SPEC= assignment, existence/equality checks, printf handoff args,
-            # --prompt-file "$SPEC", stdin redirect from "$SPEC". Anything else (python
-            # write_text, : >, touch, dd, sed -i, tee, …) fails the canary.
+            # Full-line allowlist for any code line that mentions SPEC / $SPEC / ${SPEC}:
+            # shell must not create the prompt. Substring greps are insufficient (a write can
+            # piggyback on an allowed fragment). The whole stripped line must match exactly.
             code="$(code_block_lines "$agent")"
             printf '%s\n' "$code" | grep -E '<<' >/dev/null && {
               echo "::error::${lane} code block contains a shell heredoc"; exit 1; } || true
             while IFS= read -r line; do
-              # Match $SPEC but not $SPEC_DIR / $SPEC_EOF etc.
-              if printf '%s\n' "$line" | grep -Eq '\$SPEC([^A-Za-z0-9_]|$)'; then
-                printf '%s\n' "$line" | grep -Eq \
-                  'SPEC="\$SPEC_DIR/prompt"|printf .*SPEC_DIR=%q SPEC=%q|\[ ! -e "\$SPEC" \]|\[ -n "\$SPEC" \]|\[ "\$SPEC" =|--prompt-file[[:space:]]+"\$SPEC"|<[[:space:]]*"\$SPEC"|SPEC=%q' \
-                  || {
-                    echo "::error::${lane} code block has non-allowlisted \$SPEC use (shell must not write the prompt): $line"
-                    exit 1
-                  }
-              fi
-              # Equivalent path $SPEC_DIR/prompt — only the assignment and equality check.
-              if printf '%s\n' "$line" | grep -q '\$SPEC_DIR/prompt'; then
-                printf '%s\n' "$line" | grep -Eq \
-                  'SPEC="\$SPEC_DIR/prompt"|\[ "\$SPEC" = "\$SPEC_DIR/prompt" \]' \
-                  || {
-                    echo "::error::${lane} code block writes or references \$SPEC_DIR/prompt outside assignment/equality (shell must not create the prompt): $line"
-                    exit 1
-                  }
-              fi
+              norm="$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+              # Skip pure comments and lines with no SPEC token.
+              case "$norm" in \#*) continue ;; esac
+              printf '%s\n' "$norm" | grep -Eq 'SPEC|\$\{?SPEC' || continue
+              case "$norm" in
+                'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
+                'SPEC="$SPEC_DIR/prompt"') continue ;;
+                'OUT="$(mktemp -t grok-out.XXXXXX)" || { rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$?"; exit 1; }') continue ;;
+                'OUT="$(mktemp -t codex-out.XXXXXX)" || { rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$?"; exit 1; }') continue ;;
+                '[ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }') continue ;;
+                "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' \"\$BEFORE\" \"\$SNAP\" \"\$SPEC_DIR\" \"\$SPEC\" \"\$OUT\"") continue ;;
+                'RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \') continue ;;
+                '--sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \') continue ;;
+                '[ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
+                'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
+                'rm -rf "$SPEC_DIR"') continue ;;
+              esac
+              echo "::error::${lane} code block has non-allowlisted SPEC line (shell must not write the prompt): $norm"
+              exit 1
             done < <(printf '%s\n' "$code")
             # Allocation contract — CODE BLOCK only. Handoff MUST print SPEC_DIR for cleanup.
             printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' || {
