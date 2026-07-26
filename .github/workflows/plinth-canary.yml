@@ -102,15 +102,22 @@ jobs:
               echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
               echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            # Shell writes into $SPEC (any of=/>/tee/cp/dd/install/python) or heredoc re-embed it.
+            # $SPEC in code blocks is allowlist-only (Write creates the file; shell must not).
+            # Allowed: SPEC= assignment, existence/equality checks, printf handoff args,
+            # --prompt-file "$SPEC", stdin redirect from "$SPEC". Anything else (python
+            # write_text, : >, touch, dd, sed -i, tee, …) fails the canary.
             code="$(code_block_lines "$agent")"
-            printf '%s\n' "$code" | grep -E '(printf|echo|cat|tee|dd|install|python|python3).{0,80}\$SPEC' \
-              | grep -E '(>|of=|tee|cp )' >/dev/null && {
-              echo "::error::${lane} code block appears to shell-write into \$SPEC"; exit 1; } || true
-            printf '%s\n' "$code" | grep -E '(^|[^[:alnum:]_])(tee|cp|dd|install)[[:space:]].*\$SPEC' >/dev/null && {
-              echo "::error::${lane} code block uses tee/cp/dd/install into \$SPEC"; exit 1; } || true
             printf '%s\n' "$code" | grep -E '<<' >/dev/null && {
               echo "::error::${lane} code block contains a shell heredoc"; exit 1; } || true
+            while IFS= read -r line; do
+              # Match $SPEC but not $SPEC_DIR / $SPEC_EOF etc.
+              printf '%s\n' "$line" | grep -Eq '\$SPEC([^A-Za-z0-9_]|$)' || continue
+              printf '%s\n' "$line" | grep -Eq \
+                'SPEC="\$SPEC_DIR/prompt"|printf .*SPEC_DIR=%q SPEC=%q|\[ ! -e "\$SPEC" \]|\[ -n "\$SPEC" \]|\[ "\$SPEC" =|--prompt-file[[:space:]]+"\$SPEC"|<[[:space:]]*"\$SPEC"|SPEC=%q' \
+                && continue
+              echo "::error::${lane} code block has non-allowlisted \$SPEC use (shell must not write the prompt): $line"
+              exit 1
+            done < <(printf '%s\n' "$code")
             # Allocation contract — CODE BLOCK only. Handoff MUST print SPEC_DIR for cleanup.
             printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' || {
               echo "::error::${lane} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
@@ -155,7 +162,7 @@ jobs:
           # Write-analog stands in for Claude Code's Write tool: same create-only + project-CWD
           # constraints the canary can enforce without a live Claude Code session.
           PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
-          OWNED_DIRS="$PD"
+          owned_dirs=("$PD")
           mkdir -p "$PD/bin" "$PD/mock-plinth"
           # lane-guard stub so extracted step-0 allocation can run.
           cat > "$PD/mock-plinth/lane-guard.sh" <<'LG'
@@ -245,7 +252,7 @@ jobs:
               "$PWD"/.plinth-lane.*) : ;;
               *) echo "::error::${lane}: allocated SPEC not under \${PWD}/.plinth-lane.* (got $SPEC)"; exit 1 ;;
             esac
-            OWNED_DIRS="$OWNED_DIRS $SPEC_DIR"
+            owned_dirs+=("$SPEC_DIR")
             [ ! -e "$SPEC" ] || { echo "::error::${lane}: allocation pre-created SPEC path $SPEC"; exit 1; }
             write_analog "$SPEC" "$escaped"
             [ -f "$SPEC" ] || { echo "::error::${lane}: Write analog did not create $SPEC"; exit 1; }
@@ -297,9 +304,8 @@ jobs:
             exercise_lane grok "$GA" "$GCMD"
             exercise_lane codex "$CA" "$CCMD"
           fi
-          # Remove only fixture-owned paths (not every .plinth-lane.* on the machine).
-          # shellcheck disable=SC2086
-          rm -rf $OWNED_DIRS 2>/dev/null || true
+          # Remove only fixture-owned paths (array — safe with spaces/glob in paths).
+          rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
           # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
           [ -f "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" ] || {
             echo "::error::missing docs/receipts/claude-write-project-local-plinth-lane.txt (live Write receipt)"; exit 1; }

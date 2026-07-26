@@ -9,9 +9,10 @@
   `--add-dir`; not a pre-created system `mktemp` file Write would refuse to overwrite
   unread). Fail-loud on mktemp. Review harness comment clarifies project-owned `.plinth`
   files (including GOAL.md) stay outside the pinned-tooling allowlist. Canary: exact
-  Write tool token, project-local `$SPEC_DIR/prompt`, ban shell redirects/heredocs into
-  the spec, pin extracted `cap 600` command blocks to `"$SPEC"`, run those blocks against
-  stubs with a SPEC_EOF payload, and prove a fixed-heredoc negative control still executes.
+  Write tool token, project-local `$SPEC_DIR/prompt`, allowlist-only `$SPEC` uses in code
+  blocks (shell must not create the prompt), pin extracted `cap 600` command blocks to
+  `"$SPEC"`, run those blocks against stubs with a SPEC_EOF payload, and prove a
+  fixed-heredoc negative control still executes.
   Project and template `.gitignore` ignore `.plinth-lane.*`. Step-0 handoff prints
   `SPEC_DIR` so cleanup across tool calls is real, not re-derived. Canary extracts
   and runs each lane's step-0 allocation, applies a Write-tool analog (create-only,
