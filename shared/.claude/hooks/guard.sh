@@ -384,16 +384,20 @@ case "$tool" in
           # quoted-empty delimiter is valid (terminator = empty line)
           if (dst=="" && reliable && ok && (d!="" || q)) {
             cons=first_consumer(pref)
-            enqueue(d, (q && is_inert_consumer(cons)), t)
+            # never suppress after an earlier unreliable/untracked heredoc (queue order)
+            enqueue(d, (q && is_inert_consumer(cons) && !no_suppress_rest), t)
           } else if (dst=="" && reliable && d!="") {
             # track without suppress so a later terminator does not leave us inside a body
             enqueue(d, 0, t)
+          } else {
+            # untracked / unreliable delim: poison later suppress so a following
+            # inert cat <<'B' cannot hide an earlier executable body
+            no_suppress_rest=1
           }
-          # unreliable delim decode: no enqueue — every following line stays fully scanned
           i=j-1
         }
       }
-      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0 }
+      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0; no_suppress_rest=0 }
       {
         if (head<=tail) {
           body=$0; cmp=body

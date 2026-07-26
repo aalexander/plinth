@@ -2549,6 +2549,12 @@ jobs:
           [ "$(gcmd $'cat <<X\'Y\'\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X'Y' delim left body unscanned"; exit 1; }
           [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: metachar-prefixed comment wrongly blocked inert body"; exit 1; }
           [ "$(gcmd $':;# cat <<\'S\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside ;# comment suppressed real rm"; exit 1; }
+          # Unreliable first delimiter must not let a later inert heredoc hide an earlier body.
+          [ "$(gcmd $'bash <<X\'Y\'; cat <<\'B\'\nrm -rf build\nXY\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: unreliable bash delim + queued cat hid rm"; exit 1; }
+          [ "$(gcmd $'bash <<$\'\\x41\'; cat <<\'B\'\nrm -rf build\nA\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C first delim + queued cat hid rm"; exit 1; }
+          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer \$( duplicate check"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' >(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open process-sub >( header not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<X\"Y\"\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X\"Y\" delim left body unscanned"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
