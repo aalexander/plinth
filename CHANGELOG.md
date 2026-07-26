@@ -1,5 +1,13 @@
 # Plinth changelog
 
+## v4.7.2 — atomic managed-file refresh (upstream #10) — July 26, 2026
+- **Managed-file refresh is atomic (upstream #10).** `plinth update` installs shared
+  files via same-dir temp + `rename(2)` so a running `review.sh` keeps its open inode;
+  destination mode is preserved exactly on refresh, with a `chmod u+x` exec-bit floor on
+  the eight managed scripts so a lost +x is healed without resetting other bits; a live
+  review round only warns (does not hard-fail). `.plinth-version` is still stamped from
+  `$PLINTH_VERSION` (not copied from the source tree).
+
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
