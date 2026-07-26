@@ -150,12 +150,9 @@ Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (bra
 review RECEIPT as a git note on the approved commit — push it WITH the branch
 (`git push origin HEAD refs/notes/plinth-receipts`; the server receipt check fails
 closed without it). The notes ref is append-only: NEVER force-push it. On a
-non-fast-forward rejection, recover with the EXACT four commands below, in order —
+non-fast-forward rejection, recover with the EXACT three commands below —
 `git notes merge` REQUIRES a notes-ref argument (bare `git notes --ref=X merge`
-exits with "must specify a notes ref to merge"), so the side ref must be named.
-Pass the SAME base you reviewed against: the re-run only re-mints for free when the
-stored verdict's base matches, and bare `./.plinth/review.sh` means `main`, so a
-`develop` loop that omits it buys a full paid round instead of a remint:
+exits with "must specify a notes ref to merge"), so the side ref must be named:
 ```
 git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
 git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
@@ -178,15 +175,10 @@ only after a clean-slate confirmation, EVERY time. Swapping the reviewer vendor
 mid-loop forces a fresh full round instead — coverage credit does not transfer
 between vendors). Exit 2 = the
 review DID NOT RUN — fix the mechanical problem or surface it; never treat it as a
-pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER, which is OPT-IN and
-OFF unless `round_cap` is set to a positive integer in the base branch's config. There
-is NO default cap: a long loop is a signal to fix CONVERGENCE, not to stop reviewing.
-Converge by making rounds smaller and fuller — enumerate the whole finding-CLASS rather
-than the instance the reviewer named, batch every open finding's fix into ONE commit per
-round, and run independent work in parallel. Where a cap IS configured, a loop that hits
-it is a design problem, not a review problem: STOP and surface to the human (never
-restart the loop or clear session state to dodge it). The PLINTH_* review overrides
-(PLINTH_REVIEWER_VENDOR,
+pass. One deliberate exit-2 case: the round_cap CIRCUIT BREAKER (default 8 rounds) —
+a loop that has not converged by then is a design problem, not a review problem;
+STOP and surface to the human (never restart the loop or clear session state to
+dodge the cap). The PLINTH_* review overrides (PLINTH_REVIEWER_VENDOR,
 PLINTH_REVIEWER_MODEL, PLINTH_AUDIT_VENDOR, PLINTH_AUDIT_MODEL, PLINTH_ROUND_CAP)
 are OPERATOR-ONLY: the driver must NEVER set them — using them to change the
 reviewer, drop the cross-vendor audit, or raise the round cap is the same

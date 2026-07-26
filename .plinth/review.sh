@@ -15,11 +15,8 @@
 # every mode (the round-1 fresh pass read the full branch); a Tier-2 non-fresh
 # approval gets a clean-slate full confirmation before it binds (always — v4.6's
 # once-per-loop skip is retired, upstream #27).
-# round_cap is an OPT-IN circuit breaker: UNSET (the default) means NO CAP — the loop
-# runs until it converges. Set a positive integer (max 100000) and a loop that has not
-# converged by then stops (exit 2) and surfaces to the human; 0 is also "no cap". Values
-# above the max are REFUSED, not clamped: past the arithmetic range they wrap negative and
-# would silently disable the breaker the operator was raising.
+# round_cap (default 8) is a hard circuit breaker: a loop that
+# has not converged by then stops (exit 2) and surfaces to the human.
 #
 # Protocol files under .plinth/session/review/ (self-gitignored, per-task):
 #   request-<n>.json   what round n reviewed {sha, base_ref, round, mode, ts}
@@ -139,44 +136,13 @@ ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND
 # post-approval clean-slate confirmation (a capped confirmation dies with the
 # non-binding APPROVED persisted; the unconfirmed-approval recovery runs it on
 # the next invocation once the operator unbricks with PLINTH_ROUND_CAP).
-# UNSET MEANS NO CAP (v4.7.1). It used to mean 8, which made removing the knob from
-# .plinth/config look like disabling the breaker while silently restoring the default —
-# a loop would run to 8 and stop, with the config offering no evidence why. Opt IN to a
-# cap by setting round_cap; leave it out and the loop runs until it converges. The
-# breaker is a deliberate cost ceiling for an operator who wants one, not a default
-# ceiling on convergence: a long loop is a signal to fix the CONVERGENCE (enumerate the
-# whole finding-class, batch every fix into one commit per round), not to stop reviewing.
-# A MALFORMED value is NOT silently reinterpreted as a number — that is how a typo
-# ('round_cap = eight') would quietly disable a breaker the operator believed was armed.
-# A digit-only value can still be absurd: past Bash's signed 64-bit range the arithmetic
-# WRAPS, so a huge positive cap becomes negative and `[ "$ROUND_CAP" -gt 0 ]` silently
-# disables the breaker the operator was trying to raise. Bound it well below the wrap and
-# far above any real loop; 100000 is arbitrary but unreachable in practice.
-ROUND_CAP_MAX=100000
-ROUND_CAP="$(bcfg round_cap)"
-case "$ROUND_CAP" in
-  '')       ROUND_CAP=0 ;;
-  *[!0-9]*) die_infra "round_cap in .plinth/config must be a non-negative integer (got '$ROUND_CAP'). Leave it unset or set 0 to disable the breaker; set a positive integer to cap the loop." ;;
-  *)        # Length is checked on the value with LEADING ZEROS STRIPPED. Checking the raw
-            # string rejected `0000001`, which is a perfectly valid 1 that the normalization
-            # below explicitly supports — the guard exists to stop an OVERFLOW-sized magnitude,
-            # not a padded small number.
-            case "$ROUND_CAP" in *[!0]*) rc_mag="${ROUND_CAP#"${ROUND_CAP%%[!0]*}"}" ;; *) rc_mag=0 ;; esac
-            [ "${#rc_mag}" -le 6 ] && [ "$((10#$rc_mag))" -le "$ROUND_CAP_MAX" ] \
-              || die_infra "round_cap in .plinth/config is absurdly large (got '$ROUND_CAP'; max ${ROUND_CAP_MAX}). Past the arithmetic range it wraps NEGATIVE and disables the breaker instead of raising it — set 0 (or leave it unset) if you mean no cap." ;;
-esac
+ROUND_CAP="$(bcfg round_cap)"; case "$ROUND_CAP" in ''|*[!0-9]*) ROUND_CAP=8 ;; esac
 ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal and crash the -gt test
 # PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
 # read from the BASE branch, so raising it on the feature branch does nothing;
 # the env is the unbrick path when a capped loop must legitimately continue.
 if [ -n "${PLINTH_ROUND_CAP:-}" ]; then
-  case "$PLINTH_ROUND_CAP" in
-    *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;;
-    *) case "$PLINTH_ROUND_CAP" in *[!0]*) prc_mag="${PLINTH_ROUND_CAP#"${PLINTH_ROUND_CAP%%[!0]*}"}" ;; *) prc_mag=0 ;; esac
-       { [ "${#prc_mag}" -le 6 ] && [ "$((10#$prc_mag))" -le "$ROUND_CAP_MAX" ]; } \
-         || die_infra "PLINTH_ROUND_CAP is absurdly large (got '$PLINTH_ROUND_CAP'; max ${ROUND_CAP_MAX}) — it would wrap NEGATIVE and disable the breaker instead of raising it; use 0 for no cap"
-       ROUND_CAP=$((10#$PLINTH_ROUND_CAP)) ;;
-  esac
+  case "$PLINTH_ROUND_CAP" in *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;; *) ROUND_CAP=$((10#$PLINTH_ROUND_CAP)) ;; esac
   echo "Plinth review: OVERRIDE — round_cap=${ROUND_CAP} from PLINTH_ROUND_CAP (this run only)."
 fi
 AUDIT_MODEL="$(bcfg audit_model)"
@@ -417,19 +383,12 @@ mkdir -p "$SDIR"
 # The tier is computed deterministically from the diff by version-pinned tooling
 # the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
 # docs/text) is granted by the deterministic floor without a model round; Tier
-# 1/2 get adversarial review. diff_digest is a fingerprint of the REVIEWED DIFF.
-# It is still not a merge-time enforcement point (the server check owns that), but it
-# IS now load-bearing for loop continuation: see the base-binding block below, where
-# reusing an approval or a coverage anchor keyed on a base ref's SPELLING was found to
-# be unsound because a ref is mutable. Real use showed the need, which is the bar.
+# 1/2 get adversarial review. diff_digest is recorded in the verdict as a
+# forensic fingerprint of the reviewed diff (dashboard/audit only — it is not
+# a merge-time enforcement point; that hardening is deferred until real use
+# shows it is needed).
 diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
 [ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
-# The IMMUTABLE identity of "where the base was" for this run. A ref name is a moving
-# label — `main` today is not `main` tomorrow — so continuation decisions that must
-# survive base movement key on this SHA, never on the spelling. Empty (no merge base,
-# e.g. unrelated histories) fails CLOSED at the comparison sites: an unknown anchor
-# never matches, so the loop re-reads rather than assuming continuity.
-merge_base="$(git merge-base "$baseref" "$sha" 2>/dev/null)" || merge_base=""
 # Fail CLOSED: a missing/broken classifier must not de-escalate. Default Tier 2
 # (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
 # high-consequence diff is over-reviewed, never under-reviewed.
@@ -466,41 +425,26 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # and call THIS function rather than restate its logic — a fixture that re-implements
 # the rule cannot detect the rule changing underneath it.
 #
-# ONE anchored pattern, not a pipeline of strips. Earlier rounds found holes in the
-# sequential-stripping approach — `/tmp/proj.git`, `../canary/receipt.git`,
+# ONE anchored pattern, not a pipeline of strips. Three rounds of review found holes in
+# the sequential-stripping approach — `/tmp/proj.git`, `../canary/receipt.git`,
 # `https:///owner/repo`, `ssh://git@/owner/repo`, `C:/owner/repo` all reduced to a
 # plausible-looking pair — because each strip only removed a prefix it recognised and
 # whatever survived was accepted. Anchoring the WHOLE string means anything not matched
 # is refused by construction, which is the property that kept failing to hold.
 #
-# THE ACCEPTED GRAMMAR IS A CLOSED LIST — not "whatever git accepts". Git's URL syntax is
-# strictly wider than this, and the difference is deliberate. Exactly two forms parse:
-#
-#   scheme://[user@]host[:port]/owner/repo[.git][/]   scheme = http|https|git|ssh|git+ssh
-#   [user@]host:owner/repo[.git][/]                   scp-style; host REQUIRED, path RELATIVE
-#
-# host is [A-Za-z0-9][A-Za-z0-9._-]*, or — IN THE SCHEME FORM ONLY — a bracketed IPv6
-# literal (`ssh://git@[2001:db8::1]:22/owner/repo` parses). owner and repo are
-# [A-Za-z0-9._-]+. UNDERSCORES are allowed in the host because SSH config aliases
-# routinely use them (`gh_work:owner/repo`) and an alias is resolved by ssh, not DNS, so
-# hostname rules would reject valid remotes. A single-character host is ACCEPTED on
-# purpose — `g:owner/repo` is a legitimate alias remote.
-#
-# REFUSED ON PURPOSE, each one a form git itself would accept:
-#   ftp://, ftps://          documented git schemes; no receipt use case, so not carried
-#   host/owner/repo          schemeless — indistinguishable from a relative local path
-#   host:/owner/repo         scp-style with an ABSOLUTE path — ambiguous with the Windows
-#                            drive form `C:/owner/repo`, which must stay refused; refusing
-#                            both is why the scp branch's owner group rejects a leading
-#                            slash, and why no host-length rule is needed
-#   [::1]:owner/repo         scp-style IPv6 — the scp branch takes no brackets
-# plus file://, absolute/relative/tilde paths, hostless URLs, and >2 path segments.
-#
-# CONSEQUENCE, stated plainly: a repo whose origin is any refused form mints NO receipt.
-# The review still runs and can still APPROVE; the loop announces the non-mint; and where
-# `receipt / verify` is required, that PR fails closed until origin names an accepted
-# form. That is the honest trade — a narrow parser that never mints a wrong identity,
-# rather than a wide one that mints pairs the server can never match.
+# Accepted, and nothing else:
+#   [scheme://][user@]host[:port]/owner/repo[.git][/]     scheme = http(s)|git|(git+)ssh
+#   [user@]host:owner/repo[.git][/]                       scp-style (host REQUIRED)
+# host is [A-Za-z0-9][A-Za-z0-9._-]* or a bracketed IPv6 literal. UNDERSCORES are
+# allowed because SSH config aliases routinely use them (`gh_work:owner/repo`), and an
+# alias is resolved by ssh, not DNS — applying hostname rules to it rejects valid
+# remotes. IPv6 needs the bracket form since a bare literal's colons are ambiguous with
+# the port separator. owner and repo are [A-Za-z0-9._-]+. A single-character host is
+# ACCEPTED on purpose — an SSH config alias like `g:owner/repo` is a legitimate remote.
+# The Windows drive form `C:/owner/repo` is still refused, and without needing a length
+# rule: the scp branch's owner group cannot match a leading slash after the colon. An
+# earlier revision required >=2 chars, which refused valid alias remotes to exclude a
+# form that was already excluded.
 #
 # The HOST IS NOT PART OF THE IDENTITY, deliberately, and this function does NOT check
 # that it is github.com. Requiring that would break GitHub Enterprise, whose remotes
@@ -508,9 +452,8 @@ echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.rea
 # compared by receipt-verify.sh against ${{ github.repository }} on the server. A
 # gitlab.com or unrelated-host remote therefore yields a pair that simply fails that
 # comparison — fail-closed at the gate rather than refused here. What this function
-# guarantees is narrower than "a GitHub repo", and narrower than "a host-based URL": it
-# is "an owner/repo pair extracted from one of the two forms listed above". Do not
-# describe it as more.
+# guarantees is narrower than "a GitHub repo": it is "an owner/repo pair extracted from
+# a host-based remote URL". Do not describe it as more.
 receipt_nwo() {
   local url="$1" core rest
   [ -n "$url" ] || return 0
@@ -546,21 +489,6 @@ ledger_complete() {
   return 0
 }
 
-# canon_base <ref-spelling> -> the bare branch name. A base can legitimately be written
-# `main`, `origin/main`, `refs/heads/main` or `refs/remotes/origin/main`; all four name the
-# SAME base. Stripping only `origin/` (the previous rule) left the fully-qualified forms
-# verbatim, so they were stored in the verdict and HASHED INTO the receipt subject while
-# receipt-verify.sh normalizes the PR's base to a bare name — a legitimately reviewed PR
-# then failed base_ref or subject-digest verification. Order matters: refs/remotes/ must be
-# stripped before origin/, or `refs/remotes/origin/main` keeps its `origin/`.
-canon_base() {
-  local b="${1:-}"
-  b="${b#refs/heads/}"
-  b="${b#refs/remotes/}"
-  b="${b#origin/}"
-  printf '%s' "$b"
-}
-
 mint_receipt() {  # mint_receipt <round>
   local mround="$1" repo_nwo htree mb ledger subj receipt origin_url
   origin_url="$(git config --get remote.origin.url 2>/dev/null)" || origin_url=""
@@ -571,7 +499,7 @@ mint_receipt() {  # mint_receipt <round>
   # is; naming the remote instead of reproducing its URL removes the entire leak class
   # rather than enumerating it.
   [ -n "$repo_nwo" ] || {
-    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
+    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL carries no owner/repo pair (local paths, file:// and hostless URLs have no repository identity to bind). Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential. Set an origin remote whose URL names a host and an owner/repo, then re-run ./.plinth/review.sh to mint."
     return 0
   }
   htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
@@ -597,18 +525,7 @@ mint_receipt() {  # mint_receipt <round>
     echo "Plinth review: NOTE — receipt NOT minted: the per-loop override ledger (${SDIR}/usage.jsonl) is missing or does not cover every round up to ${mround} — an append was lost. Minting from it would drop overrides from the disclosure the server check enforces, and would overwrite a correct receipt. Restore session state, or re-run the loop from a clean round 1."
     return 0
   fi
-  # ROUND 0 (Tier 0) NEVER reads a ledger file. Round 0 means no round has run in THIS
-  # loop, so any usage.jsonl present is a PRIOR loop's — and Tier 0 mints and exits
-  # BEFORE the round-bookkeeping that clears per-loop markers, so reusing a branch after
-  # its base advances would otherwise mint a round-0 receipt carrying the old loop's
-  # override tuples. The server check compares that ledger to the PR body for exact
-  # tuple-set equality, so a stale row fails a legitimately clean Tier-0 PR (and an
-  # operator who then "fixes" the body by adding the phantom line has disclosed an
-  # override that never applied). By definition there are no overrides to disclose at
-  # round 0: the empty ledger is the only correct answer, not a fallback.
-  if [ "${mround:-0}" = "0" ]; then
-    ledger="[]"
-  elif [ -f "$SDIR/usage.jsonl" ]; then
+  if [ -f "$SDIR/usage.jsonl" ]; then
     ledger="$(jq -cs '[.[] | select(.overrides) | .round as $r | (.overrides | to_entries[]) |
         {round: $r, name: ("PLINTH_" + (.key | ascii_upcase)), value: (.value | tostring)}]' \
         "$SDIR/usage.jsonl" 2>/dev/null)" || ledger=""
@@ -621,15 +538,15 @@ mint_receipt() {  # mint_receipt <round>
   fi
   if command -v shasum >/dev/null 2>&1; then
     subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
-      "$repo_nwo" "$(canon_base "$baseref")" "$mb" "$sha" "$htree" | shasum -a 256 | cut -d' ' -f1)"
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | shasum -a 256 | cut -d' ' -f1)"
   elif command -v sha256sum >/dev/null 2>&1; then
     subj="$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
-      "$repo_nwo" "$(canon_base "$baseref")" "$mb" "$sha" "$htree" | sha256sum | cut -d' ' -f1)"
+      "$repo_nwo" "${baseref#origin/}" "$mb" "$sha" "$htree" | sha256sum | cut -d' ' -f1)"
   else
     echo "Plinth review: NOTE — receipt not minted (no sha256 tool)."; return 0
   fi
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
-    --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
+    --arg br "${baseref#origin/}" --arg mb "$mb" --arg sd "sha256:${subj}" \
     --argjson round "$mround" --argjson ledger "$ledger" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
       base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
@@ -648,22 +565,11 @@ mint_receipt() {  # mint_receipt <round>
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
 if [ "$RISK" = "0" ]; then
-  # A Tier-0 grant is round 0 — by definition a NEW loop. It exits before the round
-  # bookkeeping below, so it must do that branch's per-loop reset itself; otherwise a
-  # branch whose base advanced into Tier-0 territory keeps the PREVIOUS loop's findings,
-  # coverage anchor and override ledger. mint_receipt already refuses to read a ledger at
-  # round 0, so the RECEIPT was correct — but the leftover usage.jsonl still described
-  # overrides that did not apply to this subject, leaving the audit trail contradicting
-  # the disclosure: publish it and the verifier sees a phantom override, omit it and the
-  # PR body contradicts session state. Clearing is the only consistent answer.
-  rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
-        "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
-        --arg mbase "$merge_base" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
           round:0, session_id:"", model:"deterministic-floor", risk:$risk,
-          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
+          diff_digest:$digest, usage:null, ts:$ts}' > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
@@ -737,17 +643,10 @@ if [ -n "${RV_MODEL:-}" ]; then REVIEWER_MODEL="$RV_MODEL"; fi
 # would pass a FOREIGN session id to the new vendor's --resume and safety would
 # rest on that CLI failing cleanly; a missing recorded vendor (pre-v4.6
 # verdict.json) fails CLOSED to a non-resume round. Pure fn -> testable.
-resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode> <prev_vendor> <prev_mbase> <merge_base>
+resumable_prev() {  # resumable_prev <prev_verdict> <prev_sid> <prev_base> <baseref> <prev_mode> <prev_vendor>
   [ "$1" = "CHANGES_NEEDED" ] || return 1
   [ -n "$2" ] || return 1
-  # Base identity NORMALIZED (origin/main and main are the same base; treating them as
-  # different spuriously burned a full round after an operator added and fetched origin)
-  # AND the merge base UNMOVED. The second test is the load-bearing one: a same-named
-  # base that MOVED changes the diff while the spelling still matches, so a warm thread
-  # would continue against a diff it never read. Empty prev_mbase (pre-v4.7.1 verdict)
-  # fails CLOSED here, as everywhere else in this function.
-  [ "$(canon_base "$3")" = "$(canon_base "$4")" ] || return 1
-  [ -n "${7:-}" ] && [ "${7:-}" = "${8:-}" ] || return 1
+  [ "$3" = "$4" ] || return 1
   [ "${6:-}" = "${REVIEWER_VENDOR:-}" ] || return 1
   # Only resume a mode that carries a warm UNANCHORED full read: fresh, or a prior
   # resume that continues such a thread. verify is anchored on prior findings; an
@@ -809,14 +708,6 @@ if [ -f "$SDIR/verdict.json" ]; then
   prev_mode="$(jq -r '.mode // empty'          "$SDIR/verdict.json")"
   prev_vendor="$(jq -r '.vendor // empty'      "$SDIR/verdict.json")"
   prev_round="$(jq -r '.round // 0'            "$SDIR/verdict.json")"
-  # IMMUTABLE reviewed state. A base REF is a moving label, so neither reusing an
-  # approval nor inheriting a coverage anchor may key on its spelling: `main` can move
-  # under a fixed HEAD, which changes the diff while the name stays equal. prev_digest
-  # pins WHAT was reviewed; prev_mbase pins WHERE the base was. Both are empty on a
-  # pre-v4.7.1 verdict.json, and every comparison below fails CLOSED on empty — an
-  # unknown anchor re-reads rather than assuming continuity.
-  prev_digest="$(jq -r '.diff_digest // empty' "$SDIR/verdict.json")"
-  prev_mbase="$(jq -r '.merge_base // empty'   "$SDIR/verdict.json")"
   prev_in="$(jq -r '.usage.input_tokens // 0'  "$SDIR/verdict.json")"
   case "$prev_in" in ''|*[!0-9]*) prev_in=0 ;; esac
   # Budget is ADVISORY: warn loudly and continue — never park the loop on a
@@ -825,37 +716,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   if [ "$prev_in" -gt "$ROUND_BUDGET" ]; then
     echo "Plinth review: NOTE — last round cost ${prev_in} input tokens (> ${ROUND_BUDGET}). Continuing; spend is on the dashboard. Consider 'plinth smoke' if findings are RUNTIME-class."
   fi
-  # A MOVED base restarts the loop rather than continuing it. Announce it: the round
-  # counter, finding history and override ledger all reset, and an operator watching
-  # round numbers would otherwise see the loop silently start over.
-  if [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$(canon_base "$prev_base")" = "$(canon_base "$baseref")" ] \
-     && [ -n "$prev_mbase" ] && [ "$prev_mbase" != "$merge_base" ]; then
-    echo "Plinth review: NOTE — '${baseref}' has MOVED since round ${prev_round} (merge base ${prev_mbase:0:12} → ${merge_base:0:12}). The recorded coverage anchor describes a diff that no longer exists, so continuing would verify fixes against a base nobody read. Starting a NEW loop: full round, fresh finding history and override ledger."
-  fi
-  # Say so when the base is why the free remint did not happen — otherwise an operator
-  # following the notes-recovery recipe with the wrong base silently buys a full round.
-  # Two DIFFERENT causes, reported differently, because the operator's next move differs.
   if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ]; then
-    if [ "$(canon_base "$prev_base")" != "$(canon_base "$baseref")" ]; then
-      echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}', but this run targets '${baseref}'. A verdict binds a DIFF, so that approval does not carry over and no receipt is reminted for it. Running a full round against '${baseref}'. If you meant to remint the existing receipt, re-run with the base you reviewed: ./.plinth/review.sh $(canon_base "$prev_base")"
-    elif [ -n "$prev_digest" ] && [ "$prev_digest" != "$diff_digest" ]; then
-      echo "Plinth review: NOTE — ${sha} is APPROVED against '${prev_base}' and HEAD has not moved, but the BASE HAS: the diff under review no longer matches the one that was approved (digest ${prev_digest:0:12} → ${diff_digest:0:12}). Reusing that approval would mint a receipt for a diff nobody reviewed. Running a full round."
-    fi
-  fi
-  # The stored BASE must match too, not just the SHA. A verdict is a statement about a
-  # DIFF, and the receipt's subject digest binds the base ref and merge-base — so an
-  # APPROVED recorded against `develop` says nothing about the same commit read against
-  # `main`. Without this test, the documented notes-recovery recipe (fetch, merge, re-run
-  # review.sh to remint) reminted through the fast path using whatever base the re-run
-  # defaulted to: `./.plinth/review.sh` with no argument means `main`, so a develop-based
-  # loop would mint a receipt claiming a `main` review that never happened — and the
-  # server check would happily verify it. Mismatch falls through to the new-loop branch
-  # below, which clears the per-loop markers and runs a real round 1 against the new base
-  # (correct: different base, different diff, different subject, fresh ledger).
-  if [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "APPROVED" ] \
-     && [ "$(canon_base "$prev_base")" = "$(canon_base "$baseref")" ] \
-     && [ -n "$prev_digest" ] && [ "$prev_digest" = "$diff_digest" ] \
-     && [ -n "$prev_mbase" ] && [ "$prev_mbase" = "$merge_base" ]; then
     if binds_directly "$prev_mode" "$RISK"; then
       # REMINT before the fast path returns. Minting is best-effort (a repo with no
       # origin, no notes support, or no sha256 tool still reviews fine), so a binding
@@ -877,22 +738,12 @@ if [ -f "$SDIR/verdict.json" ]; then
     echo "Plinth review: prior APPROVED at ${sha} (round ${prev_round}, mode ${prev_mode}, Tier ${RISK}) is NON-BINDING and unconfirmed — running the clean-slate confirmation now."
     recovery=1; mode="fresh"; round=$((prev_round + 1)); sid=""
   fi
-  # "HEAD unchanged" only means "nothing new to review" while the REVIEW CONTEXT is also
-  # unchanged. A CHANGES_NEEDED round is about a DIFF, and the diff moves when the base
-  # does: selecting a different base, or the same-named base moving under a fixed HEAD,
-  # both produce a diff the prior round never read. Refusing there stranded the operator —
-  # the loop would neither continue nor restart, and the only escape was to fake a commit.
-  # Those cases must fall through to the new-loop reset below, so the guard now fires only
-  # when the base identity AND the merge base are also unchanged. Empty prev_mbase (a
-  # pre-v4.7.1 verdict) means the anchor is unknown, so it too falls through and re-reads.
-  if [ "${recovery:-0}" != 1 ] && [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ] \
-     && [ "$(canon_base "$prev_base")" = "$(canon_base "$baseref")" ] \
-     && [ -n "$prev_mbase" ] && [ "$prev_mbase" = "$merge_base" ]; then
+  if [ "${recovery:-0}" != 1 ] && [ "$prev_sha" = "$sha" ] && [ "$prev_verdict" = "CHANGES_NEEDED" ]; then
     die "HEAD unchanged since round ${prev_round} returned CHANGES_NEEDED — commit fixes before re-running"
   fi
   if [ "${recovery:-0}" = 1 ]; then
     :  # confirmation recovery already selected fresh mode — skip the resume logic
-  elif [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode" "$prev_vendor" "$prev_mbase" "$merge_base"; then
+  elif [ "${RV_WARM_RESUME:-1}" = "1" ] && resumable_prev "$prev_verdict" "$prev_sid" "$prev_base" "$baseref" "$prev_mode" "$prev_vendor"; then
     mode="resume"; round=$((prev_round + 1)); sid="$prev_sid"
     # Resume only when it can plausibly work; otherwise a verify round (fresh
     # session, SCOPED: open prior findings + the cumulative fix diff since the
@@ -911,9 +762,7 @@ if [ -f "$SDIR/verdict.json" ]; then
         mode="$fallback"
       fi
     fi
-  elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$(canon_base "$prev_base")" = "$(canon_base "$baseref")" ] \
-       && [ -n "$prev_mbase" ] && [ "$prev_mbase" = "$merge_base" ] \
-       && [ -f "$SDIR/findings-${prev_round}.json" ]; then
+  elif [ "$prev_verdict" = "CHANGES_NEEDED" ] && [ "$prev_base" = "$baseref" ] && [ -f "$SDIR/findings-${prev_round}.json" ]; then
     # Non-warm-resume reviewer (grok: no headless token usage → no size-gateable
     # warm thread) can't resume — and so can a vendor swap mid-loop — but prior
     # findings on the SAME base exist → a scoped verify round continues the fix
@@ -1258,9 +1107,8 @@ ${inc}${evidence}${commits}"
         --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
-        --arg mbase "$merge_base" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts}
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, usage:$usage, ts:$ts}
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
   # usage.jsonl is the CUMULATIVE per-round ledger (verdict.json is overwritten

@@ -60,24 +60,37 @@ jobs:
           [ -n "${DRIVER_SHELL_MARKER:-}" ] \
             || { echo "::error::failed to load DRIVER_SHELL_MARKER from bin/plinth"; exit 1; }
 
-          # Read a version label: exactly one non-empty line, strict X.Y.Z, no embedded newlines.
-          # Mutant: tr -d '\\n\\r' over the whole file turns '4.7.\\n1' into accepted '4.7.1'.
-          read_xyz_label() {  # <file> → prints label on stdout, exit 1 if malformed
-            local f="$1" raw nonempty first
+          # Read a version label: exactly one X.Y.Z line and at most one terminal LF.
+          # Command substitution strips ALL trailing LFs, so `raw=$(cat f)` turns
+          # `4.7.1\n\n` into accepted `4.7.1`. Preserve bytes with a sentinel; reject
+          # NUL (Bash cannot store it) and CR.
+          read_xyz_label() {  # <file> -> prints label on stdout, exit 1 if malformed
+            local f="$1" raw first trail
             [ -f "$f" ] || { echo "missing $f" >&2; return 1; }
-            raw="$(cat "$f")"
-            # Reject embedded newlines that are not a single trailing terminator.
+            if python3 -c 'import sys; sys.exit(0 if b"\x00" in open(sys.argv[1],"rb").read() else 1)' "$f"; then
+              echo "label file $f contains a NUL byte" >&2; return 1
+            fi
+            raw="$(cat "$f"; printf x)"
+            raw="${raw%x}"
             case "$raw" in
-              *$'\n'*$'\n'*) echo "label file $f has multiple lines" >&2; return 1 ;;
+              *$'\r'*) echo "label file $f contains CR" >&2; return 1 ;;
             esac
-            # Strip at most one trailing newline (keep internal content intact).
-            first="${raw%$'\n'}"
-            first="${first%$'\r'}"
-            # No other whitespace, no v-prefix, no extra components, no trailing junk.
+            first="$raw"
+            trail=0
+            while true; do
+              case "$first" in
+                *$'\n') first="${first%$'\n'}"; trail=$((trail+1)) ;;
+                *) break ;;
+              esac
+            done
+            if [ "$trail" -gt 1 ]; then
+              echo "label file $f has $trail trailing newlines (max 1)" >&2; return 1
+            fi
+            case "$first" in
+              *$'\n'*) echo "label file $f has embedded newlines" >&2; return 1 ;;
+            esac
             printf '%s' "$first" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
               || { echo "label in $f is not strict X.Y.Z (got '$(printf '%s' "$first" | head -c 40)')" >&2; return 1; }
-            # Also reject if the file had a second non-empty line after stripping only the last nl
-            # (covered by multi-line case above). Empty after strip:
             [ -n "$first" ] || { echo "label in $f is empty" >&2; return 1; }
             printf '%s' "$first"
           }
@@ -286,6 +299,30 @@ jobs:
             echo "::error::multiline VERSION '4.7.\\n1' was ACCEPTED: $out"; exit 1
           fi
           echo "OK mutant: multiline VERSION and .plinth-version refused"
+          # Mutant: extra trailing LFs (command-substitution strip would accept these).
+          printf '1.0.0\n' > "$FX/VERSION"
+          python3 -c "open('$FX/.plinth-version','wb').write(b'4.7.1\n\n')"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::double-trailing-LF .plinth-version was ACCEPTED: $out"; exit 1
+          fi
+          python3 -c "open('$FX/VERSION','wb').write(b'4.7.1\n\n')"
+          printf '1.0.0\n' > "$FX/.plinth-version"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::double-trailing-LF VERSION was ACCEPTED: $out"; exit 1
+          fi
+          echo "OK mutant: double-trailing-LF labels refused"
+          # Mutant: NUL in label file.
+          printf '1.0.0\n' > "$FX/VERSION"
+          python3 -c "open('$FX/.plinth-version','wb').write(b'4.7.\x001\n')"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::NUL-bearing .plinth-version was ACCEPTED: $out"; exit 1
+          fi
+          python3 -c "open('$FX/VERSION','wb').write(b'4.7.\x001\n')"
+          printf '1.0.0\n' > "$FX/.plinth-version"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::NUL-bearing VERSION was ACCEPTED: $out"; exit 1
+          fi
+          echo "OK mutant: NUL-bearing labels refused"
 
           # Positive equal: fully matching +x twins.
           seed_equal_tree

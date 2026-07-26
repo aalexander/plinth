@@ -56,11 +56,11 @@ parts that were wrong on the way:
 - **Instrument identity is honest mid-release.** `.plinth-version` is the installed
   instrument, not the product `VERSION`. Canary refuses `.plinth-version == VERSION`
   unless every managed installed twin matches its `shared/` source (including driver
-  shells from `shared/driver-shell.md`); also refuses an instrument AHEAD of product
-  and non-semver labels. A behavioral fixture drives equal-version-with-stale-twins
-  and asserts failure — the committed lag path alone never exercised twin comparison.
-  During development the product version may lead; a labeled release commit refreshes
-  the twins and aligns the label.
+  shells and executable mode); also refuses an instrument AHEAD of product, non-strict
+  labels (including multi-trailing-LF and NUL forms that command-substitution would
+  silently normalize), and loads stock-CLAUDE classification from `bin/plinth`. Mid-
+  release, the installed tree is the last labeled refresh (4.7.1); product may lead
+  until a labeled instrument-refresh commit aligns them.
 - **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
   abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
   exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's
