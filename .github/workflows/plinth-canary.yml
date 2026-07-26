@@ -118,9 +118,13 @@ jobs:
                 "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' \"\$BEFORE\" \"\$SNAP\" \"\$SPEC_DIR\" \"\$SPEC\" \"\$OUT\"") continue ;;
                 'RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \') continue ;;
                 '--sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \') continue ;;
+                'rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"') continue ;;
                 'case "$SPEC_DIR" in') continue ;;
                 '"${PWD}/.plinth-lane."*)') continue ;;
-                '[ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
+                'case "$rest" in ''|*/*|*..*)') continue ;;
+                'echo "SPEC_DIR not a direct \${PWD}/.plinth-lane.* dir — refusing cleanup (got: $SPEC_DIR)"; exit 1 ;;') continue ;;
+                'esac') continue ;;
+                '[ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
                 'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
                 'rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }') continue ;;
                 'rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }') continue ;;
@@ -194,7 +198,7 @@ jobs:
           # constraints the canary can enforce without a live Claude Code session.
           PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
           owned_dirs=("$PD")
-          cleanup_owned() { rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true; }
+          cleanup_owned() { /bin/rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true; }
           trap cleanup_owned EXIT
           mkdir -p "$PD/bin" "$PD/mock-plinth"
           # lane-guard stub so extracted step-0 allocation can run.
@@ -327,21 +331,21 @@ jobs:
             set -e
             [ "$mut_rc" != 0 ] || {
               echo "::error::${lane}: command block accepted missing SPEC_DIR handoff (cleanup unguarded)"; exit 1; }
-            # Mutation: mistaken SPEC_DIR=$PWD/src must NOT delete project trees.
-            victim="$(mktemp -d "$PWD/.plinth-lane-canary-victim.XXXXXX")"
-            mkdir -p "$victim/src"; echo keep > "$victim/src/important"
-            owned_dirs+=("$victim")
+            # Mutation: nested/.. paths under .plinth-lane. prefix must NOT delete trees.
+            # (shell * matches slashes — prefix-only guards are unsafe.)
+            nest="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
+            mkdir -p "$nest/src"; echo keep > "$nest/src/important"
+            : > "$nest/src/prompt"
+            owned_dirs+=("$nest")
             {
               echo 'set -euo pipefail'
               echo 'cap() { shift; "$@"; }'
               echo "LANE_RULES=x; BEFORE=x; SNAP=x"
-              echo "SPEC_DIR=$(printf %q "$victim/src")"
-              echo "SPEC=$(printf %q "$victim/src/prompt")"
+              echo "SPEC_DIR=$(printf %q "$nest/src")"
+              echo "SPEC=$(printf %q "$nest/src/prompt")"
               echo "OUT=$(printf %q "$PD/out-victim-$lane")"
               echo "RECEIVED=$(printf %q "$PD/recv-victim-$lane"); export RECEIVED"
               echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
-              # create the prompt path so equality check could pass
-              : > "$victim/src/prompt"
               printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
             } > "$PD/run-victim-$lane.sh"
             set +e
@@ -349,9 +353,9 @@ jobs:
             vic_rc=$?
             set -e
             [ "$vic_rc" != 0 ] || {
-              echo "::error::${lane}: cleanup accepted non-.plinth-lane SPEC_DIR"; exit 1; }
-            [ -f "$victim/src/important" ] || {
-              echo "::error::${lane}: cleanup deleted a project directory (data-loss path)"; exit 1; }
+              echo "::error::${lane}: cleanup accepted nested .plinth-lane.*/src SPEC_DIR"; exit 1; }
+            [ -f "$nest/src/important" ] || {
+              echo "::error::${lane}: cleanup deleted a nested project directory (data-loss path)"; exit 1; }
             # Failure-path cleanup: CLI exits nonzero; SPEC_DIR must still be removed and RUN_RC preserved.
             cat > "$PD/bin/grok" <<'FAILSTUB'
           #!/usr/bin/env bash
@@ -483,6 +487,9 @@ jobs:
           done
           # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
           for lane in grok codex; do
+            # Clear any prior .plinth-lane.* residue so the assertion is meaningful.
+            find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' \
+              -exec /bin/rm -rf {} + 2>/dev/null || true
             cat > "$inj/bin/mktemp" <<'INJ'
           #!/usr/bin/env bash
           if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then exec /usr/bin/mktemp "$@"; fi
@@ -494,7 +501,7 @@ jobs:
             out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} OUT mktemp failure want exit 1 got $rc"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} OUT mktemp failure want exit 1 got $rc (out: $out)"; exit 1; }
             printf '%s\n' "$out" | grep -q 'OUT mktemp failed rc=43' || {
               echo "::error::${lane} OUT mktemp did not report rc=43 (got: $out)"; exit 1; }
             leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null || true)"
@@ -525,8 +532,15 @@ jobs:
             rc=$?
             set -e
             [ "$rc" = 1 ] || { echo "::error::${lane} OUT+rm-rf failure want exit 1 got $rc (out: $out)"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC_DIR cleanup after OUT mktemp failed' || {
-              echo "::error::${lane} OUT+rm-rf missing diagnostic (got: $out)"; exit 1; }
+            printf '%s\n' "$out" | grep -q 'SPEC_DIR cleanup after OUT mktemp failed rc=45' || {
+              echo "::error::${lane} OUT+rm-rf missing rc=45 diagnostic (got: $out)"; exit 1; }
+            leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null || true)"
+            # residue is expected when rm -rf fails — ensure at least the dir still exists
+            [ -n "$leftovers" ] || {
+              echo "::error::${lane} OUT+rm-rf should leave SPEC_DIR residue when rm fails"; exit 1; }
+            # clear residual dirs so later assertions stay clean
+            # shellcheck disable=SC2086
+            /bin/rm -rf -- $leftovers
           done
           # rmdir failure via EXTRACTED command block (nonempty dir): loud fail, keep extra file.
           for lane in grok codex; do
@@ -560,11 +574,13 @@ jobs:
             out="$(bash "$inj/run-rmdir-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" != 0 ] || { echo "::error::${lane} rmdir failure not fail-loud"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC_DIR rmdir failed' || {
-              echo "::error::${lane} rmdir missing diagnostic (got: $out)"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} rmdir want exit 1 got $rc"; exit 1; }
+            printf '%s\n' "$out" | grep -Eq 'SPEC_DIR rmdir failed rc=[1-9]' || {
+              echo "::error::${lane} rmdir missing rc diagnostic (got: $out)"; exit 1; }
             [ -f "$rmdir_victim/extra" ] || {
               echo "::error::${lane} rmdir path deleted unrelated content"; exit 1; }
+            [ -d "$rmdir_victim" ] || {
+              echo "::error::${lane} rmdir failure removed the directory tree"; exit 1; }
           done
           # rm -f failure via extracted command block.
           for lane in grok codex; do
@@ -572,6 +588,7 @@ jobs:
             rm_victim="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
             owned_dirs+=("$rm_victim")
             : > "$rm_victim/prompt"
+            echo keep > "$rm_victim/unrelated"
             mkdir -p "$inj/bin"
             cat > "$inj/bin/rm" <<'INJ'
           #!/usr/bin/env bash
@@ -604,13 +621,17 @@ jobs:
             out="$(bash "$inj/run-rm-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" != 0 ] || { echo "::error::${lane} rm -f failure not fail-loud"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC cleanup failed' || {
-              echo "::error::${lane} rm -f missing diagnostic (got: $out)"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} rm -f want exit 1 got $rc"; exit 1; }
+            printf '%s\n' "$out" | grep -q 'SPEC cleanup failed rc=44' || {
+              echo "::error::${lane} rm -f missing rc=44 diagnostic (got: $out)"; exit 1; }
             [ -d "$rm_victim" ] || {
               echo "::error::${lane} rm -f failure removed the whole SPEC_DIR unexpectedly"; exit 1; }
             [ -f "$rm_victim/prompt" ] || {
               echo "::error::${lane} rm -f failure removed the prompt unexpectedly"; exit 1; }
+            [ -f "$rm_victim/unrelated" ] || {
+              echo "::error::${lane} rm -f failure removed unrelated files"; exit 1; }
+            # Drop injected rm from PATH for later fixture cleanup.
+            rm -f "$inj/bin/rm"
           done
           echo "canary: extracted-block allocation/cleanup failure injection OK"
           # Negative fixtures: known bypass forms MUST fail the full-line allowlist.
@@ -667,7 +688,9 @@ jobs:
             echo "canary: negative fixture rejected: tools-comment-write"
           }
           # Remove only fixture-owned paths (array — safe with spaces/glob in paths).
-          rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
+          # Use absolute /bin/rm so a failure-injection PATH wrapper cannot break cleanup.
+          /bin/rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
+          trap - EXIT
           # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
           [ -f "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" ] || {
             echo "::error::missing docs/receipts/claude-write-project-local-plinth-lane.txt (live Write receipt)"; exit 1; }

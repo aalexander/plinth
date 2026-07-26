@@ -110,10 +110,15 @@ except subprocess.TimeoutExpired:
        # do not accumulate as hidden residue under the repo. SPEC_DIR comes from the
        # pasted step-0 handoff (not re-derived), so cleanup uses the same directory
        # Write created.
-       # Only delete the project-local mktemp dir from step 0 — never a mistaken path.
+       # Only delete the direct project-local mktemp dir from step 0. Reject nested
+       # or `..` paths (shell * matches slashes, so a prefix-only case is unsafe).
+       rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"
        case "$SPEC_DIR" in
          "${PWD}/.plinth-lane."*)
-           [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
+           case "$rest" in ''|*/*|*..*)
+             echo "SPEC_DIR not a direct \${PWD}/.plinth-lane.* dir — refusing cleanup (got: $SPEC_DIR)"; exit 1 ;;
+           esac
+           [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
              echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
            rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }
            rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }
