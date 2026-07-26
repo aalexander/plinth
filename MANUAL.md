@@ -742,12 +742,12 @@ installed copies.
   residual self-exit 142. Diagnostics do **not** instruct a re-run — a blind/automatic
   retry was declined deliberately because it doubles the hang bound and would weaken the
   cap fixtures; an operator may still re-run deliberately after reading the residual.
-- **Delegation receipt residuals / follow-ons (audit round 10, not blocking v4.8 ship)**
+- **Delegation receipt residuals / follow-ons (not blocking v4.8 ship)**
   (`shared/.plinth/lane-guard.sh` `delegation`, canary). No BEFORE/SNAP binding on the
-  transcript (stale-OUT residual is disclosed in the honest bound, not enforced). Session
-  `.gitignore` is always rewritten to exact `*` (tracked-file clobber path untested).
+  transcript (stale-OUT residual is disclosed in the honest bound, not enforced). Tracked
+  session `.gitignore` is refused unless already exact `*` (untracked is rewritten).
   `model=` sanitizer deletes disallowed chars rather than marking `sanitized`. Several
-  refusal branches (non-git cwd, non-dir session/lanes, mkdir failures) lack fixtures.
+  refusal branches (non-git cwd, non-dir session, mkdir failures) lack fixtures.
   Preflight diagnostic sleeps add ~3 minutes serial wall-clock to the canary — injectable
   cap would be cheaper. Tracked for a later pass.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**

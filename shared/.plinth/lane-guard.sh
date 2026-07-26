@@ -430,12 +430,12 @@ case "$sub" in
             exit 3 ;;
         esac
         if [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; then :; else
-          # Only claim "not signed in" when the CLI said so or exited nonzero without a known
-          # cap code — GNU timeout uses 125 for its own failures; do not send the user to login.
-          if [ "$_grc" = 0 ] || printf '%s' "$_go" | grep -qi 'not authenticated'; then
-            echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"
+          # Ordinary unauthenticated path (rc=1, or exit 0 + "not authenticated" text) stays
+          # "not signed in". GNU timeout's own failure is 125 — do not send the user to login.
+          if [ "$_grc" = 125 ]; then
+            echo "unavailable: the grok auth check ('grok models') failed (rc=125, elapsed ${_gel}s) — not necessarily unsigned-in (GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
           else
-            echo "unavailable: the grok auth check ('grok models') failed (rc=$_grc, elapsed ${_gel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
+            echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"
           fi
           exit 3
         fi ;;
@@ -468,9 +468,10 @@ case "$sub" in
               echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
             fi
             exit 3 ;;
-          *)
-            echo "unavailable: the codex auth check ('codex login status') failed (rc=$_crc, elapsed ${_cel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
+          125)
+            echo "unavailable: the codex auth check ('codex login status') failed (rc=125, elapsed ${_cel}s) — not necessarily unsigned-in (GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
             exit 3 ;;
+          *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
         esac ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
@@ -558,7 +559,13 @@ case "$sub" in
       [ "$(wc -c < "$f" | tr -d '[:space:]')" = "2" ] || return 1
       grep -qxF '*' "$f"
     }
-    if git -C "$droot" ls-files --error-unmatch -- .plinth/session/.gitignore >/dev/null 2>&1; then
+    # ls-files --error-unmatch: 0 = tracked, 1 = untracked/missing, >=2 = command failure (fail closed).
+    _gi_track=0
+    git -C "$droot" ls-files --error-unmatch -- .plinth/session/.gitignore >/dev/null 2>&1 || _gi_track=$?
+    if [ "$_gi_track" -ge 2 ]; then
+      echo "unavailable: cannot determine whether .plinth/session/.gitignore is tracked (git ls-files rc=$_gi_track) — refusing (fail closed)"; exit 3
+    fi
+    if [ "$_gi_track" -eq 0 ]; then
       if ! _exact_star_gi "$dig"; then
         echo "unavailable: tracked .plinth/session/.gitignore is not the exact self-ignore '*' — refusing to clobber a tracked file (would dirty the tree and lose committed content)"; exit 3
       fi
