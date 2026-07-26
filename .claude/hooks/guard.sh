@@ -36,13 +36,13 @@ each_protected() {  # builtin pattern + project patterns, one per line
 
 # Deny-ship TRIPWIRE. This is a CLAUDE `.claude/` PreToolUse hook: it fires for a Claude
 # driver and its Claude subagents ONLY. Whether a non-Claude CLI executes these hooks
-# is PROBEABLE, not assumed — `plinth hookprobe <grok|codex>` (grok 0.2.112 reported no
+# is PROBEABLE, not assumed — `plinth hookprobe <grok|codex>` (grok 0.2.93 reported no
 # execution (reproduce: plinth hookprobe grok); codex has its own hook system Plinth does not wire; re-run the probe on
 # CLI upgrades). Under a non-executing driver neither this hook NOR the `.claude/`
 # Stop review-gate fires for a non-Claude
 # driver — for them the ship gate is purely SERVER-SIDE: branch protection's required
 # checks (floor + checks; the cloud review is advisory comments, and the review verdict
-# is verified server-side only where `receipt / verify` is required), plus the trusted driver running
+# gains a server verifier only with the receipt check), plus the trusted driver running
 # the loop. For a Claude driver this hook
 # complements the Stop review-gate by
 # refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
@@ -58,9 +58,8 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    so quoted PROSE mentioning the command stays inert; a `bash -c "gh pr create"`
 #    deliberately hidden in quotes is OUT OF SCOPE.
 #  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection's
-#    required checks (floor + checks, plus `receipt / verify` where the operator has
-#    required it — that is what puts the review verdict itself under branch
-#    protection). A client hook can never replace those.
+#    required checks (floor + checks today; the receipt check adds the review-verdict
+#    gate). A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate

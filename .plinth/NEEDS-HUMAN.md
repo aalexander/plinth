@@ -45,8 +45,9 @@
   real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
   one mints nothing, so the check fails closed — correct, but it would block every PR).
   plinth itself ships product VERSION 4.7.2 on this branch. The installed instrument
-  (`.plinth-version`) is the prior labeled refresh and deliberately lags until a
-  labeled instrument-refresh commit — do not read VERSION as the running instrument.
+  (`.plinth-version` = 4.6.0) matches tag `v4.6.0`'s `shared/` payload (what floor
+  byte-compares) and deliberately lags until a labeled instrument-refresh commit —
+  do not read VERSION as the running instrument.
 
   **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
   per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand

@@ -58,9 +58,17 @@ parts that were wrong on the way:
   unless every managed installed twin matches its `shared/` source (including driver
   shells and executable mode); also refuses an instrument AHEAD of product, non-strict
   labels (including multi-trailing-LF and NUL forms that command-substitution would
-  silently normalize), and loads stock-CLAUDE classification from `bin/plinth`. Mid-
-  release, the installed tree is the last labeled refresh (4.7.1); product may lead
-  until a labeled instrument-refresh commit aligns them.
+  silently normalize), and loads stock-CLAUDE classification from `bin/plinth`. Mid-release, the installed tree matches tag `v4.6.0` shared/ (`.plinth-version` =
+  4.6.0, what floor compares); product may lead until a labeled refresh aligns them.
+- **Blank `round_cap` / empty `PLINTH_ROUND_CAP` refuse.** A present-but-empty
+  config key (`round_cap =`) and an explicitly empty env override are malformed and
+  abort (exit 2), not silent "no cap". Unset still means no cap.
+- **Version labels: LF only, no leading zeros, lag checks the named tag.** CRLF is
+  refused (floor/bin retain `\r`). Lag mid-release still requires installed twins to
+  match `shared/` at tag `v${.plinth-version}` when that tag exists.
+- **Receipt gate honest bound.** Required `receipt / verify` + `strict:true` blocks
+  merge on a green context name and up-to-date base; it does not cryptographically
+  bind the job body. MANUAL states the caller-workflow control limit.
 - **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
   abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
   exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's

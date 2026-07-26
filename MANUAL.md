@@ -20,6 +20,21 @@ that branch protection could require. Under the architect-resident DEFAULT the l
 Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop is
 contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7 — the
 server-side review gate) is REQUIRED in branch protection with `strict:true`.
+
+**HONEST BOUND — caller workflow control.** Branch protection requires a *context
+name* (`receipt / verify`). On `pull_request`, GitHub runs workflow files from the
+PR head, so a PR can replace the job that *produces* that context with a local
+always-green reusable workflow unless the base branch already pins a trusted
+`uses:` ref and the check refuses a different pin (which it does). That pin-match
+defense works only after the receipt job exists on the base. It does **not** make
+the required context equivalent to "this verifier binary ran": the first bootstrap
+PR and any gap before the base pin lands remain the operator's bootstrap window.
+Claims below that `receipt / verify` + `strict:true` is a "server-side review gate"
+mean: merge is blocked unless a job named that context is green and the branch is
+up to date — not that GitHub cryptographically binds the job body to a vendor-
+signed verifier. Treat over-strong wording as the contract intent; this paragraph
+is the enforced fact.
+
 Shipping it is not enabling it: it gates only where an operator wires
 `receipt / verify` into ci.yml, requires that context, AND sets
 `required_status_checks.strict=true` ("Require branches to be up to date before

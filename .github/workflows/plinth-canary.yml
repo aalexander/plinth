@@ -70,23 +70,24 @@ jobs:
             if python3 -c 'import sys; sys.exit(0 if b"\x00" in open(sys.argv[1],"rb").read() else 1)' "$f"; then
               echo "label file $f contains a NUL byte" >&2; return 1
             fi
-            # Sentinel preserves trailing newlines (and CR) through command substitution.
+            # Sentinel preserves trailing newlines through command substitution.
             raw="$(cat "$f"; printf x)"
             raw="${raw%x}"
-            # Strip exactly one terminal LF, or one terminal CRLF. Nothing else.
+            # Reject CR entirely: floor/bin/plinth retain \r and would clone/pin a
+            # tag containing that byte. CRLF is not a supported label form.
+            case "$raw" in
+              *$'\r'*) echo "label file $f contains CR (use a single trailing LF only)" >&2; return 1 ;;
+            esac
             first="$raw"
             case "$first" in
-              *$'\r\n') first="${first%$'\r\n'}" ;;
-              *$'\n')   first="${first%$'\n'}" ;;
-              *$'\r')   echo "label file $f ends with bare CR (need LF or CRLF)" >&2; return 1 ;;
+              *$'\n') first="${first%$'\n'}" ;;
             esac
-            # After that single optional terminator: no CR or LF may remain.
             case "$first" in
               *$'\n'*) echo "label file $f has embedded or extra newlines" >&2; return 1 ;;
-              *$'\r'*) echo "label file $f has embedded CR" >&2; return 1 ;;
             esac
-            printf '%s' "$first" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-              || { echo "label in $f is not strict X.Y.Z (got '$(printf '%s' "$first" | head -c 40)')" >&2; return 1; }
+            # No leading zeros in any component (04.7.2 must not lag-pass as distinct).
+            printf '%s' "$first" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+              || { echo "label in $f is not strict X.Y.Z without leading zeros (got '$(printf '%s' "$first" | head -c 40)')" >&2; return 1; }
             [ -n "$first" ] || { echo "label in $f is empty" >&2; return 1; }
             printf '%s' "$first"
           }
@@ -102,6 +103,43 @@ jobs:
               return 1
             fi
             if [ "$prod" != "$inst" ]; then
+              # Lag is expected mid-release, but the installed bytes must still be
+              # the instrument named by .plinth-version — floor clones v$inst and
+              # cmp's shared/* against .plinth/*. If the tag exists in this clone,
+              # require that match here too (hybrid payloads fail closed).
+              if git -C "$root" rev-parse -q --verify "refs/tags/v${inst}" >/dev/null 2>&1 \
+                 || git rev-parse -q --verify "refs/tags/v${inst}" >/dev/null 2>&1; then
+                tag="v${inst}"
+                repo="${GITHUB_WORKSPACE:-$root}"
+                lag_pair() {
+                  local src="$1" dst="$2" tmp
+                  if ! git -C "$repo" cat-file -e "${tag}:${src}" 2>/dev/null; then
+                    return 0  # pin predates this file — floor skips too
+                  fi
+                  [ -f "$root/$dst" ] || { echo "missing installed $dst for instrument $inst"; mism=1; return; }
+                  tmp="$(mktemp)"
+                  git -C "$repo" show "${tag}:${src}" > "$tmp"
+                  if ! cmp -s "$tmp" "$root/$dst"; then
+                    echo "$dst differs from ${tag}:${src} — .plinth-version=$inst but installed bytes are not that instrument"
+                    mism=1
+                  fi
+                  rm -f "$tmp"
+                }
+                lag_pair shared/plinth-rules.md .plinth/plinth-rules.md
+                lag_pair shared/MODELS.md .plinth/MODELS.md
+                lag_pair shared/.plinth/review.sh .plinth/review.sh
+                lag_pair shared/.plinth/risk-classify.sh .plinth/risk-classify.sh
+                lag_pair shared/.plinth/lane-guard.sh .plinth/lane-guard.sh
+                lag_pair shared/.plinth/receipt-verify.sh .plinth/receipt-verify.sh
+                lag_pair shared/.plinth/review-schema.json .plinth/review-schema.json
+                lag_pair shared/reviewer.md .plinth/reviewer.md
+                lag_pair shared/.claude/hooks/guard.sh .claude/hooks/guard.sh
+                lag_pair shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
+                lag_pair shared/.claude/hooks/review-gate.sh .claude/hooks/review-gate.sh
+                lag_pair shared/.claude/hooks/pulse.sh .claude/hooks/pulse.sh
+                lag_pair shared/driver-shell.md AGENTS.md
+                [ "$mism" = 0 ] || return 1
+              fi
               echo "OK lag: product VERSION=$prod, instrument=.plinth-version=$inst"
               return 0
             fi
@@ -307,6 +345,18 @@ jobs:
             echo "::error::double-trailing-LF VERSION was ACCEPTED: $out"; exit 1
           fi
           echo "OK mutant: double-trailing-LF labels refused"
+          # Mutant: CRLF is refused (floor/bin retain \r).
+          printf '1.0.0\n' > "$FX/VERSION"
+          python3 -c "open('$FX/.plinth-version','wb').write(b'4.7.1\r\n')"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::CRLF .plinth-version was ACCEPTED: $out"; exit 1
+          fi
+          python3 -c "open('$FX/VERSION','wb').write(b'4.7.1\r\n')"
+          printf '1.0.0\n' > "$FX/.plinth-version"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::CRLF VERSION was ACCEPTED: $out"; exit 1
+          fi
+          echo "OK mutant: CRLF labels refused"
           # Mutant: NUL in label file.
           printf '1.0.0\n' > "$FX/VERSION"
           python3 -c "open('$FX/.plinth-version','wb').write(b'4.7.\x001\n')"
@@ -320,20 +370,6 @@ jobs:
           fi
           echo "OK mutant: NUL-bearing labels refused"
 
-          # Positive: single terminal CRLF is valid (Windows-style label files).
-          seed_equal_tree
-          python3 -c "open('$FX/VERSION','wb').write(b'9.9.9\r\n')"
-          python3 -c "open('$FX/.plinth-version','wb').write(b'9.9.9\r\n')"
-          out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::equal-version with CRLF terminators was REFUSED: $out"; exit 1; }
-          printf '%s' "$out" | grep -q 'OK equal' || { echo "::error::CRLF equal tree did not report OK equal: $out"; exit 1; }
-          echo "OK positive: equal-version with CRLF terminators accepted"
-          # Negative: bare CR mid-label still refused.
-          seed_equal_tree
-          python3 -c "open('$FX/.plinth-version','wb').write(b'9.9\r.9\n')"
-          if out="$(check_instrument_identity "$FX" 2>&1)"; then
-            echo "::error::embedded-CR .plinth-version was ACCEPTED: $out"; exit 1
-          fi
-          echo "OK mutant: embedded-CR label refused"
           # Positive equal: fully matching +x twins.
           seed_equal_tree
           out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::healed equal-version tree was REFUSED: $out"; exit 1; }
@@ -1285,6 +1321,30 @@ jobs:
             printf '%s' '{"verdict":"CHANGES_NEEDED","summary":"s","findings":[{"file":"app.py","line":1,"severity":"major","description":"still bad","status":"open"}]}' > "$CB/verdict-2"
             rc=0; PLINTH_ROUND_CAP=5 PATH="$CB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] && [ "$(cat "$CB/state")" = 2 ] || { echo "::error::PLINTH_ROUND_CAP override did not unbrick the capped loop (rc=$rc calls=$(cat "$CB/state"))"; exit 1; } )
+
+          # (3c-blank) present-but-empty round_cap and empty PLINTH_ROUND_CAP refuse.
+          BL="$(mktemp -d)"; mkstate "$BL"; mk_cap_codex "$BL"
+          printf '%s' "$CNF" > "$BL/verdict-1"
+          bld="$(mktemp -d)"
+          ( cd "$bld"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$bld" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            printf 'round_cap =\n' >> .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
+            rc=0; out="$(PATH="$BL:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3c-blank) empty round_cap= did not abort (rc=$rc): $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'empty\|round_cap' || { echo "::error::(3c-blank) abort did not name empty round_cap: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            [ "$(cat "$BL/state")" = 0 ] || { echo "::error::(3c-blank) reviewer ran despite empty round_cap"; exit 1; } )
+          ( cd "$bld"; rm -f .plinth/config; "$GITHUB_WORKSPACE/bin/plinth" init "$bld" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            # no config round_cap; empty env override
+            echo REQ > SPEC.md; git add -A; git commit -qm base2 >/dev/null 2>/dev/null || true
+            git checkout -qb feat2 >/dev/null 2>&1 || git checkout feat >/dev/null 2>&1
+            echo b > app.py; git add -A; git commit -qm r2 >/dev/null
+            rc=0; out="$(PLINTH_ROUND_CAP= PATH="$BL:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(3c-blank) PLINTH_ROUND_CAP='' did not abort (rc=$rc): $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'PLINTH_ROUND_CAP\|round_cap' || { echo "::error::(3c-blank) empty env abort did not name the override: $(printf '%s' "$out" | tail -c 200)"; exit 1; } )
+
           # (3b) NO round_cap in config = NO CAP (v4.7.1 change of default). Previously an
           # unset knob meant 8, so DELETING round_cap from .plinth/config looked like
           # disabling the breaker while silently restoring a default — the loop stopped at

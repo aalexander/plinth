@@ -26,22 +26,6 @@ Use line 0 for file-level findings. On fix-verification rounds, re-check each of
 your prior findings and mark it resolved or open — resolved requires evidence in
 the diff, not the driver's claim.
 
-**Report the CLASS, and every instance of it you can find — not the first one.**
-When a defect could exist in more than one place, say so explicitly and enumerate
-the sites: every input form the rule mis-handles, every call site missing the
-guard, every doc sentence the code no longer supports. One finding naming five
-instances is worth five times one finding naming one, because the driver fixes
-what you name and re-runs — so a finding that names one instance buys one round
-per instance. If you have checked the class and it really does have a single
-instance, say THAT too ("checked the other N call sites; only this one"), so the
-driver can fix narrowly with confidence instead of guessing at the blast radius.
-Where you suspect more instances but cannot confirm them within this round, name
-the suspicion and where you would look; an unverified lead is more useful to the
-driver than silence, provided it is labelled as a lead and not as a finding.
-
-This is the single largest lever either side has on loop length. A driver that
-must discover the class one instance at a time pays a full round for each.
-
 ## Verdict policy — what blocks and what doesn't
 - Open blocker or major findings in PROJECT code: CHANGES_NEEDED.
 - Minor findings: report them (severity "minor", status open) but they do NOT

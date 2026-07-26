@@ -337,7 +337,7 @@ case "$sub" in
     case "$v" in
       grok)
         command -v grok >/dev/null 2>&1 || { echo "unavailable: grok not on PATH — install https://x.ai/cli"; exit 3; }
-        # grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
+        # grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
         # code alone does NOT verify auth — inspect the OUTPUT. A nonzero exit (hung/killed/other) is
         # also unavailable. Only a zero exit with NO "not authenticated" marker counts as signed in.
         _go="$(_cap 30 grok models 2>&1)"; _grc=$?

@@ -204,7 +204,15 @@ ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND
 # disables the breaker the operator was trying to raise. Bound it well below the wrap and
 # far above any real loop; 100000 is arbitrary but unreachable in practice.
 ROUND_CAP_MAX=100000
-ROUND_CAP="$(bcfg round_cap)"
+# Absent key (or all-comment file) => no cap. A present key with an empty value
+# (`round_cap =` or `round_cap =   `) is MALFORMED — same class as a typo: refuse
+# rather than silently disable the breaker the operator thought they set.
+if printf '%s\n' "$basecfg" | grep -qE '^[[:space:]]*round_cap[[:space:]]*='; then
+  ROUND_CAP="$(bcfg round_cap)"
+  [ -n "$ROUND_CAP" ] || die_infra "round_cap in .plinth/config is present but empty — set a non-negative integer, or delete the key for no cap"
+else
+  ROUND_CAP=""
+fi
 case "$ROUND_CAP" in
   '')       ROUND_CAP=0 ;;
   *[!0-9]*) die_infra "round_cap in .plinth/config must be a non-negative integer (got '$ROUND_CAP'). Leave it unset or set 0 to disable the breaker; set a positive integer to cap the loop." ;;
@@ -220,7 +228,9 @@ ROUND_CAP=$((10#$ROUND_CAP))   # leading zeros would otherwise parse as octal an
 # PLINTH_ROUND_CAP: operator env override (this run only) — the config knob is
 # read from the BASE branch, so raising it on the feature branch does nothing;
 # the env is the unbrick path when a capped loop must legitimately continue.
-if [ -n "${PLINTH_ROUND_CAP:-}" ]; then
+# Use ${VAR+x} so an explicitly empty PLINTH_ROUND_CAP='' is refused (the |''
+# arm below). `[ -n "${PLINTH_ROUND_CAP:-}" ]` would treat empty as unset and skip.
+if [ -n "${PLINTH_ROUND_CAP+x}" ]; then
   case "$PLINTH_ROUND_CAP" in
     *[!0-9]*|'') die_infra "PLINTH_ROUND_CAP must be a non-negative integer (got '$PLINTH_ROUND_CAP')" ;;
     *) case "$PLINTH_ROUND_CAP" in *[!0]*) prc_mag="${PLINTH_ROUND_CAP#"${PLINTH_ROUND_CAP%%[!0]*}"}" ;; *) prc_mag=0 ;; esac
