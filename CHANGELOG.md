@@ -1,19 +1,20 @@
 # Plinth changelog
 
-## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+## v4.7.2 — implementer specs stay data, never shell source — July 26, 2026
 - **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
   lane contracts require the non-shell Write tool for their unique prompt file and pass
   only the path to the CLI, so a literal `SPEC_EOF` line cannot terminate a fixed-delimiter
-  heredoc and execute. The prompt path is a not-yet-created file under `mktemp -d` (not
-  a pre-created `mktemp` file): Claude Code's Write refuses to overwrite an unread
-  existing path, so a plain `mktemp` would fail the first Write. The review harness
-  documents that project-owned `.plinth` files (DRIVER-project.md, AGENTS-project.md,
-  config, protected-paths, NEEDS-HUMAN.md) remain outside the pinned-tooling set used for
-  tamper arithmetic. Canary: implementer agents declare Write, allocate a not-yet-existing
-  `$SPEC` under a unique dir and print it, ban fixed-heredoc shell embedding and plain
-  `mktemp` for SPEC, pin each real command block to feed `"$SPEC"` (not `"$OUT"`), and
-  run each lane's extracted command block (GCMD/CCMD) against CLI stubs so a payload
-  containing a literal `SPEC_EOF` line is delivered unchanged without shell execution.
+  heredoc and execute. The prompt path is a not-yet-created file under
+  `${PWD}/.plinth-lane.*` (project CWD so Claude Code Write is authorized without
+  `--add-dir`; not a pre-created system `mktemp` file Write would refuse to overwrite
+  unread). Fail-loud on mktemp. Review harness comment clarifies project-owned `.plinth`
+  files (including GOAL.md) stay outside the pinned-tooling allowlist. Canary: exact
+  Write tool token, project-local `$SPEC_DIR/prompt`, ban shell redirects/heredocs into
+  the spec, pin extracted `cap 600` command blocks to `"$SPEC"`, run those blocks against
+  stubs with a SPEC_EOF payload, and prove a fixed-heredoc negative control still executes.
+  Project and template `.gitignore` ignore `.plinth-lane.*`.
+
+## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.

@@ -79,68 +79,77 @@ jobs:
       - name: Implementer prompt files cannot terminate a shell heredoc
         run: |
           set -euo pipefail
-          # The fixed-delimiter heredoc bug: a spec line equal to SPEC_EOF terminated the
-          # shell source and the rest executed. Lanes must (1) create the prompt file with
-          # the non-shell Write tool, (2) pass only its path into the real CLI command block
-          # via $SPEC — not $OUT or a rebuilt string. Assertions below are mutation-sensitive
-          # on those contracts; a freehand stub that ignores the agent files would be hollow.
+          # Fixed-delimiter heredoc: a SPEC_EOF line terminated shell source and the rest
+          # executed. Lanes must (1) Write-tool create a not-yet-existing prompt under the
+          # project CWD, (2) pass only that path via $SPEC into the real CLI command block.
           AGENT_DIR="${AGENTS_UNDER_TEST:-$GITHUB_WORKSPACE/shared/.claude/agents}"
           for lane in grok codex; do
             agent="$AGENT_DIR/${lane}-implementer.md"
-            grep -q '^tools: .*Write' "$agent" || { echo "::error::${lane} lane cannot use the required non-shell Write tool"; exit 1; }
-            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || { echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            # Any cat/heredoc into $SPEC re-embeds arbitrary bytes as shell source.
-            grep -Eq 'cat[[:space:]]*>[[:space:]]*"?\$SPEC|<<['\''"]?SPEC_EOF' "$agent" && {
-              echo "::error::${lane} lane embeds arbitrary spec data in shell source via a fixed heredoc or cat into \$SPEC"; exit 1; } || true
-            # Step 0 allocates a unique SPEC path that does NOT yet exist (Write refuses to
-            # overwrite an unread existing file — plain `mktemp` creates one and is wrong here)
-            # and prints it so the Write tool creates that path.
-            grep -qE 'SPEC_DIR="\$\(mktemp -d' "$agent" || {
-              echo "::error::${lane} lane does not mktemp -d a unique SPEC_DIR (must not pre-create the prompt file)"; exit 1; }
-            grep -qE 'SPEC="\$SPEC_DIR/' "$agent" || {
-              echo "::error::${lane} lane does not derive SPEC from SPEC_DIR as a not-yet-created path"; exit 1; }
-            # Plain file mktemp for SPEC (without -d) reintroduces the Write-over-existing failure.
-            grep -Eq 'SPEC="\$\(mktemp[^-]' "$agent" && {
-              echo "::error::${lane} lane uses mktemp (file) for SPEC — that pre-creates the path and Claude Code Write rejects overwriting it unread"; exit 1; } || true
+            # Frontmatter: tools line must list Write as a whole tool token (not a substring).
+            tools_line="$(grep -E '^tools:' "$agent" | head -1)"
+            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' || {
+              echo "::error::${lane} lane tools frontmatter lacks Write as a tool token (got: $tools_line)"; exit 1; }
+            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
+              echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
+            # Shell write of the SPEC body re-embeds arbitrary bytes. Ban redirects into
+            # $SPEC (cat/printf/echo/tee) and any heredoc (agents must not shell-source the spec).
+            grep -E '(printf|echo|cat|tee).*>' "$agent" | grep -E '\$SPEC' >/dev/null && {
+              echo "::error::${lane} lane shell-redirects into \$SPEC"; exit 1; } || true
+            grep -E '<<' "$agent" >/dev/null && {
+              echo "::error::${lane} lane contains a shell heredoc — fixed delimiters reintroduce SPEC_EOF injection"; exit 1; } || true
+            # Project-local unique dir + fixed child name (not ../ traversal, not system /tmp).
+            grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$agent" || {
+              echo "::error::${lane} lane does not mktemp -d under \${PWD}/.plinth-lane.* (Write needs project CWD)"; exit 1; }
+            grep -qE 'SPEC="\$SPEC_DIR/prompt"' "$agent" || {
+              echo "::error::${lane} lane must set SPEC=\"\$SPEC_DIR/prompt\" (unique dir child, not ../)"; exit 1; }
+            grep -E 'SPEC="\$SPEC_DIR/\.\.' "$agent" >/dev/null && {
+              echo "::error::${lane} lane SPEC escapes SPEC_DIR via .."; exit 1; } || true
+            grep -E 'SPEC="\$\(mktemp[^-]' "$agent" >/dev/null && {
+              echo "::error::${lane} lane uses file-mktemp for SPEC (pre-creates path; Write rejects unread overwrite)"; exit 1; } || true
             grep -q "printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q" "$agent" || {
               echo "::error::${lane} lane does not print SPEC= for the non-shell Write handoff"; exit 1; }
             grep -q 'does not exist yet' "$agent" || {
               echo "::error::${lane} lane step 1 no longer states the SPEC path must not exist yet before Write"; exit 1; }
+            grep -q 'project CWD' "$agent" || {
+              echo "::error::${lane} lane no longer documents project-CWD authorization for Write"; exit 1; }
+            # Fail-loud on allocation (snippets do not use set -e).
+            grep -q 'SPEC_DIR mktemp failed' "$agent" || {
+              echo "::error::${lane} lane does not fail loud when SPEC_DIR mktemp fails"; exit 1; }
           done
-          # Mutation-sensitive: the REAL command blocks (not prose) must feed "$SPEC".
-          # A swap to "$OUT" still satisfies flag-presence greps elsewhere; pin the variable.
+          # REAL command blocks (anchored on cap 600 invocation, not first prose match).
           GA="$AGENT_DIR/grok-implementer.md"
-          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
-          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block"; exit 1; }
+          GCMD="$(awk '/cap 600 grok /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok cap-600 invocation command block"; exit 1; }
           printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$SPEC"' || {
-            echo "::error::grok COMMAND does not pass --prompt-file \"\$SPEC\" (path-based prompt wiring lost or mutated)"; exit 1; }
+            echo "::error::grok COMMAND does not pass --prompt-file \"\$SPEC\""; exit 1; }
           printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$OUT"' && {
             echo "::error::grok COMMAND feeds \$OUT as the prompt file — must be \$SPEC"; exit 1; } || true
           CA="$AGENT_DIR/codex-implementer.md"
-          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
-          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block"; exit 1; }
+          CCMD="$(awk '/cap 600 codex /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex cap-600 invocation command block"; exit 1; }
           printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$SPEC"' || {
-            echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\" (path-based prompt wiring lost or mutated)"; exit 1; }
+            echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\""; exit 1; }
           printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$OUT"' && {
             echo "::error::codex COMMAND feeds \$OUT as the prompt — must be \$SPEC"; exit 1; } || true
-          # Behavioral: non-shell create (Write-tool analog) of a not-yet-existing path with a
-          # payload containing a literal SPEC_EOF line, then RUN THE ALREADY-EXTRACTED
-          # $GCMD/$CCMD blocks against stubs (not freehand retyped command strings). A
-          # mutation that changes the agent command block must change what the stub receives.
-          PD="$(mktemp -d)"; SPEC_DIR="$(mktemp -d "$PD/spec.XXXXXX")"; SPEC="$SPEC_DIR/prompt"; ESCAPED="$PD/escaped"
-          [ ! -e "$SPEC" ] || { echo "::error::test fixture pre-created SPEC path — would not model Claude Code Write"; exit 1; }
+          # Behavioral: Write-analog create under a project-local unique dir, then run the
+          # EXTRACTED GCMD/CCMD blocks against stubs (not freehand retyped strings).
+          PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
+          SPEC_DIR="$(mktemp -d "$PD/spec.XXXXXX")"; SPEC="$SPEC_DIR/prompt"; ESCAPED="$PD/escaped"
+          case "$SPEC" in
+            "$PWD"/*|"$PD"/*) : ;;
+            *) echo "::error::fixture SPEC path is not under project/PD (got $SPEC)"; exit 1 ;;
+          esac
+          [ ! -e "$SPEC" ] || { echo "::error::test fixture pre-created SPEC path"; exit 1; }
           python3 - "$SPEC" "$ESCAPED" <<'PYWRITE'
           import pathlib, sys
-          # Simulates the non-shell Write tool: create a not-yet-existing path (not overwrite).
           p = pathlib.Path(sys.argv[1])
           if p.exists():
-              raise SystemExit("Write analog refused: path already exists (Claude Code requires Read first to overwrite)")
+              raise SystemExit("Write analog refused: path already exists")
           p.write_text(
               "objective: preserve arbitrary bytes\nSPEC_EOF\ntouch " + sys.argv[2] + "\nverification: exact payload\n"
           )
           PYWRITE
           mkdir -p "$PD/bin"
-          # Grok-shaped stub: honors --prompt-file PATH from the extracted GCMD argv.
           cat > "$PD/bin/grok" <<'CLISTUB'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -150,7 +159,6 @@ jobs:
           done
           echo "stub-grok: missing --prompt-file" >&2; exit 2
           CLISTUB
-          # Codex-shaped stub: prompt on stdin (GCMD uses `codex exec ... - < "$SPEC"`).
           cat > "$PD/bin/codex" <<'CLISTUB'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -158,8 +166,7 @@ jobs:
           exit 0
           CLISTUB
           chmod +x "$PD/bin/grok" "$PD/bin/codex"
-          # Negative control: a fixed-delimiter heredoc MUST execute post-SPEC_EOF shell
-          # (proves the ESCAPED assertion is falsifiable under the old pattern).
+          # Negative control: fixed-delimiter heredoc MUST run post-SPEC_EOF shell.
           ESCAPED_NEG="$PD/escaped-neg"
           {
             printf '%s\n' 'cat > /dev/null <<SPEC_EOF' 'line-before' 'SPEC_EOF'
@@ -168,16 +175,13 @@ jobs:
           } > "$PD/neg-heredoc.sh"
           bash "$PD/neg-heredoc.sh" 2>/dev/null || true
           [ -e "$ESCAPED_NEG" ] || {
-            echo "::error::negative control failed — fixed SPEC_EOF heredoc did not execute the post-delimiter touch"; exit 1; }
-          # Run the EXTRACTED command blocks (indent stripped). cap() is identity so the
-          # wall-clock wrapper does not hide argv; stubs capture what the real form delivers.
+            echo "::error::negative control failed — fixed SPEC_EOF heredoc did not execute post-delimiter touch"; exit 1; }
           run_extracted() {
-            # $1=received path, $2=out path, $3=command-block text
             local recv="$1" out="$2" block="$3"
             local runf="$PD/run-extracted.sh"
             {
               echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'   # drop the N-second arg; run the real CLI form
+              echo 'cap() { shift; "$@"; }'
               echo "LANE_RULES=canary-isolation"
               echo "BEFORE=canary; SNAP=canary; RC=0"
               echo "OUT=$(printf %q "$out")"
@@ -195,14 +199,14 @@ jobs:
           else
             run_extracted "$PD/received-grok" "$PD/out-grok" "$GCMD"
             cmp -s "$SPEC" "$PD/received-grok" || {
-              echo "::error::extracted grok GCMD did not deliver the SPEC_EOF-containing payload via --prompt-file \"\$SPEC\""; exit 1; }
+              echo "::error::extracted grok GCMD did not deliver the SPEC_EOF payload via --prompt-file \"\$SPEC\""; exit 1; }
             run_extracted "$PD/received-codex" "$PD/out-codex" "$CCMD"
             cmp -s "$SPEC" "$PD/received-codex" || {
-              echo "::error::extracted codex CCMD did not deliver the SPEC_EOF-containing payload via stdin from \"\$SPEC\""; exit 1; }
+              echo "::error::extracted codex CCMD did not deliver the SPEC_EOF payload via stdin from \"\$SPEC\""; exit 1; }
           fi
           [ ! -e "$ESCAPED" ] || { echo "::error::a spec line after literal SPEC_EOF escaped into shell execution"; exit 1; }
           rm -rf "$PD"
-          echo "canary: extracted GCMD/CCMD path wiring carries literal SPEC_EOF without execution OK"
+          echo "canary: extracted GCMD/CCMD project-local \$SPEC wiring carries literal SPEC_EOF without execution OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -3439,8 +3443,8 @@ jobs:
           # and drops it silently; bypassPermissions needs a turn budget AND a sandbox. Extract the real command
           # block (the flag words also appear in the surrounding explanation, so a whole-file grep is hollow):
           GA="$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"
-          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
-          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block in the agent"; exit 1; }
+          GCMD="$(awk '/cap 600 grok /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok cap-600 invocation command block in the agent"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'permission-mode bypassPermissions' || { echo "::error::grok COMMAND lacks --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'max-turns'                          || { echo "::error::grok COMMAND lacks --max-turns (a single turn ends before the edit lands)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
@@ -3448,8 +3452,8 @@ jobs:
           printf '%s\n' "$GCMD" | grep -q 'cap 600'                            || { echo "::error::grok COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q -- '--rules'                         || { echo "::error::grok COMMAND lacks --rules isolation — grok auto-loads CLAUDE.md/AGENTS.md (driver contract) and acts as a driver, not a lane"; exit 1; }
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
-          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
-          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
+          CCMD="$(awk '/cap 600 codex /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex cap-600 invocation command block in the agent"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'project_doc_max_bytes=0' || { echo "::error::codex COMMAND lacks -c project_doc_max_bytes=0 — codex auto-loads AGENTS.md (driver contract) instead of acting as a lane"; exit 1; }

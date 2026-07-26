@@ -363,9 +363,10 @@ sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || re
 # anchor would also match copies of these names in subdirs — e.g. the Plinth
 # repo's own shared/ sources, which are the PRODUCT there, not the instrument.
 # Project-owned .plinth files are DELIBERATELY NOT here: DRIVER-project.md,
-# AGENTS-project.md, config, protected-paths, and NEEDS-HUMAN.md remain ordinary
-# project scope, so findings stay blocking without auto-labeling their commits as
-# tooling tampering. HARNESS_RE and HARNESS_PATHS enumerate the same pinned set.
+# AGENTS-project.md, GOAL.md, config, protected-paths, and NEEDS-HUMAN.md remain
+# ordinary project scope, so findings stay blocking without auto-labeling their
+# commits as tooling tampering. HARNESS_RE/HARNESS_PATHS are the closed allowlist
+# of pinned tooling paths (not an exception-list over all of .plinth/).
 HARNESS_RE='^\.claude/hooks/|^\.claude/agents/(grok-implementer|codex-implementer)\.md$|^\.claude/settings\.json$|^\.plinth/(review\.sh|risk-classify\.sh|lane-guard\.sh|receipt-verify\.sh|review-schema\.json|plinth-rules\.md|MODELS\.md|reviewer\.md)$|^AGENTS\.md$|^CLAUDE\.md$'
 # The SAME tooling set as HARNESS_RE, in git pathspec form. Feeds BOTH the tamper arithmetic
 # and the COMMITS IN RANGE prompt list, so the reviewer is shown exactly (and completely) the

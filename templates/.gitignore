@@ -12,6 +12,9 @@ id_ed25519*
 secrets/
 credentials/
 
+# Implementer-lane prompt dirs (project-local mktemp for Write-authorized SPEC files)
+.plinth-lane.*
+
 # Model weights / large binaries — commit pointers or use LFS, never raw weights
 *.gguf
 *.safetensors

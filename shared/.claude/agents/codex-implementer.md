@@ -52,17 +52,21 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first:
 
-       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
+       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)" || { echo "SNAP mktemp failed rc=$?"; exit 1; }
        .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
-       # SPEC path must NOT exist yet: Claude Code's Write refuses to overwrite an
-       # unread existing file (mktemp alone creates one and would fail the first Write).
-       SPEC_DIR="$(mktemp -d -t codex-spec.XXXXXX)"; SPEC="$SPEC_DIR/prompt"
-       OUT="$(mktemp -t codex-out.XXXXXX)"
+       # SPEC under project CWD so Claude Code Write can create it (system /tmp is
+       # outside the default project file-access scope). Path must NOT exist yet:
+       # Write refuses to overwrite an unread existing file.
+       SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
+       SPEC="$SPEC_DIR/prompt"
+       OUT="$(mktemp -t codex-out.XXXXXX)" || { echo "OUT mktemp failed rc=$?"; exit 1; }
+       [ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }
        printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
 1. Use the **Write tool**, not Bash, to create the file at the literal `SPEC`
-   path printed by step 0 (that path does not exist yet — do not pre-create it)
+   path printed by step 0 (that path does not exist yet — do not pre-create it;
+   it is under the project CWD so Write is authorized without --add-dir)
    with the full spec, restated cleanly. End it with: “Run the verification
    command and include its ACTUAL output in your final message.” A line such as
    `SPEC_EOF` has no special meaning because the payload never appears in shell source.
