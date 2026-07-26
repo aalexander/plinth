@@ -121,6 +121,12 @@ Everything between is the model's call.
   Empty `changelog.d/` is a no-op (exit 0). Invalid/missing `bump:`, empty body, bad
   slug, or malformed `VERSION` aborts without rewriting `VERSION` or `CHANGELOG.md`.
   Format and rationale: `changelog.d/README.md`.
+- `plinth dash` / `plinth dashboard` — multi-instance HTML wallboard on
+  **127.0.0.1** only (`--port N`, default 7348). Discovers Plinth projects
+  (`PLINTH_DASH_ROOTS`, else `~/.config/plinth/dashboard-projects`, else
+  `~/Dev/*/.plinth/config`), serves a dark card UI, and exposes
+  `GET /api/snapshot`. `--snapshot` prints that JSON offline (no server). Does
+  not replace `plinth watch`. See “Multi-instance wallboard” below.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
@@ -462,6 +468,53 @@ statusline (opt-in, in project or user settings.json):
 It shows the current stage + time in stage, the verdict vs HEAD, and red
 guard/gate alerts. Token economics stay on `plinth watch`.
 
+## Multi-instance wallboard (`plinth dash`)
+`plinth watch` is one project in a TTY. When you have several Plinth checkouts
+going, use the HTML wallboard:
+
+```
+plinth dash            # http://127.0.0.1:7348/  (loopback only)
+plinth dashboard       # alias
+plinth dash --port 7349  # pick a free high port (1–65535)
+plinth dash --snapshot   # print the same JSON the UI polls (offline / CI)
+```
+
+Requires **python3** on PATH to serve the UI (`--snapshot` is bash+jq only).
+The server binds **127.0.0.1 only**, is read-only, and serves a single static
+page plus `GET /api/snapshot`. The server keeps a **single-flight snapshot body
+with a 2.5s TTL** (≥ the 2s UI poll) so steady-state polling reuses one builder
+result instead of re-shelling every tick; concurrent callers share that flight.
+Observed burn/tokens come from the last **300 lines** of the Claude transcript
+when reachable; burn_per_min is the sum of all token categories in that tail
+with timestamps in the last **5 minutes**, divided by 5. Session task /
+session age use a **`tail -n 10k`** of `events.jsonl` then a stream (no full-file
+`wc`); `session_secs` is set only from the **first** `SessionStart` still inside
+that window for the active SID (resume re-emits are ignored; otherwise null).
+A review round is
+RUNNING when a `request-N` outruns the verdict **and** either there is no
+`last-error`, or the request file is **strictly newer** than `last-error`.
+Subsecond newer requires **python3** (nanosecond mtime); without it, bash
+`-nt` is whole-second on some platforms and same-second ties stay infra-error
+(not RUNNING). It does **not** replace `plinth watch`.
+
+**Discovery** (first match wins):
+
+1. `PLINTH_DASH_ROOTS` — colon-separated absolute paths (useful for tests).
+2. `~/.config/plinth/dashboard-projects` — one absolute path per line (`#` comments; `~/` expanded).
+3. **Default:** every `~/Dev/*` directory that has a `.plinth/config`.
+
+Each card shows project path, branch @ head, review verdict / round / stale vs
+HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
+open/blocking counts, a **feedless** flag when there is no event feed (typical
+for non-Claude drivers), and **observed** driver burn when a Claude transcript is
+reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
+no scrapers, no fake %.
+
+Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
+fixture matrix, a node unit test of pure card HTML (error tone / no-review
+suppression), and a short-lived loopback HTTP check (`/`, `/api/snapshot`,
+POST 405) with process cleanup.
+
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
 - Exit 2, "working tree is dirty" / "HEAD unchanged" / "empty diff": loop
@@ -648,17 +701,13 @@ it has run green with a real smoke_cmd.
 - **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
   the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
-  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in v4.7.1 —
+  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. Upstream #32 (the lane implemented a
-  task itself instead of delegating) is addressed in v4.8.0 by the DELEGATION RECEIPT:
-  the lane must record the delegate's own transcript under `.plinth/session/lanes/`
-  before it may report `STATUS: complete`, and the report carries the artifact path
-  plus the delegate's self-reported model. Check the receipt — open the artifact —
-  rather than trusting the narrative. What it does NOT do is prove which model
-  produced the diff: a lane that self-implemented could write a file. It makes the
-  omission detectable, so "grok typed it" is now a claim with an artifact behind it,
-  not an assumption.
+  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
+  instead of delegating, which its contract forbids) remains open. Until it lands, treat
+  "grok typed it" as a claim to verify, not an
+  assumption — check the report, and prefer typing it yourself over believing a lane
+  that may have silently self-implemented.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -684,15 +733,12 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE. SHIPPED in v4.8.0.** The lane contract
-   said it must never implement the task itself, but nothing structurally showed when it
-   did; a lane that struggles to drive the CLI could do the work and still emit a
-   well-formed report. `lane-guard.sh delegation <vendor> <rc> <transcript>` now records
-   the delegate's own transcript + exit code under `.plinth/session/lanes/` and prints a
-   receipt (artifact path, sha256, the delegate's self-reported model) that both lanes
-   must carry on a `DELEGATION:` line; no artifact -> exit 3 -> `STATUS: unavailable`.
-   Bound, stated in the contract itself: it proves a transcript EXISTS, never who typed
-   the diff — detectable, not impossible.
+2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
+   implement the task itself, but nothing structurally enforces that; a lane that
+   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
+   require a grok-invocation artifact (transcript + exit) under the session dir before
+   the lane may report `STATUS: complete`, and surface the delegate model in the report
+   so "typed by grok-4.5" is verifiable rather than asserted.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully
@@ -726,34 +772,17 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
-- **`lane-guard preflight grok` reported a COLD-START false negative once**
-  (`shared/.plinth/lane-guard.sh` `preflight`). A driver saw `unavailable: grok not
-  signed in` on the first call and `ready: grok` on three consecutive re-runs, with grok
-  demonstrably authenticated. NOT reproducible here (four probes against grok 0.2.112,
-  all `ready` in ~0.6s). v4.8.0 disambiguates the preflight diagnostic (no automatic
-  retry, no change to what counts as authenticated) with an HONEST BOUND aligned to GNU
-  coreutils `timeout -k 5`: **elapsed first** (instant 124/137/142 is "too fast" —
-  no-tool refuse or child self-exit); **rc=124 + elapsed ≈ cap** is *consistent with*
-  the wall-clock timeout (TERM-death or python fallback), residual CLI self-exit 124;
-  **rc=137**: `-k` KILL lands ~cap+5 (~35s) — elapsed≥33 is *consistent with* that path
-  **or** external/CLI SIGKILL; 28–32s is at/near TERM but early for completed `-k`, so
-  prefers self-exit wording; never timeout-only, never absolute "NOT a timeout";
-  **rc=142** is *often* SIGALRM (128+14), not the standard 124/137 cap signature,
-  residual self-exit 142. Diagnostics do **not** instruct a re-run — a blind/automatic
-  retry was declined deliberately because it doubles the hang bound and would weaken the
-  cap fixtures; an operator may still re-run deliberately after reading the residual.
-- **Delegation receipt residuals / follow-ons (not blocking v4.8 ship)**
-  (`shared/.plinth/lane-guard.sh` `delegation`, canary). No BEFORE/SNAP binding on the
-  transcript (stale-OUT residual is disclosed in the honest bound, not enforced). Tracked
-  session `.gitignore` is refused unless already exact `*` (untracked is rewritten).
-  `model=` sanitizer deletes disallowed chars rather than marking `sanitized`. Several
-  refusal branches (non-git cwd, non-dir session, mkdir failures) lack fixtures.
-  Preflight diagnostic sleeps add ~3 minutes serial wall-clock to the canary — injectable
-  cap would be cheaper. Tracked for a later pass.
-- **`round_cap = 0` on main is operator config, not this PR** (`.plinth/config`, commit
-  `372ee25` already on `origin/main`). This v4.8.0 branch does not touch `.plinth/config`
-  (`git diff origin/main...HEAD -- .plinth/config` is empty). Reviewer findings that treat
-  that main commit as PR-scope tooling tampering are out of scope for the branch diff.
+- **`plinth dash` backlog (v4.8 review):** (a) ThreadingHTTPServer still allows
+  unlimited concurrent *caller threads* (builders are single-flight). (b) a
+  discovered path with `.plinth/config` but no git repo paints branch
+  `detached` / head `-` rather than "git unavailable". (c) 10k-line events cap
+  is not a byte cap; transcript mktemp/tail failure modes; config CRLF/whitespace
+  discovery; `sha_match` min-length; smoke port cleanup via lsof (not only the
+  spawn group); failing-builder stderr is buffered fully before 2k truncation;
+  `PLINTH_DASH_SNAPSHOT_BIN` / `PLINTH_DASH_PORT` / `PLINTH_DASH_DEV_ROOT` env
+  knobs are lightly documented; fail-server smoke port is SRV+1 without probe;
+  serve-mode `json.loads` accepts any JSON (not only a snapshot object) before cache;
+  cardHTML interpolates numeric burn/token fields without esc() (local-data hardening).
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

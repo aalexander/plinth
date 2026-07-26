@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plinth dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-card-hi: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --dim: #6e7681;
+    --green: #3fb950;
+    --green-bg: rgba(63, 185, 80, 0.12);
+    --red: #f85149;
+    --red-bg: rgba(248, 81, 73, 0.12);
+    --yellow: #d29922;
+    --yellow-bg: rgba(210, 153, 34, 0.12);
+    --cyan: #39d2c0;
+    --cyan-bg: rgba(57, 210, 192, 0.10);
+    --purple: #a371f7;
+    --orange: #f0883e;
+    --font: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+  }
+  body {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(57, 210, 192, 0.08), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(163, 113, 247, 0.05), transparent);
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 1.25rem 1.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: rgba(13, 17, 23, 0.92);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    font-family: var(--font);
+    color: var(--cyan);
+  }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .meta {
+    font-family: var(--font);
+    font-size: 0.75rem;
+    color: var(--muted);
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .meta .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    display: inline-block;
+  }
+  .meta .dot.err { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .meta .dot.spin { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  main {
+    padding: 1.25rem 1.5rem 2.5rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+  }
+  .empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 4rem 1rem;
+    color: var(--muted);
+    font-family: var(--font);
+    font-size: 0.9rem;
+  }
+  .empty code {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 0.15rem 0.45rem;
+    border-radius: 4px;
+    color: var(--cyan);
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.1rem 0.95rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--border);
+  }
+  .card.ok::before { background: var(--green); }
+  .card.warn::before { background: var(--yellow); }
+  .card.bad::before { background: var(--red); }
+  .card.idle::before { background: var(--dim); }
+  .card.human::before { background: var(--orange); }
+  .card:hover { background: var(--bg-card-hi); border-color: #484f58; }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .name {
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .path {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .chip {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    padding: 0.18rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: transparent;
+    white-space: nowrap;
+  }
+  .chip.green { color: var(--green); background: var(--green-bg); border-color: rgba(63,185,80,0.35); }
+  .chip.red { color: var(--red); background: var(--red-bg); border-color: rgba(248,81,73,0.35); }
+  .chip.yellow { color: var(--yellow); background: var(--yellow-bg); border-color: rgba(210,153,34,0.35); }
+  .chip.cyan { color: var(--cyan); background: var(--cyan-bg); border-color: rgba(57,210,192,0.3); }
+  .chip.orange { color: var(--orange); background: rgba(240,136,62,0.12); border-color: rgba(240,136,62,0.35); }
+  .chip.purple { color: var(--purple); background: rgba(163,113,247,0.12); border-color: rgba(163,113,247,0.3); }
+  .kv {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: 0.25rem 0.6rem;
+    font-size: 0.8rem;
+  }
+  .kv dt {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .kv dd {
+    margin: 0;
+    font-family: var(--font);
+    font-size: 0.78rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .kv dd.muted { color: var(--muted); }
+  .kv dd.task { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .footer-note {
+    margin-top: auto;
+    padding-top: 0.4rem;
+    font-family: var(--font);
+    font-size: 0.65rem;
+    color: var(--dim);
+    border-top: 1px solid transparent;
+  }
+  footer {
+    padding: 0.75rem 1.5rem 1.5rem;
+    font-family: var(--font);
+    font-size: 0.7rem;
+    color: var(--dim);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>◤ PLINTH <span>dash</span></h1>
+  <div class="meta">
+    <span><span id="live-dot" class="dot spin"></span> <span id="live-label">loading</span></span>
+    <span id="gen-ago">—</span>
+    <span id="discovery">—</span>
+    <span id="count">—</span>
+  </div>
+</header>
+<main id="grid">
+  <div class="empty">Loading snapshot…</div>
+</main>
+<footer>
+  Local-only · 127.0.0.1 · read-only · vendor plan quota unknown ·
+  <code style="color:var(--muted)">plinth watch</code> stays the TTY dashboard
+</footer>
+<script>
+(function () {
+  const grid = document.getElementById("grid");
+  const liveDot = document.getElementById("live-dot");
+  const liveLabel = document.getElementById("live-label");
+  const genAgo = document.getElementById("gen-ago");
+  const discoveryEl = document.getElementById("discovery");
+  const countEl = document.getElementById("count");
+  let lastGen = null;
+  // Sticky diagnostic under the header when a later poll fails after cards exist.
+  let errBanner = document.getElementById("poll-error");
+  if (!errBanner) {
+    errBanner = document.createElement("div");
+    errBanner.id = "poll-error";
+    errBanner.style.cssText =
+      "display:none;font-family:var(--font);font-size:0.75rem;color:var(--red);" +
+      "padding:0.4rem 1.5rem;border-bottom:1px solid var(--border);background:var(--red-bg)";
+    const hdr = document.querySelector("header");
+    if (hdr && hdr.parentNode) hdr.parentNode.insertBefore(errBanner, hdr.nextSibling);
+  }
+
+  function hum(secs) {
+    if (secs == null || secs < 0 || Number.isNaN(secs)) return "—";
+    secs = Math.floor(secs);
+    if (secs < 60) return secs + "s";
+    if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
+    return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+  }
+  function humK(n) {
+    if (n == null) return "—";
+    if (n >= 1e6) return (Math.floor(n / 1e5) / 10) + "M";
+    if (n >= 1e3) return (Math.floor(n / 100) / 10) + "k";
+    return String(n);
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function cardTone(p) {
+    if (p.error) return "bad";
+    const r = p.review;
+    if (r && r.last_error) return "bad";
+    if (p.needs_human && p.needs_human.open > 0) return "human";
+    if (!r) return p.feedless ? "idle" : "idle";
+    if (r.running) return "warn";
+    if (r.stale) return "bad";
+    if (r.verdict === "APPROVED") return "ok";
+    if (r.verdict === "CHANGES_NEEDED") return "warn";
+    return "idle";
+  }
+
+  // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
+  function cardHTML(p) {
+    const tone = cardTone(p);
+    const chips = [];
+    if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
+    if (p.feedless) chips.push('<span class="chip">feedless</span>');
+    if (p.needs_human && p.needs_human.open > 0) {
+      const blk = p.needs_human.blocking > 0
+        ? " · " + p.needs_human.blocking + " blocking" : "";
+      chips.push('<span class="chip orange">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</span>");
+    }
+    const r = p.review;
+    if (r) {
+      if (r.running) {
+        chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
+      } else if (r.last_error) {
+        chips.push('<span class="chip red">review infra error</span>');
+      } else if (r.verdict === "APPROVED") {
+        chips.push('<span class="chip green">APPROVED</span>');
+      } else if (r.verdict === "CHANGES_NEEDED") {
+        chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
+      } else if (r.verdict) {
+        chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
+      }
+      if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
+      if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
+    } else if (!p.error) {
+      chips.push('<span class="chip">no review</span>');
+    }
+    if (p.burn_per_min != null) {
+      chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
+    }
+
+    const activity = p.activity_secs_ago == null
+      ? (p.feedless ? "no pulse feed" : "—")
+      : hum(p.activity_secs_ago) + " ago";
+    const session = p.session_secs == null ? "—" : hum(p.session_secs);
+    const task = p.task ? esc(p.task) : '<span class="muted">—</span>';
+    const revDetail = r
+      ? (r.verdict || (r.running ? "running" : "—")) +
+        (r.sha7 ? " @" + esc(r.sha7) : "") +
+        (r.mode ? " · " + esc(r.mode) : "") +
+        (r.tier != null ? " · tier " + r.tier : "")
+      : "none on this branch";
+    const models = [
+      p.model_driver ? "drv " + p.model_driver : null,
+      p.model_reviewer ? "rev " + p.model_reviewer : null,
+    ].filter(Boolean).join(" · ") || "—";
+    const tokens = p.tokens_total != null
+      ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
+      : "unknown";
+
+    return (
+      '<article class="card ' + tone + '">' +
+        '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
+        '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
+        '<div class="chips">' + chips.join("") + "</div>" +
+        '<dl class="kv">' +
+          "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
+          "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
+          "<dt>session</dt><dd>" + esc(session) + "</dd>" +
+          "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
+          "<dt>models</dt><dd class=\"muted\">" + esc(models) + "</dd>" +
+          "<dt>burn</dt><dd class=\"muted\">" +
+            (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
+            tokens + " · quota unknown</dd>" +
+          "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
+        "</dl>" +
+        '<div class="footer-note">quota/reset: unavailable without vendor APIs</div>' +
+      "</article>"
+    );
+  }
+
+  function render(data) {
+    lastGen = data.generated_at;
+    discoveryEl.textContent = data.discovery || "—";
+    const projects = data.projects || [];
+    countEl.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s");
+
+    if (!projects.length) {
+      grid.innerHTML =
+        '<div class="empty">No Plinth projects found.<br><br>' +
+        'Default discovery: <code>~/Dev/*/.plinth/config</code><br>' +
+        'Or list paths in <code>~/.config/plinth/dashboard-projects</code><br>' +
+        'Or set <code>PLINTH_DASH_ROOTS=path:path</code></div>';
+      return;
+    }
+
+    // Sort: needs-human first, then running review, then name
+    projects.sort((a, b) => {
+      const ah = (a.needs_human && a.needs_human.open) || 0;
+      const bh = (b.needs_human && b.needs_human.open) || 0;
+      if (ah !== bh) return bh - ah;
+      const ar = a.review && a.review.running ? 1 : 0;
+      const br = b.review && b.review.running ? 1 : 0;
+      if (ar !== br) return br - ar;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    grid.innerHTML = projects.map(cardHTML).join("");
+  }
+
+  // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
+  globalThis.__plinthDash = { cardTone: cardTone, cardHTML: cardHTML, esc: esc };
+
+  function tickClocks() {
+    if (lastGen == null) return;
+    const ago = Math.floor(Date.now() / 1000) - lastGen;
+    genAgo.textContent = "snap " + hum(Math.max(0, ago)) + " ago";
+  }
+
+  // Serialize polls: never start a new fetch while one is pending. Slow
+  // multi-project snapshots must not fan out concurrent subprocesses or let
+  // an older response overwrite a newer one.
+  let pollInFlight = false;
+  let pollSeq = 0;
+  async function poll() {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    const seq = ++pollSeq;
+    liveDot.className = "dot spin";
+    try {
+      const res = await fetch("/api/snapshot", { cache: "no-store" });
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!res.ok) {
+        const detail = data && (data.detail || data.error);
+        throw new Error(detail || ("HTTP " + res.status));
+      }
+      if (data && data.error) throw new Error(data.detail || data.error);
+      // Only apply if we are still the latest completed sequence owner.
+      if (seq === pollSeq) {
+        render(data);
+        liveDot.className = "dot";
+        liveLabel.textContent = "live";
+        if (errBanner) { errBanner.style.display = "none"; errBanner.textContent = ""; }
+      }
+    } catch (e) {
+      if (seq === pollSeq) {
+        liveDot.className = "dot err";
+        liveLabel.textContent = "error";
+        const msg = e && e.message ? e.message : String(e);
+        // Always surface actionable detail (even when stale cards remain).
+        if (errBanner) {
+          errBanner.style.display = "block";
+          errBanner.textContent = "Snapshot failed: " + msg;
+        }
+        if (!grid.querySelector(".card")) {
+          grid.innerHTML = '<div class="empty">Snapshot failed: ' + esc(msg) + "</div>";
+        }
+      }
+    } finally {
+      pollInFlight = false;
+      tickClocks();
+    }
+  }
+
+  // Test seam: expose poll controller for the smoke harness.
+  globalThis.__plinthDash.poll = poll;
+  globalThis.__plinthDash.getPollState = function () {
+    return { inFlight: pollInFlight, seq: pollSeq };
+  };
+
+  poll();
+  setInterval(poll, 2000);
+  setInterval(tickClocks, 1000);
+})();
+</script>
+</body>
+</html>

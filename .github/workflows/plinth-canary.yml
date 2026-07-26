@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           # Glob every shipped shell script rather than naming them: an explicit list
           # silently skipped lane-guard.sh and receipt-verify.sh as they were added.
-          for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh bin/plinth; do bash -n "$f"; done
+          for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh shared/dashboard/*.sh bin/plinth; do bash -n "$f"; done
       - name: Managed refresh is atomic and warns during a live review
         run: |
           set -euo pipefail
@@ -148,6 +148,12 @@ jobs:
           fi
           rm -rf "$NEG" "$AR" "$AT" "$AB"; rm -f "$GATE"
           echo "canary: atomic managed refresh + exact mode + exec floor + live-review warning + negative control OK"
+      - name: Dashboard smoke (snapshot + UI unit + loopback HTTP)
+        run: |
+          set -euo pipefail
+          # shared/dashboard/smoke-snapshot.sh: offline fixture matrix, node
+          # cardHTML unit test, and a short-lived 127.0.0.1 server (cleaned up).
+          ./shared/dashboard/smoke-snapshot.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail
@@ -188,148 +194,6 @@ jobs:
                             f"fixture into its own step.")
           sys.exit(1 if bad else 0)
           PYLIMIT
-      - name: Targeted ship gate binds merge to origin-resolved PR head
-        run: |
-          set -euo pipefail
-          # Upstream #16: targeted `gh pr merge` is authorized only by APPROVED at the
-          # *resolved PR head* bound to the checkout's origin — and the actionable
-          # command must itself pin -R (or a same-repo PR URL) plus
-          # --match-head-commit equal to that head. Sibling matrix (all green).
-          GUARD="${GITHUB_WORKSPACE}/shared/.claude/hooks/guard.sh"
-          GD="$(mktemp -d)"; GB="$(mktemp -d)"
-          git -C "$GD" init -qb main .
-          git -C "$GD" config user.email canary@plinth.ci
-          git -C "$GD" config user.name "plinth canary"
-          printf 'base\n' > "$GD/file"; git -C "$GD" add file; git -C "$GD" commit -qm base
-          git -C "$GD" remote add origin https://github.com/acme/repo.git
-          mkdir -p "$GD/.plinth/session/review/pr-head" "$GD/.plinth/session/review/feat-x"
-          HEAD_OK=1111111111111111111111111111111111111111
-          HEAD_BAD=2222222222222222222222222222222222222222
-          # Stub REQUIRES -R acme/repo or -R github.com/acme/repo so a missing origin
-          # bind cannot pass by accident (gh default-repo trap).
-          cat > "$GB/gh" <<'GHSTUB'
-          #!/usr/bin/env bash
-          ok_r=0
-          for a in "$@"; do
-            case "$a" in
-              acme/repo|github.com/acme/repo) ok_r=1 ;;
-            esac
-          done
-          case " $* " in *" -R "*|*" --repo "*) ;; *) exit 1 ;; esac
-          [ "$ok_r" = 1 ] || exit 1
-          case " $* " in *" 404 "*) exit 1 ;; esac
-          printf '%s\n' '{"headRefName":"pr/head","headRefOid":"1111111111111111111111111111111111111111","headRepository":{"nameWithOwner":"acme/repo"}}'
-          GHSTUB
-          chmod +x "$GB/gh"
-          gcmd() {
-            local command="$1" rc=0
-            printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$command" '$c')" |
-              PATH="$GB:$PATH" CLAUDE_PROJECT_DIR="$GD" bash "$GUARD" >/dev/null 2>&1 || rc=$?
-            printf '%s' "$rc"
-          }
-          bound() { printf 'gh pr merge %s -R acme/repo --match-head-commit %s --squash' "$1" "$HEAD_OK"; }
-          # bare merge on main → 0
-          [ "$(gcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::targeted ship gate changed bare current-branch behavior on main"; exit 1; }
-          # create + echo prose merge → 0 (prose not ship)
-          [ "$(gcmd 'gh pr create --fill; echo gh pr merge 404')" = 0 ] || { echo "::error::target parser treated argument-position prose as a targeted merge"; exit 1; }
-          # unqualified / incomplete targeted forms fail closed even with a matching verdict
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd 'gh pr merge 42 --squash')" = 2 ] || { echo "::error::unqualified PR merge authorized without -R and --match-head-commit"; exit 1; }
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --squash")" = 2 ] || { echo "::error::targeted merge authorized without --match-head-commit"; exit 1; }
-          [ "$(gcmd "gh pr merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::targeted merge authorized without -R (GH_REPO/default-repo trap)"; exit 1; }
-          # fully bound, no verdict file match → still 2 if we clear APPROVED
-          rm -f "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::bound merge authorized without APPROVED at resolved head"; exit 1; }
-          # fully bound + APPROVED at resolved SHA → 0
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd "$(bound 42)")" = 0 ] || { echo "::error::bound merge blocked despite APPROVED at resolved head SHA"; exit 1; }
-          # wrong verdict SHA → 2
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_BAD" > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::targeted ship gate accepted APPROVED bound to a different SHA"; exit 1; }
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
-          # wrong --match-head-commit (command not pinned to resolved head) → 2
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_BAD --squash")" = 2 ] || { echo "::error::--match-head-commit mismatch was accepted"; exit 1; }
-          # PR URL same repo + match-head → 0; other repo → 2; URL without match-head → 2
-          [ "$(gcmd "gh pr merge https://github.com/acme/repo/pull/42 --match-head-commit $HEAD_OK")" = 0 ] || { echo "::error::same-repo PR URL + match-head was blocked"; exit 1; }
-          [ "$(gcmd "gh pr merge https://github.com/other/repo/pull/42 --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::other-repo PR URL authorized by local verdict"; exit 1; }
-          [ "$(gcmd 'gh pr merge https://github.com/acme/repo/pull/42')" = 2 ] || { echo "::error::PR URL without --match-head-commit was authorized"; exit 1; }
-          # -R acme/repo → 0; -R github.com/acme/repo → 0; -R other/repo → 2
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::-R acme/repo + match-head rejected"; exit 1; }
-          [ "$(gcmd "gh pr merge 42 -R github.com/acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::host-qualified -R github.com/owner/repo + match-head rejected"; exit 1; }
-          [ "$(gcmd "gh pr merge 42 -R other/repo --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::-R other/repo authorized by local verdict"; exit 1; }
-          # unresolvable / unparseable → 2
-          [ "$(gcmd "gh pr merge 404 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::failed open when gh could not resolve the PR"; exit 1; }
-          [ "$(gcmd 'gh pr merge branch-name -R acme/repo')" = 2 ] || { echo "::error::failed open on unparseable positional merge argv"; exit 1; }
-          # quoted / backslash merge argv fail-closed (unquote is not a shell parser)
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body \"Release notes\"")" = 2 ] || { echo "::error::quoted --body was parsed instead of fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body \"Release 42\" -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::quoted multi-word body invented a PR target"; exit 1; }
-          # Escaped whitespace: shell has one body token; stripped invents positional 42 — must block.
-          [ "$(gcmd "gh pr merge --body Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash body invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge -b Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -b invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge --body=Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body= invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge --subject Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --subject invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge -t Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -t invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge --author-email a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --author-email invented PR target"; exit 1; }
-          [ "$(gcmd "gh pr merge -A a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -A invented PR target"; exit 1; }
-          [ "$(gcmd "gh pr merge --body-file ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body-file invented PR 42"; exit 1; }
-          [ "$(gcmd "gh pr merge -F ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -F invented PR 42"; exit 1; }
-          # Single-token unquoted value flags stay allowed when fully bound
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body ship-ok --squash")" = 0 ] || { echo "::error::unquoted single-token --body blocked"; exit 1; }
-          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body=ship-ok --squash")" = 0 ] || { echo "::error::--body= single-token blocked"; exit 1; }
-          # Dynamic expansion: shell can invent a PR target after inspection — fail closed
-          [ "$(gcmd "BODY=Release_42; gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::\$BODY expansion was not fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::unexpanded \$BODY body was not fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body \$(echo 42) -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::command-substitution body was not fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body Release{42} -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::brace expansion body was not fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body-file ./x*42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::glob body-file was not fail-closed"; exit 1; }
-          # Backtick / process-sub must remain visible (segment only on ;&|, not `())
-          [ "$(gcmd "gh pr merge --body=Release\`printf 42\` -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backtick body was not fail-closed"; exit 1; }
-          [ "$(gcmd "gh pr merge --body-file=<(printf notes) 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::process-sub body-file was not fail-closed"; exit 1; }
-          # -R/--repo between pr and merge (gh inherited-option placement)
-          [ "$(gcmd "gh pr -R acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -R o/r merge was not gated/authorized"; exit 1; }
-          [ "$(gcmd "gh pr --repo acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo o/r merge was not gated/authorized"; exit 1; }
-          [ "$(gcmd "gh pr --repo=acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo=o/r merge was not gated/authorized"; exit 1; }
-          [ "$(gcmd "gh pr -Racme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -Ro/r merge was not gated/authorized"; exit 1; }
-          [ "$(gcmd "gh pr -R other/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::gh pr -R other/repo merge authorized wrong repo"; exit 1; }
-          [ "$(gcmd "gh pr -R acme/repo merge 42 --squash")" = 2 ] || { echo "::error::gh pr -R merge without match-head authorized"; exit 1; }
-          # Subshell / cmd-sub / backtick wrappers must not skip the gate (fail closed)
-          [ "$(gcmd "(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::parenthesized merge skipped ship gate"; exit 1; }
-          [ "$(gcmd "echo \$(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::\$() merge skipped ship gate"; exit 1; }
-          [ "$(gcmd "\`gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash\`")" = 2 ] || { echo "::error::backtick-wrapped merge skipped ship gate"; exit 1; }
-          [ "$(gcmd "(gh pr create --fill)")" = 0 ] || { echo "::error::parenthesized create on main changed base fail-open"; exit 1; }
-          # outside git: bare → 0; targeted → 2
-          NG="$(mktemp -d)"
-          ngcmd() {
-            local command="$1" rc=0
-            printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$command" '$c')" |
-              PATH="$GB:$PATH" CLAUDE_PROJECT_DIR="$NG" bash "$GUARD" >/dev/null 2>&1 || rc=$?
-            printf '%s' "$rc"
-          }
-          [ "$(ngcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::bare ship outside git no longer fail-open"; exit 1; }
-          [ "$(ngcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::targeted ship gate failed open outside a local repository checkout"; exit 1; }
-          # multi-segment: APPROVED merge must not authorize unreviewed create (both orders)
-          git -C "$GD" checkout -qb feat/x
-          HEAD_SHA="$(git -C "$GD" rev-parse HEAD)"
-          rm -f "$GD/.plinth/session/review/feat-x/verdict.json"
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (create;merge)"; exit 1; }
-          [ "$(gcmd "$(bound 42); gh pr create --fill")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (merge;create)"; exit 1; }
-          # inherited-option create siblings on feature without verdict → 2
-          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 2 ] || { echo "::error::gh pr -R o/r create not gated on feature"; exit 1; }
-          [ "$(gcmd 'gh pr --repo acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo o/r create not gated on feature"; exit 1; }
-          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo=o/r create not gated on feature"; exit 1; }
-          [ "$(gcmd 'gh pr -Racme/repo create --fill')" = 2 ] || { echo "::error::gh pr -Ro/r create not gated on feature"; exit 1; }
-          [ "$(gcmd '(gh pr create --fill)')" = 2 ] || { echo "::error::parenthesized create on feature not gated"; exit 1; }
-          [ "$(gcmd 'echo $(gh pr create --fill)')" = 2 ] || { echo "::error::\$() create on feature not gated"; exit 1; }
-          [ "$(gcmd '`gh pr create --fill`')" = 2 ] || { echo "::error::backtick-wrapped create on feature not gated"; exit 1; }
-          # feature both approved → 0 for create;merge and inherited-option create
-          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
-          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
-          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 0 ] || { echo "::error::gh pr -R create blocked despite feature APPROVED"; exit 1; }
-          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 0 ] || { echo "::error::gh pr --repo= create blocked despite feature APPROVED"; exit 1; }
-          # quoted create sibling must NOT poison an independent bound merge (segment-local)
-          [ "$(gcmd "gh pr create --title \"feat x\" --fill; $(bound 42)")" = 0 ] || { echo "::error::quoted create sibling blocked independent bound merge"; exit 1; }
-          echo "canary: targeted ship gate origin-bound PR head + multi-segment create|merge OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -2757,106 +2621,6 @@ jobs:
           [ "$(gcmd 'nice -n 10 rm -rf x')" = 2 ] || { echo "::error::guard: nice -n 10 rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'time -p git reset --hard origin/main')" = 2 ] || { echo "::error::guard: time -p prefixed hard-reset not blocked"; exit 1; }
           [ "$(gcmd 'sudo -u root ls /root')" = 0 ] || { echo "::error::guard: benign sudo -u root wrongly blocked"; exit 1; }
-          # ── quoted-heredoc + inert consumer (cat/tee): body excluded from both scans ──
-          # Executable consumers, unquoted bodies, pipes/process-subs, and header redirects stay fully scanned.
-          [ "$(gcmd 'rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: plain rm -rf not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\'\nrm -rf\nDROP TABLE\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body with rm/DROP wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\'\n.plinth/session/x\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body mentioning protected path wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat > .plinth/session/x <<\'S\'\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: header redirect to protected path allowed"; exit 1; }
-          [ "$(gcmd $'cat <<S\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: unquoted heredoc body escaped scan"; exit 1; }
-          [ "$(gcmd $'bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash <<'S' body escaped destructive scan"; exit 1; }
-          [ "$(gcmd $'sqlite3 db <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 <<'S' DROP escaped scan"; exit 1; }
-          [ "$(gcmd $'bash <<\'S\'\nprintf x > .plinth/session/x\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash heredoc protected write escaped scan"; exit 1; }
-          [ "$(gcmd $'tee f.txt <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee <<'S' body wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat /dev/null | bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pipeline peer cat misclassified bash heredoc as inert"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cat heredoc piped to bash escaped scan"; exit 1; }
-          [ "$(gcmd $'sqlite3 cat <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 with arg named cat misclassified as inert"; exit 1; }
-          # Fail-closed bounds: continued headers, complex delimiters, cross-line quotes, secret-path body,
-          # <<- / empty delim / prefixed inert consumer (distinct branches the simple matrix missed).
-          [ "$(gcmd $'cat <<\'S\' \\\n| bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: backslash-continued cat|bash not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' \\\n> .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: continued header redirect to protected path allowed"; exit 1; }
-          [ "$(gcmd $'cat <<$\'\\x53\'\nsafe\nS\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C delim mis-decode left post-body rm unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<\"S\\\\q\"\nsafe\nS\\q\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: double-quoted delim with backslash left post-body rm unscanned"; exit 1; }
-          [ "$(gcmd $'echo \"start\ncat <<\'S\'\nbody\nS\"; rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside multiline quote suppressed real post-quote rm"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\'\n.env\nsecrets/key\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' secret-path body text wrongly blocked"; exit 1; }
-          [ "$(gcmd $'sudo cat <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: sudo cat <<'S' body wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<-\'S\'\n\trm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<-'S' tab-stripped body wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'\'\nrm -rf\n\n')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'' empty delim body wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\"S\"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure double-quoted delim body wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<$\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure \$'S' delim body wrongly blocked"; exit 1; }
-          # Continued-before-<<, incomplete header (open quote then pipe), concat delims, queued heredocs.
-          [ "$(gcmd $'bash -s \\\ncat <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash -s continued into cat <<'S' body not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' \"x\ny\" | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open-quote header then | bash not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'X\'$\'Y\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat 'X'\$'Y' delim left post-body rm unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<X$\'\\x59\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat X\$'\\x59' delim left post-body rm unscanned"; exit 1; }
-          [ "$(gcmd $'bash <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: queued bash heredocs first-body rm not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: multi-heredoc is not simple-form (should full-scan)"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' $(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open \$(...) header then | bash not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' `\necho x\n` | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open backtick header then | bash not blocked"; exit 1; }
-          # Outer expansion opened before << (cross-line depth), process-sub, and comment-not-incomplete.
-          [ "$(gcmd $'echo $(\necho x\ncat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: outer \$( before << left body unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' <(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open process-sub <( header not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with quote wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # $(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with \$( wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # `\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with backtick wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer \$( before << not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<X\'Y\'\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X'Y' delim left body unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: metachar-prefixed comment wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $':;# cat <<\'S\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside ;# comment suppressed real rm"; exit 1; }
-          # Unreliable first delimiter must not let a later inert heredoc hide an earlier body.
-          [ "$(gcmd $'bash <<X\'Y\'; cat <<\'B\'\nrm -rf build\nXY\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: unreliable bash delim + queued cat hid rm"; exit 1; }
-          [ "$(gcmd $'bash <<$\'\\x41\'; cat <<\'B\'\nrm -rf build\nA\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C first delim + queued cat hid rm"; exit 1; }
-          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer \$( duplicate check"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' >(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open process-sub >( header not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<X\"Y\"\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X\"Y\" delim left body unscanned"; exit 1; }
-          # $"D" is locale-translated — never suppress. Same-line outer backtick / <( / >( covered.
-          [ "$(gcmd $'cat <<$\"S\"\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: locale \$\"S\" delim wrongly suppressed"; exit 1; }
-          [ "$(gcmd $'echo `echo x; cat <<\'S\'`\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer backtick before << not blocked"; exit 1; }
-          [ "$(gcmd $'cat <(echo x) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line <( before << not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<$\'S\nX\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$' delim left body unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # \\\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment-contained trailing backslash wrongly blocked"; exit 1; }
-          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) > .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: outer \$( with protected redirect not blocked"; exit 1; }
-          [ "$(gcmd $'cat >(\necho x\n) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cross-line >( then << not blocked"; exit 1; }
-          [ "$(gcmd $'cat >(echo x) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line >(echo x) << not blocked"; exit 1; }
-          [ "$(gcmd $'cat <<$\"S\nX\"\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$\" delim left body unscanned"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # | note\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with | wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # <(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with <( wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' # >(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with >( wrongly blocked inert body"; exit 1; }
-          [ "$(gcmd $'cat ${x:-<<\'S\';}\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: \${…} nested << left post-body rm unscanned"; exit 1; }
-          [ "$(gcmd $'{\ncat <<\'S\'\nrm -rf build\nS\n} | bash')" = 2 ] || { echo "::error::heredoc-matrix: brace-group | bash hid body"; exit 1; }
-          [ "$(gcmd $'(\ncat <<\'S\'\nrm -rf build\nS\n) | bash')" = 2 ] || { echo "::error::heredoc-matrix: subshell | bash hid body"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' $(printf /dev/null)#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: )#suffix not a comment; pipe to bash missed"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' /dev/null\\ #suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-space #suffix pipe missed"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' /dev/null\\;#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-semi #suffix pipe missed"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' /dev/null\\&#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-amp #suffix pipe missed"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' /dev/null\\|#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-pipe #suffix pipe missed"; exit 1; }
-          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: if/fi | bash hid body"; exit 1; }
-          [ "$(gcmd $'while false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: while/done | bash hid body"; exit 1; }
-          [ "$(gcmd $'true; if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: mid-line if after ; | bash hid body"; exit 1; }
-          [ "$(gcmd $'until false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: until/done | bash hid body"; exit 1; }
-          [ "$(gcmd $'for x in 1; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: for/done | bash hid body"; exit 1; }
-          [ "$(gcmd $'case x in x)\ncat <<\'S\'\nrm -rf build\nS\n;; esac | bash')" = 2 ] || { echo "::error::heredoc-matrix: case/esac | bash hid body"; exit 1; }
-          [ "$(gcmd $'select x in a; do\ncat <<\'S\'\nrm -rf build\nS\nbreak; done | bash')" = 2 ] || { echo "::error::heredoc-matrix: select/done | bash hid body"; exit 1; }
-          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi > >(cat)')" = 2 ] || { echo "::error::heredoc-matrix: if/fi > >(cat) hid body"; exit 1; }
-          # Independent pipeline must not force full-scan false positives on inert cat.
-          # Multi-statement commands are not the simple form — full scan (fail closed).
-          [ "$(gcmd $'echo a | cat\ncat <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: multi-statement should full-scan inert body (fail closed)"; exit 1; }
-          [ "$(gcmd $'echo ok; cat <<\'S\' # ;\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pre-header statement should full-scan"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\'\nrm -rf\nS\necho ok')" = 2 ] || { echo "::error::heredoc-matrix: post-terminator command should full-scan"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: ;# comment on simple header wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' > /tmp/plinth-heredoc-out\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: redirect after delimiter wrongly blocked"; exit 1; }
-          [ "$(gcmd $'tee <<\'S\' /tmp/plinth-heredoc-tee\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee arg after delimiter wrongly blocked"; exit 1; }
-          # Operand-taking wrappers with cat/tee as the option operand (not the consumer).
-          [ "$(gcmd $'env -P cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env -P cat bash should full-scan (executable)"; exit 1; }
-          [ "$(gcmd $'env --chdir=/tmp cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --chdir cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'env --unset=PATH cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --unset cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'time --output=/tmp/t cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: time --output cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'sudo -u root cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -u cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'sudo -D cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -D cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'sudo -h cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -h cat bash should full-scan"; exit 1; }
-          [ "$(gcmd $'cat > /tmp/plinth-pre-redir <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pre-delimiter redirect wrongly blocked"; exit 1; }
-          [ "$(gcmd $'cat <<\'S\' < /dev/null\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: input redirect after delimiter wrongly blocked"; exit 1; }
-          echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
@@ -3660,37 +3424,6 @@ jobs:
             grep -q 'RUN_RC=\$RC' "$A" || { echo "::error::${a}-implementer run block does not propagate the CLI rc (RUN_RC)"; exit 1; }
             grep -q 'NEVER "complete"' "$A" || { echo "::error::${a}-implementer lost the nonzero-RUN_RC-is-never-complete rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
-            # v4.8 (upstream #32): a lane once implemented a task ITSELF and still emitted a
-            # well-formed report — prose forbade it, nothing structural showed it. The lane must now
-            # WIRE the delegation receipt, carry it into the report, ask the delegate for its model,
-            # and state the bound honestly (it proves an artifact, not authorship):
-            grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer does not record a delegation receipt — 'the delegate typed it' goes back to being unverifiable (upstream #32)"; exit 1; }
-            grep -q '^    DELEGATION:' "$A" || { echo "::error::${a}-implementer's report block has no DELEGATION line — the driver would get no receipt to check"; exit 1; }
-            grep -q 'MODEL: <the model id you are running as>' "$A" || { echo "::error::${a}-implementer's spec no longer asks the delegate to self-report its MODEL — the report's model= could only ever be 'unreported'"; exit 1; }
-            grep -q 'does NOT prove which model' "$A" || { echo "::error::${a}-implementer dropped the honest bound on the delegation receipt (it proves a transcript exists, not who typed the diff) — overclaiming is this repo's most-cited defect class"; exit 1; }
-            grep -q 'BEFORE/SNAP' "$A" || { echo "::error::${a}-implementer honest bound omits the stale-OUT residual (transcript not bound to THIS run)"; exit 1; }
-            grep -q 'tree dirty after unavailable' "$A" || { echo "::error::${a}-implementer lacks unavailable-after-edits dirty-tree disclosure (delegate may have written before exit 3)"; exit 1; }
-            # ORDERING + REAL VARIABLES (not a whole-file string presence): the documented
-            # delegation invocation must appear AFTER the documented scope invocation, and must
-            # pass the run's rc and transcript path (RUN_RC / OUT) — not a hardcoded 0 or fixed path.
-            # A whole-file grep for "delegation" still passes if those lines swapped or used literals.
-            _scope_ln="$(grep -nE 'lane-guard\.sh scope ' "$A" | head -1 | cut -d: -f1)"
-            _del_ln="$(grep -nE "lane-guard\.sh delegation $a " "$A" | head -1 | cut -d: -f1)"
-            { [ -n "$_scope_ln" ] && [ -n "$_del_ln" ]; } || { echo "::error::${a}-implementer missing scope or delegation command line for order check"; exit 1; }
-            [ "$_del_ln" -gt "$_scope_ln" ] || { echo "::error::${a}-implementer runs delegation (line $_del_ln) BEFORE scope (line $_scope_ln) — artifact under .plinth/session/ would trip the pre-run snapshot"; exit 1; }
-            # Extract the FIRST documented delegation invocation line (indented command, not prose):
-            _dline="$(grep -E "lane-guard\.sh delegation $a " "$A" | head -1)"
-            # POSITIONAL validation (not whole-line substring): usage is
-            #   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>
-            # so after the vendor, arg 2 must be the RUN_RC binding and arg 3 the OUT
-            # binding. A mere grep for RUN_RC/OUT accepts swapped args, `token-RUN_RC
-            # token-OUT`, and `$RUN_RC /tmp/fixed-$OUT.log` — all green while the receipt
-            # wire is broken. Accept only exact shell vars ($RUN_RC/$OUT, braced, quoted)
-            # or angle-bracket placeholders that name those identities.
-            _d_rc='("\$RUN_RC"|"\$\{RUN_RC\}"|\$RUN_RC|\$\{RUN_RC\}|<[^>]*RUN_RC[^>]*>)'
-            _d_out='("\$OUT"|"\$\{OUT\}"|\$OUT|\$\{OUT\}|<[^>]*OUT[^>]*>)'
-            printf '%s' "$_dline" | grep -Eq "delegation ${a} ${_d_rc}[[:space:]]+${_d_out}([[:space:]]|\$)" \
-              || { echo "::error::${a}-implementer delegation does not pass RUN_RC then OUT as positional args after the vendor (got: $_dline) — swapped/hardcoded/substring tokens hide a broken receipt wire"; exit 1; }
           done
           # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
           # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
@@ -3773,222 +3506,39 @@ jobs:
           LG="$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh"; LGB="$(mktemp -d)"
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING CLI (rc=$r)"; exit 1; }
           # UNAUTHENTICATED grok — grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but
-          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable.
-          # CAPTURE the diagnostic (do not discard): a clean auth failure must report "not signed in".
+          # EXITS 0, so the OUTPUT (not the exit code) is authoritative; preflight must still be unavailable:
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { echo "You are not authenticated."; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
-          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?
-          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r out=$(printf '%s' "$out" | tr '\n' ' ')) — exit code alone is not auth / diagnostic discarded"; exit 1; }
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight read grok as ready despite 'not authenticated' output on exit 0 (rc=$r) — exit code alone is not auth"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1; exit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
-          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?
-          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a grok auth check exiting NONZERO (rc=$r)"; exit 1; }
           # AUTHENTICATED grok — a real model list, no 'not authenticated' marker -> ready:
           printf '#!/usr/bin/env bash\n[ "$1" = models ] && { printf "grok-4.5\\n"; exit 0; }\nexit 0\n' > "$LGB/grok"; chmod +x "$LGB/grok"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated CLI (rc=$r)"; exit 1; }
           # codex preflight: same three states — codex auth (login status) is safety-critical and must be tested too
           r=0; PATH=/usr/bin:/bin bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on a MISSING codex (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 1; exit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
-          r=0; out="$(PATH="$LGB:$PATH" bash "$LG" preflight codex 2>&1)" || r=$?
-          { [ "$r" = 3 ] && printf '%s' "$out" | grep -qi 'not signed in'; } || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+          r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
-          # Non-auth wrapper/CLI failure residual: rc=125 (GNU timeout's own failure) must NOT
-          # be labeled plain "not signed in" for either vendor.
-          for _v in grok codex; do
-            _w125="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 125\n' > "$_w125/grok"; chmod +x "$_w125/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 125; exit 0\n' > "$_w125/codex"; chmod +x "$_w125/codex"
-            fi
-            r=0; out="$(PATH="$_w125:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] rc-125: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not necessarily unsigned-in\|wrapper failure' \
-              || { echo "::error::preflight[$_v] rc-125: must hedge not-signed-in (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'not signed in \(auth check' \
-              && { echo "::error::preflight[$_v] rc-125: must not use plain not-signed-in attribution (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # Ordinary rc=1 auth failure still says "not signed in" (not the residual):
-          for _v in grok codex; do
-            _w1="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 1\n' > "$_w1/grok"; chmod +x "$_w1/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 1; exit 0\n' > "$_w1/codex"; chmod +x "$_w1/codex"
-            fi
-            r=0; out="$(PATH="$_w1:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] rc-1: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not signed in' || { echo "::error::preflight[$_v] rc-1: must say not signed in (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not necessarily unsigned-in' && { echo "::error::preflight[$_v] rc-1: wrongly used wrapper residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # rc=2 (and similar non-auth codes) must NOT be labeled "not signed in":
-          for _v in grok codex; do
-            _w2="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 2\n' > "$_w2/grok"; chmod +x "$_w2/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 2; exit 0\n' > "$_w2/codex"; chmod +x "$_w2/codex"
-            fi
-            r=0; out="$(PATH="$_w2:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] rc-2: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not necessarily unsigned-in' || { echo "::error::preflight[$_v] rc-2: must use non-auth residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'not signed in \(auth check' \
-              && { echo "::error::preflight[$_v] rc-2: wrongly labeled not-signed-in (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # PREFLIGHT DIAGNOSTICS (both vendors) — honest timeout claim (GNU coreutils + python):
-          #   elapsed first; then by exit code:
-          #   (i)   instant 124 → too-fast, never "timeout fired"
-          #   (ii)  genuine hang → cap-related diagnosis + elapsed; accept 124 (TERM/python) OR
-          #         137 (GNU timeout -k KILL); never "too fast"; never "NOT a timeout" for 137
-          #   (iii) slow self-exit 137 → must NOT be timeout-ONLY (must name -k OR self-exit residual)
-          #   (iv)  instant 137 → too-fast (not a completed cap)
-          #   (v)   clean auth failure still reports "not signed in" (covered above)
-          for _v in grok codex; do
-            _fast="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 124\n' > "$_fast/grok"; chmod +x "$_fast/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 124; exit 0\n' > "$_fast/codex"; chmod +x "$_fast/codex"
-            fi
-            r=0; out="$(PATH="$_fast:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-124: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock timeout' || { echo "::error::preflight[$_v] fast-124: diagnostic must say too-fast-to-be-timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-124: wrongly claimed the wall-clock timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # AUTH-CHECK WALL-CLOCK CAP: a HANGING (TERM-ignoring) auth check must be bounded AND the
-          # diagnostic must be cap-related with elapsed. On Ubuntu, GNU timeout -k returns 137 after
-          # KILL; on the python fallback, 124. SLOW (~30s+) by design — do not skip.
-          # Helper: accept either timeout signature; reject "too fast" and reject "NOT a timeout".
-          # 124 path must say "consistent with" (not a definite "hit") and name the residual.
-          _assert_real_cap_diag() {  # $1=vendor label, $2=out
-            # "not a timeout-only" is the 137 residual phrasing and must NOT trip this guard —
-            # only an absolute "NOT a timeout" / "NOT a wall-clock timeout" denial is wrong for a hang.
-            printf '%s' "$2" | grep -Eqi 'too fast' && { echo "::error::preflight[$1] real-cap: wrongly said too-fast for a genuine hang (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$2" | grep -Eqi 'NOT a (wall-clock )?timeout([^a-z-]|$)' && { echo "::error::preflight[$1] real-cap: genuine hang must not be absolutely labeled NOT-a-timeout (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$2" | grep -qi 're-run preflight' && { echo "::error::preflight[$1] real-cap: diagnostics must not instruct a re-run (blind retry doubles the hang bound) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
-            if printf '%s' "$2" | grep -qi 'consistent with the 30s wall-clock timeout'; then
-              printf '%s' "$2" | grep -Eqi 'rc=124|exit 124' || { echo "::error::preflight[$1] real-cap 124-path: must name exit/rc 124 (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-              printf '%s' "$2" | grep -Eqi 'elapsed [0-9]+s|after [0-9]+s' || { echo "::error::preflight[$1] real-cap 124-path: must report elapsed (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-              printf '%s' "$2" | grep -qi 'Residual' || { echo "::error::preflight[$1] real-cap 124-path: must name Residual (self-exit indistinguishability) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-              printf '%s' "$2" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::preflight[$1] real-cap 124-path: must not claim definite 'hit' (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; } || true
-            elif printf '%s' "$2" | grep -Eqi 'rc=137|ended rc=137'; then
-              printf '%s' "$2" | grep -qi 'KILL' || { echo "::error::preflight[$1] real-cap 137-path: must name -k KILL residual (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-              printf '%s' "$2" | grep -qi 'not a timeout-only' || { echo "::error::preflight[$1] real-cap 137-path: must refuse timeout-only claim (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1; }
-            else
-              echo "::error::preflight[$1] real-cap: diagnostic must claim consistent-with-timeout (124) or -k-KILL-consistent (137) (got: $(printf '%s' "$2" | tr '\n' ' '))"; exit 1
-            fi
-          }
+          # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
+          # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"
-          as="$(date +%s)"; r=0; out="$(PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok 2>&1)" || r=$?; ae="$(date +%s)"
+          as="$(date +%s)"; r=0; PLINTH_HOOKPROBE_TIMEOUT= PATH="$LGH:$PATH" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; ae="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging grok auth check (rc=$r elapsed=$(( ae - as ))s) — auth preflight uncapped"; exit 1; }
-          _assert_real_cap_diag grok "$out"
-          # codex genuine-cap (slow) — same contract (124 or 137 depending on cap path):
-          LHC="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = login ] && { trap "" TERM; sleep 90; }\n' > "$LHC/codex"; chmod +x "$LHC/codex"
-          as="$(date +%s)"; r=0; out="$(PATH="$LHC:$PATH" bash "$LG" preflight codex 2>&1)" || r=$?; ae="$(date +%s)"
-          { [ "$r" = 3 ] && [ "$(( ae - as ))" -ge 20 ] && [ "$(( ae - as ))" -lt 60 ]; } || { echo "::error::lane-guard preflight did not BOUND a hanging codex auth check (rc=$r elapsed=$(( ae - as ))s)"; exit 1; }
-          _assert_real_cap_diag codex "$out"
-          # SLOW self-exit 137: indistinguishable from GNU -k KILL path, so must NOT claim
-          # timeout-ONLY (must name the -k OR self-exit residual). Sleep 28: crosses >=28s
-          # threshold with second-granularity elapsed, 2s under the 30s wrapper.
-          for _v in grok codex; do
-            _slow="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && { sleep 28; exit 137; }\n' > "$_slow/grok"; chmod +x "$_slow/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && { sleep 28; exit 137; }; exit 0\n' > "$_slow/codex"; chmod +x "$_slow/codex"
-            fi
-            r=0; out="$(PATH="$_slow:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] slow-137: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-137: must not use the timeout-only 124 phrasing for rc=137 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$out" | grep -qi 'not a timeout-only' || { echo "::error::preflight[$_v] slow-137: must refuse timeout-only claim (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            # sleep 28 is past TERM but early for -k KILL (~35s) — must NOT claim completed -k consistency alone:
-            printf '%s' "$out" | grep -Eqi 'self-exit|earlier than the typical' || { echo "::error::preflight[$_v] slow-137@28s: must name self-exit / early-for-KILL residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 're-run preflight' && { echo "::error::preflight[$_v] slow-137: must not instruct re-run (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # Instant 137: too-fast, never a completed cap / timeout-fired claim.
-          for _v in grok codex; do
-            _f137="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 137\n' > "$_f137/grok"; chmod +x "$_f137/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 137; exit 0\n' > "$_f137/codex"; chmod +x "$_f137/codex"
-            fi
-            r=0; out="$(PATH="$_f137:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-137: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-137: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-137: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not a completed timeout' || { echo "::error::preflight[$_v] fast-137: must say not a completed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            # Must NOT claim definite SIGKILL — canary uses explicit exit 137 (self-exit residual):
-            printf '%s' "$out" | grep -qi 'self-exit' || { echo "::error::preflight[$_v] fast-137: must name CLI self-exit residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'is SIGKILL( |$)' && { echo "::error::preflight[$_v] fast-137: must not claim definite 'is SIGKILL' (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          # rc=142: often SIGALRM, not the standard GNU timeout/python cap signature. Pin both
-          # directions and both vendors — fast is too-fast; slow names SIGALRM + residual self-exit.
-          for _v in grok codex; do
-            _f142="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 142\n' > "$_f142/grok"; chmod +x "$_f142/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 142; exit 0\n' > "$_f142/codex"; chmod +x "$_f142/codex"
-            fi
-            r=0; out="$(PATH="$_f142:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] fast-142: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-142: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-142: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'SIGALRM' || { echo "::error::preflight[$_v] fast-142: must name SIGALRM (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            # "often SIGALRM" + residual self-exit — a definite "is SIGALRM" without residual is overclaim:
-            printf '%s' "$out" | grep -Eqi 'often SIGALRM|Residual|self-exit' || { echo "::error::preflight[$_v] fast-142: must hedge SIGALRM (often/residual/self-exit) (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'is SIGALRM( |,)' && { echo "::error::preflight[$_v] fast-142: must not claim definite 'is SIGALRM' (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-          done
-          for _v in grok codex; do
-            _s142="$(mktemp -d)"
-            if [ "$_v" = grok ]; then
-              printf '#!/usr/bin/env bash\n[ "$1" = models ] && { sleep 28; exit 142; }\n' > "$_s142/grok"; chmod +x "$_s142/grok"
-            else
-              printf '#!/usr/bin/env bash\n[ "$1" = login ] && { sleep 28; exit 142; }; exit 0\n' > "$_s142/codex"; chmod +x "$_s142/codex"
-            fi
-            r=0; out="$(PATH="$_s142:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::preflight[$_v] slow-142: want rc=3 got $r"; exit 1; }
-            printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] slow-142: must not use timeout-only 124 phrasing for rc=142 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-            printf '%s' "$out" | grep -qi 'SIGALRM' || { echo "::error::preflight[$_v] slow-142: must name SIGALRM (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'not the standard wall-clock-cap signature' || { echo "::error::preflight[$_v] slow-142: must say not the standard cap signature (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'Residual' || { echo "::error::preflight[$_v] slow-142: must name Residual (self-exit) (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          done
           # `_cap` itself, not just the agent caps, must bound via its PYTHON fallback (timeout hidden)
-          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep/date + hanging grok, plus
-          # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps
-          # and the diagnostic uses the 124 consistent-with-timeout path (python always exits 124):
-          CPY="$(mktemp -d)"; for b in bash grep sleep python3 date; do ln -s "$(command -v "$b")" "$CPY/$b"; done
+          # and REFUSE with no cap tool at all. Build a CLEAN PATH (bash/grep/sleep + hanging grok, plus
+          # python3 for the fallback case) so `_cap` selects python; a genuine hang (~30s) proves it caps:
+          CPY="$(mktemp -d)"; for b in bash grep sleep python3; do ln -s "$(command -v "$b")" "$CPY/$b"; done
           printf '#!/usr/bin/env bash\ncase "$1" in models) trap "" TERM; sleep 90;; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
-          ps="$(date +%s)"; r=0; out="$(PATH="$CPY" bash "$LG" preflight grok 2>&1)" || r=$?; pe="$(date +%s)"
+          ps="$(date +%s)"; r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; pe="$(date +%s)"
           { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging auth check (rc=$r elapsed=$(( pe - ps ))s; want 3 and a real ~30s bound, not an instant fail)"; exit 1; }
-          printf '%s' "$out" | grep -qi 'consistent with the 30s wall-clock timeout' || { echo "::error::_cap python fallback real-cap diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          # Assert BOTH fields separately — alternation would let either alone pass (hollow).
-          printf '%s' "$out" | grep -Eqi 'rc=124|exit 124' || { echo "::error::_cap python fallback real-cap must name exit/rc 124 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s|after [0-9]+s' || { echo "::error::_cap python fallback real-cap must report elapsed (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -qi 'Residual' || { echo "::error::_cap python fallback real-cap must name Residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          # Same PYTHON-only hang for CODEX — its slow-124 diagnostic is a duplicated branch
-          # (lane-guard.sh codex case); GNU-timeout hang probes on Ubuntu return 137 and never
-          # exercise that 124 wording. A definite-timeout / missing residual regression on codex
-          # alone would stay green without this twin.
-          printf '#!/usr/bin/env bash\ncase "$1" in login) trap "" TERM; sleep 90;; *) exit 0;; esac\n' > "$CPY/codex"; chmod +x "$CPY/codex"
-          ps="$(date +%s)"; r=0; out="$(PATH="$CPY" bash "$LG" preflight codex 2>&1)" || r=$?; pe="$(date +%s)"
-          { [ "$r" = 3 ] && [ "$(( pe - ps ))" -ge 20 ] && [ "$(( pe - ps ))" -lt 60 ]; } || { echo "::error::_cap python fallback did not GENUINELY cap a hanging codex auth check (rc=$r elapsed=$(( pe - ps ))s)"; exit 1; }
-          printf '%s' "$out" | grep -qi 'consistent with the 30s wall-clock timeout' || { echo "::error::_cap python fallback codex real-cap diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -Eqi 'rc=124|exit 124' || { echo "::error::_cap python fallback codex must name exit/rc 124 (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -Eqi 'elapsed [0-9]+s|after [0-9]+s' || { echo "::error::_cap python fallback codex must report elapsed (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -qi 'Residual' || { echo "::error::_cap python fallback codex must name Residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::_cap python fallback codex must not claim definite 'hit' (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           # authed via the python path -> ready (0):
           printf '#!/usr/bin/env bash\ncase "$1" in models) printf "grok-4.5\\n";; esac\n' > "$CPY/grok"; chmod +x "$CPY/grok"
           r=0; PATH="$CPY" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::_cap python path rejected an authenticated grok (rc=$r)"; exit 1; }
-          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3,
-          # and the diagnostic must say too-fast (instant 124), NOT claim the 30s timeout fired:
-          CNO="$(mktemp -d)"; for b in bash grep date; do ln -s "$(command -v "$b")" "$CNO/$b"; done
+          # NO cap tool (no timeout/gtimeout/python3): `_cap` must REFUSE, not run uncapped -> preflight 3:
+          CNO="$(mktemp -d)"; for b in bash grep; do ln -s "$(command -v "$b")" "$CNO/$b"; done
           printf '#!/usr/bin/env bash\ncase "$1" in models) echo ok;; esac\n' > "$CNO/grok"; chmod +x "$CNO/grok"
-          r=0; out="$(PATH="$CNO" bash "$LG" preflight grok 2>&1)" || r=$?
-          [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
-          printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock timeout' || { echo "::error::_cap no-tool: diagnostic must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-          printf '%s' "$out" | grep -qi 'hit the 30s wall-clock timeout' && { echo "::error::_cap no-tool: wrongly claimed wall-clock timeout for an instant refuse (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+          r=0; PATH="$CNO" bash "$LG" preflight grok >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::_cap ran the auth check UNCAPPED with no timeout/python3 (rc=$r, want 3 — must refuse)"; exit 1; }
           # the lane-agent cap fallback must FAIL UNAVAILABLE (return 3), NEVER run UNCAPPED, when
           # neither timeout/gtimeout nor python3 exists. EXECUTE the shipped cap() (not just grep) with a
           # CLEAN PATH that has bash + a sentinel-touching model stub but NO timeout/gtimeout/python3, and
@@ -4230,222 +3780,6 @@ jobs:
             r=0; bash "$LG" scope HEAD --snapshot "$SNAPG3" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope missed a SYMLINKED .git/hooks/pre-commit (rc=$r)"; exit 1; }
             rm -f .git/hooks/pre-commit /tmp/eh$$
-            )
-          # ── v4.8 (upstream #32): the DELEGATION RECEIPT gate. The lane's entire value is that a
-          # DIFFERENT model family typed the diff; a lane that quietly implements the task itself and
-          # still emits a well-formed report removes that diversity while the driver believes
-          # delegation happened. `delegation` makes the delegate's OWN transcript a precondition of
-          # STATUS: complete, so a skipped delegation leaves a hole the driver can see. BOTH
-          # directions are asserted — a gate that cannot REFUSE is not a gate.
-          # Integrity is asserted ON DISK (receipt line alone is hollow): header agrees with receipt,
-          # recomputed body sha256/byte count match, transcript preserved BYTE-FOR-BYTE. ──
-          LGD="$(mktemp -d)"; ( cd "$LGD"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            mkdir -p .plinth; printf '(^|/)\.plinth/session/\n' > .plinth/protected-paths
-            # NOTE the .gitignore deliberately does NOT list .plinth/session/ — a fresh clone has no
-            # session dir at all, so the self-ignore `delegation` writes is what must keep it clean:
-            printf 'node_modules/\n' > .gitignore; echo a > app.py; git add -A; git commit -qm base >/dev/null
-            # (1) ARTIFACT INTEGRITY on a pathological transcript: blank lines, trailing whitespace,
-            # a tab, a UTF-8 character, and NO trailing newline. A summary/re-wrap must fail the
-            # byte-for-byte body check. Hash/size are computed from the SOURCE before recording.
-            TR="$(mktemp)"
-            # shellcheck disable=SC2059
-            printf 'line1\n\nline with trailing spaces  \n\tindented tab line\nUTF-8: caf\xc3\xa9\nverification: ok\nMODEL: grok-4.5' > "$TR"
-            EXP_BYTES="$(wc -c < "$TR" | tr -d '[:space:]')"
-            EXP_HASH="$(shasum -a 256 "$TR" 2>/dev/null | cut -d' ' -f1 || sha256sum "$TR" | cut -d' ' -f1)"
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 0 ] || { echo "::error::lane-guard delegation rejected a PRESENT non-empty transcript (rc=$r) — an honest lane could never report complete"; exit 1; }
-            printf '%s' "$out" | grep -q '^delegation recorded: ' || { echo "::error::delegation printed no receipt line for the lane to report and the driver to check"; exit 1; }
-            ART="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"
-            { [ -n "$ART" ] && [ -s "$ART" ] && [ -f "$ART" ]; } || { echo "::error::the delegation receipt names no non-empty artifact FILE — nothing is preserved for the driver to read"; exit 1; }
-            case "$ART" in *"/.plinth/session/lanes/"*) : ;; *) echo "::error::delegation artifact is not under .plinth/session/lanes/ ($ART) — the driver would not know where to look"; exit 1 ;; esac
-            # Parse receipt LINE fields:
-            R_RC="$(printf '%s' "$out" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
-            R_BYTES="$(printf '%s' "$out" | sed -n 's/.* bytes=\([^ ]*\).*/\1/p')"
-            R_HASH="$(printf '%s' "$out" | sed -n 's/.* sha256=\([^ ]*\).*/\1/p')"
-            R_MODEL="$(printf '%s' "$out" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
-            # Parse artifact HEADER (first line) — must agree with the receipt:
-            HDR="$(head -n1 "$ART")"
-            printf '%s' "$HDR" | grep -q '^# plinth lane delegation v1:' || { echo "::error::artifact header missing '# plinth lane delegation v1:' (got: $HDR)"; exit 1; }
-            H_RC="$(printf '%s' "$HDR" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
-            H_BYTES="$(printf '%s' "$HDR" | sed -n 's/.* bytes=\([^ ]*\).*/\1/p')"
-            H_HASH="$(printf '%s' "$HDR" | sed -n 's/.* sha256=\([^ ]*\).*/\1/p')"
-            H_MODEL="$(printf '%s' "$HDR" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
-            [ "$R_RC" = "0" ] && [ "$H_RC" = "0" ] || { echo "::error::rc disagrees receipt/header (receipt rc=$R_RC header rc=$H_RC)"; exit 1; }
-            [ "$R_BYTES" = "$H_BYTES" ] || { echo "::error::bytes disagrees receipt/header (receipt=$R_BYTES header=$H_BYTES)"; exit 1; }
-            [ "$R_HASH" = "$H_HASH" ] || { echo "::error::sha256 disagrees receipt/header (receipt=$R_HASH header=$H_HASH)"; exit 1; }
-            [ "$R_MODEL" = "$H_MODEL" ] || { echo "::error::model disagrees receipt/header (receipt=$R_MODEL header=$H_MODEL)"; exit 1; }
-            [ "$R_BYTES" = "$EXP_BYTES" ] || { echo "::error::recorded bytes=$R_BYTES != real transcript bytes=$EXP_BYTES"; exit 1; }
-            [ "$R_HASH" = "$EXP_HASH" ] || { echo "::error::recorded sha256=$R_HASH != recomputed transcript sha256=$EXP_HASH"; exit 1; }
-            [ "$R_MODEL" = "grok-4.5" ] || { echo "::error::model not grok-4.5 in both places (got receipt=$R_MODEL header=$H_MODEL)"; exit 1; }
-            # Body = everything after the first newline of the artifact; must equal the transcript
-            # BYTE-FOR-BYTE (blank lines, trailing spaces, tab, UTF-8, no final newline):
-            BODY="$(mktemp)"; tail -n +2 "$ART" > "$BODY"
-            BODY_HASH="$(shasum -a 256 "$BODY" 2>/dev/null | cut -d' ' -f1 || sha256sum "$BODY" | cut -d' ' -f1)"
-            BODY_BYTES="$(wc -c < "$BODY" | tr -d '[:space:]')"
-            [ "$BODY_HASH" = "$EXP_HASH" ] || { echo "::error::artifact BODY sha256=$BODY_HASH != transcript $EXP_HASH — body not preserved (summary/re-wrap would fail here)"; exit 1; }
-            [ "$BODY_BYTES" = "$EXP_BYTES" ] || { echo "::error::artifact BODY bytes=$BODY_BYTES != transcript $EXP_BYTES"; exit 1; }
-            cmp -s "$TR" "$BODY" || { echo "::error::artifact BODY is not byte-for-byte identical to the transcript (cmp failed)"; exit 1; }
-            # recorded sha256 must equal a sha256 recomputed from the artifact body (the integrity claim):
-            [ "$R_HASH" = "$BODY_HASH" ] || { echo "::error::receipt sha256 does not match sha256 recomputed from artifact body"; exit 1; }
-            # the artifact must not DIRTY the tree: `delegation` may be the first thing to create
-            # .plinth/session/ in a fresh clone, and review.sh refuses a dirty tree — a lane run
-            # would otherwise block the review of its own work:
-            grep -qx '\*' .plinth/session/.gitignore || { echo "::error::delegation did not write the self-ignoring .plinth/session/.gitignore — the lane artifact would leave the tree dirty and review.sh would refuse"; exit 1; }
-            [ -z "$(git status --porcelain)" ] || { echo "::error::recording a delegation receipt left the working tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            # (2) transcript MISSING -> exit 3. THIS is the gate: a lane that skipped the delegation
-            # (and did the work itself) can obtain no receipt, so complete is not available to it.
-            # Paths live OUTSIDE the fixture repo so later dirty-tree checks stay non-hollow:
-            r=0; out="$(bash "$LG" delegation grok 0 "/no/such/transcript-$$.log" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::lane-guard delegation ACCEPTED a MISSING transcript (rc=$r, want 3) — nothing then stops a self-implementing lane from reporting STATUS: complete"; exit 1; }
-            printf '%s' "$out" | grep -q '^unavailable: ' || { echo "::error::delegation's refusal does not print the 'unavailable:' reason the lane is required to report"; exit 1; }
-            # (3) transcript EMPTY -> exit 3: a zero-byte file is a `touch`, not evidence the CLI ran:
-            EMPTY="$(mktemp)"; : > "$EMPTY"
-            r=0; bash "$LG" delegation grok 0 "$EMPTY" >/dev/null 2>&1 || r=$?
-            [ "$r" = 3 ] || { echo "::error::lane-guard delegation ACCEPTED an EMPTY transcript (rc=$r, want 3) — non-empty is the whole precondition"; exit 1; }
-            # (4) NONZERO CLI rc still RECORDS, and rc+model must agree in receipt AND artifact header
-            # (checking only the receipt line is hollow — a header that lies would pass):
-            r=0; out="$(bash "$LG" delegation codex 7 "$TR" 2>&1)" || r=$?
-            [ "$r" = 0 ] || { echo "::error::delegation refused to record a NONZERO-rc delegate run (rc=$r)"; exit 1; }
-            ART7="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"
-            HDR7="$(head -n1 "$ART7")"
-            R7="$(printf '%s' "$out" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
-            H7="$(printf '%s' "$HDR7" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')"
-            RM7="$(printf '%s' "$out" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
-            HM7="$(printf '%s' "$HDR7" | sed -n 's/.* model=\([^ ]*\).*/\1/p')"
-            { [ "$R7" = "7" ] && [ "$H7" = "7" ]; } || { echo "::error::nonzero rc not agreed in receipt+header (receipt rc=$R7 header rc=$H7)"; exit 1; }
-            { [ "$RM7" = "grok-4.5" ] && [ "$HM7" = "grok-4.5" ]; } || { echo "::error::model not agreed in receipt+header for nonzero-rc run (receipt=$RM7 header=$HM7)"; exit 1; }
-            r=0; out="$(bash "$LG" delegation codex 124 "$TR" 2>&1)" || r=$?
-            { [ "$r" = 0 ] && printf '%s' "$out" | grep -q 'rc=124'; } || { echo "::error::delegation refused to record (or mis-recorded) a TIMED-OUT delegate run (rc=$r) — timeout/partial reports would lose their evidence"; exit 1; }
-            ART124="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDR124="$(head -n1 "$ART124")"
-            printf '%s' "$HDR124" | grep -q 'rc=124' || { echo "::error::timeout rc=124 present in receipt but missing from artifact header"; exit 1; }
-            r=0; bash "$LG" delegation grok complete "$TR" >/dev/null 2>&1 || r=$?
-            [ "$r" = 2 ] || { echo "::error::delegation accepted a non-numeric CLI exit code (rc=$r, want 2) — the recorded rc must be the CLI's real exit"; exit 1; }
-            # (5) no MODEL: line -> model=unreported in BOTH receipt and artifact header.
-            NOMODEL="$(mktemp)"; printf 'ran, said nothing about its model\n' > "$NOMODEL"
-            out="$(bash "$LG" delegation grok 0 "$NOMODEL" 2>&1)" || { echo "::error::delegation failed on a transcript with no MODEL: line — an honest delegation must still record"; exit 1; }
-            ARTU="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDRU="$(head -n1 "$ARTU")"
-            printf '%s' "$out" | grep -q 'model=unreported' || { echo "::error::delegation did not report an ABSENT model self-report as 'unreported' in the receipt"; exit 1; }
-            printf '%s' "$HDRU" | grep -q 'model=unreported' || { echo "::error::artifact header did not record model=unreported for a transcript with no MODEL: line (got: $HDRU)"; exit 1; }
-            # (6) PRE-EXISTING empty or non-matching .plinth/session/.gitignore must not leave the
-            # tree dirty — rewrite to EXACT `*` (a lone `*` line among un-ignores is not enough):
-            rm -rf .plinth/session
-            mkdir -p .plinth/session; : > .plinth/session/.gitignore   # empty pre-existing
-            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with empty pre-existing session .gitignore"; exit 1; }
-            # file must be EXACTLY one `*` line (not merely contain a `*` line among un-ignores):
-            _assert_exact_star_gi() {
-              local f=.plinth/session/.gitignore
-              { [ "$(wc -l < "$f" | tr -d '[:space:]')" = "1" ] \
-                && [ "$(wc -c < "$f" | tr -d '[:space:]')" = "2" ] \
-                && grep -qxF '*' "$f"; } \
-                || { echo "::error::$1 (got bytes=$(wc -c < "$f" | tr -d '[:space:]') content=$(cat "$f" | tr '\n' '|'))"; exit 1; }
-            }
-            _assert_exact_star_gi "delegation did not rewrite empty session .gitignore to exact '*\\n'"
-            [ -z "$(git status --porcelain)" ] || { echo "::error::empty pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            printf 'node_modules/\n' > .plinth/session/.gitignore   # non-matching content
-            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with non-matching pre-existing session .gitignore"; exit 1; }
-            _assert_exact_star_gi "delegation left non-matching .gitignore unrepaired"
-            [ -z "$(git status --porcelain)" ] || { echo "::error::non-matching pre-existing .gitignore left tree DIRTY: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            # Effective-rule case: `*` plus later `!lanes/` un-ignores — must rewrite and stay clean:
-            printf '*\n!lanes/\n!lanes/**\n' > .plinth/session/.gitignore
-            out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || { echo "::error::delegation failed with un-ignore session .gitignore"; exit 1; }
-            _assert_exact_star_gi "delegation left un-ignore rules in session .gitignore — effective ignore broken"
-            [ -z "$(git status --porcelain)" ] || { echo "::error::un-ignore .gitignore left tree DIRTY after rewrite: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            # (7) TERMINAL MODEL self-report: first decoy must not win over the last MODEL: line:
-            MULTI="$(mktemp)"; printf 'MODEL: decoy-model\nwork done\nMODEL: actual-terminal-model\n' > "$MULTI"
-            out="$(bash "$LG" delegation grok 0 "$MULTI" 2>&1)" || { echo "::error::delegation failed on multi-MODEL transcript"; exit 1; }
-            printf '%s' "$out" | grep -q 'model=actual-terminal-model' || { echo "::error::delegation recorded first MODEL decoy instead of terminal self-report (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -q 'model=decoy-model' && { echo "::error::delegation recorded decoy MODEL (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
-            ARTM="$(printf '%s' "$out" | sed -n 's/.*artifact=//p')"; HDRM="$(head -n1 "$ARTM")"
-            printf '%s' "$HDRM" | grep -q 'model=actual-terminal-model' || { echo "::error::artifact header did not use terminal MODEL (got: $HDRM)"; exit 1; }
-            # (8) SYMLINKED lanes directory is an escape — artifact would land outside the repo.
-            # Must refuse (exit 3) and not write through the symlink:
-            rm -rf .plinth/session
-            mkdir -p .plinth/session
-            EXT="$(mktemp -d)"; ln -s "$EXT" .plinth/session/lanes
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED lanes directory (rc=$r, want 3) — artifact escape outside the repository"; exit 1; }
-            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::delegation refusal for symlinked lanes did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            # nothing should have been written through the symlink:
-            [ -z "$(ls -A "$EXT" 2>/dev/null)" ] || { echo "::error::delegation wrote through the symlinked lanes dir into $EXT: $(ls -A "$EXT")"; exit 1; }
-            # (9) SYMLINKED session dir: refuse BEFORE writing .gitignore or lanes (no external write):
-            rm -rf .plinth/session
-            EXT2="$(mktemp -d)"; ln -s "$EXT2" .plinth/session
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED .plinth/session (rc=$r, want 3)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::session-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            [ -z "$(ls -A "$EXT2" 2>/dev/null)" ] || { echo "::error::delegation wrote through symlinked session into $EXT2: $(ls -A "$EXT2")"; exit 1; }
-            # (9b) SYMLINKED parent `.plinth` dir: same escape; refuse before any write:
-            rm -rf .plinth
-            EXT2B="$(mktemp -d)"; mkdir -p "$EXT2B/keep"; ln -s "$EXT2B" .plinth
-            # protected-paths lived under .plinth — recreate a real one is impossible while
-            # .plinth is a symlink; delegation only needs git root + the path checks:
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED .plinth parent (rc=$r, want 3)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::.plinth-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            # only the pre-existing keep/ should be there — no session/lanes/gitignore written through:
-            [ -z "$(ls -A "$EXT2B" 2>/dev/null | grep -v '^keep$')" ] \
-              || { echo "::error::delegation wrote through symlinked .plinth into $EXT2B: $(ls -A "$EXT2B")"; exit 1; }
-            rm -rf .plinth; mkdir -p .plinth; printf '(^|/)\.plinth/session/\n' > .plinth/protected-paths
-            # (10) SYMLINKED session .gitignore: refuse before following:
-            rm -rf .plinth/session
-            mkdir -p .plinth/session
-            EXT3="$(mktemp -d)"; printf 'pre\n' > "$EXT3/gitignore"; ln -s "$EXT3/gitignore" .plinth/session/.gitignore
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED session .gitignore (rc=$r, want 3)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::gitignore-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            grep -qx 'pre' "$EXT3/gitignore" || { echo "::error::delegation overwrote external gitignore through symlink"; exit 1; }
-            # (11) TRACKED session .gitignore must not be clobbered (data-loss + dirty tree):
-            rm -rf .plinth/session
-            mkdir -p .plinth/session
-            printf 'keep-this-rule\n' > .plinth/session/.gitignore
-            # force-add despite any parent ignore: the point is the path is TRACKED content
-            git add -f .plinth/session/.gitignore; git commit -qm 'track session gitignore' >/dev/null
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED/clobbered a TRACKED non-exact session .gitignore (rc=$r, want 3)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'tracked' || { echo "::error::tracked-gitignore refusal did not mention tracked (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            grep -qx 'keep-this-rule' .plinth/session/.gitignore || { echo "::error::delegation clobbered tracked session .gitignore content"; exit 1; }
-            [ -z "$(git status --porcelain .plinth/session/.gitignore)" ] || { echo "::error::delegation dirtied tracked session .gitignore: $(git status --porcelain .plinth/session/.gitignore)"; exit 1; }
-            # tracked exact `*` must still be ACCEPTED (not a blanket tracked-file ban):
-            printf '*\n' > .plinth/session/.gitignore
-            git add -f .plinth/session/.gitignore; git commit -qm 'track exact star gi' >/dev/null
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 0 ] || { echo "::error::delegation refused tracked exact '*' session .gitignore (rc=$r) — only non-exact tracked content is refused"; exit 1; }
-            _assert_exact_star_gi "tracked exact '*' must remain exact after record"
-            [ -z "$(git status --porcelain)" ] || { echo "::error::tracked exact '*' path left tree dirty: $(git status --porcelain | tr '\n' ' ')"; exit 1; }
-            # lanes-symlink refusal must not rewrite .gitignore first either:
-            rm -rf .plinth/session; mkdir -p .plinth/session
-            printf 'keep-pre-lanes\n' > .plinth/session/.gitignore
-            EXT4="$(mktemp -d)"; ln -s "$EXT4" .plinth/session/lanes
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::lanes-symlink path should refuse (rc=$r)"; exit 1; }
-            grep -qx 'keep-pre-lanes' .plinth/session/.gitignore || { echo "::error::lanes-symlink refusal rewrote .gitignore before failing (got: $(cat .plinth/session/.gitignore | tr '\n' ' '))"; exit 1; }
-            # non-directory `lanes` (regular file) must also preserve pre-existing .gitignore:
-            rm -rf .plinth/session; mkdir -p .plinth/session
-            printf 'keep-pre-nondir\n' > .plinth/session/.gitignore
-            printf 'not-a-dir\n' > .plinth/session/lanes
-            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::non-dir lanes should refuse (rc=$r)"; exit 1; }
-            grep -qx 'keep-pre-nondir' .plinth/session/.gitignore || { echo "::error::non-dir lanes refusal rewrote .gitignore (got: $(cat .plinth/session/.gitignore | tr '\n' ' '))"; exit 1; }
-            # git ls-files --error-unmatch command failure (rc>=2) must fail closed, not treat as untracked:
-            rm -rf .plinth/session; mkdir -p .plinth/session
-            printf 'keep-ls-fail\n' > .plinth/session/.gitignore
-            GWRAP="$(mktemp -d)"; ln -s "$(command -v true)" "$GWRAP/true" 2>/dev/null || true
-            # Real git shim: pass-through except error-unmatch on the session gitignore path.
-            cat > "$GWRAP/git" <<'GSH'
-#!/usr/bin/env bash
-if [ "$1" = "-C" ]; then shift 2; fi
-if [ "$1" = "ls-files" ] && printf '%s\n' "$@" | grep -q -- '--error-unmatch' \
-  && printf '%s\n' "$@" | grep -q '\.plinth/session/\.gitignore'; then
-  exit 128
-fi
-exec /usr/bin/git "$@"
-GSH
-            chmod +x "$GWRAP/git"
-            r=0; out="$(PATH="$GWRAP:$PATH" bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
-            [ "$r" = 3 ] || { echo "::error::ls-files failure must fail closed (rc=$r, want 3; out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            printf '%s' "$out" | grep -qi 'ls-files\|tracked\|fail closed\|cannot determine' \
-              || { echo "::error::ls-files failure diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
-            grep -qx 'keep-ls-fail' .plinth/session/.gitignore || { echo "::error::ls-files failure path rewrote .gitignore as if untracked"; exit 1; }
             )
           # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
           # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each

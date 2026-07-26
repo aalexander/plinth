@@ -1,69 +1,37 @@
 # Plinth changelog
 
-## v4.8.0 — the lane delegation receipt: "grok typed it" becomes checkable — July 25, 2026
-- **Upstream #32 — a lane implemented a task ITSELF and still emitted a well-formed
-  report.** The whole point of the implementer seat is that a DIFFERENT model family
-  types the volume; a lane that quietly becomes "same family, in a subagent" removes
-  that diversity while the driver believes delegation happened. The lane contract
-  forbade it in prose, and prose was all there was: nothing sat between "preflight
-  passed" and "the delegate produced the diff". The observed self-implemented output
-  then carried two real defects its own "verified, passes" claim missed.
-- **`lane-guard.sh delegation <vendor> <cli-rc> <transcript>` — a precondition, not a
-  reminder.** Both lanes (`grok-implementer`, `codex-implementer` — one class, same
-  gate) must now run it after the scope check: it copies the delegate CLI's OWN
-  transcript and exit code to an artifact under `.plinth/session/lanes/` and prints one
-  `delegation recorded: ...` line carrying the artifact path, the transcript's sha256,
-  and the delegate's self-reported model (the lane's spec asks the CLI to end with
-  `MODEL: <id>`; absent → `unreported`, which is not a failure). A missing or EMPTY
-  transcript exits 3 with an `unavailable:` reason — no receipt, no `STATUS: complete`.
-  The report gained a `DELEGATION:` line so the driver can open the artifact instead of
-  trusting the narrative.
-- **HONEST BOUND, in the contract text itself.** The receipt proves a non-empty
-  transcript EXISTS and preserves it for the driver to read. It does NOT prove which
-  model wrote the diff (`model=` is the delegate's self-report; a self-implementing
-  agent could write a file), and it does NOT bind the transcript to THIS run (no
-  BEFORE/SNAP/recency — a fallible stale-OUT paste still records). Same shape as the
-  receipt check's residual — a skipped delegation becomes DETECTABLE (no artifact, no
-  receipt, nothing to open), not impossible. A subagent's compliance with prose cannot
-  be enforced by more prose; what changed is that the omission now leaves a hole.
-  Lanes must also disclose a dirty tree on `unavailable` after the CLI may already
-  have written (lost transcript / wrong OUT).
-- **Preflight failure reasons are disambiguated (diagnostic only), with an honest
-  timeout bound aligned to GNU `timeout -k 5`.** A driver reported `unavailable: grok not
-  signed in` on a first call and `ready` on three re-runs, with grok authenticated —
-  unattributable, because a fast auth failure and a 30s wall-clock timeout printed the
-  same reason. Both vendors now split by **elapsed then exit code**: instant 124/137/142
-  is "too fast"; **rc=124 + elapsed ≈ cap** is *consistent with* the wall-clock timeout
-  (TERM-death or python fallback), residual CLI self-exit 124; **rc=137**: `-k` KILL
-  lands ~cap+5 (~35s) — elapsed≥33 *consistent with* that path or external/CLI SIGKILL;
-  28–32s prefers self-exit wording (at/near TERM, early for completed `-k`); never
-  timeout-only, never absolute "NOT a timeout"; **rc=142** is *often* SIGALRM, not the
-  standard 124/137 signature, residual self-exit. Diagnostics never instruct a re-run
-  (a blind retry doubles the hang bound). Explicitly NOT a fix for that flake. Logged
-  under `## Noticed`.
-- **Canary coverage in both directions** (`plinth-canary.yml`): artifact present and
-  non-empty → receipt permitted; artifact missing or empty → exit 3; a nonzero CLI rc
-  still records (timeout/partial keeps its evidence); a non-numeric rc is a usage error;
-  an absent `MODEL:` line reads as `unreported` rather than a fabricated model; the
-  **terminal** `MODEL:` line wins over an earlier decoy; symlinked `session` /
-  `.gitignore` / `lanes` refuse before any external write; a `*`+`!lanes/` gitignore is
-  rewritten to exact `*`. Plus contract fixtures that keep both lanes wired to the
-  receipt with **positional** `RUN_RC` then `OUT` after the vendor, carrying the
-  `DELEGATION:` line, asking for the model — and keeping the honest bound in the text
-  (a fixture goes red if the doc starts claiming it proves authorship).
-- **The artifact never dirties the tree.** `delegation` may be the first thing to create
-  `.plinth/session/` in a fresh clone, so it writes an **exact** self-ignoring
-  `.plinth/session/.gitignore` (`*\n` only — not merely a `*` line among later
-  un-ignores) that `bin/plinth`, `review.sh`, and the session hooks already write —
-  otherwise a lane run would leave an untracked file and `review.sh`, which refuses a
-  dirty tree, would block the review of the lane's own work. Containment checks run
-  **before** any write so a symlinked session/gitignore cannot redirect them. A
-  **tracked** session `.gitignore` is never clobbered (refuse unless already exact `*`);
-  the rewrite is deferred until `lanes` containment succeeds so a later refusal cannot
-  leave a truncated file behind.
-- **Driver contract names the fourth lane-guard step.** `shared/plinth-rules.md` and
-  `shared/MODELS.md` now require `delegation` alongside preflight/snapshot/scope and tell
-  the driver to treat a complete report without a `DELEGATION:` receipt as incomplete.
+## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
+- **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
+  project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
+  page plus `GET /api/snapshot`, read-only (**python3** required for serve;
+  `--snapshot` is bash+jq). Discovery (first match): `PLINTH_DASH_ROOTS` (colon
+  paths; no glob expansion), else `~/.config/plinth/dashboard-projects` (one
+  path per line; leading `~/` expanded correctly), else default `~/Dev/*` with
+  `.plinth/config`.
+- **Per-card snapshot.** Project path, branch @ head (detached → slug
+  `detached`), review verdict / round / full-SHA stale vs HEAD / in-flight
+  round (numeric request-N sort, path-hyphen safe). RUNNING only when
+  `request-N` outruns the verdict **and** either no `last-error` or the request
+  file is strictly newer (`-nt`) than `last-error` (retry after infra failure).
+  Session identity streams `events.jsonl` with a per-SID map (interleaved SIDs
+  keep task/session start). Burn/tokens from a **recent transcript tail** (all
+  token categories, including cache read). NEEDS-HUMAN open+blocking =
+  unchecked boxes only. Malformed events/verdicts surface `error` without
+  zeroing queue counts. Vendor quota always unavailable. Port 1–65535.
+- **Serve cache + bounded scan.** Single-flight builder + **2.5s TTL**
+  (`time.monotonic`, ≥ 2s UI poll) so concurrent `/api/snapshot` callers share
+  one shell snapshot (success or short-lived failure with stderr detail).
+  Event-stream meta is capped at the last **10k** lines per project. UI
+  serializes client polls (`pollInFlight`).
+- **Loopback hardening + steady-state errors.** HTTP `Host` must be loopback
+  (`127.0.0.1` / `localhost` / `::1`) — rejects DNS-rebinding `Host` headers.
+  After cards are shown, a later snapshot failure keeps them and surfaces the
+  builder detail in a sticky `#poll-error` banner (not only the live label).
+- **`--snapshot` + smoke.** Offline JSON builder; `shared/dashboard/smoke-snapshot.sh`
+  covers fixtures (tilde, detached, abbrev, multi-digit request, completed
+  queue, long session, interleave, last-error/retry/same-second, stale, bad
+  events/verdict), node `cardHTML` unit tests, and loopback HTTP with
+  single-flight invocation counts. Wired into the canary scaffold job.
 ## v4.7.2 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
 Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
 instance the reviewer named rather than the class it belonged to, so the next round found

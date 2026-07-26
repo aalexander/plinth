@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.6.0 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.8.0 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
 #   plinth watch  <project-path>  Live session dashboard (task, stage pipeline,
 #                                 tokens, burn, review/gate state). --once for a
 #                                 single frame.
+#   plinth dash|dashboard         Multi-instance HTML wallboard on 127.0.0.1
+#                                 (--snapshot for offline JSON; --port N).
 #   plinth update <project-path>  Propagate a Plinth version to an existing project:
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
@@ -40,14 +42,17 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
        plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
        plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)
-       plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)"; exit 1; }
+       plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
+       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ]; then
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
+   || [ "$cmd" = "dash" ] || [ "$cmd" = "dashboard" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
+     # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -1879,6 +1884,615 @@ $frags
 EOF
 }
 
+# ── plinth dash / dashboard ───────────────────────────────────────────────────
+# Multi-instance HTML wallboard. Discovery (first match wins):
+#   1. PLINTH_DASH_ROOTS — colon-separated absolute paths (tests / operators)
+#   2. ~/.config/plinth/dashboard-projects — one absolute path per line (# comments)
+#   3. Default: every ~/Dev/* that has .plinth/config
+# Serves only on 127.0.0.1. Read-only. --snapshot prints JSON and exits (CI/smoke).
+
+_dash_mtime() {  # epoch seconds or 0
+  # Prefer GNU -c (Linux). BSD/macOS -f second. NEVER try -f first: GNU
+  # `stat -f` is filesystem status and prints `?` with exit 0 for unknown
+  # formats, so the -c branch would never run and activity age would be 0
+  # on every Linux host (including the canary runner).
+  local t
+  t="$(stat -c '%Y' "$1" 2>/dev/null || true)"
+  case "$t" in ''|*[!0-9]*) t="$(stat -f '%m' "$1" 2>/dev/null || true)" ;; esac
+  case "$t" in ''|*[!0-9]*) echo 0 ;; *) printf '%s\n' "$t" ;; esac
+}
+
+# True if $1 is strictly newer than $2.
+# - With python3: nanosecond mtime (portable subsecond retries).
+# - Without: bash -nt only (whole-second on some platforms). Same-second ties
+#   are NOT newer — subsecond retry detection requires python3 (documented).
+_dash_file_newer() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys
+sys.exit(0 if os.stat(sys.argv[1]).st_mtime_ns > os.stat(sys.argv[2]).st_mtime_ns else 1)' \
+      "$1" "$2" 2>/dev/null && return 0
+    return 1
+  fi
+  [ "$1" -nt "$2" ]
+}
+
+_dash_realpath() {
+  # Prefer realpath; fall back to cd/pwd (no -P on pure logical paths).
+  if command -v realpath >/dev/null 2>&1; then realpath "$1" 2>/dev/null && return 0; fi
+  ( cd "$1" 2>/dev/null && pwd -P ) || return 1
+}
+
+discover_dashboard_projects() {
+  local p cfg="$HOME/.config/plinth/dashboard-projects" line rp
+  if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
+    # set -f: unquoted colon-split must not pathname-expand roots that contain * ? [.
+    local IFS=':'
+    set -f
+    for p in $PLINTH_DASH_ROOTS; do
+      [ -n "$p" ] || continue
+      [ -d "$p" ] || continue
+      [ -f "$p/.plinth/config" ] || continue
+      rp="$(_dash_realpath "$p")" || continue
+      printf '%s\n' "$rp"
+    done
+    set +f
+    return 0
+  fi
+  if [ -f "$cfg" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|\#*) continue ;; esac
+      # Expand leading ~/ only (no arbitrary shell expansion).
+      # Escape ~ in ${line#\~/}: unescaped ~ tilde-expands inside the pattern and
+      # leaves a literal ~/ after $HOME/ (e.g. $HOME/~/Dev/foo).
+      case "$line" in "~/"*) line="${HOME}/${line#\~/}" ;; esac
+      [ -d "$line" ] || continue
+      [ -f "$line/.plinth/config" ] || continue
+      rp="$(_dash_realpath "$line")" || continue
+      printf '%s\n' "$rp"
+    done < "$cfg"
+    return 0
+  fi
+  # Default scan: ~/Dev/*/.plinth/config
+  local dev="${PLINTH_DASH_DEV_ROOT:-$HOME/Dev}"
+  [ -d "$dev" ] || return 0
+  for p in "$dev"/*; do
+    [ -d "$p" ] || continue
+    [ -f "$p/.plinth/config" ] || continue
+    rp="$(_dash_realpath "$p")" || continue
+    printf '%s\n' "$rp"
+  done
+}
+
+# Newest in-flight request-N.json for a review slug (numeric N, basename only).
+# Full-path `sort -t- -k2` breaks when any parent directory contains '-'.
+_dash_latest_request() {
+  local dir="$1" slug="$2" f bn n
+  [ -d "$dir/.plinth/session/review/$slug" ] || return 0
+  for f in "$dir/.plinth/session/review/$slug"/request-*.json; do
+    [ -f "$f" ] || continue
+    bn="${f##*/}"
+    n="${bn#request-}"
+    n="${n%.json}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$n" "$f"
+  done | sort -n -k1,1 | tail -1 | cut -f2-
+}
+
+# Bounds for per-poll work. Session identity streams at most the last N event
+# lines (O(N) time / O(unique SIDs in window) mem). Transcript burn uses a tail.
+_DASH_EV_MAX_LINES=10000
+_DASH_TR_TAIL=300
+
+# One project card as a compact JSON object on stdout (single line).
+# Always emits a card (error field on render failure) so projects are never dropped.
+snapshot_one_project() {
+  local dir="$1" NOW
+  NOW="$(date +%s)"
+  local feedless=0 EV_RAW="$dir/.plinth/session/events.jsonl"
+  local tr_tmp=""
+  if [ ! -f "$EV_RAW" ]; then feedless=1; fi
+
+  local head head_full branch slug
+  head_full="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo '')"
+  head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
+  # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
+  branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ]; then branch="detached"; fi
+  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+
+  local vfile="$dir/.plinth/session/review/$slug/verdict.json"
+  local verdict_file_bad=false
+  if [ -f "$vfile" ]; then
+    # Exactly one JSON document and it must be an object (rejects null/false,
+    # multi-doc files where the last doc is an object, empty files, etc.).
+    if ! jq -se 'length == 1 and (.[0] | type) == "object"' "$vfile" >/dev/null 2>&1; then
+      verdict_file_bad=true
+    fi
+  else
+    vfile=/dev/null
+  fi
+  # Do not slurp usage.jsonl — the wallboard never renders it, and a malformed
+  # ledger must not collapse the card (would zero NEEDS-HUMAN etc.).
+  local rqfile
+  rqfile="$(_dash_latest_request "$dir" "$slug")"
+  [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
+  # Infra failure leaves last-error. A request file strictly newer than last-error
+  # means a retry is in flight (review.sh writes request, then on fail last-error;
+  # a later retry rewrites request). Same mtime or older request → keep error.
+  local has_last_error=false
+  local errfile="$dir/.plinth/session/review/$slug/last-error"
+  if [ -f "$errfile" ]; then
+    if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ] \
+       && _dash_file_newer "$rqfile" "$errfile"; then
+      has_last_error=false
+    else
+      has_last_error=true
+    fi
+  fi
+
+  local activity_ago=null events_mtime=0
+  if [ "$feedless" -eq 0 ]; then
+    events_mtime="$(_dash_mtime "$EV_RAW")"
+    case "$events_mtime" in ''|*[!0-9]*) events_mtime=0 ;; esac
+    if [ "$events_mtime" -gt 0 ] 2>/dev/null; then
+      activity_ago=$((NOW - events_mtime))
+      [ "$activity_ago" -ge 0 ] 2>/dev/null || activity_ago=0
+    fi
+  fi
+
+  local nhn=0 nhb=0 nhf raw
+  nhf="$(needs_human_file "$dir")"
+  if [ -s "$nhf" ]; then
+    raw="$(open_items "$nhf")"
+    # Open = unchecked boxes only. Empty open_items means the queue is clear —
+    # do NOT fall back to counting headings / checked lines as open.
+    if [ -n "$raw" ]; then
+      nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
+      nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    fi
+    case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
+    case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
+  fi
+
+  # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
+  # pre-scan of the full file). t0 is set only from SessionStart — if that event
+  # fell off the window, session_secs is null rather than a fabricated age.
+  local sid="" session_t0="" task="" transcript_path=""
+  local events_parse_failed=false
+  if [ "$feedless" -eq 0 ]; then
+    local meta_out meta_rc=0 ev_tmp=""
+    ev_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-ev.XXXXXX")" || ev_tmp=""
+    if [ -z "$ev_tmp" ]; then
+      events_parse_failed=true
+    else
+      tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
+      meta_out="$(jq -nr '
+        # Event names actually produced by Plinth hooks + pulse passthrough.
+        def known_event:
+          . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
+          or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
+          or . == "PreCompact" or . == "guard_block" or . == "gate_release"
+          or . == "unknown";
+        reduce inputs as $e ({cur:null, by:{}};
+          if ($e | type) != "object" then error("bad_event_type")
+          # Every object needs a known string event name (incl. sid-less / empty {}).
+          elif ($e.event == null) or (($e.event | type) != "string")
+               or (($e.event | known_event) | not) then error("bad_event_name")
+          elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
+          elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
+          elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
+          elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
+          elif ($e.sid == null) then .
+          else
+            (if .by[$e.sid] == null then
+               .by[$e.sid] = {t0: null, task: null, tr: null}
+             else . end)
+            | .cur = $e.sid
+            # Keep the first SessionStart in the window (resume re-emits SessionStart).
+            | if ($e.event == "SessionStart") and ($e.epoch != null)
+                 and (.by[$e.sid].t0 == null)
+              then .by[$e.sid].t0 = $e.epoch else . end
+            | if ($e.event == "UserPromptSubmit")
+                and (($e.detail // "") | length > 0)
+                and ((($e.detail // "") | test("^\\s*<")) | not)
+              then .by[$e.sid].task = $e.detail else . end
+            | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+          end
+        )
+        # Empty or sid-less feed is healthy-but-empty, not a render failure.
+        | if .cur == null then {sid:null, t0:null, task:null, tr:null}
+          else ((.by[.cur] // {t0:null, task:null, tr:null}) + {sid: .cur})
+          end
+        | @json
+      ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
+      rm -f "$ev_tmp"
+      if [ "$meta_rc" -ne 0 ] || [ -z "$meta_out" ]; then
+        events_parse_failed=true
+      else
+        sid="$(printf '%s' "$meta_out" | jq -r '.sid // empty')"
+        session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
+        task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
+        transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
+      fi
+    fi
+  fi
+
+  # Malformed events or present-but-non-object verdict → error card.
+  if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
+    jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
+      --arg head "$head" --arg branch "$branch" \
+      --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+        error:"snapshot_render_failed",
+        needs_human:{open:$nhn,blocking:$nhb},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+    return 0
+  fi
+
+  # Burn/tokens: tail the transcript only (recent window; UI labels it as such).
+  local transcript=/dev/null
+  if [ -n "${transcript_path:-}" ] && [ -f "$transcript_path" ]; then
+    tr_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-tr.XXXXXX")" || tr_tmp=""
+    if [ -n "$tr_tmp" ]; then
+      tail -n "$_DASH_TR_TAIL" "$transcript_path" > "$tr_tmp" 2>/dev/null || : > "$tr_tmp"
+      transcript="$tr_tmp"
+    else
+      transcript="$transcript_path"
+    fi
+  fi
+
+  local session_secs_json=null
+  if [ -n "${session_t0:-}" ]; then
+    case "$session_t0" in *[!0-9]*) ;; *)
+      session_secs_json=$((NOW - session_t0))
+      [ "$session_secs_json" -ge 0 ] 2>/dev/null || session_secs_json=0
+    ;; esac
+  fi
+
+  local rq_round_from_name=null
+  if [ -n "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
+    local rqbn="${rqfile##*/}"
+    local rqn="${rqbn#request-}"
+    rqn="${rqn%.json}"
+    case "$rqn" in ''|*[!0-9]*) ;; *) rq_round_from_name="$rqn" ;; esac
+  fi
+  jq -nc --slurpfile vd "$vfile" --slurpfile rq "$rqfile" --slurpfile tr "$transcript" \
+        --arg path "$dir" --arg name "$(basename "$dir")" \
+        --arg head "$head" --arg head_full "$head_full" --arg branch "$branch" \
+        --arg sid "${sid:-}" --arg task "${task:-}" \
+        --argjson feedless "$feedless" --argjson now "$NOW" \
+        --argjson activity_ago "${activity_ago:-null}" \
+        --argjson session_secs "${session_secs_json:-null}" \
+        --argjson nhn "$nhn" --argjson nhb "$nhb" \
+        --argjson has_last_error "$has_last_error" \
+        --argjson rq_round_from_name "$rq_round_from_name" '
+    def sha_match($a; $b):
+      ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
+      and (($a | startswith($b)) or ($b | startswith($a)));
+    def toksum: .i + .cc + .cr + .o;
+    def verdict_ok($v):
+      $v == "APPROVED" or $v == "CHANGES_NEEDED";
+    def sha_ok($s):
+      # 7–40 hex (sha1) or up to 64 hex (sha256 object format).
+      ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));
+    def round_ok($r):
+      ($r | type == "number") and ($r == ($r | floor)) and ($r >= 0);
+    ($vd[0] // null) as $V0
+    # Protocol-shape guard: present verdict.json needs enum + hex sha + round.
+    | (if $V0 == null then null
+       elif ($V0 | type) != "object" then error("bad_verdict_shape")
+       elif ($V0.verdict == null) or ($V0.verdict | type != "string")
+            or (verdict_ok($V0.verdict) | not) then error("bad_verdict_enum")
+       elif ($V0.sha == null) or (sha_ok($V0.sha) | not) then error("bad_verdict_sha")
+       elif ($V0.round == null) or (round_ok($V0.round) | not) then error("bad_verdict_round")
+       else $V0 end) as $V
+    | ($rq[0] // null) as $RQ0
+    | (if $RQ0 == null then null
+       elif ($RQ0 | type) != "object" then error("bad_request_shape")
+       elif ($RQ0.round == null) or (round_ok($RQ0.round) | not) then error("bad_request_round")
+       elif ($rq_round_from_name != null)
+            and (($RQ0.round | floor) != $rq_round_from_name) then error("bad_request_round_mismatch")
+       else $RQ0 end) as $RQ
+    # RUNNING only when a newer request exists AND no last-error (infra failure
+    # leaves request-N behind without a live reviewer).
+    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) and ($has_last_error | not)
+       then true else false end) as $running
+    | (if $V == null then null
+       else (sha_match($V.sha // ""; $head_full) | not) end) as $stale
+    | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
+        | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
+           i: (.message.usage.input_tokens // 0),
+           cc: (.message.usage.cache_creation_input_tokens // 0),
+           cr: (.message.usage.cache_read_input_tokens // 0),
+           o: (.message.usage.output_tokens // 0),
+           m: (.message.model // null)}
+        | select(.e != null))) as $use
+    | (if ($use | length) == 0 then null
+       else ([$use[] | select(.e > $now - 300) | toksum] | add // 0) / 5 | floor end) as $burn
+    # tokens_total = sum over the recent transcript window (all token categories).
+    | (if ($use | length) == 0 then null
+       else ([$use[] | toksum] | add // 0) end) as $tok
+    | (($use | map(.m) | map(select(. != null)) | .[-1]) // null) as $driver_model
+    | {
+        path: $path,
+        name: $name,
+        branch: $branch,
+        head: $head,
+        feedless: ($feedless == 1),
+        sid: (if $sid == "" then null else $sid end),
+        task: (if $task == "" then null else $task end),
+        session_secs: $session_secs,
+        activity_secs_ago: (if $activity_ago == null then null else $activity_ago end),
+        model_driver: $driver_model,
+        model_reviewer: ($V.model // null),
+        tokens_total: $tok,
+        tokens_window: "recent_transcript_tail",
+        burn_per_min: $burn,
+        review: (if $V == null and ($running | not) and ($has_last_error | not) then null
+                 elif $V == null and $has_last_error then {
+                   verdict: null, round: ($RQ.round // null), sha7: null,
+                   stale: null, running: false, mode: ($RQ.mode // null),
+                   tier: null, last_error: true
+                 }
+                 else {
+          verdict: ($V.verdict // null),
+          round: (if $running then ($RQ.round // null) else ($V.round // null) end),
+          sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
+          stale: $stale,
+          running: $running,
+          mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
+          tier: ($V.risk.tier // null),
+          last_error: $has_last_error
+        } end),
+        needs_human: { open: $nhn, blocking: $nhb },
+        quota: {
+          available: false,
+          note: "Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"
+        }
+      }
+  ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
+      --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
+      --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+        error:"snapshot_render_failed",
+        needs_human:{open:$nhn,blocking:$nhb},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+  [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
+  return 0
+}
+
+build_dashboard_snapshot() {
+  local roots tmp dir projects_json discovery
+  tmp="$(mktemp)" || { echo "plinth dash: mktemp failed" >&2; exit 1; }
+  : > "$tmp"
+  roots="$(discover_dashboard_projects | sort -u)"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    snapshot_one_project "$dir" >> "$tmp" || true
+  done <<< "$roots"
+  # jq -s on an empty file yields []; if the slurp itself fails, surface a top-level
+  # error rather than a silent empty wallboard (looks-idle-while-broken).
+  local top_err=""
+  if projects_json="$(jq -s '.' "$tmp" 2>/dev/null)"; then
+    :
+  else
+    projects_json='[]'
+    top_err="projects_aggregate_failed"
+  fi
+  rm -f "$tmp"
+  if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
+    discovery="env:PLINTH_DASH_ROOTS"
+  elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then
+    discovery="config:~/.config/plinth/dashboard-projects"
+  else
+    discovery="default:~/Dev/*/.plinth/config"
+  fi
+  if [ -n "$top_err" ]; then
+    jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
+       --arg discovery "$discovery" --arg error "$top_err" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error}'
+  else
+    jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
+       --arg discovery "$discovery" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+  fi
+}
+
+run_dashboard() {
+  shift  # drop cmd
+  local mode=serve port="${PLINTH_DASH_PORT:-7348}" arg
+  while [ $# -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --snapshot) mode=snapshot ;;
+      --port)
+        port="${1:-}"
+        [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
+        shift || true
+        ;;
+      --help|-h) usage ;;
+      *) echo "plinth dash: unknown arg: $arg" >&2; usage ;;
+    esac
+  done
+
+  if [ "$mode" = snapshot ]; then
+    build_dashboard_snapshot
+    exit 0
+  fi
+
+  # Validate the final port whether it came from --port or PLINTH_DASH_PORT
+  # (serve mode only — snapshot never binds). Length-cap first so an oversized
+  # digit string cannot trip bash "integer expression expected" and fall through.
+  case "$port" in ''|*[!0-9]*) echo "plinth dash: bad port: $port" >&2; exit 1 ;; esac
+  if [ "${#port}" -gt 5 ] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "plinth dash: port out of range (1-65535): $port" >&2; exit 1
+  fi
+
+  command -v python3 >/dev/null 2>&1 || { echo "plinth dash: python3 required to serve the UI" >&2; exit 1; }
+  local html="$PLINTH_ROOT/shared/dashboard/index.html"
+  [ -f "$html" ] || { echo "plinth dash: missing $html" >&2; exit 1; }
+
+  # Resolve self for the child to re-invoke --snapshot (same checkout / same env).
+  local self="$PLINTH_ROOT/bin/plinth"
+  [ -x "$self" ] || self="$(command -v plinth 2>/dev/null || true)"
+  [ -n "$self" ] || { echo "plinth dash: cannot locate plinth binary" >&2; exit 1; }
+
+  echo "plinth dash: http://127.0.0.1:${port}/  (loopback only · ctrl-c to quit)"
+  echo "  discovery: $(if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then echo "PLINTH_DASH_ROOTS"; elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then echo "~/.config/plinth/dashboard-projects"; else echo "~/Dev/*/.plinth/config"; fi)"
+  # Env passed explicitly so the child inherits roots/config the same way.
+  PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
+  PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
+  python3 - "$port" <<'PY'
+import json, os, subprocess, sys, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(sys.argv[1])
+HOST = "127.0.0.1"
+HTML = os.environ["PLINTH_DASH_HTML"]
+BIN = os.environ["PLINTH_BIN"]
+# Preserve operator discovery overrides for snapshot child.
+CHILD_ENV = os.environ.copy()
+
+# Single-flight + TTL cache: concurrent /api/snapshot callers share one builder.
+# TTL is >= the UI poll interval (2s) so steady-state polling reuses the body
+# instead of re-scanning every project's events.jsonl every tick. Loopback-only.
+_snap_lock = threading.Lock()
+_snap_body = None  # success body bytes
+_snap_err = None   # failure body bytes (shared single-flight)
+_snap_mono = 0.0
+_SNAP_TTL = 2.5
+_SNAP_ERR_TTL = 1.0
+# Optional test hook: PLINTH_DASH_SNAPSHOT_BIN overrides the offline builder
+# (smoke counts invocations for single-flight / TTL assertions).
+SNAP_BIN = os.environ.get("PLINTH_DASH_SNAPSHOT_BIN") or BIN
+
+def _host_ok(handler):
+    # DNS-rebinding defense: only accept loopback Host values.
+    # Handles "127.0.0.1:7348", "localhost", "[::1]", "[::1]:7348".
+    # Rejects "[::1]attacker.example" and any non-empty non-:port suffix after ].
+    h = (handler.headers.get("Host") or "").strip().lower()
+    if not h:
+        return False
+    if h.startswith("["):
+        end = h.find("]")
+        if end < 0:
+            return False
+        host = h[1:end]
+        rest = h[end + 1:]
+        if rest:
+            # Must be exactly :digits (port); nothing else.
+            if not (rest.startswith(":") and rest[1:].isdigit() and len(rest) > 1):
+                return False
+    else:
+        # hostname / IPv4, optional :port (exactly one colon for port split)
+        if h.count(":") == 1:
+            host, port = h.rsplit(":", 1)
+            if not port.isdigit():
+                return False
+        else:
+            host = h
+    return host in ("127.0.0.1", "localhost", "::1")
+
+def _snapshot_bytes():
+    """Single-flight success + short-lived shared failure (no stampede on errors)."""
+    global _snap_body, _snap_err, _snap_mono
+    now = time.monotonic()
+    with _snap_lock:
+        if _snap_body is not None and (now - _snap_mono) < _SNAP_TTL:
+            return 200, _snap_body
+        if _snap_err is not None and (now - _snap_mono) < _SNAP_ERR_TTL:
+            return 500, _snap_err
+        try:
+            proc = subprocess.run(
+                [SNAP_BIN, "dash", "--snapshot"],
+                env=CHILD_ENV,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or b"").decode("utf-8", "replace").strip()
+                if not detail:
+                    detail = (proc.stdout or b"").decode("utf-8", "replace").strip()
+                if not detail:
+                    detail = "dash --snapshot exited %s" % proc.returncode
+                err = json.dumps({"error": "snapshot_failed", "detail": detail[:2000]}).encode()
+                _snap_err = err
+                _snap_body = None
+                _snap_mono = time.monotonic()
+                return 500, err
+            out = proc.stdout or b""
+            json.loads(out)
+            _snap_body = out
+            _snap_err = None
+            _snap_mono = time.monotonic()
+            return 200, out
+        except Exception as e:
+            err = json.dumps({"error": "snapshot_failed", "detail": str(e)[:2000]}).encode()
+            _snap_err = err
+            _snap_body = None
+            _snap_mono = time.monotonic()
+            return 500, err
+
+class H(BaseHTTPRequestHandler):
+    server_version = "plinth-dash/1"
+    def log_message(self, fmt, *args):
+        sys.stderr.write("plinth dash: %s - %s\n" % (self.address_string(), fmt % args))
+
+    def _send(self, code, body: bytes, ctype: str):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if not _host_ok(self):
+            self._send(400, b"bad host", "text/plain; charset=utf-8")
+            return
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            try:
+                with open(HTML, "rb") as f:
+                    body = f.read()
+            except OSError as e:
+                self._send(500, str(e).encode(), "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        if path == "/api/snapshot":
+            code, out = _snapshot_bytes()
+            self._send(code, out, "application/json; charset=utf-8")
+            return
+        self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        if not _host_ok(self):
+            self._send(400, b"bad host", "text/plain; charset=utf-8")
+            return
+        self._send(405, b"read-only", "text/plain; charset=utf-8")
+
+class LoopbackServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    def server_bind(self):
+        # Belt: refuse non-loopback even if HOST were ever changed above.
+        if self.server_address[0] not in ("127.0.0.1", "::1"):
+            raise RuntimeError("plinth dash refuses non-loopback bind")
+        super().server_bind()
+
+httpd = LoopbackServer((HOST, PORT), H)
+try:
+    httpd.serve_forever()
+except KeyboardInterrupt:
+    pass
+finally:
+    httpd.server_close()
+PY
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -1887,6 +2501,7 @@ case "$cmd" in
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
+  dash|dashboard) run_dashboard "$@" ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent
