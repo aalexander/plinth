@@ -32,10 +32,12 @@
    (or `checks` for a direct checks job) — GitHub names required checks by JOB
    name, not the workflow name (no `CI / ` prefix); the preflight names any
    missing one. (The Codex cloud review
-   posts comments — advisory, not a requirable check. To put the review VERDICT
-   under branch protection too, wire the `receipt` job in `ci.yml` and add the
-   `receipt / verify` context to the required list — auto mode, v4.7; it needs an
-   instrument that mints receipts, i.e. v4.7+ on the branch being reviewed.
+   posts comments — advisory, not a requirable check. To require a receipt check
+   at merge, wire the `receipt` job in `ci.yml`, add `receipt / verify` to the
+   required list, set `strict:true`, and keep the real verifier on the base pin
+   (a PR can replace the caller with an always-green job of the same context name
+   — see MANUAL caller-control bound). Needs an instrument that mints receipts
+   (v4.7+ on the branch being reviewed).
    `plinth init` pins that job's `uses:` ref for a ci.yml it creates; `ci.yml` is
    yours and is never rewritten afterwards, so if you add the job to an EXISTING
    ci.yml, copy it from `templates/.github/workflows/ci.yml` and pin the ref to
