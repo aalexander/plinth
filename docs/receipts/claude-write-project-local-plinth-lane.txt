@@ -1,0 +1,9 @@
+# Claude Code Write receipt — project-local not-yet-existing path
+# date: 2026-07-26T06:31:04Z
+# claude: 2.1.220 (Claude Code)
+# path: /private/tmp/claude-501/-Users-austin-Dev-plinth/90401f5f-00cb-479c-9330-909d2566d0eb/scratchpad/split/wtb/.plinth-lane.lEx4zQ/prompt (under ${PWD}/.plinth-lane.*)
+# result: Write created the file (content below)
+# ---
+write-receipt-ok
+# --- stdout (truncated) ---
+WRITE_OK /private/tmp/claude-501/-Users-austin-Dev-plinth/90401f5f-00cb-479c-9330-909d2566d0eb/scratchpad/split/wtb/.plinth-lane.lEx4zQ/prompt

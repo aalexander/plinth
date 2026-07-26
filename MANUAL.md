@@ -825,11 +825,12 @@ installed copies.
   prevents writes while permitting filesystem reads — cwd merely hides the
   path. Either enforce the isolation or reword the claim (overclaiming is this
   repo's worst defect class). (v4.5.0 refresh review, round 11.)
-- **Lane + auditor temp files are never cleaned up** (both
-  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
-  `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
-  snapshot metadata accumulate under the system temp dir; add a post-report /
-  post-audit cleanup step. (Round 11, minors.)
+- **Lane SNAP/OUT temps and auditor mktemps still leak** (implementer lanes clean
+  SPEC_DIR after the CLI returns as of v4.7.2, but SNAP/OUT and
+  `shared/.plinth/review.sh`'s per-audit `mktemp -d` still accumulate under the
+  system temp dir; interrupted runs may also leave SPEC_DIR). Add post-report /
+  post-audit cleanup for the remaining paths. (Round 11 minors; narrowed after
+  #22 cleanup work.)
 - **review.sh: verify/resume anchors are existence-checked, not ancestry-checked**
   (`lastfullread` and `prev_sha`: `git cat-file -e` only). After a rebase the anchor
   commit can still exist while no longer being an ancestor of HEAD, so the
