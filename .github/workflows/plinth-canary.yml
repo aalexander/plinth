@@ -322,6 +322,43 @@ jobs:
                 echo "::error::lag missing installed risk-classify was ACCEPTED: $out"; exit 1
               fi
               echo "OK mutant: lag missing installed file refused"
+            # Mutant: lag missing grok-implementer (symmetric to codex omission).
+            HYG="$(mktemp -d)"
+            mkdir -p "$HYG/.plinth" "$HYG/.claude/hooks" "$HYG/.claude/agents"
+            printf '9.9.9\n' > "$HYG/VERSION"; printf '4.6.0\n' > "$HYG/.plinth-version"
+            for pair in \
+              'shared/.plinth/review.sh|.plinth/review.sh' \
+              'shared/.plinth/risk-classify.sh|.plinth/risk-classify.sh' \
+              'shared/.plinth/lane-guard.sh|.plinth/lane-guard.sh' \
+              'shared/.plinth/review-schema.json|.plinth/review-schema.json' \
+              'shared/plinth-rules.md|.plinth/plinth-rules.md' \
+              'shared/MODELS.md|.plinth/MODELS.md' \
+              'shared/reviewer.md|.plinth/reviewer.md' \
+              'shared/.claude/hooks/guard.sh|.claude/hooks/guard.sh' \
+              'shared/.claude/hooks/session-start.sh|.claude/hooks/session-start.sh' \
+              'shared/.claude/hooks/review-gate.sh|.claude/hooks/review-gate.sh' \
+              'shared/.claude/hooks/pulse.sh|.claude/hooks/pulse.sh' \
+              'shared/.claude/agents/codex-implementer.md|.claude/agents/codex-implementer.md' \
+              'shared/driver-shell.md|AGENTS.md' \
+              'shared/driver-shell.md|CLAUDE.md'; do
+              src="${pair%%|*}"; dst="${pair##*|}"
+              mkdir -p "$HYG/$(dirname "$dst")"
+              git -C "$GITHUB_WORKSPACE" show "v4.6.0:${src}" > "$HYG/$dst"
+            done
+            # omit grok-implementer
+            chmod +x "$HYG/.plinth/"*.sh "$HYG/.claude/hooks/"*.sh
+            if out="$(check_instrument_identity "$HYG" 2>&1)"; then
+              echo "::error::lag missing grok-implementer was ACCEPTED: $out"; exit 1
+            fi
+            echo "OK mutant: lag missing grok-implementer refused"
+            # Mutant: managed CLAUDE.md body stale under lag (marker present, wrong bytes).
+            git -C "$GITHUB_WORKSPACE" show v4.6.0:shared/.claude/agents/grok-implementer.md > "$HYG/.claude/agents/grok-implementer.md"
+            printf 'Plinth driver shell (version-pinned)\nSTALE-CLAUDE-LAG\n' > "$HYG/CLAUDE.md"
+            if out="$(check_instrument_identity "$HYG" 2>&1)"; then
+              echo "::error::lag stale managed CLAUDE.md was ACCEPTED: $out"; exit 1
+            fi
+            printf '%s' "$out" | grep -qi 'CLAUDE\|differs' || { echo "::error::lag CLAUDE mutant did not name CLAUDE: $out"; exit 1; }
+            echo "OK mutant: lag stale managed CLAUDE.md refused"
             fi
           else
             echo "::error::tag v4.6.0 missing — cannot exercise lag provenance (fetch tags in checkout)"; exit 1
