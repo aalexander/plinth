@@ -1842,9 +1842,10 @@ _dash_mtime() {  # epoch seconds or 0
   case "$t" in ''|*[!0-9]*) echo 0 ;; *) printf '%s\n' "$t" ;; esac
 }
 
-# True if $1 is strictly newer than $2. Prefer nanosecond compare (python3)
-# because bash `[ a -nt b ]` is whole-second on some platforms (macOS) and
-# would miss a same-second retry after last-error.
+# True if $1 is strictly newer than $2.
+# - With python3: nanosecond mtime (portable subsecond retries).
+# - Without: bash -nt only (whole-second on some platforms). Same-second ties
+#   are NOT newer — subsecond retry detection requires python3 (documented).
 _dash_file_newer() {
   if command -v python3 >/dev/null 2>&1; then
     python3 -c 'import os,sys
@@ -2240,29 +2241,67 @@ CHILD_ENV = os.environ.copy()
 # TTL is >= the UI poll interval (2s) so steady-state polling reuses the body
 # instead of re-scanning every project's events.jsonl every tick. Loopback-only.
 _snap_lock = threading.Lock()
-_snap_body = None
+_snap_body = None  # success body bytes
+_snap_err = None   # failure body bytes (shared single-flight)
 _snap_mono = 0.0
 _SNAP_TTL = 2.5
+_SNAP_ERR_TTL = 1.0
 # Optional test hook: PLINTH_DASH_SNAPSHOT_BIN overrides the offline builder
 # (smoke counts invocations for single-flight / TTL assertions).
 SNAP_BIN = os.environ.get("PLINTH_DASH_SNAPSHOT_BIN") or BIN
 
+def _host_ok(handler):
+    # DNS-rebinding defense: only accept loopback Host values.
+    h = (handler.headers.get("Host") or "").strip().lower()
+    if not h:
+        return False
+    host = h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+    # Strip IPv6 brackets if present.
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host in ("127.0.0.1", "localhost", "::1")
+
 def _snapshot_bytes():
-    global _snap_body, _snap_mono
+    """Single-flight success + short-lived shared failure (no stampede on errors)."""
+    global _snap_body, _snap_err, _snap_mono
     now = time.monotonic()
     with _snap_lock:
         if _snap_body is not None and (now - _snap_mono) < _SNAP_TTL:
-            return _snap_body
-        out = subprocess.check_output(
-            [SNAP_BIN, "dash", "--snapshot"],
-            env=CHILD_ENV,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-        )
-        json.loads(out)  # validate before caching
-        _snap_body = out
-        _snap_mono = time.monotonic()
-        return out
+            return 200, _snap_body
+        if _snap_err is not None and (now - _snap_mono) < _SNAP_ERR_TTL:
+            return 500, _snap_err
+        try:
+            proc = subprocess.run(
+                [SNAP_BIN, "dash", "--snapshot"],
+                env=CHILD_ENV,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or b"").decode("utf-8", "replace").strip()
+                if not detail:
+                    detail = (proc.stdout or b"").decode("utf-8", "replace").strip()
+                if not detail:
+                    detail = "dash --snapshot exited %s" % proc.returncode
+                err = json.dumps({"error": "snapshot_failed", "detail": detail[:2000]}).encode()
+                _snap_err = err
+                _snap_body = None
+                _snap_mono = time.monotonic()
+                return 500, err
+            out = proc.stdout or b""
+            json.loads(out)
+            _snap_body = out
+            _snap_err = None
+            _snap_mono = time.monotonic()
+            return 200, out
+        except Exception as e:
+            err = json.dumps({"error": "snapshot_failed", "detail": str(e)[:2000]}).encode()
+            _snap_err = err
+            _snap_body = None
+            _snap_mono = time.monotonic()
+            return 500, err
 
 class H(BaseHTTPRequestHandler):
     server_version = "plinth-dash/1"
@@ -2279,6 +2318,9 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not _host_ok(self):
+            self._send(400, b"bad host", "text/plain; charset=utf-8")
+            return
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             try:
@@ -2290,17 +2332,15 @@ class H(BaseHTTPRequestHandler):
             self._send(200, body, "text/html; charset=utf-8")
             return
         if path == "/api/snapshot":
-            try:
-                out = _snapshot_bytes()
-            except Exception as e:
-                err = json.dumps({"error": "snapshot_failed", "detail": str(e)}).encode()
-                self._send(500, err, "application/json; charset=utf-8")
-                return
-            self._send(200, out, "application/json; charset=utf-8")
+            code, out = _snapshot_bytes()
+            self._send(code, out, "application/json; charset=utf-8")
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if not _host_ok(self):
+            self._send(400, b"bad host", "text/plain; charset=utf-8")
+            return
         self._send(405, b"read-only", "text/plain; charset=utf-8")
 
 class LoopbackServer(ThreadingHTTPServer):

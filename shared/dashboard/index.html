@@ -388,9 +388,13 @@
     liveDot.className = "dot spin";
     try {
       const res = await fetch("/api/snapshot", { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      if (data.error) throw new Error(data.detail || data.error);
+      let data = null;
+      try { data = await res.json(); } catch (_) { data = null; }
+      if (!res.ok) {
+        const detail = data && (data.detail || data.error);
+        throw new Error(detail || ("HTTP " + res.status));
+      }
+      if (data && data.error) throw new Error(data.detail || data.error);
       // Only apply if we are still the latest completed sequence owner.
       if (seq === pollSeq) {
         render(data);

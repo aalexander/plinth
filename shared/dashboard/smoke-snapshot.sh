@@ -134,7 +134,7 @@ printf 'not-json{\n' > "$G/.plinth/session/review/feat-bad/usage.jsonl"
 printf '%s\n' '- [ ] [BLOCKING] still open after bad usage' \
   > "$G/.plinth/NEEDS-HUMAN.md"
 
-# ── Fixture H: transcript burn (all token categories, recent window) ─────────
+# ── Fixture H: transcript burn (all token categories + tail bound) ───────────
 H="$FIX/theta-burn"
 mk_git "$H"
 git -C "$H" checkout -qb feat/burn
@@ -142,12 +142,28 @@ echo h > "$H/h.txt"
 git -C "$H" add -A
 git -C "$H" commit -qm "work"
 HTR="$H/.plinth/session/transcript.jsonl"
-# One assistant usage line within the 5-min window (epoch now).
-# Includes cache_read so the total is not under-counted.
 TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-jq -nc --arg ts "$TS" \
-  '{type:"assistant",timestamp:$ts,message:{model:"claude-test",usage:{input_tokens:100,output_tokens:50,cache_creation_input_tokens:0,cache_read_input_tokens:10000}}}' \
-  > "$HTR"
+# 350 lines: first 50 are OLD noise that must be tailed away; last has real usage
+# including non-zero cache_creation so dropping that category fails the assert.
+python3 - "$HTR" "$TS" <<'PY'
+import json, sys
+path, ts = sys.argv[1], sys.argv[2]
+with open(path, "w") as f:
+    for i in range(350):
+        if i < 50:
+            usage = {"input_tokens": 9999, "output_tokens": 0,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        elif i == 349:
+            usage = {"input_tokens": 100, "output_tokens": 50,
+                     "cache_creation_input_tokens": 25, "cache_read_input_tokens": 10000}
+        else:
+            usage = {"input_tokens": 0, "output_tokens": 0,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        f.write(json.dumps({
+            "type": "assistant", "timestamp": ts,
+            "message": {"model": "claude-test", "usage": usage},
+        }) + "\n")
+PY
 jq -nc --argjson epoch "$NOW" --arg tr "$HTR" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-burn",transcript:$tr,tool:null,detail:null,rc:null}' \
   > "$H/.plinth/session/events.jsonl"
@@ -418,12 +434,13 @@ jq -e '
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
 
-# Transcript burn: all categories (incl. cache_read 10000) + exact burn window
+# Transcript burn: tail drops the 9999-noise prefix; all categories including
+# cache_creation(25)+cache_read(10000)+in(100)+out(50)=10175
 jq -e '
   .projects[] | select(.name == "theta-burn")
-  | .tokens_total == 10150
+  | .tokens_total == 10175
   and .tokens_window == "recent_transcript_tail"
-  and .burn_per_min == 2030
+  and .burn_per_min == 2035
   and .model_driver == "claude-test"
 ' "$OUT" >/dev/null
 
@@ -808,6 +825,21 @@ jq -e '
 ' "$PREC2_OUT" >/dev/null
 rm -f "$CFG_HOME/.config/plinth/dashboard-projects"
 
+# Glob metacharacters in PLINTH_DASH_ROOTS must not pathname-expand.
+GLOB_PROJ="$FIX/proj[1]"
+mk_git "$GLOB_PROJ"
+export PLINTH_DASH_ROOTS="$GLOB_PROJ"
+GLOB_OUT="$FIX/glob.json"
+"$PLINTH" dash --snapshot > "$GLOB_OUT"
+jq -e '(.projects | length) == 1 and .projects[0].name == "proj[1]"' "$GLOB_OUT" >/dev/null
+# A bare glob that would expand to many paths must not pull in siblings.
+export PLINTH_DASH_ROOTS="$FIX/proj*"
+GLOB2="$FIX/glob2.json"
+"$PLINTH" dash --snapshot > "$GLOB2"
+# With set -f the literal "proj*" is not a directory → zero projects (not expanded).
+jq -e '.projects == []' "$GLOB2" >/dev/null
+unset PLINTH_DASH_ROOTS
+
 # Port range validation (serve path — fails before bind with the intended
 # diagnostic, not via bash "integer expression expected" / Python OverflowError).
 assert_port_reject() {
@@ -948,6 +980,48 @@ if command -v lsof >/dev/null 2>&1; then
     printf '%s\n' "$bind_info" >&2
     exit 1
   fi
+fi
+# DNS-rebinding: hostile Host rejected
+host_code="$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Host: attacker.example:${SRV_PORT}" \
+  "http://127.0.0.1:${SRV_PORT}/api/snapshot" || true)"
+[ "$host_code" = "400" ] || { echo "smoke-snapshot: hostile Host should be 400, got $host_code" >&2; exit 1; }
+# Failing builder surfaces detail and shares one flight (count invocations)
+FAIL_COUNT="$FIX/fail.count"
+: > "$FAIL_COUNT"
+FAIL_WRAP="$FIX/fail-plinth"
+cat > "$FAIL_WRAP" <<FAIL
+#!/usr/bin/env bash
+printf '1\n' >> "$FAIL_COUNT"
+echo "builder boom detail" >&2
+exit 7
+FAIL
+chmod +x "$FAIL_WRAP"
+FAIL_PORT=$((SRV_PORT + 1))
+env PLINTH_DASH_SNAPSHOT_BIN="$FAIL_WRAP" PLINTH_DASH_ROOTS="$A" \
+  "$PLINTH" dash --port "$FAIL_PORT" >"$FIX/fail.out" 2>"$FIX/fail.err" &
+FAIL_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${FAIL_PORT}/" 2>/dev/null || true)"
+  [ "$code" = "200" ] && break
+  kill -0 "$FAIL_PID" 2>/dev/null || break
+  sleep 0.15
+done
+: > "$FAIL_COUNT"
+ferr1="$(curl -s --max-time 30 "http://127.0.0.1:${FAIL_PORT}/api/snapshot" || true)"
+ferr2="$(curl -s --max-time 30 "http://127.0.0.1:${FAIL_PORT}/api/snapshot" || true)"
+printf '%s' "$ferr1" | jq -e '.error == "snapshot_failed" and (.detail | test("boom"))' >/dev/null \
+  || { echo "smoke-snapshot: fail detail missing: $ferr1" >&2; exit 1; }
+printf '%s' "$ferr2" | jq -e '.error == "snapshot_failed"' >/dev/null \
+  || { echo "smoke-snapshot: second fail response bad: $ferr2" >&2; exit 1; }
+fhits="$(wc -l < "$FAIL_COUNT" | tr -d ' ')"
+[ "$fhits" = "1" ] || { echo "smoke-snapshot: expected 1 fail-builder call (shared err TTL), got $fhits" >&2; exit 1; }
+kill "$FAIL_PID" 2>/dev/null || true
+wait "$FAIL_PID" 2>/dev/null || true
+# Also terminate any leftover fail-port listener from this smoke only
+if command -v lsof >/dev/null 2>&1; then
+  fp="$(lsof -tiTCP:"$FAIL_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  [ -n "$fp" ] && kill -TERM $fp 2>/dev/null || true
 fi
 srv_cleanup
 if command -v lsof >/dev/null 2>&1; then

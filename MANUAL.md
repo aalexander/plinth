@@ -489,11 +489,10 @@ session age use a **`tail -n 10k`** of `events.jsonl` then a stream (no full-fil
 `wc`); `session_secs` is set only from a `SessionStart` still inside that window
 (otherwise null — never a fabricated age). A review round is
 RUNNING when a `request-N` outruns the verdict **and** either there is no
-`last-error`, or the request file is **strictly newer** than `last-error`
-(nanosecond mtime when python3 is available — bash `-nt` is whole-second on
-some platforms). A `last-error` that is same-age or newer than the request
-keeps the card on “review infra error”, not RUNNING. It does **not** replace
-`plinth watch`.
+`last-error`, or the request file is **strictly newer** than `last-error`.
+Subsecond newer requires **python3** (nanosecond mtime); without it, bash
+`-nt` is whole-second on some platforms and same-second ties stay infra-error
+(not RUNNING). It does **not** replace `plinth watch`.
 
 **Discovery** (first match wins):
 
