@@ -117,7 +117,7 @@ jobs:
                 '--sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \') continue ;;
                 '[ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
                 'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
-                'rm -rf "$SPEC_DIR"') continue ;;
+                'rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup failed rc=$?"; exit 1; }') continue ;;
               esac
               echo "::error::${lane} has non-allowlisted shell SPEC line (shell must not write the prompt): $norm"
               return 1
@@ -153,6 +153,8 @@ jobs:
               echo "::error::${lane} code block does not fail loud on SPEC_DIR mktemp failure"; exit 1; }
             printf '%s\n' "$code" | grep -q 'rm -rf "$SPEC_DIR"' || {
               echo "::error::${lane} code block does not rm -rf \"\$SPEC_DIR\" after CLI consumes the prompt"; exit 1; }
+            printf '%s\n' "$code" | grep -q 'SPEC_DIR cleanup failed' || {
+              echo "::error::${lane} code block does not fail loud when SPEC_DIR cleanup fails"; exit 1; }
             printf '%s\n' "$code" | grep -q 'SPEC_DIR handoff missing or mismatched' || {
               echo "::error::${lane} code block does not validate SPEC_DIR handoff before cleanup"; exit 1; }
             grep -q 'does not exist yet' "$agent" || {
@@ -316,7 +318,67 @@ jobs:
             set -e
             [ "$mut_rc" != 0 ] || {
               echo "::error::${lane}: command block accepted missing SPEC_DIR handoff (cleanup unguarded)"; exit 1; }
-            echo "canary: ${lane} allocation+Write-analog+handoff+command-block+cleanup OK"
+            # Failure-path cleanup: CLI exits nonzero; SPEC_DIR must still be removed and RUN_RC preserved.
+            cat > "$PD/bin/grok" <<'FAILSTUB'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          while [ "$#" -gt 0 ]; do
+            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 7; fi
+            shift
+          done
+          exit 7
+          FAILSTUB
+            cat > "$PD/bin/codex" <<'FAILSTUB'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cat > "${RECEIVED:?}"
+          exit 7
+          FAILSTUB
+            chmod +x "$PD/bin/grok" "$PD/bin/codex"
+            # Fresh allocation + Write for the failure path.
+            set +e
+            bash -c 'set -euo pipefail; source "$1"' _ "$allocf" > "$PD/state-fail-$lane" 2>"$PD/alloc-err-fail-$lane"
+            set -e
+            eval "$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$PD/state-fail-$lane" | tail -1)"
+            write_analog "$SPEC" "$PD/escaped-fail-$lane"
+            cp "$SPEC" "$PD/expected-fail-$lane"
+            fail_spec_dir="$SPEC_DIR"
+            owned_dirs+=("$fail_spec_dir")
+            {
+              echo 'set -euo pipefail'
+              echo 'cap() { shift; "$@"; }'
+              echo "LANE_RULES=canary-isolation"
+              echo "$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$PD/state-fail-$lane" | tail -1)"
+              echo "OUT=$(printf %q "$PD/out-fail-$lane")"
+              echo "RECEIVED=$(printf %q "$PD/recv-fail-$lane"); export RECEIVED"
+              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
+              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
+            } > "$PD/run-fail-$lane.sh"
+            fail_out="$(bash "$PD/run-fail-$lane.sh" 2>&1)" || true
+            printf '%s\n' "$fail_out" | grep -q 'RUN_RC=7' || {
+              echo "::error::${lane}: failure-path did not preserve CLI rc 7 (got: $fail_out)"; exit 1; }
+            [ ! -e "$fail_spec_dir" ] || {
+              echo "::error::${lane}: SPEC_DIR residue after CLI failure path ($fail_spec_dir)"; exit 1; }
+            cmp -s "$PD/expected-fail-$lane" "$PD/recv-fail-$lane" || {
+              echo "::error::${lane}: failure-path stub did not receive the prompt before exiting nonzero"; exit 1; }
+            # Restore success stubs for any subsequent use.
+            cat > "$PD/bin/grok" <<'CLISTUB'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          while [ "$#" -gt 0 ]; do
+            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 0; fi
+            shift
+          done
+          echo "stub-grok: missing --prompt-file" >&2; exit 2
+          CLISTUB
+            cat > "$PD/bin/codex" <<'CLISTUB'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cat > "${RECEIVED:?}"
+          exit 0
+          CLISTUB
+            chmod +x "$PD/bin/grok" "$PD/bin/codex"
+            echo "canary: ${lane} allocation+Write-analog+handoff+command-block+cleanup OK (incl. CLI failure path)"
           }
           if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
             SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"; SPEC="$SPEC_DIR/prompt"

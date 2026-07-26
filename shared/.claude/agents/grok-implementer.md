@@ -108,7 +108,7 @@ except subprocess.TimeoutExpired:
        # Write created.
        [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
          echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
-       rm -rf "$SPEC_DIR"
+       rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup failed rc=$?"; exit 1; }
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    Three axes, all required:

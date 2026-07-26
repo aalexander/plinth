@@ -13,7 +13,8 @@ Thumbs.db
 *.plinth-tmp
 
 # Implementer-lane prompt dirs + canary scratch (project-local Write paths)
-.plinth-lane*
+/.plinth-lane.*
+/.plinth-lane-canary.*
 
 # Editor droppings
 *.swp
