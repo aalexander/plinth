@@ -1,5 +1,14 @@
 # Blocked on you
 
+- [ ] **Branch protection — auto mode residual (2026-07-26)**  
+  Product **v4.8.0**, instrument **4.8.0**, tags **v4.7.2**/**v4.8.0** pushed.
+  `ci.yml` wires floor/checks@**v4.7.2** and **`receipt`**@**v4.7.2**.  
+  **You only:** require status check `receipt / verify` and enable **strict**
+  (up-to-date before merge). Caller-control bound: PR can spoof context name
+  (ci.yml HONEST BOUND / MANUAL).
+
+- [ ] **#43** — Write-tool implementers regressed after #41 overwrote #37.
+
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
   (guard-protected), so these are paste-ready — one command per repo, then commit on

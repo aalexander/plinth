@@ -1,6 +1,11 @@
 # Plinth changelog
 
 ## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
+- **Release close-out:** required floor/checks pins advanced to tag **v4.7.2**
+  (trail-by-one for product 4.8.0). **`receipt` job** wired on PRs for auto mode
+  (`plinth-receipt.yml@v4.7.2`) with caller-control HONEST BOUND documented in
+  ci.yml. Operators: add `receipt / verify` + `strict: true` after instruments ≥ v4.7.
+
 - **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
   page plus `GET /api/snapshot`, read-only (**python3** required for serve;

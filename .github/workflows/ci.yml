@@ -35,16 +35,30 @@ jobs:
   # .plinth/NEEDS-HUMAN.md). Downstream pins a Plinth release the same way (see templates/ci.yml).
   # Require `floor` and `checks` (the pinned jobs), not the `-current` twins.
   floor:
-    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@0d0d657e7a1c199516d76dc59d9fc41665404800 # v4.7.1
+    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@9d318aca4c7b9a0d1e73c737c159ff9952593486 # v4.7.2
 
   floor-current:
     uses: ./.github/workflows/plinth-floor.yml
 
   checks:
-    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@0d0d657e7a1c199516d76dc59d9fc41665404800 # v4.7.1
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@9d318aca4c7b9a0d1e73c737c159ff9952593486 # v4.7.2
 
   checks-current:
     uses: ./.github/workflows/plinth-checks.yml
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest
+
+  # Auto mode (v4.7+): APPROVED-at-HEAD receipt as a requirable status context.
+  # Pin trails by one tagged release (same rule as floor/checks). Require
+  #  + branch protection strict:true after instrument ≥ v4.7.
+  # HONEST BOUND (caller control): on pull_request, GitHub selects workflow files from
+  # the PR merge ref (merge commit incorporating the PR's workflow changes). A PR can
+  # replace this caller with a different always-green job that still reports the
+  # required context name  — then the reusable verifier never runs.
+  # The base-pin inside plinth-receipt.yml only helps when this job still executes
+  # (see MANUAL caller-control bound). Not a cryptographic bind of the context name
+  # to this verifier.
+  receipt:
+    if: github.event_name == 'pull_request'
+    uses: aalexander/plinth/.github/workflows/plinth-receipt.yml@9d318aca4c7b9a0d1e73c737c159ff9952593486 # v4.7.2
