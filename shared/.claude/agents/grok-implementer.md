@@ -61,7 +61,7 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
        SPEC="$SPEC_DIR/prompt"
        OUT="$(mktemp -t grok-out.XXXXXX)" || { echo "OUT mktemp failed rc=$?"; exit 1; }
        [ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }
-       printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC" "$OUT"
+       printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
 1. Use the **Write tool**, not Bash, to create the file at the literal `SPEC`
@@ -77,7 +77,7 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
    NEITHER exists it FAILS UNAVAILABLE (return 3) rather than run grok uncapped — the hard-cap
    contract is never silently broken (python3 is a declared dependency; see SETUP.md):
 
-       # Paste the exact BEFORE=... SNAP=... SPEC=... OUT=... assignment line from step 0 here.
+       # Paste the exact BEFORE=... SNAP=... SPEC_DIR=... SPEC=... OUT=... line from step 0.
        cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
          # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
          # python3 fallback runs the CLI in its own process group and TERM-then-KILLs it likewise.
@@ -103,7 +103,11 @@ except subprocess.TimeoutExpired:
          > "$OUT" 2>&1 || RC=$?
        # Prompt was consumed path-based; remove the project-local SPEC_DIR (and the
        # prompt file) on every path — success, timeout, or CLI failure — so specs
-       # do not accumulate as hidden residue under the repo.
+       # do not accumulate as hidden residue under the repo. SPEC_DIR comes from the
+       # pasted step-0 handoff (not re-derived), so cleanup uses the same directory
+       # Write created.
+       [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
+         echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
        rm -rf "$SPEC_DIR"
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 

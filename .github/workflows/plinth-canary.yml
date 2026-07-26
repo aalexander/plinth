@@ -102,19 +102,22 @@ jobs:
               echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
               echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            # Shell writes into $SPEC (redirect, tee, cp) or any heredoc re-embed the spec.
+            # Shell writes into $SPEC (any of=/>/tee/cp/dd/install/python) or heredoc re-embed it.
             code="$(code_block_lines "$agent")"
-            printf '%s\n' "$code" | grep -E '(printf|echo|cat|tee).*>.*\$SPEC' >/dev/null && {
-              echo "::error::${lane} code block shell-redirects into \$SPEC"; exit 1; } || true
-            printf '%s\n' "$code" | grep -E '(^|[^[:alnum:]_])(tee|cp)[[:space:]].*\$SPEC' >/dev/null && {
-              echo "::error::${lane} code block uses tee/cp into \$SPEC"; exit 1; } || true
+            printf '%s\n' "$code" | grep -E '(printf|echo|cat|tee|dd|install|python|python3).{0,80}\$SPEC' \
+              | grep -E '(>|of=|tee|cp )' >/dev/null && {
+              echo "::error::${lane} code block appears to shell-write into \$SPEC"; exit 1; } || true
+            printf '%s\n' "$code" | grep -E '(^|[^[:alnum:]_])(tee|cp|dd|install)[[:space:]].*\$SPEC' >/dev/null && {
+              echo "::error::${lane} code block uses tee/cp/dd/install into \$SPEC"; exit 1; } || true
             printf '%s\n' "$code" | grep -E '<<' >/dev/null && {
               echo "::error::${lane} code block contains a shell heredoc"; exit 1; } || true
-            # Allocation contract — asserted on CODE BLOCK lines only (not comments/prose).
+            # Allocation contract — CODE BLOCK only. Handoff MUST print SPEC_DIR for cleanup.
             printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' || {
               echo "::error::${lane} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
             printf '%s\n' "$code" | grep -qE 'SPEC="\$SPEC_DIR/prompt"' || {
               echo "::error::${lane} code block must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
+            printf '%s\n' "$code" | grep -q "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" || {
+              echo "::error::${lane} handoff printf must include SPEC_DIR (cleanup cannot re-derive across tool calls)"; exit 1; }
             printf '%s\n' "$code" | grep -E 'SPEC="\$SPEC_DIR/\.\.' >/dev/null && {
               echo "::error::${lane} SPEC escapes SPEC_DIR via .."; exit 1; } || true
             printf '%s\n' "$code" | grep -E 'SPEC="\$\(mktemp[^-]' >/dev/null && {
@@ -123,6 +126,8 @@ jobs:
               echo "::error::${lane} code block does not fail loud on SPEC_DIR mktemp failure"; exit 1; }
             printf '%s\n' "$code" | grep -q 'rm -rf "$SPEC_DIR"' || {
               echo "::error::${lane} code block does not rm -rf \"\$SPEC_DIR\" after CLI consumes the prompt"; exit 1; }
+            printf '%s\n' "$code" | grep -q 'SPEC_DIR handoff missing or mismatched' || {
+              echo "::error::${lane} code block does not validate SPEC_DIR handoff before cleanup"; exit 1; }
             grep -q 'does not exist yet' "$agent" || {
               echo "::error::${lane} step 1 no longer states SPEC must not exist yet before Write"; exit 1; }
             grep -q 'project CWD' "$agent" || {
@@ -145,8 +150,12 @@ jobs:
             echo "::error::codex COMMAND block lacks rm -rf \"\$SPEC_DIR\" cleanup"; exit 1; }
           # Behavioral: extract+run each lane's step-0 allocation (code block), Write-analog
           # create on the resulting not-yet-existing path, run extracted GCMD/CCMD against
-          # stubs, assert payload transport + SPEC_DIR cleanup.
+          # stubs using ONLY the step-0 handoff variables (including SPEC_DIR — not injected),
+          # assert payload transport + SPEC_DIR cleanup.
+          # Write-analog stands in for Claude Code's Write tool: same create-only + project-CWD
+          # constraints the canary can enforce without a live Claude Code session.
           PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
+          OWNED_DIRS="$PD"
           mkdir -p "$PD/bin" "$PD/mock-plinth"
           # lane-guard stub so extracted step-0 allocation can run.
           cat > "$PD/mock-plinth/lane-guard.sh" <<'LG'
@@ -203,45 +212,50 @@ jobs:
             local lane="$1" agent="$2" block="$3"
             local allocf="$PD/alloc-$lane.sh" statef="$PD/state-$lane" recv="$PD/received-$lane" out="$PD/out-$lane"
             local escaped="$PD/escaped-$lane"
-            # Extract step-0 allocation: indented code from BEFORE= through the SPEC printf.
+            # Extract step-0 allocation: indented code from BEFORE= through the handoff printf.
             awk '
               /^ {4,}BEFORE="\$\(git rev-parse HEAD\)"/{f=1}
-              f && /^ {4,}/{print; if ($0 ~ /printf .*BEFORE=%q SNAP=%q SPEC=%q OUT=%q/) exit; next}
+              f && /^ {4,}/{print; if ($0 ~ /printf .*SPEC_DIR=%q SPEC=%q/) exit; next}
               f{exit}
             ' "$agent" | sed 's/^[[:space:]]*//' > "$allocf"
             grep -q 'SPEC_DIR=' "$allocf" || {
               echo "::error::${lane}: could not extract step-0 allocation"; cat "$allocf"; exit 1; }
+            grep -q 'SPEC_DIR=%q' "$allocf" || {
+              echo "::error::${lane}: extracted allocation handoff omits SPEC_DIR=%q"; exit 1; }
             # Point lane-guard at the mock without touching the repo's real .plinth tree.
             sed -i.bak "s|.plinth/lane-guard.sh|$PD/mock-plinth/lane-guard.sh|g" "$allocf"
             rm -f "$allocf.bak"
-            # Run allocation; capture the printf handoff line (SPEC path).
+            # Run allocation; capture the printf handoff line (includes SPEC_DIR).
             set +e
             bash -c 'set -euo pipefail; source "$1"' _ "$allocf" > "$statef" 2>"$PD/alloc-err-$lane"
             alloc_rc=$?
             set -e
             [ "$alloc_rc" = 0 ] || {
               echo "::error::${lane}: step-0 allocation failed rc=$alloc_rc"; cat "$PD/alloc-err-$lane"; exit 1; }
+            # Use ONLY the handoff line — do not invent SPEC_DIR.
+            handoff="$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$statef" | tail -1)"
+            [ -n "$handoff" ] || { echo "::error::${lane}: allocation did not print SPEC_DIR handoff"; cat "$statef"; exit 1; }
             # shellcheck disable=SC1090
-            eval "$(grep -E 'BEFORE=.*SPEC=' "$statef" | tail -1)"
-            [ -n "${SPEC:-}" ] || { echo "::error::${lane}: allocation did not print SPEC="; cat "$statef"; exit 1; }
-            local SPEC_DIR; SPEC_DIR="$(dirname "$SPEC")"
+            eval "$handoff"
+            [ -n "${SPEC:-}" ] && [ -n "${SPEC_DIR:-}" ] || {
+              echo "::error::${lane}: handoff missing SPEC or SPEC_DIR"; exit 1; }
+            [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
+              echo "::error::${lane}: handoff SPEC is not \$SPEC_DIR/prompt"; exit 1; }
             case "$SPEC" in
               "$PWD"/.plinth-lane.*) : ;;
               *) echo "::error::${lane}: allocated SPEC not under \${PWD}/.plinth-lane.* (got $SPEC)"; exit 1 ;;
             esac
+            OWNED_DIRS="$OWNED_DIRS $SPEC_DIR"
             [ ! -e "$SPEC" ] || { echo "::error::${lane}: allocation pre-created SPEC path $SPEC"; exit 1; }
             write_analog "$SPEC" "$escaped"
             [ -f "$SPEC" ] || { echo "::error::${lane}: Write analog did not create $SPEC"; exit 1; }
-            # Expected payload for post-run cmp (SPEC_DIR is removed by the command block).
             cp "$SPEC" "$PD/expected-$lane"
+            # Run command block with the EXACT handoff assignments (paste simulation).
             {
               echo 'set -euo pipefail'
               echo 'cap() { shift; "$@"; }'
               echo "LANE_RULES=canary-isolation"
-              echo "BEFORE=$(printf %q "${BEFORE:-canary}")"
-              echo "SNAP=$(printf %q "${SNAP:-canary}")"
-              echo "SPEC_DIR=$(printf %q "$SPEC_DIR")"
-              echo "SPEC=$(printf %q "$SPEC")"
+              echo "$handoff"
               echo "OUT=$(printf %q "$out")"
               echo "RECEIVED=$(printf %q "$recv"); export RECEIVED"
               echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
@@ -255,7 +269,22 @@ jobs:
               echo "::error::${lane}: SPEC_DIR residue remains after command block ($SPEC_DIR)"; exit 1; }
             [ ! -e "$escaped" ] || {
               echo "::error::${lane}: SPEC_EOF payload escaped into shell execution"; exit 1; }
-            echo "canary: ${lane} allocation+Write-analog+command-block+cleanup OK"
+            # Mutation: handoff without SPEC_DIR must fail the cleanup guard.
+            {
+              echo 'set -euo pipefail'
+              echo 'cap() { shift; "$@"; }'
+              echo "LANE_RULES=x; BEFORE=x; SNAP=x; SPEC=$(printf %q "$PD/expected-$lane"); OUT=$(printf %q "$out"); unset SPEC_DIR"
+              echo "RECEIVED=$(printf %q "$PD/recv-mut-$lane"); export RECEIVED"
+              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
+              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
+            } > "$PD/run-mut-$lane.sh"
+            set +e
+            bash "$PD/run-mut-$lane.sh" >/dev/null 2>&1
+            mut_rc=$?
+            set -e
+            [ "$mut_rc" != 0 ] || {
+              echo "::error::${lane}: command block accepted missing SPEC_DIR handoff (cleanup unguarded)"; exit 1; }
+            echo "canary: ${lane} allocation+Write-analog+handoff+command-block+cleanup OK"
           }
           if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
             SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"; SPEC="$SPEC_DIR/prompt"
@@ -268,10 +297,17 @@ jobs:
             exercise_lane grok "$GA" "$GCMD"
             exercise_lane codex "$CA" "$CCMD"
           fi
-          rm -rf "$PD"
-          # Remove any canary residue under project CWD (allocation dirs + fixture root).
-          rm -rf "${PWD}"/.plinth-lane.* 2>/dev/null || true
-          echo "canary: project-local Write path + extracted CLI wiring + SPEC_DIR cleanup OK"
+          # Remove only fixture-owned paths (not every .plinth-lane.* on the machine).
+          # shellcheck disable=SC2086
+          rm -rf $OWNED_DIRS 2>/dev/null || true
+          # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
+          [ -f "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" ] || {
+            echo "::error::missing docs/receipts/claude-write-project-local-plinth-lane.txt (live Write receipt)"; exit 1; }
+          grep -q 'write-receipt-ok' "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" || {
+            echo "::error::Write receipt does not show successful create"; exit 1; }
+          grep -q '\.plinth-lane\.' "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" || {
+            echo "::error::Write receipt path is not under .plinth-lane.*"; exit 1; }
+          echo "canary: project-local Write path + handoff SPEC_DIR + extracted CLI wiring + cleanup OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
