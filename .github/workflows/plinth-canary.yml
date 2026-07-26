@@ -3314,6 +3314,8 @@ jobs:
             grep -q '^    DELEGATION:' "$A" || { echo "::error::${a}-implementer's report block has no DELEGATION line — the driver would get no receipt to check"; exit 1; }
             grep -q 'MODEL: <the model id you are running as>' "$A" || { echo "::error::${a}-implementer's spec no longer asks the delegate to self-report its MODEL — the report's model= could only ever be 'unreported'"; exit 1; }
             grep -q 'does NOT prove which model' "$A" || { echo "::error::${a}-implementer dropped the honest bound on the delegation receipt (it proves a transcript exists, not who typed the diff) — overclaiming is this repo's most-cited defect class"; exit 1; }
+            grep -q 'BEFORE/SNAP' "$A" || { echo "::error::${a}-implementer honest bound omits the stale-OUT residual (transcript not bound to THIS run)"; exit 1; }
+            grep -q 'tree dirty after unavailable' "$A" || { echo "::error::${a}-implementer lacks unavailable-after-edits dirty-tree disclosure (delegate may have written before exit 3)"; exit 1; }
             # ORDERING + REAL VARIABLES (not a whole-file string presence): the documented
             # delegation invocation must appear AFTER the documented scope invocation, and must
             # pass the run's rc and transcript path (RUN_RC / OUT) — not a hardcoded 0 or fixed path.

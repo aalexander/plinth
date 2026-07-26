@@ -49,8 +49,11 @@
 #       WHAT IT DOES NOT GUARANTEE (say it plainly, do not let this claim grow): it proves a
 #       non-empty transcript EXISTS and preserves it for the driver to read. It does NOT prove
 #       which model produced the diff — `model=` is whatever the transcript says, and a lane
-#       that implemented the task itself could write a file. A skipped delegation becomes
-#       DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not impossible.
+#       that implemented the task itself could write a file. It also does NOT bind the
+#       transcript to THIS run (no BEFORE/SNAP/recency check) — a fallible paste of a STALE
+#       OUT path from a prior invocation still records a green receipt. A skipped delegation
+#       becomes DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not
+#       impossible.
 #
 #   lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>...
 #       After the run: every TRACKED change + NEW (non-ignored) file (vs baseref) must be a spec
@@ -413,7 +416,7 @@ case "$sub" in
             if [ "$_gel" -ge 33 ]; then
               echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
             elif [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — past the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
+              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — at/near the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
             else
               echo "unavailable: the grok auth check terminated with rc=137 after only ${_gel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). Residual: rc=137 is often SIGKILL (128+9) from an external kill, OR a CLI self-exit 137 — not a completed timeout."
             fi
@@ -445,7 +448,7 @@ case "$sub" in
             if [ "$_cel" -ge 33 ]; then
               echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
             elif [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — past the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
+              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — at/near the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
             else
               echo "unavailable: the codex auth check terminated with rc=137 after only ${_cel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). Residual: rc=137 is often SIGKILL (128+9) from an external kill, OR a CLI self-exit 137 — not a completed timeout."
             fi

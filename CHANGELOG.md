@@ -20,11 +20,14 @@
   trusting the narrative.
 - **HONEST BOUND, in the contract text itself.** The receipt proves a non-empty
   transcript EXISTS and preserves it for the driver to read. It does NOT prove which
-  model wrote the diff: `model=` is the delegate's self-report, and an agent that
-  implemented the task itself could write a file. This is the same shape as the receipt
-  check's residual — a skipped delegation becomes DETECTABLE (no artifact, no receipt,
-  nothing to open), not impossible. A subagent's compliance with prose cannot be
-  enforced by more prose; what changed is that the omission now leaves a hole.
+  model wrote the diff (`model=` is the delegate's self-report; a self-implementing
+  agent could write a file), and it does NOT bind the transcript to THIS run (no
+  BEFORE/SNAP/recency — a fallible stale-OUT paste still records). Same shape as the
+  receipt check's residual — a skipped delegation becomes DETECTABLE (no artifact, no
+  receipt, nothing to open), not impossible. A subagent's compliance with prose cannot
+  be enforced by more prose; what changed is that the omission now leaves a hole.
+  Lanes must also disclose a dirty tree on `unavailable` after the CLI may already
+  have written (lost transcript / wrong OUT).
 - **Preflight failure reasons are disambiguated (diagnostic only), with an honest
   timeout bound aligned to GNU `timeout -k 5`.** A driver reported `unavailable: grok not
   signed in` on a first call and `ready` on three re-runs, with grok authenticated —
@@ -33,7 +36,7 @@
   is "too fast"; **rc=124 + elapsed ≈ cap** is *consistent with* the wall-clock timeout
   (TERM-death or python fallback), residual CLI self-exit 124; **rc=137**: `-k` KILL
   lands ~cap+5 (~35s) — elapsed≥33 *consistent with* that path or external/CLI SIGKILL;
-  28–32s prefers self-exit wording (past TERM, early for completed `-k`); never
+  28–32s prefers self-exit wording (at/near TERM, early for completed `-k`); never
   timeout-only, never absolute "NOT a timeout"; **rc=142** is *often* SIGALRM, not the
   standard 124/137 signature, residual self-exit. Diagnostics never instruct a re-run
   (a blind retry doubles the hang bound). Explicitly NOT a fix for that flake. Logged

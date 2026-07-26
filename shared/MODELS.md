@@ -206,8 +206,10 @@ path handed to `delegation`) leaves no receipt and blocks a truthful
 line (or with an unreadable/missing artifact under `.plinth/session/lanes/`) as
 incomplete — open the artifact; do not trust the narrative alone. HONEST BOUND: the
 receipt proves a non-empty transcript *exists and is preserved*, not which model
-typed the diff — a self-implementing lane could still write a file and call
-`delegation` on it; omission becomes DETECTABLE, not impossible.
+typed the diff, and not that the transcript belongs to *this* run (no BEFORE/SNAP
+binding — a fallible stale-OUT paste still records). A self-implementing lane could
+still write a file and call `delegation` on it; omission becomes DETECTABLE, not
+impossible.
 `.plinth/session/` verdict/receipt state is compared too — a delegated CLI bypasses the `.claude/`
 guard, so scope is what stops it forging a fake approval; only the hook-appended
 `.plinth/session/events.jsonl` (pulse.sh, every tool use) is excluded to avoid false-flagging every

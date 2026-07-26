@@ -162,13 +162,18 @@ except subprocess.TimeoutExpired:
    It preserves grok's own transcript + exit code as an artifact under
    `.plinth/session/lanes/` and prints one `delegation recorded: ...` line — put that line
    VERBATIM on the report's DELEGATION line. Exit 3 = no transcript (missing or empty):
-   nothing shows grok ran, so the ONLY honest status is `unavailable`, whatever you may have
-   produced by other means. `STATUS: complete` without a receipt line is a false report.
+   nothing shows grok ran for this receipt, so the ONLY honest status is `unavailable` —
+   even if the CLI already wrote to the shared checkout (crash after edits, lost temp,
+   wrong pasted OUT). On that path: still run scope if you can; put the ACTUAL dirty files
+   on CHANGES; put `tree dirty after unavailable — driver must inspect/revert to BEFORE`
+   on GAPS; do NOT imply the tree is clean. `STATUS: complete` without a receipt line is a
+   false report.
    HONEST BOUND, and do not let this claim grow: the receipt proves a non-empty transcript
    EXISTS and preserves it for the driver to open. It does NOT prove which model wrote the
    diff — `model=` is grok's own self-report, and an agent that implemented the task itself
-   could write a file. It makes a skipped delegation DETECTABLE (no artifact, no receipt,
-   nothing for the driver to read), not impossible.
+   could write a file. It also does NOT prove the transcript belongs to THIS run (no
+   BEFORE/SNAP binding — a stale OUT paste still records). It makes a skipped delegation
+   DETECTABLE (no artifact, no receipt, nothing for the driver to read), not impossible.
 
 ## What you return
 

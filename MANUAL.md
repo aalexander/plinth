@@ -736,12 +736,20 @@ installed copies.
   no-tool refuse or child self-exit); **rc=124 + elapsed ≈ cap** is *consistent with*
   the wall-clock timeout (TERM-death or python fallback), residual CLI self-exit 124;
   **rc=137**: `-k` KILL lands ~cap+5 (~35s) — elapsed≥33 is *consistent with* that path
-  **or** external/CLI SIGKILL; 28–32s is past TERM but early for completed `-k`, so
+  **or** external/CLI SIGKILL; 28–32s is at/near TERM but early for completed `-k`, so
   prefers self-exit wording; never timeout-only, never absolute "NOT a timeout";
   **rc=142** is *often* SIGALRM (128+14), not the standard 124/137 cap signature,
   residual self-exit 142. Diagnostics do **not** instruct a re-run — a blind/automatic
   retry was declined deliberately because it doubles the hang bound and would weaken the
   cap fixtures; an operator may still re-run deliberately after reading the residual.
+- **Delegation receipt residuals / follow-ons (audit round 10, not blocking v4.8 ship)**
+  (`shared/.plinth/lane-guard.sh` `delegation`, canary). No BEFORE/SNAP binding on the
+  transcript (stale-OUT residual is disclosed in the honest bound, not enforced). Session
+  `.gitignore` is always rewritten to exact `*` (tracked-file clobber path untested).
+  `model=` sanitizer deletes disallowed chars rather than marking `sanitized`. Several
+  refusal branches (non-git cwd, non-dir session/lanes, mkdir failures) lack fixtures.
+  Preflight diagnostic sleeps add ~3 minutes serial wall-clock to the canary — injectable
+  cap would be cheaper. Tracked for a later pass.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
