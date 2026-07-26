@@ -475,8 +475,8 @@ going, use the HTML wallboard:
 ```
 plinth dash            # http://127.0.0.1:7348/  (loopback only)
 plinth dashboard       # alias
-plinth dash --port 9   # pick a free port
-plinth dash --snapshot # print the same JSON the UI polls (offline / CI)
+plinth dash --port 7349  # pick a free high port (1–65535)
+plinth dash --snapshot   # print the same JSON the UI polls (offline / CI)
 ```
 
 The server binds **127.0.0.1 only**, is read-only, and serves a single static

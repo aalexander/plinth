@@ -1858,7 +1858,9 @@ discover_dashboard_projects() {
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in ''|\#*) continue ;; esac
       # Expand leading ~/ only (no arbitrary shell expansion).
-      case "$line" in "~/"*) line="$HOME/${line#~/}" ;; esac
+      # Escape ~ in ${line#\~/}: unescaped ~ tilde-expands inside the pattern and
+      # leaves a literal ~/ after $HOME/ (e.g. $HOME/~/Dev/foo).
+      case "$line" in "~/"*) line="${HOME}/${line#\~/}" ;; esac
       [ -d "$line" ] || continue
       [ -f "$line/.plinth/config" ] || continue
       rp="$(_dash_realpath "$line")" || continue
@@ -1877,24 +1879,43 @@ discover_dashboard_projects() {
   done
 }
 
+# Newest in-flight request-N.json for a review slug (numeric N, basename only).
+# Full-path `sort -t- -k2` breaks when any parent directory contains '-'.
+_dash_latest_request() {
+  local dir="$1" slug="$2" f bn n
+  [ -d "$dir/.plinth/session/review/$slug" ] || return 0
+  for f in "$dir/.plinth/session/review/$slug"/request-*.json; do
+    [ -f "$f" ] || continue
+    bn="${f##*/}"
+    n="${bn#request-}"
+    n="${n%.json}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$n" "$f"
+  done | sort -n -k1,1 | tail -1 | cut -f2-
+}
+
 # One project card as a compact JSON object on stdout (single line).
+# Always emits a card (error field on render failure) so projects are never dropped.
 snapshot_one_project() {
   local dir="$1" NOW
   NOW="$(date +%s)"
   local feedless=0 EV="$dir/.plinth/session/events.jsonl"
   if [ ! -f "$EV" ]; then feedless=1; EV=/dev/null; fi
 
-  local head branch slug
+  local head head_full branch slug
+  head_full="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo '')"
   head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
-  branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo '-')"
+  # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
+  branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ]; then branch="detached"; fi
   slug="$(printf '%s' "$branch" | tr '/ ' '--')"
 
   local vfile="$dir/.plinth/session/review/$slug/verdict.json"
   [ -f "$vfile" ] || vfile=/dev/null
-  local ufile="$dir/.plinth/session/review/$slug/usage.jsonl"
-  [ -f "$ufile" ] || ufile=/dev/null
+  # Do not slurp usage.jsonl — the wallboard never renders it, and a malformed
+  # ledger must not collapse the card (would zero NEEDS-HUMAN etc.).
   local rqfile
-  rqfile="$(ls "$dir/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
+  rqfile="$(_dash_latest_request "$dir" "$slug")"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
 
   local activity_ago=null events_mtime=0
@@ -1911,9 +1932,12 @@ snapshot_one_project() {
   nhf="$(needs_human_file "$dir")"
   if [ -s "$nhf" ]; then
     raw="$(open_items "$nhf")"
-    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf" || true)"
-    nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
-    nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    # Open = unchecked boxes only. Empty open_items means the queue is clear —
+    # do NOT fall back to counting headings / checked lines as open.
+    if [ -n "$raw" ]; then
+      nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
+      nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    fi
     case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
@@ -1926,22 +1950,25 @@ snapshot_one_project() {
     [ -n "$transcript" ] && [ -f "$transcript" ] || transcript=/dev/null
   fi
 
-  jq -nc --slurpfile ev "$EV" --slurpfile vd "$vfile" --slurpfile us "$ufile" \
+  jq -nc --slurpfile ev "$EV" --slurpfile vd "$vfile" \
         --slurpfile rq "$rqfile" --slurpfile tr "$transcript" \
         --arg path "$dir" --arg name "$(basename "$dir")" \
-        --arg head "$head" --arg branch "$branch" \
+        --arg head "$head" --arg head_full "$head_full" --arg branch "$branch" \
         --argjson feedless "$feedless" --argjson now "$NOW" \
         --argjson activity_ago "${activity_ago:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" '
-    def nullish: if . == null or . == "" then null else . end;
+    def sha_match($a; $b):
+      ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
+      and (($a | startswith($b)) or ($b | startswith($a)));
     ($ev | map(select(type == "object"))) as $all
     | (([$all[] | select(.sid != null)] | .[-1].sid) // null) as $sid
     | ($all | map(select(.sid == $sid))) as $sev
     | ($vd[0] // null) as $V
     | ($rq[0] // null) as $RQ
     | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) then true else false end) as $running
+    # Full-SHA / prefix-safe compare — git --short follows core.abbrev and is not always 7 chars.
     | (if $V == null then null
-       else (($V.sha // "")[0:7] != $head) end) as $stale
+       else (sha_match($V.sha // ""; $head_full) | not) end) as $stale
     | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
         | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
            i: (.message.usage.input_tokens // 0),
@@ -1988,9 +2015,10 @@ snapshot_one_project() {
       }
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
+      --argjson nhn "$nhn" --argjson nhb "$nhb" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:0,blocking:0},
+        needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
 }
 
@@ -2030,6 +2058,9 @@ run_dashboard() {
         [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
         shift || true
         case "$port" in ''|*[!0-9]*) echo "plinth dash: bad port: $port" >&2; exit 1 ;; esac
+        if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+          echo "plinth dash: port out of range (1-65535): $port" >&2; exit 1
+        fi
         ;;
       --help|-h) usage ;;
       *) echo "plinth dash: unknown arg: $arg" >&2; usage ;;

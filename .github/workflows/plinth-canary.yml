@@ -35,7 +35,14 @@ jobs:
           set -euo pipefail
           # Glob every shipped shell script rather than naming them: an explicit list
           # silently skipped lane-guard.sh and receipt-verify.sh as they were added.
-          for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh bin/plinth; do bash -n "$f"; done
+          for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh shared/dashboard/*.sh bin/plinth; do bash -n "$f"; done
+      - name: Dashboard snapshot smoke
+        run: |
+          set -euo pipefail
+          # Offline fixture matrix for plinth dash --snapshot (tilde, detached,
+          # core.abbrev, multi-digit request rounds, completed queues, bad usage,
+          # discovery modes). Server/UI bind is structural; this is the CI gate.
+          ./shared/dashboard/smoke-snapshot.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

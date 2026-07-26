@@ -253,6 +253,7 @@
   }
 
   function cardTone(p) {
+    if (p.error) return "bad";
     if (p.needs_human && p.needs_human.open > 0) return "human";
     const r = p.review;
     if (!r) return p.feedless ? "idle" : "idle";
@@ -292,6 +293,7 @@
     grid.innerHTML = projects.map((p) => {
       const tone = cardTone(p);
       const chips = [];
+      if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
       if (p.feedless) chips.push('<span class="chip">feedless</span>');
       if (p.needs_human && p.needs_human.open > 0) {
         const blk = p.needs_human.blocking > 0
@@ -311,7 +313,7 @@
         }
         if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
         if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
-      } else {
+      } else if (!p.error) {
         chips.push('<span class="chip">no review</span>');
       }
       if (p.burn_per_min != null) {

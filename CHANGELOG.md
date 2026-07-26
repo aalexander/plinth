@@ -5,16 +5,20 @@
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
   page plus `GET /api/snapshot`, read-only. Discovery (first match):
   `PLINTH_DASH_ROOTS` (colon paths), else `~/.config/plinth/dashboard-projects`
-  (one path per line), else default `~/Dev/*` with `.plinth/config`.
-- **Per-card snapshot.** Project path, branch @ head, review verdict / round /
-  stale vs HEAD / in-flight round, `events.jsonl` activity age, NEEDS-HUMAN
-  open+blocking, feedless flag, observed driver burn when a Claude transcript is
-  reachable. Vendor plan remaining quota and reset times are explicitly
-  **unavailable** (honest empty — no scrapers).
+  (one path per line; leading `~/` expanded correctly), else default `~/Dev/*`
+  with `.plinth/config`.
+- **Per-card snapshot.** Project path, branch @ head (detached → slug
+  `detached`), review verdict / round / full-SHA stale vs HEAD / in-flight
+  round (numeric request-N sort, path-hyphen safe), `events.jsonl` activity age,
+  NEEDS-HUMAN open+blocking (unchecked boxes only), feedless flag, observed
+  driver burn when a Claude transcript is reachable. Malformed side-files do
+  not zero real queue counts; cards surface `error` instead of looking idle.
+  Vendor plan remaining quota and reset times are explicitly **unavailable**
+  (honest empty — no scrapers). Port must be 1–65535.
 - **`--snapshot`.** Offline JSON builder used by the server and by
-  `shared/dashboard/smoke-snapshot.sh` (fixture session → field asserts; no
-  long-lived server in CI). UI auto-refreshes every 2s. Does not replace
-  `plinth watch` (TTY stays the per-session deep view).
+  `shared/dashboard/smoke-snapshot.sh` (expanded fixture matrix; canary CI
+  step). UI auto-refreshes every 2s. Does not replace `plinth watch` (TTY stays
+  the per-session deep view).
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
