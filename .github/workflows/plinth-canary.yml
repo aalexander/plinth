@@ -91,10 +91,31 @@ jobs:
               | grep -E '^tools:' | head -1
           }
           code_block_lines() {
-            # Indented code (4+ spaces or tabs) PLUS fenced ``` blocks — both are shell source.
+            # Indented code (4+ spaces or tabs) PLUS fenced blocks — both are shell source.
+            # Fences: ``` or ~~~, optional 1–3 leading spaces (CommonMark), optional language tag.
             {
               grep -E '^( {4,}|\t+)' "$1" || true
-              awk 'BEGIN{f=0} /^```/{f=1-f; next} f{print}' "$1" || true
+              python3 - "$1" <<'PY'
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          fence_re = re.compile(r"^( {0,3})(`{3,}|~{3,})")
+          in_fence = False
+          fence_ch = ""
+          for line in text:
+              m = fence_re.match(line)
+              if m:
+                  ch = m.group(2)[0]
+                  if not in_fence:
+                      in_fence = True
+                      fence_ch = ch
+                      continue
+                  if ch == fence_ch:
+                      in_fence = False
+                      fence_ch = ""
+                      continue
+              if in_fence:
+                  print(line)
+          PY
             }
           }
           # Static SPEC-line allowlist (full-line match after strip). Exit 0 if clean, 1 if bad.
@@ -350,6 +371,8 @@ jobs:
           fail_neg tab-append $'\t> "$OUT" 2>&1 || RC=$?; : > "$SPEC"'
           fail_neg python-spec-dir '       python3 -c "from pathlib import Path; Path(\"$SPEC_DIR/prompt\").write_text(\"x\")"'
           fail_neg fenced-bash $'```bash\n: > "$SPEC"\n```'
+          fail_neg fenced-indented $'   ```bash\n   : > "$SPEC"\n   ```'
+          fail_neg fenced-tilde $'~~~bash\n: > "$SPEC"\n~~~'
           # tools: line must not treat a comment "# Write" as granting the Write tool.
           {
             cp "$GA" "$NEG/grok-tools.md"
