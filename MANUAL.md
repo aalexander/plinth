@@ -50,11 +50,13 @@ Everything between is the model's call.
   the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
-  **KNOWN LIMITATION (until the receipt check is REQUIRED in branch protection):**
-  under the grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
+  **KNOWN LIMITATION (until auto mode is fully enabled):** under the grok-RESIDENT
+  alternative the review-before-PR loop is CONTRACT discipline — no local Stop
   gate fires (grok 0.2.112 executes no `.claude/` hooks) and, until `receipt / verify`
-  is wired and required, no status check verifies APPROVED-at-HEAD. v4.7 ships that
-  check; enabling it per repo is an operator step. Where it is not yet required, the
+  is wired, required with `strict:true`, **and** the real verifier still runs
+  (caller-control bound — context name alone is spoofable; ci.yml HONEST BOUND), no
+  status check reliably verifies APPROVED-at-HEAD. v4.7 ships that check; enabling
+  it per repo is an operator step. Where those conditions do not all hold, the
   ENFORCED-gate path is a Claude driver; choose per task, and treat non-Claude-driven
   PRs accordingly (the PR body's review audit is the evidence trail).
 - **Under the architect-resident default** the in-family routing still applies —
@@ -327,9 +329,12 @@ Two operator chores the rules generate:
    protection's required checks (floor + checks — CI and tooling integrity; they do
    not verify the review verdict, and the cloud review is advisory comments). The
    adversarial loop is contract-bound for a non-Claude driver until the receipt
-   check (auto mode, v4.7) is required in branch protection — which closes exactly
-   this gap, server-side and driver-agnostic. Wiring the hooks into codex's own
-   hook system is future work.
+   check (auto mode, v4.7) is wired, required as `receipt / verify`, and protected
+   with `strict:true` — and only when the real verifier still runs (caller-control
+   bound: a PR can replace the caller with a green spoof of the same context name;
+   see ci.yml HONEST BOUND). That is the server-side, driver-agnostic path for the
+   gap; it is not an unforgeable name. Wiring the hooks into codex's own hook
+   system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
    **You:** watch Pane B, not the scrollback. Under a CLAUDE driver the live feed
@@ -396,11 +401,13 @@ Two operator chores the rules generate:
    tampering-class), every override is announced and recorded in session state
    (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
    the PR body's audit summary. That disclosure IS cross-checked automatically
-   wherever `receipt / verify` is wired and required: the receipt carries the
-   override ledger and the verifier holds the PR body to EXACT tuple-set equality
-   with it, rejecting a missing OR a phantom disclosure line (auto mode, v4.7+).
-   Where the check is not required, the duty stays contract-bound and the operator
-   audits `usage.jsonl` directly. A vendor swap never resumes the previous vendor's
+   wherever `receipt / verify` is wired, required, protected with `strict:true`,
+   **and the real verifier still runs** (caller-control bound — a PR can replace
+   the caller so the verifier never executes; see ci.yml HONEST BOUND): the receipt
+   carries the override ledger and the verifier holds the PR body to EXACT
+   tuple-set equality with it, rejecting a missing OR a phantom disclosure line
+   (auto mode, v4.7+). Where those conditions do not all hold, the duty stays
+   contract-bound and the operator audits `usage.jsonl` directly. A vendor swap never resumes the previous vendor's
    thread — and, since v4.7, forces a fresh full round rather than a scoped verify.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
@@ -412,10 +419,11 @@ Two operator chores the rules generate:
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
    cannot close that gap (it posts comments, not a requirable status check). Under
    the grok-RESIDENT alternative the review loop is therefore contract-bound driver
-   discipline wherever the receipt check is not required; the server-side check of
-   `review.sh`'s own APPROVED-at-HEAD verdict — `receipt / verify` (auto mode,
-   v4.7+) — is what closes it, once wired into `ci.yml` and required in branch
-   protection.
+   discipline wherever the receipt check is not fully enabled; the server-side check
+   of `review.sh`'s own APPROVED-at-HEAD verdict — `receipt / verify` (auto mode,
+   v4.7+) — is what closes it once wired into `ci.yml`, required in branch
+   protection with `strict:true`, and still executed by the real verifier
+   (caller-control bound; see intro and ci.yml HONEST BOUND).
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -634,9 +642,10 @@ it has run green with a real smoke_cmd.
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
-  server-side verifier until `receipt / verify` is required, and the cloud review is
-  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
-  the merge gate proper is branch protection's required status checks.
+  server-side verifier until `receipt / verify` is wired, required, and protected
+  with `strict:true` **and** the real verifier still runs — caller-control bound;
+  the cloud review is advisory comments). Deliberately-quoted obfuscation is out of
+  scope (see above); the merge gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
@@ -645,17 +654,20 @@ it has run green with a real smoke_cmd.
   `plinth hookprobe`; grok 0.2.112: no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]) has no
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop — unless
-  `receipt / verify` is wired and required, which is exactly what puts its APPROVED-at-HEAD
-  verdict under a server-side verifier (auto mode, v4.7+). Where it is not required, the
-  verdict still has no server-side check. Every gate release (a Claude driver ending
-  its turn without approval, e.g. on a broken review pipeline) is logged as a
-  `gate_release` event the dashboard shows in red.
+  `receipt / verify` is wired, required, and protected with `strict:true` **and** the
+  real verifier still runs (caller-control bound: a PR can replace the caller with a
+  green spoof of the same context name — ci.yml HONEST BOUND). That combination is what
+  puts its APPROVED-at-HEAD verdict under a server-side verifier (auto mode, v4.7+).
+  Where those conditions do not all hold, the verdict still has no reliable
+  server-side check. Every gate release (a Claude driver ending its turn without
+  approval, e.g. on a broken review pipeline) is logged as a `gate_release` event
+  the dashboard shows in red.
 - Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
   harness) + `checks` required to merge (requires public repo or GitHub Pro; the
   preflight reports which state you're in AND names any missing required
-  context). The cloud review is advisory; adding `receipt / verify` (auto mode,
-  v4.7) to the required contexts is what puts the review verdict itself under
-  branch protection.
+  context). The cloud review is advisory; enabling auto mode for the review
+  verdict means requiring `receipt / verify` **with `strict:true`** (and accepting
+  the caller-control bound: the context name alone is not unforgeable).
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —

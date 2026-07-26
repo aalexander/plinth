@@ -33,6 +33,13 @@
   one without the other. Related residual: no canary yet drives `lane-guard.sh
   delegation` (missing/empty transcript rejection, artifact creation, model extraction).
 
+- [ ] **Instrument prose residual (v4.8.0 tag-locked):** `shared/.claude/hooks/guard.sh`
+  comments (and the installed twin) still say requiring `receipt / verify` alone puts
+  the verdict under branch protection, without `strict:true` / caller-control. MANUAL
+  is corrected. Do **not** edit the installed twin without a product patch + new tag —
+  floor byte-compares against `v${.plinth-version}`. Next instrument refresh after that
+  product fix.
+
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
   (guard-protected), so these are paste-ready — one command per repo, then commit on
