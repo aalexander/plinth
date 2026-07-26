@@ -44,7 +44,9 @@
   in every future PR, so it is yours to switch on after you have seen a receipt mint for
   real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
   one mints nothing, so the check fails closed — correct, but it would block every PR).
-  plinth itself is at 4.7.2 as of this branch (VERSION and .plinth-version agree).
+  plinth itself ships product VERSION 4.7.2 on this branch. The installed instrument
+  (`.plinth-version`) is the prior labeled refresh and deliberately lags until a
+  labeled instrument-refresh commit — do not read VERSION as the running instrument.
 
   **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
   per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand

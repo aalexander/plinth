@@ -36,6 +36,56 @@ jobs:
           # Glob every shipped shell script rather than naming them: an explicit list
           # silently skipped lane-guard.sh and receipt-verify.sh as they were added.
           for f in shared/.claude/hooks/*.sh shared/.plinth/*.sh bin/plinth; do bash -n "$f"; done
+      - name: .plinth-version may not advance past a real instrument refresh
+        run: |
+          set -euo pipefail
+          # .plinth-version is the INSTALLED instrument's identity, not the product VERSION.
+          # Advancing it while managed installed twins still differ from shared/ claims a
+          # refresh that never happened — this repo's own loop then "runs 4.x.y" while
+          # retaining the fail-open behaviour the product claims to have fixed.
+          # Mutant: bump .plinth-version to VERSION without copy_shared — this fails.
+          # Normal development (VERSION ahead of .plinth-version) is fine; a labeled
+          # release commit that refreshes every twin may set them equal.
+          prod="$(tr -d '[:space:]' < VERSION)"
+          inst="$(tr -d '[:space:]' < .plinth-version)"
+          [ -n "$prod" ] && [ -n "$inst" ] || { echo "::error::VERSION or .plinth-version is empty"; exit 1; }
+          if [ "$prod" = "$inst" ]; then
+            mism=0
+            # Managed twins from bin/plinth copy_shared (+ driver shells).
+            check_pair() {
+              local src="$1" dst="$2"
+              [ -f "$src" ] || { echo "::error::missing shared source $src"; mism=1; return; }
+              [ -f "$dst" ] || { echo "::error::missing installed twin $dst while .plinth-version=$inst equals VERSION=$prod"; mism=1; return; }
+              if ! cmp -s "$src" "$dst"; then
+                echo "::error::$dst differs from $src while .plinth-version equals VERSION ($prod) — refresh every managed twin in a labeled release commit, or leave .plinth-version at the prior instrument"
+                mism=1
+              fi
+            }
+            check_pair shared/plinth-rules.md              .plinth/plinth-rules.md
+            check_pair shared/MODELS.md                    .plinth/MODELS.md
+            check_pair shared/.plinth/review.sh            .plinth/review.sh
+            check_pair shared/.plinth/risk-classify.sh     .plinth/risk-classify.sh
+            check_pair shared/.plinth/lane-guard.sh        .plinth/lane-guard.sh
+            check_pair shared/.plinth/receipt-verify.sh    .plinth/receipt-verify.sh
+            check_pair shared/.plinth/review-schema.json   .plinth/review-schema.json
+            check_pair shared/reviewer.md                 .plinth/reviewer.md
+            check_pair shared/.claude/hooks/guard.sh       .claude/hooks/guard.sh
+            check_pair shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
+            check_pair shared/.claude/hooks/review-gate.sh .claude/hooks/review-gate.sh
+            check_pair shared/.claude/hooks/pulse.sh       .claude/hooks/pulse.sh
+            check_pair shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
+            check_pair shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
+            # Driver shells are materialized byte-identical from shared/driver-shell.md.
+            for shell in AGENTS.md CLAUDE.md; do
+              [ -f "$shell" ] || { echo "::error::missing driver shell $shell"; mism=1; continue; }
+              # materialize embeds version; compare against the shared source is not
+              # byte-identical — skip shell body equality and only require presence.
+            done
+            [ "$mism" = 0 ] || exit 1
+            echo "instrument identity OK: .plinth-version=$inst equals VERSION and managed twins match shared/"
+          else
+            echo "instrument identity OK: product VERSION=$prod, installed instrument=.plinth-version=$inst (lag is expected mid-release)"
+          fi
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

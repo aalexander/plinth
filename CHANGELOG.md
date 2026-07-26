@@ -53,6 +53,11 @@ parts that were wrong on the way:
   but some later subject-defining ops still re-resolve symbolic HEAD — a concurrent
   local ref rewind could make reviewed content differ from the commit receiving the
   verdict (hardening backlog under MANUAL `## Noticed`; not pinned in this release).
+- **Instrument identity is honest mid-release.** `.plinth-version` is the installed
+  instrument, not the product `VERSION`. Canary refuses `.plinth-version == VERSION`
+  unless every managed installed twin matches its `shared/` source — so advancing the
+  instrument label without a real refresh fails closed. During development the product
+  version may lead; a labeled release commit refreshes the twins and aligns the label.
 - **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
   abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
   exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's
