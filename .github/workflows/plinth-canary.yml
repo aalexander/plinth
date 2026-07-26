@@ -424,6 +424,91 @@ jobs:
             exercise_lane grok "$GA" "$GCMD"
             exercise_lane codex "$CA" "$CCMD"
           fi
+          # Behavioral failure injection for allocation/cleanup handlers (not text greps).
+          inj="$(mktemp -d "$PD/inject.XXXXXX")"
+          owned_dirs+=("$inj")
+          mkdir -p "$inj/bin"
+          # Fail SPEC_DIR mktemp (-d under .plinth-lane): must exit with diagnostic, no residue.
+          cat > "$inj/bin/mktemp" <<'INJ'
+          #!/usr/bin/env bash
+          for a in "$@"; do
+            case "$a" in *plinth-lane*) echo "mktemp: forced SPEC_DIR failure" >&2; exit 42 ;; esac
+          done
+          exec /usr/bin/mktemp "$@"
+          INJ
+          chmod +x "$inj/bin/mktemp"
+          set +e
+          out="$(
+            PATH="$inj/bin:$PATH" bash -c '
+              set -euo pipefail
+              BEFORE=x; SNAP=$(/usr/bin/mktemp)
+              SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
+            ' 2>&1
+          )"
+          rc=$?
+          set -e
+          [ "$rc" != 0 ] || { echo "::error::SPEC_DIR mktemp failure was not fail-loud"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'SPEC_DIR mktemp failed' || {
+            echo "::error::SPEC_DIR mktemp failure missing diagnostic (got: $out)"; exit 1; }
+          # Fail OUT mktemp after real SPEC_DIR: must remove SPEC_DIR and report mktemp rc (not cleanup rc).
+          cat > "$inj/bin/mktemp" <<'INJ'
+          #!/usr/bin/env bash
+          # First -d .plinth-lane call succeeds via real mktemp; -t (OUT) fails.
+          if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then
+            exec /usr/bin/mktemp "$@"
+          fi
+          if [[ " $* " == *" -t "* ]]; then
+            echo "mktemp: forced OUT failure" >&2; exit 43
+          fi
+          exec /usr/bin/mktemp "$@"
+          INJ
+          chmod +x "$inj/bin/mktemp"
+          set +e
+          out="$(
+            PATH="$inj/bin:$PATH" bash -c '
+              set -euo pipefail
+              SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
+              SPEC="$SPEC_DIR/prompt"
+              OUT="$(mktemp -t grok-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }
+            ' 2>&1
+          )"
+          rc=$?
+          set -e
+          [ "$rc" != 0 ] || { echo "::error::OUT mktemp failure was not fail-loud"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'OUT mktemp failed rc=43' || {
+            echo "::error::OUT mktemp failure did not report real rc 43 (got: $out)"; exit 1; }
+          # No leftover .plinth-lane dirs from the failed OUT path
+          leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' 2>/dev/null | grep -v canary || true)"
+          [ -z "$leftovers" ] || {
+            echo "::error::OUT mktemp failure left SPEC_DIR residue: $leftovers"; exit 1; }
+          # Fail rmdir after CLI: nonempty dir must fail loud without recursive delete of strangers.
+          rmdir_victim="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
+          owned_dirs+=("$rmdir_victim")
+          : > "$rmdir_victim/prompt"
+          : > "$rmdir_victim/extra"   # makes rmdir fail
+          set +e
+          out="$(
+            bash -c '
+              set -euo pipefail
+              SPEC_DIR="$1"; SPEC="$SPEC_DIR/prompt"; PWD="$2"
+              case "$SPEC_DIR" in
+                "${PWD}/.plinth-lane."*)
+                  [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || { echo mismatch; exit 1; }
+                  rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }
+                  rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }
+                  ;;
+                *) echo refuse; exit 1 ;;
+              esac
+            ' _ "$rmdir_victim" "$PWD" 2>&1
+          )"
+          rc=$?
+          set -e
+          [ "$rc" != 0 ] || { echo "::error::rmdir failure was not fail-loud"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'SPEC_DIR rmdir failed' || {
+            echo "::error::rmdir failure missing diagnostic (got: $out)"; exit 1; }
+          [ -f "$rmdir_victim/extra" ] || {
+            echo "::error::rmdir failure path deleted unrelated content"; exit 1; }
+          echo "canary: allocation/cleanup failure injection OK"
           # Negative fixtures: known bypass forms MUST fail the full-line allowlist.
           NEG="$(mktemp -d "$PD/neg.XXXXXX")"
           owned_dirs+=("$NEG")
