@@ -4,13 +4,16 @@
 - **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
   lane contracts require the non-shell Write tool for their unique prompt file and pass
   only the path to the CLI, so a literal `SPEC_EOF` line cannot terminate a fixed-delimiter
-  heredoc and execute. The review harness documents that project-owned `.plinth` files
-  (DRIVER-project.md, AGENTS-project.md, config, protected-paths, NEEDS-HUMAN.md) remain
-  outside the pinned-tooling set used for tamper arithmetic. Canary: implementer agents
-  declare Write, allocate/print a unique `$SPEC` path, ban fixed-heredoc shell embedding,
-  pin each real command block to feed `"$SPEC"` (not `"$OUT"`), and exercise both lanes'
-  documented CLI input wiring so a payload containing a literal `SPEC_EOF` line is
-  delivered unchanged without shell execution.
+  heredoc and execute. The prompt path is a not-yet-created file under `mktemp -d` (not
+  a pre-created `mktemp` file): Claude Code's Write refuses to overwrite an unread
+  existing path, so a plain `mktemp` would fail the first Write. The review harness
+  documents that project-owned `.plinth` files (DRIVER-project.md, AGENTS-project.md,
+  config, protected-paths, NEEDS-HUMAN.md) remain outside the pinned-tooling set used for
+  tamper arithmetic. Canary: implementer agents declare Write, allocate a not-yet-existing
+  `$SPEC` under a unique dir and print it, ban fixed-heredoc shell embedding and plain
+  `mktemp` for SPEC, pin each real command block to feed `"$SPEC"` (not `"$OUT"`), and
+  exercise both lanes' documented CLI input wiring so a payload containing a literal
+  `SPEC_EOF` line is delivered unchanged without shell execution.
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.

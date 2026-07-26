@@ -54,15 +54,18 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
 
        BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
        .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
-       SPEC="$(mktemp -t codex-spec.XXXXXX)"; OUT="$(mktemp -t codex-out.XXXXXX)"
+       # SPEC path must NOT exist yet: Claude Code's Write refuses to overwrite an
+       # unread existing file (mktemp alone creates one and would fail the first Write).
+       SPEC_DIR="$(mktemp -d -t codex-spec.XXXXXX)"; SPEC="$SPEC_DIR/prompt"
+       OUT="$(mktemp -t codex-out.XXXXXX)"
        printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
-1. Use the **Write tool**, not Bash, to replace the empty file at the literal `SPEC`
-   path printed by step 0 with the full spec, restated cleanly. End it with:
-   “Run the verification command and include its ACTUAL output in your final
-   message.” A line such as `SPEC_EOF` has no special meaning because the payload
-   never appears in shell source.
+1. Use the **Write tool**, not Bash, to create the file at the literal `SPEC`
+   path printed by step 0 (that path does not exist yet — do not pre-create it)
+   with the full spec, restated cleanly. End it with: “Run the verification
+   command and include its ACTUAL output in your final message.” A line such as
+   `SPEC_EOF` has no special meaning because the payload never appears in shell source.
 
 2. Invoke codex headlessly, high reasoning, workspace-scoped write, wall-clocked. The cap must hold
    even without coreutils — `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3

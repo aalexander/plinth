@@ -92,10 +92,20 @@ jobs:
             # Any cat/heredoc into $SPEC re-embeds arbitrary bytes as shell source.
             grep -Eq 'cat[[:space:]]*>[[:space:]]*"?\$SPEC|<<['\''"]?SPEC_EOF' "$agent" && {
               echo "::error::${lane} lane embeds arbitrary spec data in shell source via a fixed heredoc or cat into \$SPEC"; exit 1; } || true
-            # Step 0 allocates a unique SPEC path and prints it so the Write tool targets that path.
-            grep -qE 'SPEC="\$\(mktemp' "$agent" || { echo "::error::${lane} lane does not mktemp a unique SPEC path"; exit 1; }
+            # Step 0 allocates a unique SPEC path that does NOT yet exist (Write refuses to
+            # overwrite an unread existing file — plain `mktemp` creates one and is wrong here)
+            # and prints it so the Write tool creates that path.
+            grep -qE 'SPEC_DIR="\$\(mktemp -d' "$agent" || {
+              echo "::error::${lane} lane does not mktemp -d a unique SPEC_DIR (must not pre-create the prompt file)"; exit 1; }
+            grep -qE 'SPEC="\$SPEC_DIR/' "$agent" || {
+              echo "::error::${lane} lane does not derive SPEC from SPEC_DIR as a not-yet-created path"; exit 1; }
+            # Plain file mktemp for SPEC (without -d) reintroduces the Write-over-existing failure.
+            grep -Eq 'SPEC="\$\(mktemp[^-]' "$agent" && {
+              echo "::error::${lane} lane uses mktemp (file) for SPEC — that pre-creates the path and Claude Code Write rejects overwriting it unread"; exit 1; } || true
             grep -q "printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q" "$agent" || {
               echo "::error::${lane} lane does not print SPEC= for the non-shell Write handoff"; exit 1; }
+            grep -q 'does not exist yet' "$agent" || {
+              echo "::error::${lane} lane step 1 no longer states the SPEC path must not exist yet before Write"; exit 1; }
           done
           # Mutation-sensitive: the REAL command blocks (not prose) must feed "$SPEC".
           # A swap to "$OUT" still satisfies flag-presence greps elsewhere; pin the variable.
@@ -113,14 +123,19 @@ jobs:
             echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\" (path-based prompt wiring lost or mutated)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$OUT"' && {
             echo "::error::codex COMMAND feeds \$OUT as the prompt — must be \$SPEC"; exit 1; } || true
-          # Behavioral: non-shell write (Write-tool analog) of a payload with a literal SPEC_EOF
-          # line, then exercise EACH lane's documented CLI input wiring against stubs that
-          # capture what the real command form would deliver.
-          PD="$(mktemp -d)"; SPEC="$PD/spec"; ESCAPED="$PD/escaped"
+          # Behavioral: non-shell create (Write-tool analog) of a not-yet-existing path with a
+          # payload containing a literal SPEC_EOF line, then exercise EACH lane's documented
+          # CLI input wiring against stubs that capture what the real command form would deliver.
+          # Mirrors the agents: unique dir + child path that does NOT exist before Write.
+          PD="$(mktemp -d)"; SPEC_DIR="$(mktemp -d "$PD/spec.XXXXXX")"; SPEC="$SPEC_DIR/prompt"; ESCAPED="$PD/escaped"
+          [ ! -e "$SPEC" ] || { echo "::error::test fixture pre-created SPEC path — would not model Claude Code Write"; exit 1; }
           python3 - "$SPEC" "$ESCAPED" <<'PYWRITE'
           import pathlib, sys
-          # Simulates the non-shell Write tool: bytes land on the path, never shell-parsed.
-          pathlib.Path(sys.argv[1]).write_text(
+          # Simulates the non-shell Write tool: create a not-yet-existing path (not overwrite).
+          p = pathlib.Path(sys.argv[1])
+          if p.exists():
+              raise SystemExit("Write analog refused: path already exists (Claude Code requires Read first to overwrite)")
+          p.write_text(
               "objective: preserve arbitrary bytes\nSPEC_EOF\ntouch " + sys.argv[2] + "\nverification: exact payload\n"
           )
           PYWRITE
