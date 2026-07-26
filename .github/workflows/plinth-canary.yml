@@ -1703,12 +1703,19 @@ jobs:
             echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
             rc=0; PATH="$CR:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 2 ] || { echo "::error::crashed confirmation should exit 2 (rc=$rc)"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            # Immediately after the interrupted confirmation path, verdict must be UNBOUND
+            # (not shippable APPROVED@HEAD) — that is the v4.8.1 process-window close.
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::after crashed confirmation verdict is $(jq -r .verdict "$vj") want UNBOUND (process window still open)"; exit 1; }
+            jq -r '.unbound_reason // empty' "$vj" | grep -qi 'confirmation' \
+              || { echo "::error::UNBOUND missing confirmation reason: $(jq -c . "$vj")"; exit 1; }
             [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::marker written despite the confirmation never running"; exit 1; }
             rc=0; out="$(PATH="$CR:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::recovery run failed (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::re-run silently trusted an unconfirmed non-binding APPROVED"; exit 1; }
-            vj=".plinth/session/review/feat/verdict.json"
-            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; } )
+            printf '%s' "$out" | grep -qE 'NON-BINDING and unconfirmed|confirmation not yet complete|unconfirmed' \
+              || { echo "::error::re-run did not announce recovery of unconfirmed/UNBOUND approval"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; }
+            [ "$(jq -r .verdict "$vj")" = "APPROVED" ] || { echo "::error::recovery did not bind APPROVED (got $(jq -r .verdict "$vj"))"; exit 1; } )
           echo "v4.6 loop-efficiency canary block OK"
           # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
           # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
@@ -3562,10 +3569,20 @@ jobs:
           printf 'body\n' > "$LDR2/out.txt"
           r=0; ( cd "$LDR2" && bash "$LG" delegation grok 0 "$LDR2/out.txt" ) >/dev/null 2>&1 || r=$?
           [ "$r" = 3 ] || { echo "::error::delegation did not refuse symlinked lanes (rc=$r)"; exit 1; }
-          # agent wiring: Write-tool + no SPEC_EOF heredoc of the payload + delegation after scope
+          # agent wiring: Write authorized + project-local SPEC lifecycle + delegation after scope
           for a in grok codex; do
             A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            tools_line="$(awk '/^tools:/{print; exit}' "$A")"
+            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' \
+              || { echo "::error::${a}-implementer frontmatter tools lacks Write (got: $tools_line)"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$A" || { echo "::error::${a}-implementer lost Write-tool step"; exit 1; }
+            code="$(awk '/^```/{f=!f;next} f' "$A")"
+            printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' \
+              || { echo "::error::${a} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
+            printf '%s\n' "$code" | grep -qE 'SPEC="\$SPEC_DIR/prompt"' \
+              || { echo "::error::${a} code block must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
+            printf '%s\n' "$code" | grep -q 'rmdir -- "$SPEC_DIR"' \
+              || { echo "::error::${a} code block does not rmdir SPEC_DIR after CLI"; exit 1; }
             grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer lacks delegation $a"; exit 1; }
             sc_ln="$(grep -n 'lane-guard.sh scope' "$A" | head -1 | cut -d: -f1)"
             dg_ln="$(grep -n "lane-guard.sh delegation $a" "$A" | head -1 | cut -d: -f1)"
@@ -3576,7 +3593,6 @@ jobs:
             printf '%s\n' "$dline" | grep -q 'OUT' || { echo "::error::${a} delegation line missing OUT"; exit 1; }
             grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
               || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
-            # ban shell heredoc of the five-part payload (allowlisted SPEC_EOF mention in prose only)
             grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
           done
           echo "lane-guard delegation + Write-tool wiring canary OK"
