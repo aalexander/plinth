@@ -37,14 +37,13 @@ jobs:
     # with:
     #   runner: macos-latest
 
-  # The APPROVED-at-HEAD receipt check (auto mode, v4.7+): verifies the review
-  # loop's own verdict server-side — the review-verdict gate the floor/checks
-  # contexts deliberately do not provide. Runs on pull_request events only.
-  # Require the "receipt / verify" context AND set strict:true ("Require branches
-  # to be up to date") once the installed instrument is v4.7+ (its review loop
-  # mints the receipt on every binding APPROVED; an older engine mints nothing
-  # and this check fails closed by design). The check verifies as of job
-  # execution; strict keeps that verdict about the base at merge.
+  # The APPROVED-at-HEAD receipt check (auto mode, v4.7+): when this job runs,
+  # verifies a git-note receipt for the PR head. Floor/checks do not cover the
+  # review verdict. Require the "receipt / verify" context AND strict:true once
+  # the instrument is v4.7+. On pull_request the PR can replace this caller; the
+  # base-pin check inside the reusable workflow only helps when it still executes
+  # (see MANUAL caller-control bound). Verifies as of job execution; strict keeps
+  # that about the base at merge.
   receipt:
     if: github.event_name == 'pull_request'
     uses: OWNER/plinth/.github/workflows/plinth-receipt.yml@259ae5bcbb4e502be570303a427af39fe91a686e # v4.1.9 (plinth init repins)

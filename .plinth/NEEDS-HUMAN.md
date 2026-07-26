@@ -39,7 +39,7 @@
   `cd ~/Dev/wren && gh repo create wren --private --source=. --remote=origin && git push -u origin --all`
 
 - [ ] **Turn ON the v4.7 receipt gate (per repo) — TWO steps, IN THIS ORDER.** v4.7 ships
-  the server-verifiable APPROVED-at-HEAD receipt check, but SHIPPING IT IS NOT ENABLING
+  the APPROVED-at-HEAD receipt check (required context when enabled), but SHIPPING IT IS NOT ENABLING
   IT. I deliberately did NOT do this for plinth itself: enabling changes what can merge
   in every future PR, so it is yours to switch on after you have seen a receipt mint for
   real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older

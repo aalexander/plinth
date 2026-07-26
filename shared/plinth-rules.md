@@ -103,9 +103,9 @@ not-invoked event is certainly unenforced; invoked events need end-to-end
 verification), so keep any ship or destructive authority for such
 delegations narrow — what actually binds them is your discipline plus branch
 protection's required checks (floor + checks, and `receipt / verify` where it is
-wired, required, and protected with `strict:true` — that one does gate the review
-verdict at merge; the cloud review is advisory PR comments, not a requirable
-context).
+wired, required, and protected with `strict:true` — that context runs the receipt
+verifier when the real job executes; a PR that replaces the caller job can still
+forge the context name — see MANUAL; the cloud review is advisory PR comments).
 
 Act like an ARCHITECT on implementation volume: emit judgment (decomposition, interfaces,
 specs, verdicts) and keep the expensive model for the judgment a spec can't capture. Under a
@@ -198,11 +198,11 @@ recorded in session state (verdict.json for the latest round; the per-round
 usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
 (seat, value, round) — in the canonical machine-checked form
 `PLINTH-OVERRIDE: NAME=VALUE (round N)`, one line per tuple. The receipt check
-(v4.7+) enforces EXACT tuple-set equality between the receipt's ledger and the PR
-body's PLINTH-OVERRIDE lines wherever `receipt / verify` is wired and required —
-a missing disclosure fails the check, and so does a phantom one the ledger does
-not back. HONEST BOUND where that context is not yet required: the duty is
-CONTRACT-bound, auditable by the operator (read `usage.jsonl` under
+(v4.7+) checks EXACT tuple-set equality between the receipt's ledger and the PR
+body's PLINTH-OVERRIDE lines WHEN the receipt verifier job runs — a missing or
+phantom disclosure fails that job. HONEST BOUND: a PR can replace the caller so
+the verifier never runs (MANUAL caller-control bound). Where the context is not
+required, the duty is CONTRACT-bound (read `usage.jsonl` under
 `.plinth/session/review/<slug>/`). Never edit files under `.plinth/session/` or version-pinned Plinth tooling
 (under a Claude driver the guard blocks both at the tool level; for EVERY driver the
 review and CI reject such edits as tampering — so do not rely on the local hook, just
@@ -238,10 +238,10 @@ driver whose CLI does not execute `.claude/` hooks (probe with `plinth hookprobe
 gate — nothing LOCAL forces it to review. It is bound instead by these rules (you are trusted to run
 the loop) and branch protection's required checks (floor + checks). Neither verifies
 the review verdict, and the Codex cloud review is advisory (PR comments — no
-requirable status context). The APPROVED-at-HEAD receipt check (v4.7+) closes that
-gap wherever its `receipt / verify` context is wired, required, and protected with
-`strict:true`; where it is not, the loop stays CONTRACT-bound for a non-Claude
-driver. Either way: run the loop to APPROVED before you open the PR — that is the
+requirable status context). The APPROVED-at-HEAD receipt check (v4.7+) supplies a merge-time required context
+wherever `receipt / verify` is wired, required, and protected with `strict:true`
+(when the real verifier runs; see MANUAL caller-control bound); where it is not,
+the loop stays CONTRACT-bound for a non-Claude driver. Either way: run the loop to APPROVED before you open the PR — that is the
 contract, whether or not a server gate enforces it in a given repo.
 
 ## Upstream channel — two-way, with the Plinth maintainer

@@ -411,13 +411,13 @@ Two operator chores the rules generate:
    credits run out mid-loop); they are OPERATOR-ONLY (a driver setting them is
    tampering-class), every override is announced and recorded in session state
    (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
-   the PR body's audit summary. That disclosure IS cross-checked automatically
-   wherever `receipt / verify` is wired and required (the check's own job, as of
-   execution): the receipt carries the override ledger and the verifier holds the
-   PR body to EXACT tuple-set equality with it, rejecting a missing OR a phantom
-   disclosure line (auto mode, v4.7+). For that verdict to still describe the base
-   at merge time, also set `strict:true`. Where the check is not required, the
-   duty stays contract-bound and the operator audits `usage.jsonl` directly. A
+   the PR body's audit summary. That disclosure is cross-checked by the receipt
+   verifier WHEN that job actually runs (tuple-set equality on the override ledger).
+   On pull_request a PR can still replace the caller job with an always-green job
+   of the same context name so no verifier runs — see the caller-control bound.
+   Where the real check is required and runs, also set `strict:true` so the verdict
+   still describes the base at merge. Where it is not required, the duty stays
+   contract-bound and the operator audits `usage.jsonl` directly. A
    vendor swap never resumes the previous vendor's thread — and, since v4.7,
    forces a fresh full round rather than a scoped verify.
    *Background, enforcement (Claude driver):* if the model tries to end its turn

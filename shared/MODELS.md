@@ -58,11 +58,11 @@ is the floor unless end-to-end verification passes. The binding layer is unchang
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review
 verdict, and the Codex cloud review cannot close that gap (it posts PR comments;
-there is no status-check context to require). The server-verifiable
-APPROVED-at-HEAD receipt check (auto mode, v4.7+) is the adversarial gate that
-closes it — but only where its `receipt / verify` context is wired into ci.yml,
-required by branch protection, AND `strict:true` (as-of-execution check +
-up-to-date base at merge); elsewhere the review loop stays contract-bound. (If
+there is no status-check context to require). The APPROVED-at-HEAD receipt check (auto mode, v4.7+) is the merge-time required
+context for that gap — but only where `receipt / verify` is wired into ci.yml,
+required by branch protection, AND `strict:true`, and only when the real verifier
+job still runs (PR caller replacement can forge the context name; see MANUAL);
+elsewhere the review loop stays contract-bound. (If
 in-session interception ever proves necessary, the designated fix is one CI-side
 protected-paths tamper check — vendor-neutral, covers every driver — not
 per-vendor hook ports.)

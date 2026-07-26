@@ -269,6 +269,60 @@ jobs:
               echo "::error::leading-zero label 04.7.2 was ACCEPTED: $out"; exit 1
             fi
             echo "OK mutant: leading-zero label refused"
+            # Mutant: lag with one implementer agent missing.
+            if git -C "$GITHUB_WORKSPACE" rev-parse -q --verify refs/tags/v4.6.0 >/dev/null 2>&1; then
+              HYA="$(mktemp -d)"
+              mkdir -p "$HYA/.plinth" "$HYA/.claude/hooks" "$HYA/.claude/agents"
+              printf '9.9.9\n' > "$HYA/VERSION"; printf '4.6.0\n' > "$HYA/.plinth-version"
+              for pair in \
+                'shared/.plinth/review.sh|.plinth/review.sh' \
+                'shared/.plinth/risk-classify.sh|.plinth/risk-classify.sh' \
+                'shared/.plinth/lane-guard.sh|.plinth/lane-guard.sh' \
+                'shared/.plinth/review-schema.json|.plinth/review-schema.json' \
+                'shared/plinth-rules.md|.plinth/plinth-rules.md' \
+                'shared/MODELS.md|.plinth/MODELS.md' \
+                'shared/reviewer.md|.plinth/reviewer.md' \
+                'shared/.claude/hooks/guard.sh|.claude/hooks/guard.sh' \
+                'shared/.claude/hooks/session-start.sh|.claude/hooks/session-start.sh' \
+                'shared/.claude/hooks/review-gate.sh|.claude/hooks/review-gate.sh' \
+                'shared/.claude/hooks/pulse.sh|.claude/hooks/pulse.sh' \
+                'shared/.claude/agents/grok-implementer.md|.claude/agents/grok-implementer.md' \
+                'shared/driver-shell.md|AGENTS.md' \
+                'shared/driver-shell.md|CLAUDE.md'; do
+                src="${pair%%|*}"; dst="${pair##*|}"
+                mkdir -p "$HYA/$(dirname "$dst")"
+                git -C "$GITHUB_WORKSPACE" show "v4.6.0:${src}" > "$HYA/$dst"
+              done
+              # deliberately omit codex-implementer.md
+              chmod +x "$HYA/.plinth/"*.sh "$HYA/.claude/hooks/"*.sh
+              if out="$(check_instrument_identity "$HYA" 2>&1)"; then
+                echo "::error::lag missing codex-implementer was ACCEPTED: $out"; exit 1
+              fi
+              echo "OK mutant: lag missing implementer agent refused"
+              # restore agent, break +x
+              git -C "$GITHUB_WORKSPACE" show v4.6.0:shared/.claude/agents/codex-implementer.md > "$HYA/.claude/agents/codex-implementer.md"
+              chmod a-x "$HYA/.plinth/review.sh"
+              if out="$(check_instrument_identity "$HYA" 2>&1)"; then
+                echo "::error::lag non-executable review.sh was ACCEPTED: $out"; exit 1
+              fi
+              printf '%s' "$out" | grep -qi 'executable' || { echo "::error::lag +x did not name executable: $out"; exit 1; }
+              echo "OK mutant: lag non-executable review.sh refused"
+              # symlink twin
+              chmod +x "$HYA/.plinth/review.sh"
+              rm -f "$HYA/.plinth/risk-classify.sh"
+              ln -s /etc/hosts "$HYA/.plinth/risk-classify.sh"
+              if out="$(check_instrument_identity "$HYA" 2>&1)"; then
+                echo "::error::lag symlink twin was ACCEPTED: $out"; exit 1
+              fi
+              printf '%s' "$out" | grep -qi 'SYMLINK\|symlink' || { echo "::error::lag symlink did not name symlink: $out"; exit 1; }
+              echo "OK mutant: lag symlink twin refused"
+              # missing installed file (not symlink)
+              rm -f "$HYA/.plinth/risk-classify.sh"
+              if out="$(check_instrument_identity "$HYA" 2>&1)"; then
+                echo "::error::lag missing installed risk-classify was ACCEPTED: $out"; exit 1
+              fi
+              echo "OK mutant: lag missing installed file refused"
+            fi
           else
             echo "::error::tag v4.6.0 missing — cannot exercise lag provenance (fetch tags in checkout)"; exit 1
           fi
