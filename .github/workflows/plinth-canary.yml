@@ -30,6 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - name: Syntax-check every shipped script
         run: |
           set -euo pipefail
@@ -103,44 +106,61 @@ jobs:
               return 1
             fi
             if [ "$prod" != "$inst" ]; then
-              # Lag is expected mid-release, but the installed bytes must still be
-              # the instrument named by .plinth-version — floor clones v$inst and
-              # cmp's shared/* against .plinth/*. If the tag exists in this clone,
-              # require that match here too (hybrid payloads fail closed).
-              if git -C "$root" rev-parse -q --verify "refs/tags/v${inst}" >/dev/null 2>&1 \
-                 || git rev-parse -q --verify "refs/tags/v${inst}" >/dev/null 2>&1; then
-                tag="v${inst}"
-                repo="${GITHUB_WORKSPACE:-$root}"
-                lag_pair() {
-                  local src="$1" dst="$2" tmp
-                  if ! git -C "$repo" cat-file -e "${tag}:${src}" 2>/dev/null; then
-                    return 0  # pin predates this file — floor skips too
-                  fi
-                  [ -f "$root/$dst" ] || { echo "missing installed $dst for instrument $inst"; mism=1; return; }
-                  tmp="$(mktemp)"
-                  git -C "$repo" show "${tag}:${src}" > "$tmp"
-                  if ! cmp -s "$tmp" "$root/$dst"; then
-                    echo "$dst differs from ${tag}:${src} — .plinth-version=$inst but installed bytes are not that instrument"
-                    mism=1
-                  fi
-                  rm -f "$tmp"
-                }
-                lag_pair shared/plinth-rules.md .plinth/plinth-rules.md
-                lag_pair shared/MODELS.md .plinth/MODELS.md
-                lag_pair shared/.plinth/review.sh .plinth/review.sh
-                lag_pair shared/.plinth/risk-classify.sh .plinth/risk-classify.sh
-                lag_pair shared/.plinth/lane-guard.sh .plinth/lane-guard.sh
-                lag_pair shared/.plinth/receipt-verify.sh .plinth/receipt-verify.sh
-                lag_pair shared/.plinth/review-schema.json .plinth/review-schema.json
-                lag_pair shared/reviewer.md .plinth/reviewer.md
-                lag_pair shared/.claude/hooks/guard.sh .claude/hooks/guard.sh
-                lag_pair shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
-                lag_pair shared/.claude/hooks/review-gate.sh .claude/hooks/review-gate.sh
-                lag_pair shared/.claude/hooks/pulse.sh .claude/hooks/pulse.sh
-                lag_pair shared/driver-shell.md AGENTS.md
-                [ "$mism" = 0 ] || return 1
+              # Lag is expected mid-release, but installed bytes must still be the
+              # instrument named by .plinth-version. Floor clones v$inst and cmps
+              # shared/* against .plinth/*. Always resolve the tag from GITHUB_WORKSPACE
+              # (the canary checkout must fetch tags — see checkout step). Missing tag
+              # is fail-closed: we cannot prove honesty without the release tree.
+              tag="v${inst}"
+              repo="${GITHUB_WORKSPACE}"
+              if ! git -C "$repo" rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+                echo "cannot prove instrument $inst: tag ${tag} missing in GITHUB_WORKSPACE (fetch tags)"
+                return 1
               fi
-              echo "OK lag: product VERSION=$prod, instrument=.plinth-version=$inst"
+              lag_pair() {
+                local src="$1" dst="$2" tmp
+                if ! git -C "$repo" cat-file -e "${tag}:${src}" 2>/dev/null; then
+                  return 0  # pin predates this file — floor skips too
+                fi
+                [ -f "$root/$dst" ] || { echo "missing installed $dst for instrument $inst"; mism=1; return; }
+                if [ -L "$root/$dst" ]; then
+                  echo "$dst is a SYMLINK — floor rejects symlinked installed twins"
+                  mism=1; return
+                fi
+                tmp="$(mktemp)"
+                git -C "$repo" show "${tag}:${src}" > "$tmp"
+                if ! cmp -s "$tmp" "$root/$dst"; then
+                  echo "$dst differs from ${tag}:${src} — .plinth-version=$inst but installed bytes are not that instrument"
+                  mism=1
+                fi
+                rm -f "$tmp"
+              }
+              lag_pair shared/plinth-rules.md .plinth/plinth-rules.md
+              lag_pair shared/MODELS.md .plinth/MODELS.md
+              lag_pair shared/.plinth/review.sh .plinth/review.sh
+              lag_pair shared/.plinth/risk-classify.sh .plinth/risk-classify.sh
+              lag_pair shared/.plinth/lane-guard.sh .plinth/lane-guard.sh
+              lag_pair shared/.plinth/receipt-verify.sh .plinth/receipt-verify.sh
+              lag_pair shared/.plinth/review-schema.json .plinth/review-schema.json
+              lag_pair shared/reviewer.md .plinth/reviewer.md
+              lag_pair shared/.claude/hooks/guard.sh .claude/hooks/guard.sh
+              lag_pair shared/.claude/hooks/session-start.sh .claude/hooks/session-start.sh
+              lag_pair shared/.claude/hooks/review-gate.sh .claude/hooks/review-gate.sh
+              lag_pair shared/.claude/hooks/pulse.sh .claude/hooks/pulse.sh
+              lag_pair shared/.claude/agents/grok-implementer.md .claude/agents/grok-implementer.md
+              lag_pair shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
+              lag_pair shared/driver-shell.md AGENTS.md
+              if [ -f "$root/CLAUDE.md" ] && { grep -qF 'Plinth driver shell (version-pinned)' "$root/CLAUDE.md" 2>/dev/null || true; }; then
+                lag_pair shared/driver-shell.md CLAUDE.md
+              fi
+              for xpath in .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/receipt-verify.sh .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh .claude/hooks/pulse.sh; do
+                if [ -f "$root/$xpath" ] && [ ! -x "$root/$xpath" ]; then
+                  echo "$xpath is not executable under lag instrument $inst"
+                  mism=1
+                fi
+              done
+              [ "$mism" = 0 ] || return 1
+              echo "OK lag: product VERSION=$prod, instrument=.plinth-version=$inst (matches ${tag})"
               return 0
             fi
             check_pair() {
@@ -193,6 +213,48 @@ jobs:
           # 1) Committed tree — lag mid-release is the normal development shape.
           out="$(check_instrument_identity "$GITHUB_WORKSPACE" 2>&1)" || { echo "::error::committed tree failed instrument identity: $out"; exit 1; }
           printf '%s\n' "$out"
+
+          # Mutant: hybrid lag — label is an older instrument, review.sh is current shared.
+          # Must FAIL when tag v$inst exists in GITHUB_WORKSPACE.
+          if git -C "$GITHUB_WORKSPACE" rev-parse -q --verify refs/tags/v4.6.0 >/dev/null 2>&1; then
+            HY="$(mktemp -d)"
+            mkdir -p "$HY/.plinth" "$HY/shared/.plinth" "$HY/.claude/hooks" "$HY/shared/.claude/hooks" \
+                     "$HY/.claude/agents" "$HY/shared/.claude/agents"
+            printf '9.9.9\n' > "$HY/VERSION"
+            printf '4.6.0\n' > "$HY/.plinth-version"
+            # Copy real v4.6.0 shared trees then overwrite review.sh with current product
+            for src in shared/plinth-rules.md shared/MODELS.md shared/.plinth/review.sh \
+              shared/.plinth/risk-classify.sh shared/.plinth/lane-guard.sh \
+              shared/.plinth/review-schema.json shared/reviewer.md \
+              shared/.claude/hooks/guard.sh shared/.claude/hooks/session-start.sh \
+              shared/.claude/hooks/review-gate.sh shared/.claude/hooks/pulse.sh \
+              shared/.claude/agents/grok-implementer.md shared/.claude/agents/codex-implementer.md \
+              shared/driver-shell.md; do
+              mkdir -p "$HY/$(dirname "$src")"
+              git -C "$GITHUB_WORKSPACE" show "v4.6.0:${src}" > "$HY/$src" 2>/dev/null || true
+            done
+            # Install twins from v4.6.0 then poison review.sh with HEAD shared
+            cp "$HY/shared/.plinth/review.sh" "$HY/.plinth/review.sh" 2>/dev/null || true
+            cp "$HY/shared/.plinth/risk-classify.sh" "$HY/.plinth/risk-classify.sh" 2>/dev/null || true
+            cp "$HY/shared/.plinth/lane-guard.sh" "$HY/.plinth/lane-guard.sh" 2>/dev/null || true
+            cp "$HY/shared/plinth-rules.md" "$HY/.plinth/plinth-rules.md" 2>/dev/null || true
+            cp "$HY/shared/MODELS.md" "$HY/.plinth/MODELS.md" 2>/dev/null || true
+            cp "$HY/shared/reviewer.md" "$HY/.plinth/reviewer.md" 2>/dev/null || true
+            cp "$HY/shared/.claude/hooks/"* "$HY/.claude/hooks/" 2>/dev/null || true
+            cp "$HY/shared/.claude/agents/"* "$HY/.claude/agents/" 2>/dev/null || true
+            cp "$HY/shared/driver-shell.md" "$HY/AGENTS.md" 2>/dev/null || true
+            cp "$HY/shared/driver-shell.md" "$HY/CLAUDE.md" 2>/dev/null || true
+            chmod +x "$HY/.plinth/"*.sh "$HY/.claude/hooks/"*.sh 2>/dev/null || true
+            git -C "$GITHUB_WORKSPACE" show "HEAD:shared/.plinth/review.sh" > "$HY/.plinth/review.sh"
+            chmod +x "$HY/.plinth/review.sh"
+            if out="$(check_instrument_identity "$HY" 2>&1)"; then
+              echo "::error::hybrid lag (v4.6.0 label + HEAD review.sh) was ACCEPTED: $out"; exit 1
+            fi
+            printf '%s' "$out" | grep -qi 'differs\|review.sh' || { echo "::error::hybrid lag failure did not name the twin: $out"; exit 1; }
+            echo "OK mutant: hybrid lag payload refused"
+          else
+            echo "::error::tag v4.6.0 missing — cannot exercise lag provenance (fetch tags in checkout)"; exit 1
+          fi
 
           # 2) Behavioral fixtures in a synthetic tree.
           FX="$(mktemp -d)"
@@ -1322,30 +1384,39 @@ jobs:
             rc=0; PLINTH_ROUND_CAP=5 PATH="$CB:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 1 ] && [ "$(cat "$CB/state")" = 2 ] || { echo "::error::PLINTH_ROUND_CAP override did not unbrick the capped loop (rc=$rc calls=$(cat "$CB/state"))"; exit 1; } )
 
-          # (3c-blank) present-but-empty round_cap and empty PLINTH_ROUND_CAP refuse.
+                    # (3c-blank) present-but-empty round_cap and empty PLINTH_ROUND_CAP refuse.
           BL="$(mktemp -d)"; mkstate "$BL"; mk_cap_codex "$BL"
           printf '%s' "$CNF" > "$BL/verdict-1"
+          # Config blank: base commit carries `round_cap =` so bcfg reads empty.
           bld="$(mktemp -d)"
-          ( cd "$bld"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$bld" >/dev/null 2>&1
-            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+          ( cd "$bld"; git init -qb main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$bld" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+            cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -v '^round_cap' .plinth/config > .plinth/c.t && mv .plinth/c.t .plinth/config
             printf 'round_cap =\n' >> .plinth/config
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
             rc=0; out="$(PATH="$BL:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 2 ] || { echo "::error::(3c-blank) empty round_cap= did not abort (rc=$rc): $(printf '%s' "$out" | tail -c 200)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'empty\|round_cap' || { echo "::error::(3c-blank) abort did not name empty round_cap: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'present but empty\|empty' || { echo "::error::(3c-blank) abort did not name empty config: $(printf '%s' "$out" | tail -c 200)"; exit 1; }
             [ "$(cat "$BL/state")" = 0 ] || { echo "::error::(3c-blank) reviewer ran despite empty round_cap"; exit 1; } )
-          ( cd "$bld"; rm -f .plinth/config; "$GITHUB_WORKSPACE/bin/plinth" init "$bld" >/dev/null 2>&1
-            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
-            # no config round_cap; empty env override
-            echo REQ > SPEC.md; git add -A; git commit -qm base2 >/dev/null 2>/dev/null || true
-            git checkout -qb feat2 >/dev/null 2>&1 || git checkout feat >/dev/null 2>&1
-            echo b > app.py; git add -A; git commit -qm r2 >/dev/null
+          # Env blank: separate repo whose BASE has no round_cap key; only env is empty.
+          bld2="$(mktemp -d)"
+          ( cd "$bld2"; git init -qb main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$bld2" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+            cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -v '^round_cap' .plinth/config > .plinth/c.t && mv .plinth/c.t .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm r1 >/dev/null
             rc=0; out="$(PLINTH_ROUND_CAP= PATH="$BL:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 2 ] || { echo "::error::(3c-blank) PLINTH_ROUND_CAP='' did not abort (rc=$rc): $(printf '%s' "$out" | tail -c 200)"; exit 1; }
-            printf '%s' "$out" | grep -qi 'PLINTH_ROUND_CAP\|round_cap' || { echo "::error::(3c-blank) empty env abort did not name the override: $(printf '%s' "$out" | tail -c 200)"; exit 1; } )
+            printf '%s' "$out" | grep -q "PLINTH_ROUND_CAP must be a non-negative integer (got '')" \
+              || { echo "::error::(3c-blank) empty env abort did not name PLINTH_ROUND_CAP empty: $(printf '%s' "$out" | tail -c 250)"; exit 1; }
+            [ "$(cat "$BL/state")" = 0 ] || { echo "::error::(3c-blank) reviewer ran despite empty PLINTH_ROUND_CAP"; exit 1; } )
 
-          # (3b) NO round_cap in config = NO CAP (v4.7.1 change of default). Previously an
+# (3b) NO round_cap in config = NO CAP (v4.7.1 change of default). Previously an
           # unset knob meant 8, so DELETING round_cap from .plinth/config looked like
           # disabling the breaker while silently restoring a default — the loop stopped at
           # 8 and the config held no evidence why. This drives a loop well past the old

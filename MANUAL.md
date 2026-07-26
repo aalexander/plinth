@@ -23,17 +23,15 @@ server-side review gate) is REQUIRED in branch protection with `strict:true`.
 
 **HONEST BOUND — caller workflow control.** Branch protection requires a *context
 name* (`receipt / verify`). On `pull_request`, GitHub runs workflow files from the
-PR head, so a PR can replace the job that *produces* that context with a local
-always-green reusable workflow unless the base branch already pins a trusted
-`uses:` ref and the check refuses a different pin (which it does). That pin-match
-defense works only after the receipt job exists on the base. It does **not** make
-the required context equivalent to "this verifier binary ran": the first bootstrap
-PR and any gap before the base pin lands remain the operator's bootstrap window.
-Claims below that `receipt / verify` + `strict:true` is a "server-side review gate"
-mean: merge is blocked unless a job named that context is green and the branch is
-up to date — not that GitHub cryptographically binds the job body to a vendor-
-signed verifier. Treat over-strong wording as the contract intent; this paragraph
-is the enforced fact.
+PR head. A PR can replace the job that produces that context with a local
+always-green job of the same name; the reusable verifier (and its base-pin check)
+never runs in that case. The base-pin comparison only helps when the real
+verifier still executes (it stops repointing `uses:` at a fork). It does **not**
+make the required context name unforgeable. Land the receipt job on the base
+first, then require the context and `strict:true`. "Server-side review gate" in
+this MANUAL means: merge is blocked unless that context is green and the branch
+is up to date — not that GitHub binds the job body to a vendor-signed verifier.
+
 
 Shipping it is not enabling it: it gates only where an operator wires
 `receipt / verify` into ci.yml, requires that context, AND sets
@@ -335,7 +333,7 @@ Two operator chores the rules generate:
    not verify the review verdict, and the cloud review is advisory comments). The
    adversarial loop is contract-bound for a non-Claude driver until the receipt
    check (auto mode, v4.7) is required in branch protection with `strict:true` —
-   which closes exactly this gap at merge time, server-side and driver-agnostic
+   which is the merge-time required context for the receipt (see honest bound on caller control)
    (the check itself only describes the subject as of job execution). Wiring the
    hooks into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
@@ -434,7 +432,7 @@ Two operator chores the rules generate:
    the grok-RESIDENT alternative the review loop is therefore contract-bound driver
    discipline wherever the receipt check is not required with `strict:true`; the
    server-side check of `review.sh`'s own APPROVED-at-HEAD verdict —
-   `receipt / verify` (auto mode, v4.7+) — is what closes it, once wired into
+   `receipt / verify` (auto mode, v4.7+) — is what supplies the merge-time required context once wired into
    `ci.yml`, required in branch protection, and protected with `strict:true`
    (the check verifies as of execution; strict keeps that verdict about the base
    at merge).
@@ -642,7 +640,7 @@ it has run green with a real smoke_cmd.
   harness) + `checks` required to merge (requires public repo or GitHub Pro; the
   preflight reports which state you're in AND names any missing required
   context). The cloud review is advisory; adding `receipt / verify` (auto mode,
-  v4.7) to the required contexts AND setting `strict:true` is what puts the review
+  v4.7) to the required contexts AND setting `strict:true` is what puts a required context for the review
   verdict itself under branch protection in a way that still describes the base at
   merge (preflight flags receipt-required configs that omit strict as incomplete).
 

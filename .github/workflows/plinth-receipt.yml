@@ -1,23 +1,23 @@
 name: plinth-receipt
 
-# The APPROVED-at-HEAD receipt check (auto mode, v4.7): the required status
-# check that verifies review.sh's own verdict server-side. The review loop
-# mints a plinth.review-receipt/v1 as a git note on the approved commit
-# (refs/notes/plinth-receipts); this workflow fetches that note for the PR's
-# exact head and re-derives every binding from the PR's own subject via
-# receipt-verify.sh (fetched from THIS reusable workflow's own pinned uses:
-# ref, via github.job_workflow_ref — BOTH the repository and the commit come
-# from the caller's pin, nothing else; never the PR's working tree, which is
-# PR-controlled, and never a second context value that could name a different
-# repo than the pin does).
-# Fails closed on every path: no receipt, stale receipt, non-APPROVED, subject
-# mismatch, or an override the PR body does not disclose.
+# The APPROVED-at-HEAD receipt check (auto mode, v4.7): a required status
+# context that, WHEN THIS WORKFLOW RUNS, verifies a git-note receipt for the
+# PR head against the PR subject via receipt-verify.sh (fetched from this
+# reusable workflow's own pinned uses: ref via github.job_workflow_ref — never
+# from the PR working tree).
+# Fails closed when it runs: no receipt, stale receipt, non-APPROVED, subject
+# mismatch, or an undisclosed override.
 #
-# HONEST BOUND (documented everywhere this check is): this verifies that a
-# receipt was minted for exactly this subject and that its override ledger is
-# disclosed. A driver that fabricates a receipt without running the loop
-# defeats it — the check makes skipping DETECTABLE AND AUDITABLE (the notes ref
-# is append-only history), not cryptographically impossible.
+# HONEST BOUND (caller control): on pull_request, GitHub executes workflow files
+# from the PR head. A PR can replace the caller job that reports the required
+# context name `receipt / verify` with a different always-green job of the same
+# name — then THIS reusable workflow never runs. The base-pin comparison below
+# only executes when this workflow runs; it closes "repoint uses: at a fork"
+# while this job still executes. It does NOT make the required context name
+# cryptographically bound to this verifier. Bootstrap: land the receipt job on
+# the base first, then require the context + strict:true. Fabricating a real
+# receipt note without running the loop remains detectable/auditable, not
+# cryptographically impossible.
 #
 # SUBJECT-AS-OF-EXECUTION: this job verifies the PR subject at the moment it
 # runs. The live base.sha comparison detects base movement only WHILE the job is
@@ -92,19 +92,20 @@ jobs:
             *) echo "::error::job_workflow_ref does not name owner/repo (got ${wf_nwo}) — cannot resolve the verifier repository"; exit 1 ;;
           esac
           # ── The verifier pin must match the BASE branch's, not the PR's ─────────────
-          # THE BYPASS THIS CLOSES: on a `pull_request` event GitHub runs the workflow
-          # files from the PR HEAD, and the CALLER (`ci.yml`) is operator-owned project
-          # code a PR may edit. So job_workflow_ref reflects whatever pin the PR chose.
-          # Without this check, a PR could repoint its own `receipt:` job at
-          # `attacker/evil-plinth/...@sha` whose receipt-verify.sh unconditionally exits
-          # 0 — and the REQUIRED `receipt / verify` context would go green with no
-          # review, no receipt, and nothing at refs/notes/plinth-receipts. That is
-          # precisely the threat auto mode exists to close, so the verifier's own
-          # provenance cannot be controlled by the PR it gates.
+          # BYPASS THIS CLOSES (when this job runs): on pull_request, job_workflow_ref
+          # reflects the PR's chosen uses: pin. Without this check a PR could repoint
+          # its receipt: job at attacker/evil-plinth/...@sha whose verify exits 0 while
+          # still invoking a job named receipt/verify. Requiring equality with the base
+          # branch's pin stops that class IF this reusable workflow still executes.
           #
-          # The base branch is not PR-writable (that is what branch protection means),
-          # so the pin recorded THERE is the operator's. Require the running pin to
-          # equal it, exactly.
+          # BYPASS THIS DOES NOT CLOSE: a PR that replaces the caller job entirely with
+          # a local always-green job that only reuses the context *name* `receipt / verify`
+          # — then this file never runs and this comparison never fires. That is a GitHub
+          # Actions topology limit (workflow files come from the PR head). Documented in
+          # MANUAL; do not claim this check makes the context name unforgeable.
+          #
+          # The base branch is not PR-writable; the pin recorded THERE is the operator's
+          # when the job on the base is present. Require the running pin to equal it.
           base_ci="$(git show "origin/${BASE_REF}:.github/workflows/ci.yml" 2>/dev/null || true)"
           [ -n "$base_ci" ] || { echo "::error::cannot read .github/workflows/ci.yml from origin/${BASE_REF} — the verifier pin cannot be anchored to the base, so this check refuses to run (fail closed)"; exit 1; }
           base_uses="$(printf '%s\n' "$base_ci" | grep -E '^[[:space:]]*["'"'"']?uses["'"'"']?[[:space:]]*:.*plinth-receipt\.yml@' | head -1 || true)"
