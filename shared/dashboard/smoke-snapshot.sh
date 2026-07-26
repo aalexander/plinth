@@ -283,6 +283,22 @@ mk_git "$L4"
 printf '%s\n' '{"event":"SessionStart","sid":"s","epoch":"not-a-number","transcript":null}' \
   > "$L4/.plinth/session/events.jsonl"
 
+# ── Fixture L5: present verdict.json is JSON null → error ────────────────────
+L5="$FIX/mu-nullverdict"
+mk_git "$L5"
+git -C "$L5" checkout -qb feat/nullv
+echo l5 > "$L5/l5.txt"
+git -C "$L5" add -A
+git -C "$L5" commit -qm "work"
+mkdir -p "$L5/.plinth/session/review/feat-nullv"
+printf 'null\n' > "$L5/.plinth/session/review/feat-nullv/verdict.json"
+
+# ── Fixture L6: event with non-string detail → error ─────────────────────────
+L6="$FIX/mu-baddetail"
+mk_git "$L6"
+printf '%s\n' '{"event":"UserPromptSubmit","sid":"s","epoch":1,"detail":123}' \
+  > "$L6/.plinth/session/events.jsonl"
+
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
 mk_git "$M"
@@ -379,7 +395,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -395,7 +411,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 22' "$OUT" >/dev/null
+jq -e '(.projects | length) == 24' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -528,6 +544,14 @@ jq -e '
 ' "$OUT" >/dev/null
 jq -e '
   .projects[] | select(.name == "mu-badevent")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-nullverdict")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-baddetail")
   | .error == "snapshot_render_failed"
 ' "$OUT" >/dev/null
 

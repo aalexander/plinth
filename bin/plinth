@@ -1941,7 +1941,15 @@ snapshot_one_project() {
   slug="$(printf '%s' "$branch" | tr '/ ' '--')"
 
   local vfile="$dir/.plinth/session/review/$slug/verdict.json"
-  [ -f "$vfile" ] || vfile=/dev/null
+  local verdict_file_bad=false
+  if [ -f "$vfile" ]; then
+    # Present file must be a JSON object (not null/false/array/empty).
+    if ! jq -e 'type == "object"' "$vfile" >/dev/null 2>&1; then
+      verdict_file_bad=true
+    fi
+  else
+    vfile=/dev/null
+  fi
   # Do not slurp usage.jsonl — the wallboard never renders it, and a malformed
   # ledger must not collapse the card (would zero NEEDS-HUMAN etc.).
   local rqfile
@@ -2003,7 +2011,10 @@ snapshot_one_project() {
           elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
           elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
+          elif ($e.event != null) and (($e.event | type) != "string") then error("bad_event_name")
+          elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
           elif ($e.sid == null) then .
+          elif ($e.event == null) or ($e.event == "") then error("bad_event_missing_name")
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0: null, task: null, tr: null}
@@ -2012,7 +2023,6 @@ snapshot_one_project() {
             | if ($e.event == "SessionStart") and ($e.epoch != null)
               then .by[$e.sid].t0 = $e.epoch else . end
             | if ($e.event == "UserPromptSubmit")
-                and (($e.detail // "") | type == "string")
                 and (($e.detail // "") | length > 0)
                 and ((($e.detail // "") | test("^\\s*<")) | not)
               then .by[$e.sid].task = $e.detail else . end
@@ -2037,8 +2047,8 @@ snapshot_one_project() {
     fi
   fi
 
-  # Malformed events → error card (do not look idle-while-broken).
-  if [ "$events_parse_failed" = true ]; then
+  # Malformed events or present-but-non-object verdict → error card.
+  if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
       --argjson nhn "$nhn" --argjson nhb "$nhb" \
