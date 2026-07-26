@@ -32,6 +32,361 @@
   queue, long session, interleave, last-error/retry/same-second, stale, bad
   events/verdict), node `cardHTML` unit tests, and loopback HTTP with
   single-flight invocation counts. Wired into the canary scaffold job.
+## v4.7.2 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
+Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
+instance the reviewer named rather than the class it belonged to, so the next round found
+the next instance. (A hard round count is deliberately not quoted here — an exact tally in
+release prose goes stale on the very next round, which is itself a finding this release
+collected twice.) The convergence lever now lives in `shared/reviewer.md`: the reviewer is
+instructed to enumerate every instance of a class it finds, and to say so explicitly when
+it has checked a class and found only one. Recording what actually shipped, including the
+parts that were wrong on the way:
+- **`github_preflight` requires `strict:true` whenever `receipt / verify` is required.**
+  A green receipt check describes the subject as of job execution; without
+  `required_status_checks.strict=true` the base can advance while that status stays green.
+  Preflight no longer reports receipt-required configs as healthy when strict is false or
+  ABSENT (absent is treated like false — no assumed default). Canary covers true / false /
+  absent and asserts health differs; floor/checks-only configs without the receipt context
+  are unaffected. MANUAL's abbreviated enablement summaries now state the bound (wire +
+  require + strict), not wire-and-require alone.
+- **PRE-SDIR class closed for the jq sibling.** `SDIR` is resolved immediately after the
+  git-repo check and *before* the `jq` check, so `die_infra "jq not found"` writes
+  `last-error` and the Stop gate can take its infra escape. `die_infra` still refuses
+  `mkdir -p ""` when `SDIR` is empty (print + exit 2 only). Canary (3f) asserts
+  `last-error` is written when `jq` is hidden from `PATH` (behaviour, not a source grep).
+- **Receipt check post-success bound documented honestly.** A green `receipt / verify`
+  describes the subject as of job execution; post-success base movement is outside what
+  any status check can detect. `MANUAL.md` and `.plinth/NEEDS-HUMAN.md` now require
+  `"strict":true` wherever that context is required; `plinth-receipt.yml` states the bound;
+  `github_preflight` enforces the same shape when reporting protection health.
+- **Three canary greps replaced with behavioural probes.** Notes-ref probe (exit 2 =
+  absent vs other nonzero = infrastructure) is driven with a `git` stub; repo-mismatch
+  redaction places the marker in both the recorded and expected `$REPO` paths; mid-round
+  base pinning adds DIFF and CLASSIFICATION cases (mutable-ref mutants fail).
+- **Init-backfill "independent" manifest is derived from `copy_shared`.** Managed
+  `.plinth` leaves and reserved lane agents are extracted from `bin/plinth`'s
+  `copy_shared` body, then cross-checked against `PATTERNS` — not a restated stem list.
+- **Credential-safety claim narrowed to non-identity URL parts.** The guarantee covers
+  userinfo, query string, fragment, and the no-mint diagnostic never reproducing the URL
+  (name the remote; operator runs `git remote -v`). It does NOT cover the path segments
+  identity is DERIVED from: `owner/repo` is recorded in the receipt by design so the
+  server can compare it to `${{ github.repository }}`. An origin that embeds a secret in a
+  path segment will have that segment recorded; that is not a supported origin form. Do not
+  build a secret detector for path segments — shrink the claim, do not expand a guess.
+  `receipt-verify.sh` no longer echoes the recorded or expected `repo` value on a mismatch
+  (same pattern as the no-mint diagnostic). Credential fixtures cover a secret in the OWNER
+  position and the REPO position of an accepted two-segment origin, and match
+  case-insensitively (the parser lowercases).
+- **Base is pinned for the whole round (not the whole subject).** The base ref is
+  resolved to ONE immutable tip SHA (`base_tip`) before the diff is taken; that SHA
+  drives the diff, risk classification, and minting. Before minting, the named base ref
+  is re-resolved and the round ABORTS (`die_infra`, exit 2) if it has moved — naming
+  old and new tips and telling the operator to re-run. HEAD is captured once as `sha`
+  but some later subject-defining ops still re-resolve symbolic HEAD — a concurrent
+  local ref rewind could make reviewed content differ from the commit receiving the
+  verdict (hardening backlog under MANUAL `## Noticed`; not pinned in this release).
+- **Instrument identity is honest mid-release.** `.plinth-version` is the installed
+  instrument, not the product `VERSION`. Canary refuses `.plinth-version == VERSION`
+  unless every managed installed twin matches its `shared/` source (including driver
+  shells and executable mode); also refuses an instrument AHEAD of product, non-strict
+  labels (including multi-trailing-LF and NUL forms that command-substitution would
+  silently normalize), and loads stock-CLAUDE classification from `bin/plinth`. Mid-release, the installed tree matches tag `v4.6.0` shared/ (`.plinth-version` =
+  4.6.0, what floor compares); product may lead until a labeled refresh aligns them.
+- **Base-movement guard runs even when no origin is set.** `mint_receipt` used to
+  early-return before re-resolving the base when origin was missing/unsupported,
+  leaving APPROVED readable after a mid-round base move with no abort. Subject
+  integrity now runs first; minting remains best-effort after that.
+- **`diff_digest` is set -e safe across hash tools.** Probes `shasum` then
+  `sha256sum` availability before hashing (a missing `shasum` no longer aborts
+  the review under `set -e` before the fallback runs).
+- **Blank `round_cap` / empty `PLINTH_ROUND_CAP` refuse.** A present-but-empty
+  config key (`round_cap =`) and an explicitly empty env override are malformed and
+  abort (exit 2), not silent "no cap". Unset still means no cap.
+- **Version labels: LF only, no leading zeros, lag checks the named tag.** CRLF is
+  refused (floor/bin retain `\r`). Lag mid-release still requires installed twins to
+  match `shared/` at tag `v${.plinth-version}` when that tag exists.
+- **Receipt gate honest bound.** Required `receipt / verify` + `strict:true` blocks
+  merge on a green context name and up-to-date base; it does not cryptographically
+  bind the job body. MANUAL states the caller-workflow control limit.
+- **`job.workflow_ref`, not `github.job_workflow_ref`.** The receipt workflow bound
+  `JOB_WF_REF` to `${{ github.job_workflow_ref }}`, which is not an Actions context
+  property (`job_workflow_ref` is an OIDC token claim). Every real `receipt / verify`
+  run would see an empty pin and fail closed. Correct expression is
+  `${{ job.workflow_ref }}` (reusable workflow identity). Canary now static-checks the
+  envelope so shell-only fixture (9d) cannot mask a wrong expression again.
+- **Required floor/checks gates repinned to v4.7.1**
+  (`0d0d657e7a1c199516d76dc59d9fc41665404800`). The independent required jobs trail by
+  one tagged release; after v4.7.1 landed they must not still claim v4.7.0.
+- **`receipt-verify.sh` sha256sum-only PATH is exercised.** `canary-digest-base.sh`
+  runs the verifier with a curated PATH that exposes real `sha256sum` and not `shasum`,
+  so the server-side digest fallback cannot regress only on sha256sum-only hosts.
+- **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
+  abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
+  exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's
+  ship gate and the Stop gate would release on a verdict the loop had just refused to
+  bind. Demote `verdict` to `UNBOUND` and record `unbound_reason`; consumers compare
+  against `"APPROVED"`, so they fail closed with no new field. Recovery admits an
+  `UNBOUND` whose reason is the round cap (operator raises `PLINTH_ROUND_CAP` → pending
+  confirmation runs); a moved/disappeared base stays unrecoverable (must re-review).
+  Canary covers demotion on move and disappear; positive recovery for the round-cap
+  demotion (PLINTH_ROUND_CAP unbrick runs the pending confirmation); and negative
+  recovery for moved/disappeared UNBOUND (restored base starts a fresh re-review,
+  never confirmation recovery or remint).
+- **`die_infra` is safe when `SDIR` is unset, and `SDIR` is resolved early.** Pre-session
+  failures (malformed `round_cap`, missing base, …) used to call `mkdir -p ""` and write no
+  `last-error`, so the Stop gate could not take its immediate infra escape. `die_infra` now
+  skips the write when `SDIR` is empty (still print + exit 2), and `SDIR` is assigned as
+  soon as the git-repo check passes — before the `jq` check — so every ordinary pre-round
+  failure still releases the gate.
+- **Live receipt check binds `base.sha`.** The TOCTOU re-fetch in `plinth-receipt.yml`
+  compares the live PR's `base.sha` to the tip used for verification, not only head and
+  body. Notes-ref probing branches on `ls-remote` status: exit 2 is "absent"; any other
+  nonzero is infrastructure (network/auth), not a proven missing receipt.
+- **`receipt_nwo()` — one anchored pattern, extracted and testable.** Repository identity
+  is now derived by matching the WHOLE origin URL against two anchored forms
+  (`scheme://[user@]host[:port]/owner/repo` and scp-style `[user@]host:owner/repo`),
+  replacing a pipeline of prefix strips. The strip approach accepted anything that merely
+  SURVIVED reduction — `/tmp/proj.git`, `../canary/receipt.git`, `file:///c/r.git`,
+  `https:///owner/repo`, `ssh://git@/owner/repo` and `C:/owner/repo` all reduced to a
+  plausible `owner/repo` and would have been minted as repository identities, producing
+  receipts that can never satisfy the server check. Anchoring means anything unmatched is
+  refused by construction. Extracted as a pure function so the canary calls IT.
+- **The no-mint diagnostic no longer reproduces the URL at all.** It first echoed the raw
+  `remote.origin.url` — leaking `https://oauth2:TOKEN@…` into terminals, agent transcripts
+  and CI logs. Redacting userinfo was still insufficient (a token also rides in a query
+  string or fragment — and path segments are identity, not covered by this diagnostic), so
+  the rule is: name the remote, never print the URL, and tell the operator to run
+  `git remote -v`.
+- **`ledger_complete()` — every round, not just the current one.** The override ledger must
+  contain a row for EVERY round 1..N. Checking only "present" missed a stale file; checking
+  only "has a row for this round" missed a swallowed append in an EARLIER round (ledger has
+  round 2 but not round 1). Either way minting drops overrides from the disclosure the
+  server check enforces while `git notes add -f` overwrites the correct receipt. Round 0
+  (Tier 0, before any ledger exists) is still legitimate.
+- **A character-class guard that would have disabled minting outright.** `case $url in
+  *[!\ -~]*)` reads as "non-printable" but the backslash is literal, making the range
+  0x5C–0x7E — so every URL containing `@`, `.`, `:`, `/` or an uppercase letter was
+  refused. Found by the rewritten fixture within seconds of it calling production code
+  instead of a copy. Now `[![:print:]]`.
+- **Fixture (9f) extracts `receipt_nwo` and `ledger_complete` from the shipped script**
+  rather than restating them — an earlier version duplicated the logic and was rightly
+  rejected, since a copy cannot detect the original changing. It covers the accepted URL
+  forms and the refused ones by direct assertion plus a combinatorial sweep, the ledger
+  matrix including the missing-earlier-round case, and asserts the diagnostic still refuses
+  to interpolate the URL. (Exact assertion COUNTS are deliberately not quoted: they went
+  stale the moment the fixture grew, and were wrong twice.)
+- **The Tier-0 transition fixture now performs an actual transition.** Its first version
+  seeded stale session files into a branch that was ALREADY Tier 0, so it never exercised
+  the path it claimed to — and the commit message describing it was wrong in the same way.
+  It now reviews a branch at Tier 1/2 (leaving real per-loop state), advances the base onto
+  the code commit so the remaining diff is inert docs, asserts the tier actually changed,
+  and only then checks the cleanup. Both halves are asserted, so it cannot pass vacuously.
+- `round_cap` length-bounding now strips LEADING ZEROS before measuring. `0000001` is a
+  valid 1 that the normalization below it explicitly supports, but the raw-length check
+  rejected anything padded past six characters. The guard exists to stop an overflow-sized
+  MAGNITUDE, not a padded small number. Same fix on the `PLINTH_ROUND_CAP` path.
+- **Base spellings are CANONICALIZED before they are COMPARED or hashed into the receipt.**
+  Scope stated exactly, because an earlier revision of this entry said "stored" and that was
+  false: `verdict.json` and `request-*.json` deliberately keep the operator's LITERAL
+  spelling, which records what was actually run and is the more useful forensic record. It
+  is the comparisons and the receipt that must be canonical, and they are. `main`,
+  `origin/main`, `refs/heads/main` and `refs/remotes/origin/main` all name one base, but
+  only the `origin/` prefix was stripped — so the fully-qualified forms were written to the
+  verdict and hashed into the RECEIPT SUBJECT verbatim, while `receipt-verify.sh`
+  normalizes the PR's base to a bare name. A legitimately reviewed PR then failed
+  `base_ref` or subject-digest verification. `canon_base()` strips `refs/heads/`,
+  `refs/remotes/` and `origin/` in that order (the order matters:
+  `refs/remotes/origin/main` keeps its `origin/` otherwise).
+- **"HEAD unchanged" no longer strands a loop whose BASE moved.** After CHANGES_NEEDED the
+  refusal fired on HEAD alone, so a moved or reselected base left the loop unable to
+  continue OR restart — the only escape was faking a commit. It now fires only when the
+  base identity and merge base are also unchanged; otherwise the run falls through to the
+  new-loop reset. The guard still fires when the context genuinely is unchanged, which is
+  asserted alongside, because relaxing a guard without testing that it still fires is how
+  you delete it by accident.
+- **Tier 0 now performs the new-loop reset it was skipping.** A Tier-0 grant is round 0 —
+  by definition a new loop — but it exits before the round bookkeeping, so a branch whose
+  base advanced into Tier-0 territory kept the previous loop's findings, coverage anchor
+  and override ledger. The receipt was already correct (round 0 refuses to read a ledger),
+  but the leftover `usage.jsonl` described overrides that never applied to this subject,
+  leaving the audit trail contradicting the disclosure either way it was resolved.
+- **The legacy fail-closed behaviour is now implemented, not just claimed.** A v4.7.0
+  verdict carries `diff_digest` but no `merge_base`; the remint checked only the digest, so
+  such a verdict could be reused despite an unknown anchor — contradicting both the comment
+  above it and this changelog. Reuse now requires the recorded merge base to be present and
+  unmoved. Fixtures (9k2)/(9k3) cover the CHANGES_NEEDED side, the legacy verdict, and
+  fully-qualified spellings.
+- `round_cap` now rejects absurdly large digit-only values instead of letting them WRAP
+  negative past the arithmetic range and silently disable the breaker an operator was
+  trying to raise. Same guard on the `PLINTH_ROUND_CAP` override.
+- Stale sibling claims corrected: the scaffolded `.plinth/config` and `PLANNING-PROMPT.md`
+  both still told new projects that `round_cap` defaults to 8, and `MANUAL.md` described a
+  reviewer-vendor swap as falling back to a scoped verify (it forces a fresh FULL round
+  since upstream #26) while carrying a duplicated `## Noticed` entry.
+- **Approval and coverage reuse now key on IMMUTABLE state, not on a base ref's spelling.**
+  The first fix compared `prev_base = baseref` literally, which is wrong in both
+  directions because a ref is a moving label. If `main` advances ONTO an ancestor of the
+  branch (the first half of the work merged separately), HEAD and the base NAME are
+  unchanged but the merge base moves and the three-dot diff SHRINKS — so the fast path
+  reminted a receipt for a diff nobody reviewed, and the server check would verify it as
+  sound. Conversely `main` and `origin/main` at the same commit are the SAME base, and
+  treating the spellings as different spuriously bought a full paid round, breaking the
+  documented free remint as soon as an operator added and fetched an origin. Verdicts now
+  record `merge_base`, the remint requires the recorded `diff_digest` to still match, and
+  continuation (warm resume and scoped verify) requires the merge base to be unmoved —
+  both normalized across the `origin/` prefix. All fail CLOSED on a pre-v4.7.1 verdict
+  that lacks the fields. A moved base is announced and starts a new loop rather than
+  silently resetting the round counter. Fixture (9k) covers both directions; note that
+  merely adding commits to `main` is NOT this case — the merge base is unchanged, the diff
+  is byte-identical, and reusing the approval is correct.
+- **`round_cap` is now OPT-IN: unset means NO CAP (was 8).** Removing the knob from
+  `.plinth/config` used to look like disabling the breaker while silently restoring a
+  default of 8 — the loop would stop at round 8 and the config held no evidence why. This
+  was hit for real: the cap had been deliberately removed from config, and the loop was
+  still capped. A long loop is a signal to fix CONVERGENCE (enumerate the whole
+  finding-class instead of the named instance, batch every round's fixes into ONE commit,
+  parallelise independent work) — not a reason to stop reviewing. Setting `round_cap` to a
+  positive integer still arms the breaker exactly as before. A MALFORMED value is now
+  refused loudly (exit 2, before any round is spent) rather than silently reinterpreted as
+  a number, so a typo like `round_cap = eight` cannot quietly disarm a breaker the operator
+  believed was set. Four fixtures, because unset / explicit-zero / positive / malformed are
+  four separate documented inputs and one cannot speak for another: (3b) drives nine rounds
+  with the knob ABSENT, (3d) drives nine rounds with an EXPLICIT `round_cap = 0` — that
+  pair is what closes the `round_cap = 0` gap `## Noticed` had carried since v4.6, and an
+  earlier revision of this entry wrongly credited (3b) alone — while the existing breaker
+  fixture proves a positive cap still trips, and (3c) proves a malformed value aborts
+  before the reviewer is invoked.
+- **Scope of `receipt_nwo` is a CLOSED LIST, stated honestly.** It accepts exactly two
+  forms — `scheme://[user@]host[:port]/owner/repo` (scheme = http, https, git, ssh,
+  git+ssh) and scp-style `[user@]host:owner/repo` — which is deliberately NARROWER than
+  git's documented URL syntax. `ftp://`, `ftps://`, a schemeless `host/owner/repo`,
+  scp-style with an absolute path (`host:/owner/repo`, ambiguous with the `C:/` drive form
+  that must stay refused) and scp-style IPv6 are all refused ON PURPOSE; each now has a
+  regression assertion, so the boundary cannot drift without the suite saying so. Bracketed
+  IPv6 IS supported in the scheme form, with and without a port — also now asserted.
+  Consequence, stated rather than implied: a repo whose origin is a refused form mints NO
+  receipt, the loop announces it, and where `receipt / verify` is required that PR fails
+  closed until origin names an accepted form. Successive rounds each named one more missing
+  form because the CLAIM ("every git URL that names a host") was wider than the code; the
+  fix was to narrow the claim to the code, not to keep widening the regex. It still does
+  NOT verify the host is github.com — that would break GitHub Enterprise, and is
+  unnecessary since the recorded `repo` is compared against `${{ github.repository }}` on
+  the server, so an unrelated host yields a pair that simply fails there. The fixture
+  asserts a gitlab.com remote IS accepted so that scope cannot quietly drift back either.
+- **The fixtures now test the WIRING, not only the rules.** Calling the extracted helpers
+  proved they were correct but not that anything used them — deleting `mint_receipt`'s
+  calls left every negative case green. (9f) now asserts those call sites exist, and (9c)
+  drives a `file://` origin through the REAL loop end to end: the review must approve and
+  mint nothing. Verified against a build with the call deleted and the helpers intact.
+- **A single-character host is accepted.** An SSH config alias (`g:owner/repo`) is a real
+  remote; an earlier revision required a >=2-char host and refused them, in order to
+  exclude the Windows drive form `C:/owner/repo` — which the scp path pattern already
+  excludes, since the owner group cannot match a leading slash. The length rule was
+  refusing valid remotes to guard against something already guarded.
+- **The wiring assertions grep CODE, not comments.** The first version searched the whole
+  `mint_receipt` body, and both helper names appear in its explanatory comments — so
+  deleting the actual call still passed. Comment lines are stripped first, and the
+  identifier must be followed by an argument, which prose cannot satisfy. Verified against
+  a build with the `ledger_complete` call deleted and its comment left in place.
+- **Wiring is proven BEHAVIOURALLY, not by grep.** Fixture (9g) drives the real
+  `mint_receipt` against real repositories, injecting only its three globals
+  (`sha`, `baseref`, `SDIR`), and asserts on whether a note EXISTS. Deleting either
+  guard's call site makes a case mint when it must not — verified in both directions.
+  Source-pattern assertions could be satisfied by a comment; an outcome cannot.
+- **The URL rules are swept combinatorially, with a harness self-check.** Five rounds
+  each named ONE missed URL form; a matrix over scheme x userinfo x host x port x depth covers
+  the class in one pass. The self-check is the load-bearing part: an earlier hand-written
+  sweep used `path` as a loop variable, which in zsh is TIED to `$PATH`, so `sed`
+  vanished and all 2160 inputs came back refused against a CORRECT parser. Acting on
+  that would have "fixed" working code. (9f) now proves a canonical URL parses before
+  trusting any refusal, and fails loudly as a broken harness otherwise.
+- The documented notes recovery was unusable: `git notes --ref=X merge` exits "must specify
+  a notes ref to merge". Corrected in `shared/plinth-rules.md` and `NEEDS-HUMAN.md` to the
+  four-command form (fetch to a NAMED side ref, merge that ref with `-s theirs`, re-run
+  `review.sh` against the SAME base, push). The recipe is covered by two fixtures, split by
+  what each can actually prove. (9h) drives its GIT-NOTES half against a real remote — a
+  divergent non-conflicting note AND a same-object conflict — asserting the
+  non-fast-forward precondition really occurs, that no receipt is lost, and that each
+  commit ends with exactly ONE receipt object; it also COUNTER-PROVES the `-s theirs`
+  choice by merging the same conflict with `cat_sort_uniq` and showing it concatenates, so
+  the documented rationale is tested rather than asserted. (9i) covers the `review.sh`
+  step, which (9h) deliberately omits: it runs the REAL loop and proves the same-base
+  re-run remints for FREE (reviewer not re-invoked) while a different-base re-run refuses
+  to inherit the approval, announces why, and runs a real round.
+- **Credential safety is proven for ACCEPTED origins too, and at the LOOP level.** (9g)
+  previously exercised only origins that fail to parse, which is the easy half. The
+  dangerous shape for NON-identity credentials is a valid remote with userinfo
+  (`https://oauth2:TOKEN@host/o/r`, the everyday CI checkout form): it travels the whole
+  minting path AND produces a note that gets PUSHED, so a leak there is published rather
+  than merely logged. Those origins assert the token reaches neither the output nor the
+  receipt, and that the receipt still records the right identity. Path-segment secrets in
+  accepted two-segment origins are a separate class: they ARE recorded as identity (by
+  design) and the fixtures assert that honestly, case-insensitively, while still requiring
+  mint/verify logs not to re-echo values beyond the identity field. (9g) drives the
+  extracted `mint_receipt`, so it can only speak for the minting path — a claim that
+  "nothing leaks from the loop" rested on evidence that did not cover the loop. (9i)
+  supplies that for userinfo: it runs the real `./.plinth/review.sh` against a
+  credential-bearing origin and asserts on ALL of its output plus the minted note.
+- **A Tier-0 receipt could inherit a PREVIOUS loop's override ledger.** Round 0 mints and
+  exits before the round-bookkeeping that clears per-loop markers, so reusing a branch
+  after its base advanced left a stale `usage.jsonl` in place and `mint_receipt` read it —
+  stamping override tuples that never applied into the receipt. The server check compares
+  that ledger to the PR body for exact tuple-set equality, so it failed a legitimately
+  clean Tier-0 PR, and "fixing" the body to match would have disclosed a phantom override.
+  Round 0 now always mints an empty ledger: by definition no round has run, so there is
+  nothing to disclose. Both prior Tier-0 fixtures used an ABSENT ledger and so could not
+  catch it; the new case supplies a populated stale one.
+- **The protected-paths backfill fixture asserts the WHOLE managed list.** It hand-listed
+  four patterns, so `receipt-verify.sh` was pinned in v4.7 and silently never asserted. The
+  expected list is now EXTRACTED from `bin/plinth`'s own `PATTERNS` heredoc — with a
+  self-check that fails loudly if the markers move and the extraction goes empty — so a
+  newly pinned file cannot be added to the tool and missed by the fixture again. Same
+  lesson the shipped-script syntax check learned when an explicit list skipped
+  `lane-guard.sh` and `receipt-verify.sh`.
+- **The remint fast path ignored the reviewed BASE.** `already APPROVED at <sha>` matched on
+  SHA and verdict alone, so re-running against a different base re-minted a receipt whose
+  subject binds THAT base — a verdict that read the `develop` diff could mint a receipt
+  attesting a `main` review, which the server check would then verify as sound. The fast
+  path now requires the stored base to match; a mismatch says so and runs a real round.
+
+### Earlier in this release (superseded above, kept for the record)
+Found by the FIRST review run under the v4.7 engine and the new seats (codex/gpt-5.6-sol
+primary, claude/opus cross-vendor audit). The audit raised all three; the primary caught
+two of them. Both are in the minting path, so neither could be caught by the verifier's
+own fixtures — the receipt was simply built wrong before verification ever saw it.
+- **Origin URL normalization handled only two of git's forms.** `mint_receipt` stripped
+  scp-style (`git@host:owner/repo`) and `http(s)://`, so an `ssh://git@github.com/o/r.git`
+  remote — also `git+ssh://`, a host with a port, or `git://` — left the scheme and host
+  in place and the receipt recorded `repo:"ssh://git@github.com/o/r"`. It then minted
+  anyway: a note that exists but can NEVER satisfy the server check, which is exactly what
+  the adjacent no-origin branch refuses to do as "strictly worse than none". Every affected
+  repo would have failed `receipt / verify` on legitimately approved PRs, with a
+  misdirecting "minted for a different repository", and the remint path would regenerate
+  the same bad value forever. All of git's URL forms are now reduced, and anything that
+  does not reduce to an `owner/repo` pair takes the announce-and-skip path instead of
+  baking in a value that can only fail.
+- **The override ledger could fail OPEN.** v4.7.0 refused to mint on an unparseable
+  `usage.jsonl` but treated an ABSENT one as "no overrides" — sound only at round 0
+  (Tier 0 mints before any ledger exists). After a round has run, the ledger should exist,
+  and its absence means state was lost: minting then asserts zero overrides AND
+  `git notes add -f` OVERWRITES the correct receipt already at that SHA. The server
+  check's tuple-set equality would afterwards read an honest PR body as a phantom
+  disclosure, or verify a body trimmed to match while a real operator override went
+  undisclosed. Absent-after-round-0 is now refused exactly like unparseable.
+- **Spec sync.** MANUAL's Tier-2 bullet still described v4.6's once-per-loop confirmation
+  skip and a `verdict.json` `confirmation` field that v4.7 deleted, contradicting the same
+  file two paragraphs later. The canonical spec is what every future review is judged
+  against; a stale claim there is the defect class this repo blocks on.
+- ci.yml required floor/checks gates were repinned after v4.7.0; instrument deliberately lags (see .plinth-version) until a labeled refresh. `ci.yml`'s required floor/checks gates repinned
+  to the v4.7.0 release commit (their trailing comments corrected too — a stale label on a
+  correct pin is the same overclaim class).
+## v4.7.2 — atomic managed-file refresh (upstream #10) — July 26, 2026
+- **Managed-file refresh is atomic (upstream #10).** `plinth update` installs shared
+  files via same-dir temp + `rename(2)` so a running `review.sh` keeps its open inode;
+  destination mode is preserved exactly on refresh, with a `chmod u+x` exec-bit floor on
+  the eight managed scripts so a lost +x is healed without resetting other bits; a live
+  review round only warns (does not hard-fail). `.plinth-version` is still stamped from
+  `$PLINTH_VERSION` (not copied from the source tree).
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
@@ -105,7 +460,7 @@
 - **`receipt / verify` — the new reusable check.** `shared/.plinth/receipt-verify.sh`
   re-derives every field from the PR's own subject and fails closed on any mismatch;
   `.github/workflows/plinth-receipt.yml` runs it as the requirable context. Hardening:
-  the verifier is fetched at the workflow's OWN pinned ref — `github.job_workflow_ref`, i.e.
+  the verifier is fetched at the workflow's OWN pinned ref — `job.workflow_ref`, i.e.
   the exact SHA the caller's `uses:` line pins, never a version string read from the PR's
   checkout (that would let the PR pick its own verifier), the notes
   ref is fetched from the BASE repo only, the PR body comes from the event payload and is
