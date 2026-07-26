@@ -12,8 +12,8 @@
   tamper arithmetic. Canary: implementer agents declare Write, allocate a not-yet-existing
   `$SPEC` under a unique dir and print it, ban fixed-heredoc shell embedding and plain
   `mktemp` for SPEC, pin each real command block to feed `"$SPEC"` (not `"$OUT"`), and
-  exercise both lanes' documented CLI input wiring so a payload containing a literal
-  `SPEC_EOF` line is delivered unchanged without shell execution.
+  run each lane's extracted command block (GCMD/CCMD) against CLI stubs so a payload
+  containing a literal `SPEC_EOF` line is delivered unchanged without shell execution.
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.

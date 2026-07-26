@@ -752,6 +752,37 @@ installed copies.
   file would make the invariant local instead of global. Not fixed: it would add a
   parse format for a property nothing currently violates.
 
+- **Implementer canary anti-embedding grep is narrower than the agent ban**
+  (`.github/workflows/plinth-canary.yml`, lane SPEC_EOF canary; audit minor on
+  fix/lane-spec-write-not-shell). Agents ban Bash heredoc/printf/echo for the
+  prompt file; the canary only greps `cat > $SPEC` and `<<SPEC_EOF`. A
+  `printf … > "$SPEC"`, `tee`, or `<<'EOF'` regression could ship green. Broaden
+  when next touching the step.
+- **Command-block extraction is first-match-to-blank-line**
+  (same canary + later lane-flag assertions). `awk '/grok --prompt-file/…'` can
+  latch onto prose or truncate on an internal blank line. Anchor on the indented
+  `cap 600` invocation when next hardening the canary (same pattern in the
+  implementer flag-live checks further down the workflow).
+- **No real-lane receipt that Write can create under the system temp dir**
+  (lane Write-tool fix, #22). The canary uses a python analog; nothing proves
+  Claude Code Write accepts a not-yet-existing child of `mktemp -d` outside the
+  project, unblocked by guard.sh. Wants a runtime receipt from a real
+  grok-implementer/codex-implementer run. Related: granting Write while upstream
+  #32 (lane self-implements) is open makes a self-implementing lane slightly
+  less distinguishable (Bash already conferred the capability).
+- **review.sh HARNESS comment: GOAL.md omission + allowlist vs exception-list**
+  (`shared/.plinth/review.sh` ~365, bundled with the lane heredoc fix). Comment
+  lists project-owned exceptions without GOAL.md; asserts HARNESS_RE/PATHS
+  "enumerate the same pinned set" while the contract is exception-based and
+  HARNESS_RE is a closed allowlist. Comment-only, unrelated scope to the lane
+  fix — clean up when next editing that block.
+- **#22 product change recorded under already-tagged v4.7.1 with no VERSION bump**
+  (CHANGELOG.md / VERSION). v4.7.1 is tagged; this branch appends product
+  behavior under that section rather than a new top section + bump or a
+  changelog.d fragment. Judgment: still in-flight on this branch when opened;
+  next ship should either bump or land a fragment so the recording rule is
+  clean.
+
 - **guard.sh: protected-path loops fail open on heredoc temp failure**
   (`shared/.claude/hooks/guard.sh`, both pattern loops). If Bash cannot create
   the heredoc temp file, the loop is skipped and the hook still exits 0 —

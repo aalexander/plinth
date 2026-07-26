@@ -124,9 +124,9 @@ jobs:
           printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$OUT"' && {
             echo "::error::codex COMMAND feeds \$OUT as the prompt — must be \$SPEC"; exit 1; } || true
           # Behavioral: non-shell create (Write-tool analog) of a not-yet-existing path with a
-          # payload containing a literal SPEC_EOF line, then exercise EACH lane's documented
-          # CLI input wiring against stubs that capture what the real command form would deliver.
-          # Mirrors the agents: unique dir + child path that does NOT exist before Write.
+          # payload containing a literal SPEC_EOF line, then RUN THE ALREADY-EXTRACTED
+          # $GCMD/$CCMD blocks against stubs (not freehand retyped command strings). A
+          # mutation that changes the agent command block must change what the stub receives.
           PD="$(mktemp -d)"; SPEC_DIR="$(mktemp -d "$PD/spec.XXXXXX")"; SPEC="$SPEC_DIR/prompt"; ESCAPED="$PD/escaped"
           [ ! -e "$SPEC" ] || { echo "::error::test fixture pre-created SPEC path — would not model Claude Code Write"; exit 1; }
           python3 - "$SPEC" "$ESCAPED" <<'PYWRITE'
@@ -140,7 +140,7 @@ jobs:
           )
           PYWRITE
           mkdir -p "$PD/bin"
-          # Grok-shaped stub: same --prompt-file contract the extracted GCMD uses.
+          # Grok-shaped stub: honors --prompt-file PATH from the extracted GCMD argv.
           cat > "$PD/bin/grok" <<'CLISTUB'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -150,7 +150,7 @@ jobs:
           done
           echo "stub-grok: missing --prompt-file" >&2; exit 2
           CLISTUB
-          # Codex-shaped stub: prompt on stdin (matches `codex exec ... - < "$SPEC"`).
+          # Codex-shaped stub: prompt on stdin (GCMD uses `codex exec ... - < "$SPEC"`).
           cat > "$PD/bin/codex" <<'CLISTUB'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -158,25 +158,51 @@ jobs:
           exit 0
           CLISTUB
           chmod +x "$PD/bin/grok" "$PD/bin/codex"
-          # Optional override for a single-CLI harness; default exercises both lane wirings.
+          # Negative control: a fixed-delimiter heredoc MUST execute post-SPEC_EOF shell
+          # (proves the ESCAPED assertion is falsifiable under the old pattern).
+          ESCAPED_NEG="$PD/escaped-neg"
+          {
+            printf '%s\n' 'cat > /dev/null <<SPEC_EOF' 'line-before' 'SPEC_EOF'
+            printf 'touch %q\n' "$ESCAPED_NEG"
+            printf '%s\n' 'leftover' 'SPEC_EOF'
+          } > "$PD/neg-heredoc.sh"
+          bash "$PD/neg-heredoc.sh" 2>/dev/null || true
+          [ -e "$ESCAPED_NEG" ] || {
+            echo "::error::negative control failed — fixed SPEC_EOF heredoc did not execute the post-delimiter touch"; exit 1; }
+          # Run the EXTRACTED command blocks (indent stripped). cap() is identity so the
+          # wall-clock wrapper does not hide argv; stubs capture what the real form delivers.
+          run_extracted() {
+            # $1=received path, $2=out path, $3=command-block text
+            local recv="$1" out="$2" block="$3"
+            local runf="$PD/run-extracted.sh"
+            {
+              echo 'set -euo pipefail'
+              echo 'cap() { shift; "$@"; }'   # drop the N-second arg; run the real CLI form
+              echo "LANE_RULES=canary-isolation"
+              echo "BEFORE=canary; SNAP=canary; RC=0"
+              echo "OUT=$(printf %q "$out")"
+              echo "SPEC=$(printf %q "$SPEC")"
+              echo "RECEIVED=$(printf %q "$recv"); export RECEIVED"
+              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
+              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
+            } > "$runf"
+            bash "$runf"
+          }
           if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
             RECEIVED="$PD/received" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
             cmp -s "$SPEC" "$PD/received" || {
               echo "::error::PROMPT_CLI_UNDER_TEST path transport changed a SPEC_EOF-containing payload"; exit 1; }
           else
-            # Exact input forms from the agent command blocks (variable + flag/redirect).
-            RECEIVED="$PD/received-grok" SPEC="$SPEC" PATH="$PD/bin:$PATH" \
-              bash -c 'grok --prompt-file "$SPEC"'
+            run_extracted "$PD/received-grok" "$PD/out-grok" "$GCMD"
             cmp -s "$SPEC" "$PD/received-grok" || {
-              echo "::error::grok --prompt-file \"\$SPEC\" transport changed a SPEC_EOF-containing payload"; exit 1; }
-            RECEIVED="$PD/received-codex" SPEC="$SPEC" PATH="$PD/bin:$PATH" \
-              bash -c 'codex - < "$SPEC"'
+              echo "::error::extracted grok GCMD did not deliver the SPEC_EOF-containing payload via --prompt-file \"\$SPEC\""; exit 1; }
+            run_extracted "$PD/received-codex" "$PD/out-codex" "$CCMD"
             cmp -s "$SPEC" "$PD/received-codex" || {
-              echo "::error::codex stdin-from-\"\$SPEC\" transport changed a SPEC_EOF-containing payload"; exit 1; }
+              echo "::error::extracted codex CCMD did not deliver the SPEC_EOF-containing payload via stdin from \"\$SPEC\""; exit 1; }
           fi
           [ ! -e "$ESCAPED" ] || { echo "::error::a spec line after literal SPEC_EOF escaped into shell execution"; exit 1; }
           rm -rf "$PD"
-          echo "canary: each lane's \$SPEC path wiring carries literal SPEC_EOF without execution OK"
+          echo "canary: extracted GCMD/CCMD path wiring carries literal SPEC_EOF without execution OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
