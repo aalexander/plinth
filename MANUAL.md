@@ -484,7 +484,9 @@ The server binds **127.0.0.1 only**, is read-only, and serves a single static
 page plus `GET /api/snapshot`. The server keeps a **single-flight snapshot body
 with a 2.5s TTL** (≥ the 2s UI poll) so steady-state polling reuses one builder
 result instead of re-shelling every tick; concurrent callers share that flight.
-Observed burn/tokens come from a **recent transcript tail**. A review round is
+Observed burn/tokens come from a **recent transcript tail**. Session task /
+session age stream at most the last **10k** `events.jsonl` lines (bounded per
+poll; interleaved SIDs keep metadata within that window). A review round is
 RUNNING when a `request-N` outruns the verdict **and** either there is no
 `last-error`, or the request file is **strictly newer** than `last-error`
 (nanosecond mtime when python3 is available — bash `-nt` is whole-second on

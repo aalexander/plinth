@@ -1917,9 +1917,9 @@ _dash_latest_request() {
   done | sort -n -k1,1 | tail -1 | cut -f2-
 }
 
-# Bound transcript re-parse for burn. Session identity (sid/task/session_secs/
-# transcript path) is extracted with a streaming reduce over the full events
-# file (O(1) memory) so a long session is not corrupted by a simple tail.
+# Bounds for per-poll work. Session identity streams at most the last N event
+# lines (O(N) time / O(unique SIDs in window) mem). Transcript burn uses a tail.
+_DASH_EV_MAX_LINES=10000
 _DASH_TR_TAIL=300
 
 # One project card as a compact JSON object on stdout (single line).
@@ -1984,14 +1984,23 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Session identity: streaming reduce over events.jsonl (O(events) time,
-  # O(unique SIDs) memory — per-SID map so interleaved SIDs keep the active
-  # session's task/t0). No on-disk meta cache. Serve mode amortizes poll cost
-  # with a single-flight snapshot cache (TTL ≥ UI poll interval).
+  # Session identity: stream at most the last _DASH_EV_MAX_LINES lines (bounded
+  # cost per poll). Per-SID map keeps interleaved SIDs' task/t0 for the active
+  # sid. Serve mode also single-flights the whole snapshot (TTL ≥ UI poll).
   local sid="" session_t0="" task="" transcript_path=""
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
-    local meta_out meta_rc=0
+    local meta_out meta_rc=0 ev_src="$EV_RAW" ev_tmp=""
+    local lines
+    lines="$(wc -l < "$EV_RAW" 2>/dev/null | tr -d ' ')"
+    case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+    if [ "$lines" -gt "$_DASH_EV_MAX_LINES" ]; then
+      ev_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-ev.XXXXXX")" || ev_tmp=""
+      if [ -n "$ev_tmp" ]; then
+        tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
+        ev_src="$ev_tmp"
+      fi
+    fi
     meta_out="$(jq -nr '
       reduce inputs as $e ({cur:null, by:{}};
         if ($e.sid == null) then .
@@ -2012,7 +2021,8 @@ snapshot_one_project() {
       | .cur as $sid
       | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
       | @json
-    ' "$EV_RAW" 2>/dev/null)" || meta_rc=$?
+    ' "$ev_src" 2>/dev/null)" || meta_rc=$?
+    [ -n "$ev_tmp" ] && rm -f "$ev_tmp"
     if [ "$meta_rc" -ne 0 ] || [ -z "$meta_out" ]; then
       events_parse_failed=true
     else
@@ -2235,17 +2245,17 @@ CHILD_ENV = os.environ.copy()
 # instead of re-scanning every project's events.jsonl every tick. Loopback-only.
 _snap_lock = threading.Lock()
 _snap_body = None
-_snap_at = 0.0
+_snap_mono = 0.0
 _SNAP_TTL = 2.5
 # Optional test hook: PLINTH_DASH_SNAPSHOT_BIN overrides the offline builder
 # (smoke counts invocations for single-flight / TTL assertions).
 SNAP_BIN = os.environ.get("PLINTH_DASH_SNAPSHOT_BIN") or BIN
 
 def _snapshot_bytes():
-    global _snap_body, _snap_at
-    now = time.time()
+    global _snap_body, _snap_mono
+    now = time.monotonic()
     with _snap_lock:
-        if _snap_body is not None and (now - _snap_at) < _SNAP_TTL:
+        if _snap_body is not None and (now - _snap_mono) < _SNAP_TTL:
             return _snap_body
         out = subprocess.check_output(
             [SNAP_BIN, "dash", "--snapshot"],
@@ -2255,7 +2265,7 @@ def _snapshot_bytes():
         )
         json.loads(out)  # validate before caching
         _snap_body = out
-        _snap_at = time.time()
+        _snap_mono = time.monotonic()
         return out
 
 class H(BaseHTTPRequestHandler):

@@ -701,6 +701,14 @@ setTimeout(() => {
       console.error("last_error card missing infra-error chip");
       process.exit(1);
     }
+    if (!errHtml.includes('class="card bad"')) {
+      console.error("last_error cardTone should be bad");
+      process.exit(1);
+    }
+    if (api.cardTone(errRev) !== "bad") {
+      console.error("cardTone(last_error) expected bad");
+      process.exit(1);
+    }
     if (errHtml.includes("RUNNING")) {
       console.error("last_error card must not show RUNNING");
       process.exit(1);

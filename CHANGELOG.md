@@ -18,9 +18,10 @@
   token categories, including cache read). NEEDS-HUMAN open+blocking =
   unchecked boxes only. Malformed events/verdicts surface `error` without
   zeroing queue counts. Vendor quota always unavailable. Port 1–65535.
-- **Serve cache.** Single-flight builder + **2.5s TTL** (≥ 2s UI poll) so
-  steady-state polling and concurrent `/api/snapshot` callers share one shell
-  snapshot. UI serializes client polls (`pollInFlight`).
+- **Serve cache + bounded scan.** Single-flight builder + **2.5s TTL**
+  (`time.monotonic`, ≥ 2s UI poll) so concurrent `/api/snapshot` callers share
+  one shell snapshot. Event-stream meta is capped at the last **10k** lines per
+  project (bounded per-poll cost). UI serializes client polls (`pollInFlight`).
 - **`--snapshot` + smoke.** Offline JSON builder; `shared/dashboard/smoke-snapshot.sh`
   covers fixtures (tilde, detached, abbrev, multi-digit request, completed
   queue, long session, interleave, last-error/retry/same-second, stale, bad

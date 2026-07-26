@@ -254,8 +254,9 @@
 
   function cardTone(p) {
     if (p.error) return "bad";
-    if (p.needs_human && p.needs_human.open > 0) return "human";
     const r = p.review;
+    if (r && r.last_error) return "bad";
+    if (p.needs_human && p.needs_human.open > 0) return "human";
     if (!r) return p.feedless ? "idle" : "idle";
     if (r.running) return "warn";
     if (r.stale) return "bad";
