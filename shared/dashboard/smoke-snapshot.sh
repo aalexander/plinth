@@ -285,9 +285,12 @@ const resolvers = [];
 const sandbox = {
   console,
   Date, Math, String, Number, JSON, Array, Object, parseInt, isNaN,
-  // Capture interval callbacks so the harness can fire them (poll timer).
+  // Capture interval callbacks + delays so the harness can assert the 2s poll.
   __intervals: [],
-  setInterval: (fn) => { sandbox.__intervals.push(fn); return sandbox.__intervals.length; },
+  setInterval: (fn, ms) => {
+    sandbox.__intervals.push({ fn, ms });
+    return sandbox.__intervals.length;
+  },
   clearInterval: () => {},
   fetch: () => {
     fetchStarts += 1;
@@ -322,15 +325,29 @@ if (!api || typeof api.cardHTML !== "function" || typeof api.cardTone !== "funct
   console.error("missing __plinthDash.cardHTML/cardTone");
   process.exit(2);
 }
+// Must register a 2000ms poll interval (not only the 1000ms clock).
+const pollTimers = sandbox.__intervals.filter((i) => i.ms === 2000);
+const clockTimers = sandbox.__intervals.filter((i) => i.ms === 1000);
+if (pollTimers.length !== 1) {
+  console.error("expected exactly one 2000ms poll interval, got", pollTimers.length,
+    "intervals=", sandbox.__intervals.map((i) => i.ms));
+  process.exit(1);
+}
+if (clockTimers.length < 1) {
+  console.error("expected a 1000ms clock interval");
+  process.exit(1);
+}
+const pollTick = pollTimers[0].fn;
 // Initial poll() from the IIFE started one fetch.
 if (fetchStarts !== 1 || pending !== 1) {
   console.error("expected 1 in-flight fetch after boot, got starts=", fetchStarts, "pending=", pending);
   process.exit(1);
 }
-// Fire every interval callback twice (simulates two 2s ticks while still pending).
-for (const fn of sandbox.__intervals) { fn(); fn(); }
+// Fire the 2s poll callback twice while still pending — must not start another fetch.
+pollTick();
+pollTick();
 if (fetchStarts !== 1 || pending !== 1) {
-  console.error("overlapping poll: starts=", fetchStarts, "pending=", pending);
+  console.error("overlapping poll via 2000ms timer: starts=", fetchStarts, "pending=", pending);
   process.exit(1);
 }
 // Explicit concurrent poll() calls must no-op while in flight.
@@ -340,7 +357,7 @@ if (fetchStarts !== 1) {
   console.error("explicit poll overlap: starts=", fetchStarts);
   process.exit(1);
 }
-// Complete the first fetch; a subsequent poll may start another.
+// Complete the first fetch; the next 2000ms tick (not a manual api.poll) starts #2.
 resolvers[0]();
 // Allow microtasks
 setTimeout(() => {
@@ -348,9 +365,15 @@ setTimeout(() => {
     console.error("poll still inFlight after resolve");
     process.exit(1);
   }
-  api.poll();
+  pollTick(); // automatic 2s interval drives the next fetch
   if (fetchStarts !== 2 || pending !== 1) {
-    console.error("second poll after idle failed: starts=", fetchStarts, "pending=", pending);
+    console.error("2000ms tick after idle failed: starts=", fetchStarts, "pending=", pending);
+    process.exit(1);
+  }
+  // Overlap still blocked on the second fetch.
+  pollTick();
+  if (fetchStarts !== 2) {
+    console.error("second in-flight overlapped via timer");
     process.exit(1);
   }
   resolvers[1]();
