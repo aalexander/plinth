@@ -726,12 +726,11 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
-- **guard.sh heredoc inert-consumer: basename `cat`/`tee` only**
-  (`shared/.claude/hooks/guard.sh` first_consumer). A path whose basename is
-  `cat`/`tee` (e.g. `./cat`, a shadowed function/alias) is treated as an inert
-  sink, so a custom executable could receive a suppressed body. Trusted-worker
-  threat model; requiring an exact path-free token would false-positive
-  `/bin/cat`. Opened by fix/guard-quoted-heredoc review round 1 (minor).
+- **guard.sh heredoc inert-consumer: shell function/alias named `cat`/`tee`**
+  (`shared/.claude/hooks/guard.sh`). The simple-form gate requires an exact
+  `cat`/`tee` token (path-qualified `/bin/cat` / `./cat` are full-scanned). A
+  shell function or alias of that name could still receive a suppressed body.
+  Trusted-worker threat model. Opened by fix/guard-quoted-heredoc review.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

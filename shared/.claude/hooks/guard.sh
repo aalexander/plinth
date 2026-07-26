@@ -464,45 +464,47 @@ case "$tool" in
     # heredoc (optional blank lines, optional prefixes). Anything else → full scan.
     # Awk program uses \047 for quotes so it can live inside bash single quotes.
     if ! printf '%s\n' "$cmd" | awk '
-      BEGIN { state=0; delim=""; tabs=0; q=sprintf("%c",39) }
+      BEGIN { state=0; delim=""; tabs=0; q=sprintf("%c",39); bad=0 }
       {
         line=$0
         if (state==0) {
           if (line ~ /^[[:space:]]*$/) next
-          # must contain << then a simple quoted delimiter; reject pipes/groups on header
-          if (line ~ /[|;&(){}]/ && line !~ /#.*[|;&(){}]/) {
-            # allow only if the meta appears solely inside a trailing # comment
-            h=line; sub(/#.*/,"",h)
-            if (h ~ /[|;&(){}]/) exit 1
-          }
-          if (line !~ /(^|[[:space:]])(cat|tee)([[:space:]]|$)/) exit 1
-          if (line !~ /<</) exit 1
-          tabs=(line ~ /<<-/)
-          # first << only (not the last — cat <<'A' <<'B' is not simple-form)
-          if (!match(line, /<</)) exit 1
-          rest=substr(line, RSTART+2)
+          # header without trailing comment (space/# or ;# — not glued )#suffix)
+          h=line
+          sub(/[ \t]+#.*$/, "", h)
+          sub(/;#.*$/, "", h)
+          # reject multi-statement / pipeline / groups on the header (after comment strip)
+          if (h ~ /[|;&(){}]/) { bad=1; exit }
+          if (h !~ /(^|[[:space:]])(cat|tee)([[:space:]]|$)/) { bad=1; exit }
+          if (h !~ /<</) { bad=1; exit }
+          # only one << on the header
+          t=h; nlt=0; while (match(t, /<</)) { nlt++; t=substr(t, RSTART+2) }
+          if (nlt!=1) { bad=1; exit }
+          tabs=(h ~ /<<-/)
+          if (!match(h, /<</)) { bad=1; exit }
+          rest=substr(h, RSTART+2)
           if (substr(rest,1,1)=="-") rest=substr(rest,2)
           sub(/^[[:space:]]+/, "", rest)
           if (substr(rest,1,1)==q) {
             rest=substr(rest,2)
-            p=index(rest,q); if (p==0) exit 1
+            p=index(rest,q); if (p==0) { bad=1; exit }
             delim=substr(rest,1,p-1)
             rest=substr(rest,p+1)
-          } else if (substr(rest,1,2)=="$" q) {
+          } else if (length(rest)>=2 && substr(rest,1,1)=="$" && substr(rest,2,1)==q) {
             rest=substr(rest,3)
-            p=index(rest,q); if (p==0) exit 1
+            p=index(rest,q); if (p==0) { bad=1; exit }
             delim=substr(rest,1,p-1)
-            if (delim ~ /\\/) exit 1
+            if (delim ~ /\\/) { bad=1; exit }
             rest=substr(rest,p+1)
           } else if (substr(rest,1,1)=="\"") {
             rest=substr(rest,2)
-            p=index(rest,"\""); if (p==0) exit 1
+            p=index(rest,"\""); if (p==0) { bad=1; exit }
             delim=substr(rest,1,p-1)
-            if (delim ~ /\\/) exit 1
+            if (delim ~ /\\/) { bad=1; exit }
             rest=substr(rest,p+1)
-          } else exit 1
+          } else { bad=1; exit }
           sub(/^[[:space:]]+/, "", rest)
-          if (rest!="" && rest !~ /^#/) exit 1
+          if (rest!="") { bad=1; exit }
           state=1
           next
         }
@@ -514,10 +516,11 @@ case "$tool" in
         }
         if (state==2) {
           if (line ~ /^[[:space:]]*$/) next
-          exit 1
+          bad=1
+          next
         }
       }
-      END { exit (state==2) ? 0 : 1 }
+      END { exit (state==2 && bad==0) ? 0 : 1 }
     '; then
       inert_stripped=$(printf '%s\n' "$cmd")
     fi
