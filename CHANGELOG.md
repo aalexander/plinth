@@ -3,22 +3,29 @@
 ## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
 - **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
-  page plus `GET /api/snapshot`, read-only. Discovery (first match):
-  `PLINTH_DASH_ROOTS` (colon paths), else `~/.config/plinth/dashboard-projects`
-  (one path per line; leading `~/` expanded correctly), else default `~/Dev/*`
-  with `.plinth/config`.
+  page plus `GET /api/snapshot`, read-only (**python3** required for serve;
+  `--snapshot` is bash+jq). Discovery (first match): `PLINTH_DASH_ROOTS` (colon
+  paths; no glob expansion), else `~/.config/plinth/dashboard-projects` (one
+  path per line; leading `~/` expanded correctly), else default `~/Dev/*` with
+  `.plinth/config`.
 - **Per-card snapshot.** Project path, branch @ head (detached → slug
   `detached`), review verdict / round / full-SHA stale vs HEAD / in-flight
-  round (numeric request-N sort, path-hyphen safe), `events.jsonl` activity age,
-  NEEDS-HUMAN open+blocking (unchecked boxes only), feedless flag, observed
-  driver burn when a Claude transcript is reachable. Malformed side-files do
-  not zero real queue counts; cards surface `error` instead of looking idle.
-  Vendor plan remaining quota and reset times are explicitly **unavailable**
-  (honest empty — no scrapers). Port must be 1–65535.
-- **`--snapshot`.** Offline JSON builder used by the server and by
-  `shared/dashboard/smoke-snapshot.sh` (fixture matrix + node card unit test +
-  short-lived loopback HTTP; canary CI). UI auto-refreshes every 2s. Does not
-  replace `plinth watch` (TTY stays the per-session deep view).
+  round (numeric request-N sort, path-hyphen safe). RUNNING only when
+  `request-N` outruns the verdict **and** either no `last-error` or the request
+  file is strictly newer (`-nt`) than `last-error` (retry after infra failure).
+  Session identity streams `events.jsonl` with a per-SID map (interleaved SIDs
+  keep task/session start). Burn/tokens from a **recent transcript tail** (all
+  token categories, including cache read). NEEDS-HUMAN open+blocking =
+  unchecked boxes only. Malformed events/verdicts surface `error` without
+  zeroing queue counts. Vendor quota always unavailable. Port 1–65535.
+- **Serve cache.** Single-flight builder + **2.5s TTL** (≥ 2s UI poll) so
+  steady-state polling and concurrent `/api/snapshot` callers share one shell
+  snapshot. UI serializes client polls (`pollInFlight`).
+- **`--snapshot` + smoke.** Offline JSON builder; `shared/dashboard/smoke-snapshot.sh`
+  covers fixtures (tilde, detached, abbrev, multi-digit request, completed
+  queue, long session, interleave, last-error/retry/same-second, stale, bad
+  events/verdict), node `cardHTML` unit tests, and loopback HTTP with
+  single-flight invocation counts. Wired into the canary scaffold job.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

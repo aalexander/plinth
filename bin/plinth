@@ -1842,6 +1842,19 @@ _dash_mtime() {  # epoch seconds or 0
   case "$t" in ''|*[!0-9]*) echo 0 ;; *) printf '%s\n' "$t" ;; esac
 }
 
+# True if $1 is strictly newer than $2. Prefer nanosecond compare (python3)
+# because bash `[ a -nt b ]` is whole-second on some platforms (macOS) and
+# would miss a same-second retry after last-error.
+_dash_file_newer() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys
+sys.exit(0 if os.stat(sys.argv[1]).st_mtime_ns > os.stat(sys.argv[2]).st_mtime_ns else 1)' \
+      "$1" "$2" 2>/dev/null && return 0
+    return 1
+  fi
+  [ "$1" -nt "$2" ]
+}
+
 _dash_realpath() {
   # Prefer realpath; fall back to cd/pwd (no -P on pure logical paths).
   if command -v realpath >/dev/null 2>&1; then realpath "$1" 2>/dev/null && return 0; fi
@@ -1935,12 +1948,12 @@ snapshot_one_project() {
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   # Infra failure leaves last-error. A request file strictly newer than last-error
   # means a retry is in flight (review.sh writes request, then on fail last-error;
-  # a later retry rewrites request). Same-second or older request → keep error.
+  # a later retry rewrites request). Same mtime or older request → keep error.
   local has_last_error=false
   local errfile="$dir/.plinth/session/review/$slug/last-error"
   if [ -f "$errfile" ]; then
     if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ] \
-       && [ "$rqfile" -nt "$errfile" ]; then
+       && _dash_file_newer "$rqfile" "$errfile"; then
       has_last_error=false
     else
       has_last_error=true
@@ -1971,10 +1984,10 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Session identity: streaming reduce over events.jsonl (O(1) memory, per-SID
-  # map so interleaved SIDs keep the active session's task/t0). No on-disk cache
-  # (predictable /tmp + eval is a local multi-user hazard). Serve mode amortizes
-  # cost with a short single-flight snapshot cache in the Python server.
+  # Session identity: streaming reduce over events.jsonl (O(events) time,
+  # O(unique SIDs) memory — per-SID map so interleaved SIDs keep the active
+  # session's task/t0). No on-disk meta cache. Serve mode amortizes poll cost
+  # with a single-flight snapshot cache (TTL ≥ UI poll interval).
   local sid="" session_t0="" task="" transcript_path=""
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
@@ -2217,13 +2230,16 @@ BIN = os.environ["PLINTH_BIN"]
 # Preserve operator discovery overrides for snapshot child.
 CHILD_ENV = os.environ.copy()
 
-# Single-flight + short TTL cache: concurrent /api/snapshot callers share one
-# builder, and the 2s UI poll reuses a fresh result instead of re-scanning every
-# project's events.jsonl on every tick. Loopback-only; not a multi-tenant cache.
+# Single-flight + TTL cache: concurrent /api/snapshot callers share one builder.
+# TTL is >= the UI poll interval (2s) so steady-state polling reuses the body
+# instead of re-scanning every project's events.jsonl every tick. Loopback-only.
 _snap_lock = threading.Lock()
 _snap_body = None
 _snap_at = 0.0
-_SNAP_TTL = 1.5
+_SNAP_TTL = 2.5
+# Optional test hook: PLINTH_DASH_SNAPSHOT_BIN overrides the offline builder
+# (smoke counts invocations for single-flight / TTL assertions).
+SNAP_BIN = os.environ.get("PLINTH_DASH_SNAPSHOT_BIN") or BIN
 
 def _snapshot_bytes():
     global _snap_body, _snap_at
@@ -2232,7 +2248,7 @@ def _snapshot_bytes():
         if _snap_body is not None and (now - _snap_at) < _SNAP_TTL:
             return _snap_body
         out = subprocess.check_output(
-            [BIN, "dash", "--snapshot"],
+            [SNAP_BIN, "dash", "--snapshot"],
             env=CHILD_ENV,
             stderr=subprocess.DEVNULL,
             timeout=120,

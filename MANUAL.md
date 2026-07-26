@@ -481,14 +481,16 @@ plinth dash --snapshot   # print the same JSON the UI polls (offline / CI)
 
 Requires **python3** on PATH to serve the UI (`--snapshot` is bash+jq only).
 The server binds **127.0.0.1 only**, is read-only, and serves a single static
-page plus `GET /api/snapshot` (short single-flight cache so the 2s UI poll does
-not re-shell every tick). Observed burn/tokens come from a **recent transcript
-tail**. A review round is RUNNING when a `request-N` outruns the verdict **and**
-either there is no `last-error`, or the request file is **strictly newer** than
-`last-error` (a retry after infra failure). A `last-error` that is same-age or
-newer than the request keeps the card on “review infra error”, not RUNNING. It
-does **not** replace `plinth watch` — the TTY dashboard stays the per-session
-deep view.
+page plus `GET /api/snapshot`. The server keeps a **single-flight snapshot body
+with a 2.5s TTL** (≥ the 2s UI poll) so steady-state polling reuses one builder
+result instead of re-shelling every tick; concurrent callers share that flight.
+Observed burn/tokens come from a **recent transcript tail**. A review round is
+RUNNING when a `request-N` outruns the verdict **and** either there is no
+`last-error`, or the request file is **strictly newer** than `last-error`
+(nanosecond mtime when python3 is available — bash `-nt` is whole-second on
+some platforms). A `last-error` that is same-age or newer than the request
+keeps the card on “review infra error”, not RUNNING. It does **not** replace
+`plinth watch`.
 
 **Discovery** (first match wins):
 
@@ -765,15 +767,13 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
-- **`plinth dash` audit minors (v4.8 round-8 cross-vendor):** (a) loopback bind is
-  code-enforced (HOST + `LoopbackServer.server_bind`) but the smoke only greps the
-  banner for `127.0.0.1` — add a non-loopback connect-refused assertion when a
-  second local address is available. (b) `/api/snapshot` under ThreadingHTTPServer
-  has no concurrency limit / single-flight cache — loopback-only hardening; a
-  generation-keyed cache would collapse fan-out. (c) a discovered path with
-  `.plinth/config` but no git repo paints `stale ≠ HEAD` with branch `detached`
-  rather than "git unavailable" — distinguish no-git from stale. Raised by the
-  Tier-2 audit on feat/html-dashboard (findings-audit-8.json).
+- **`plinth dash` backlog (v4.8 review):** (a) loopback bind is code-enforced
+  (HOST + `LoopbackServer.server_bind`); smoke asserts lsof shows `127.0.0.1`
+  but not a multi-homed non-loopback probe on every platform. (b) server has
+  single-flight + 2.5s TTL for snapshot bodies; ThreadingHTTPServer still allows
+  unlimited concurrent *caller threads* (not builders) — further hardening
+  optional. (c) a discovered path with `.plinth/config` but no git repo paints
+  branch `detached` / head `-` rather than "git unavailable".
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

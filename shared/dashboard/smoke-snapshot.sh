@@ -479,6 +479,40 @@ jq -e '
   and .review.last_error == true
 ' "$OUT" >/dev/null
 
+# Subsecond later request within the same wall-clock second → RUNNING (-nt)
+R="$FIX/sigma-subsec"
+mk_git "$R"
+git -C "$R" checkout -qb feat/subsec
+echo r > "$R/r.txt"
+git -C "$R" add -A
+git -C "$R" commit -qm "work"
+RFULL="$(git -C "$R" rev-parse HEAD)"
+mkdir -p "$R/.plinth/session/review/feat-subsec"
+jq -nc --arg sha "$RFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$R/.plinth/session/review/feat-subsec/verdict.json"
+printf 'infra error\n' > "$R/.plinth/session/review/feat-subsec/last-error"
+jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
+  > "$R/.plinth/session/review/feat-subsec/request-2.json"
+python3 - "$R/.plinth/session/review/feat-subsec/last-error" \
+  "$R/.plinth/session/review/feat-subsec/request-2.json" <<'PY'
+import os, sys
+# Same integer second, request 50ms later (nanosecond utime).
+sec = 1_700_000_000
+os.utime(sys.argv[1], ns=(sec * 10**9, sec * 10**9))
+os.utime(sys.argv[2], ns=(sec * 10**9 + 50_000_000, sec * 10**9 + 50_000_000))
+PY
+export PLINTH_DASH_ROOTS="$R"
+SUB="$FIX/subsec.json"
+"$PLINTH" dash --snapshot > "$SUB"
+jq -e '
+  .projects[] | select(.name == "sigma-subsec")
+  | .review.running == true
+  and .review.last_error == false
+  and .review.round == 2
+' "$SUB" >/dev/null
+
 # ── Pure UI card render (node + __plinthDash seam) ───────────────────────────
 # Fails if error tone or no-review suppression is broken — not just source greps.
 UI_OUT="$FIX/ui-unit.out"
@@ -758,10 +792,20 @@ assert_port_reject "PLINTH_DASH_PORT=0" env PLINTH_DASH_PORT=0 "$PLINTH" dash
 assert_port_reject "PLINTH_DASH_PORT=notaport" env PLINTH_DASH_PORT=notaport "$PLINTH" dash
 assert_port_reject "PLINTH_DASH_PORT=oversized" env PLINTH_DASH_PORT=99999999999999999999999 "$PLINTH" dash
 
-# ── Short-lived server: loopback HTTP surface ────────────────────────────────
-# Process group + child kill so the python ThreadingHTTPServer cannot leak.
+# ── Short-lived server: loopback HTTP + single-flight / TTL ──────────────────
+# Counting wrapper as PLINTH_DASH_SNAPSHOT_BIN so we can assert builder fan-in.
 export PLINTH_DASH_ROOTS="$A:$I"
 export HOME="$CFG_HOME"
+COUNT_FILE="$FIX/snap.count"
+: > "$COUNT_FILE"
+WRAP="$FIX/count-plinth"
+cat > "$WRAP" <<WRAP
+#!/usr/bin/env bash
+printf '1\n' >> "$COUNT_FILE"
+exec "$PLINTH" "\$@"
+WRAP
+chmod +x "$WRAP"
+export PLINTH_DASH_SNAPSHOT_BIN="$WRAP"
 SRV_PORT=18734
 for try in 18734 18735 18736 18737 18738 18739 18740; do
   SRV_PORT="$try"
@@ -772,9 +816,9 @@ for try in 18734 18735 18736 18737 18738 18739 18740; do
   fi
   break
 done
-# setsid when available → kill the whole group; else pkill children + lsof port.
 if command -v setsid >/dev/null 2>&1; then
-  setsid "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
+  setsid env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
     kill -TERM -"$SRV_PID" 2>/dev/null || true
@@ -786,7 +830,8 @@ if command -v setsid >/dev/null 2>&1; then
     fi
   }
 else
-  "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
+  env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
     local kids
@@ -814,17 +859,28 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   sleep 0.15
 done
 [ "$ready" = 1 ] || { echo "smoke-snapshot: server did not become ready on :$SRV_PORT" >&2; cat "$FIX/srv.err" >&2; exit 1; }
-# Static UI
-curl -sf "http://127.0.0.1:${SRV_PORT}/" | grep -q 'Plinth dashboard' \
-  || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
-# Snapshot API includes the render-failed project with NH preserved
-curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" > "$FIX/api.json"
+# Expire the warm-up TTL (2.5s), then assert concurrent + within-TTL share one build.
+sleep 3
+: > "$COUNT_FILE"
+# Concurrent requests after expiry → exactly one builder invocation.
+# Wait only on the curl PIDs — bare `wait` would also wait for the server job.
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c1=$!
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c2=$!
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c3=$!
+wait "$c1" "$c2" "$c3" || true
+# One more within TTL should still hit cache (no second builder call)
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" > "$FIX/api.json"
+hits="$(wc -l < "$COUNT_FILE" | tr -d ' ')"
+[ "$hits" = "1" ] || { echo "smoke-snapshot: expected 1 builder call within TTL, got $hits" >&2; exit 1; }
 jq -e '
   (.projects | length) == 2
   and ([.projects[] | select(.name == "iota-badverdict")
         | .error == "snapshot_render_failed"
         and .needs_human.open == 1] | any)
 ' "$FIX/api.json" >/dev/null
+# Static UI
+curl -sf "http://127.0.0.1:${SRV_PORT}/" | grep -q 'Plinth dashboard' \
+  || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
 # Read-only
 post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
 [ "$post_code" = "405" ] || { echo "smoke-snapshot: POST should be 405, got $post_code" >&2; exit 1; }
@@ -846,7 +902,6 @@ if command -v lsof >/dev/null 2>&1; then
   fi
 fi
 srv_cleanup
-# Assert nothing is still listening on the port
 if command -v lsof >/dev/null 2>&1; then
   if lsof -nP -iTCP:"$SRV_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "smoke-snapshot: server still listening on :$SRV_PORT after cleanup" >&2
