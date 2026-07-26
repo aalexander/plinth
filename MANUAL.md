@@ -570,7 +570,11 @@ it has run green with a real smoke_cmd.
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
-  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
+  those text scans only when the consumer is an inert data sink (`cat`/`tee`) and the
+  delimiter is quoted; executable consumers (`bash`, `sqlite3`, …), unquoted bodies, and
+  piped/process-substituted forms stay fully scanned, and the header (including redirect
+  targets) is always scanned. The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is

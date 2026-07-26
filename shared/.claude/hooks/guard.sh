@@ -87,6 +87,172 @@ ship_gate() {  # <what> — called only when the command is a ship action
 case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+    # Heredoc body handling. Quoting a delimiter only disables shell expansion —
+    # it does NOT make the body non-executable (`bash <<'E'` still runs the body;
+    # `sqlite3 <<'E'` still runs SQL). Suppress body lines from BOTH pattern scans
+    # (destructive + protected/secret-path) ONLY when:
+    #   (1) the delimiter is quoted ('D'/"D"/basic $'D'), AND
+    #   (2) the FIRST command word of the simple command owning << (after the last
+    #       unquoted |;&, skipping sudo/env/nice/nohup/time and VAR=) is exactly
+    #       cat or tee, AND
+    #   (3) that simple command has no unquoted | or process-sub >( / <( before
+    #       or after << (body is not piped elsewhere).
+    # The header (including redirect targets) is always scanned — so
+    # `cat > .plinth/session/x <<'E'` still blocks. Unquoted bodies, executable
+    # consumers, and ambiguous parses stay fully in scope (fail closed). Fixes the
+    # upstream #22 false-positive without the "any quoted heredoc" over-suppress.
+    inert_stripped="$(printf '%s\n' "$cmd" | awk '
+      function enqueue(d, suppress, t) { tail++; delim[tail]=d; suppress_body[tail]=suppress; tabs[tail]=t }
+      function is_inert_consumer(c) { return (c=="cat" || c=="tee") }
+      function last_unquoted_sep(s,    i,n,c,st,last) {
+        n=length(s); st=""; last=0
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="\\") { i++; continue }
+          if (c=="|" || c==";" || c=="&") last=i
+        }
+        return last
+      }
+      function has_unquoted_pipe_or_procsub(s,    i,n,c,st) {
+        n=length(s); st=""
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="\\") { i++; continue }
+          if (c=="|") return 1
+          if (c==">" && i<n && substr(s,i+1,1)=="(") return 1
+          if (c=="<" && i<n && substr(s,i+1,1)=="(") return 1
+        }
+        return 0
+      }
+      # First command word of the simple command owning <<. "" = fail closed.
+      function first_consumer(prefix,    s,n,a,i,w,sep) {
+        s=prefix
+        sep=last_unquoted_sep(s)
+        if (sep>0) s=substr(s,sep+1)
+        gsub(/[0-9]*>>?[ \t]*[^ \t;&|<>]+/," ",s)
+        gsub(/[0-9]*>>?&[0-9]+/," ",s)
+        gsub(/[0-9]*>>?/," ",s)
+        gsub(/[0-9]*<[ \t]*[^ \t;&|<>]+/," ",s)
+        gsub(/[ \t]+/," ",s)
+        sub(/^ /,"",s); sub(/ $/,"",s)
+        n=split(s,a," ")
+        for (i=1;i<=n;i++) {
+          w=a[i]
+          if (w ~ /"/ || w ~ /\047/) {
+            if (w ~ /^"[^"]*"$/ || w ~ /^\047[^\047]*\047$/) w=substr(w,2,length(w)-2)
+            else return ""
+          }
+          if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+          if (w ~ /^(sudo|command|env|nice|nohup|time)$/) {
+            while (i+1<=n && a[i+1] ~ /^-/) {
+              i++
+              if (a[i] ~ /^--[^=]+=/) continue
+              if (a[i] ~ /^--/) continue
+              # short opts that take a value for these prefixes
+              if ((w=="sudo" && a[i] ~ /^-[ugCTrRp]$/) || \
+                  (w=="env" && a[i] ~ /^-[uCS]$/) || \
+                  (w=="nice" && a[i]=="-n") || \
+                  (w=="time" && a[i] ~ /^-[fo]$/)) {
+                if (i+1<=n && a[i+1] !~ /^-/) i++
+              }
+            }
+            continue
+          }
+          if (w ~ /^-/) continue
+          sub(/.*\//,"",w)
+          return w
+        }
+        return ""
+      }
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple) {
+        n=length(line); st=""
+        for (i=1;i<=n;i++) {
+          c=substr(line,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="\\") { i++; continue }
+          prev=(i==1 ? "" : substr(line,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") continue
+          j=i+2; t=0
+          if (substr(line,j,1)=="-") { t=1; j++ }
+          while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
+          d=""; q=0; st=""; ok=1
+          # basic $'\''...'\'' / $"..." — literal body + simple \\ escapes (no \x olympics)
+          if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
+            q=1; qch=substr(line,j+1,1); j+=2
+            while (j<=n) {
+              c=substr(line,j,1)
+              if (c==qch) { j++; break }
+              if (c=="\\") { j++; if (j<=n) d=d substr(line,j,1); j++; continue }
+              d=d c; j++
+            }
+          } else while (j<=n) {
+            c=substr(line,j,1)
+            if (st=="sq") { if (c=="\047") st=""; else d=d c; j++; continue }
+            if (st=="dq") {
+              if (c=="\"") { st=""; j++; continue }
+              if (c=="\\") { j++; if (j<=n) d=d substr(line,j,1); j++; continue }
+              d=d c; j++; continue
+            }
+            if (c ~ /[[:space:];&|()<>]/) break
+            if (c=="\047") { q=1; st="sq"; j++; continue }
+            if (c=="\"") { q=1; st="dq"; j++; continue }
+            if (c=="\\") { ok=0; j++; if (j<=n) j++; break }
+            d=d c; j++
+          }
+          # word concat after quoted form, or unterminated quote → fail closed
+          if (st!="" || (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/ && substr(line,j,1)!="")) ok=0
+          pref=substr(line,1,i-1)
+          sep=last_unquoted_sep(pref)
+          simple=(sep>0)?substr(pref,sep+1):pref
+          if (has_unquoted_pipe_or_procsub(simple) || has_unquoted_pipe_or_procsub(substr(line,j))) ok=0
+          if (st=="" && d!="" && ok) {
+            cons=first_consumer(pref)
+            enqueue(d, (q && is_inert_consumer(cons)), t)
+          } else if (st=="" && d!="") {
+            # still track the heredoc so a following terminator does not leave us
+            # "inside" a suppressed body for a later real command — but do not suppress
+            enqueue(d, 0, t)
+          }
+          i=j-1
+        }
+      }
+      BEGIN { head=1; tail=0 }
+      {
+        if (head<=tail) {
+          body=$0; cmp=body
+          if (tabs[head]) sub(/^\t*/,"",cmp)
+          if (!suppress_body[head]) print body
+          if (cmp==delim[head]) head++
+          next
+        }
+        print
+        scan($0)
+      }
+    ')"
     # rm/git patterns are anchored to command position. Upstream issue #1
     # hardenings (driver-reported): backticks open command substitutions —
     # they are boundaries too; and quotes are REMOVED (not the spans — the shell
@@ -113,6 +279,7 @@ case "$tool" in
     # (; | &) inside quoted prose (`-m "step; rm -rf x"`) exposes it to the matcher and
     # blocks — rare, and fail-closed (run it yourself). \042 " \047 ' \134 backslash.
     stripped="$(printf '%s' "$cmd" | tr -d '\042\047\134')"
+    destructive_stripped="$(printf '%s' "$inert_stripped" | tr -d '\042\047\134')"
     # PFX: a chain of command PREFIX words (sudo/command/env/... each with optional
     # -opts + one arg) or VAR=val assignments, before the command. OPT: a chain of a
     # command's own GLOBAL OPTIONS between it and its subcommand (`git -C . push`, `gh
@@ -136,8 +303,8 @@ case "$tool" in
     # seconds vs. data loss on a miss. The +/: alternatives start right after a space (the
     # prefix group ends in whitespace), so a mid-token plus/colon — an ordinary non-destructive
     # refspec like `feature+x` or `HEAD:main` — is NOT a hit.
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
-       || printf '%s' "$cmd" | grep -Eiq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
+    if printf '%s' "$destructive_stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
+       || printf '%s' "$inert_stripped" | grep -Eiq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
       block "destructive command detected. If intended, run it yourself."
     fi
     # Ship tripwire: block `gh pr create`/`gh pr merge` at COMMAND POSITION on `stripped`
@@ -159,9 +326,9 @@ case "$tool" in
       # relative path sits mid-string after a space, so strip the anchors and
       # match the bare pattern. Over-matching blocks (fail closed) — fine.
       bp="${pattern#"(^|/)"}"; bp="${bp#^}"; bp="${bp%\$}"
-      if printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${bp}" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}"; then
+      if printf '%s' "$inert_stripped" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${bp}" \
+         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" \
+         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}"; then
         block "bash write targeting protected path (pattern '${pattern}'). Protected files are off-limits to the driver; if genuinely intended, the human runs it."
       fi
     done <<PATTERNS
@@ -177,9 +344,9 @@ PATTERNS
     # so the Bash branch fails CLOSED on the entire .env family. Write .env.example via the
     # Write tool, or the human runs the bash form.
     for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519' '\.env'; do
-      if printf '%s' "$cmd" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${sp}" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" \
-         || printf '%s' "$cmd" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}"; then
+      if printf '%s' "$inert_stripped" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${sp}" \
+         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" \
+         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}"; then
         block "bash write targeting a secret path (matched '${sp}'). Secret paths need explicit human action; if intended, the human runs it."
       fi
     done

@@ -2503,6 +2503,21 @@ jobs:
           [ "$(gcmd 'nice -n 10 rm -rf x')" = 2 ] || { echo "::error::guard: nice -n 10 rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'time -p git reset --hard origin/main')" = 2 ] || { echo "::error::guard: time -p prefixed hard-reset not blocked"; exit 1; }
           [ "$(gcmd 'sudo -u root ls /root')" = 0 ] || { echo "::error::guard: benign sudo -u root wrongly blocked"; exit 1; }
+          # ── quoted-heredoc + inert consumer (cat/tee): body excluded from both scans ──
+          # Executable consumers, unquoted bodies, pipes/process-subs, and header redirects stay fully scanned.
+          [ "$(gcmd 'rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: plain rm -rf not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\nrm -rf\nDROP TABLE\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body with rm/DROP wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\n.plinth/session/x\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body mentioning protected path wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat > .plinth/session/x <<\'S\'\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: header redirect to protected path allowed"; exit 1; }
+          [ "$(gcmd $'cat <<S\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: unquoted heredoc body escaped scan"; exit 1; }
+          [ "$(gcmd $'bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash <<'S' body escaped destructive scan"; exit 1; }
+          [ "$(gcmd $'sqlite3 db <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 <<'S' DROP escaped scan"; exit 1; }
+          [ "$(gcmd $'bash <<\'S\'\nprintf x > .plinth/session/x\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash heredoc protected write escaped scan"; exit 1; }
+          [ "$(gcmd $'tee f.txt <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee <<'S' body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat /dev/null | bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pipeline peer cat misclassified bash heredoc as inert"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cat heredoc piped to bash escaped scan"; exit 1; }
+          [ "$(gcmd $'sqlite3 cat <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 with arg named cat misclassified as inert"; exit 1; }
+          echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
