@@ -351,7 +351,7 @@ printf '%s\n' '{"event":1,"sid":"s","epoch":1}' > "$L14/.plinth/session/events.j
 L15="$FIX/mu-emptyobj"; mk_git "$L15"
 printf '%s\n' '{}' > "$L15/.plinth/session/events.jsonl"
 
-# Healthy guard_block + PreCompact must NOT fail the card
+# Healthy guard_block + PreCompact + full allowlist must NOT fail the card
 L16="$FIX/mu-healthyhooks"; mk_git "$L16"
 NOW_H=$NOW
 {
@@ -360,8 +360,73 @@ NOW_H=$NOW
   jq -nc --argjson epoch "$((NOW_H+1))" \
     '{event:"guard_block",sid:null,epoch:$epoch,tool:"Bash",detail:"blocked"}'
   jq -nc --argjson epoch "$((NOW_H+2))" \
+    '{event:"PreToolUse",sid:"sid-h",epoch:$epoch,tool:"Bash",detail:null}'
+  jq -nc --argjson epoch "$((NOW_H+3))" \
+    '{event:"PostToolUse",sid:"sid-h",epoch:$epoch,tool:"Bash",detail:"ok",rc:0}'
+  jq -nc --argjson epoch "$((NOW_H+4))" \
+    '{event:"SubagentStop",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
+  jq -nc --argjson epoch "$((NOW_H+5))" \
     '{event:"PreCompact",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
+  jq -nc --argjson epoch "$((NOW_H+6))" \
+    '{event:"Stop",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
+  jq -nc --argjson epoch "$((NOW_H+7))" \
+    '{event:"gate_release",sid:"sid-h",epoch:$epoch,tool:null,detail:"released"}'
+  jq -nc --argjson epoch "$((NOW_H+8))" \
+    '{event:"unknown",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
 } > "$L16/.plinth/session/events.jsonl"
+
+# SHA-256 object-format repo with APPROVED-at-HEAD (64-hex sha)
+HAVE_SHA256=0
+L17="$FIX/mu-sha256"
+mkdir -p "$L17/.plinth/session"
+printf 'spec_path = SPEC.md\n' > "$L17/.plinth/config"
+if git -C "$L17" init -q --object-format=sha256 2>/dev/null; then
+  git -C "$L17" config user.email "smoke@plinth.test"
+  git -C "$L17" config user.name "plinth smoke"
+  echo ok > "$L17/README"
+  git -C "$L17" add -A && git -C "$L17" commit -qm "init"
+  git -C "$L17" checkout -qb feat/sha256
+  echo s > "$L17/s.txt"
+  git -C "$L17" add -A && git -C "$L17" commit -qm "work"
+  S256="$(git -C "$L17" rev-parse HEAD)"
+  mkdir -p "$L17/.plinth/session/review/feat-sha256"
+  jq -nc --arg sha "$S256" \
+    '{verdict:"APPROVED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+      risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+    > "$L17/.plinth/session/review/feat-sha256/verdict.json"
+  HAVE_SHA256=1
+else
+  rm -rf "$L17"
+fi
+
+# Extra protocol-shape rejects: scalar event, bad sid, bad transcript, empty verdict,
+# non-string verdict enum, missing/non-string/non-hex sha
+L18="$FIX/mu-scalarev"; mk_git "$L18"
+printf '42\n' > "$L18/.plinth/session/events.jsonl"
+L19="$FIX/mu-badsid"; mk_git "$L19"
+printf '%s\n' '{"event":"SessionStart","sid":1,"epoch":1}' > "$L19/.plinth/session/events.jsonl"
+L20="$FIX/mu-badtr"; mk_git "$L20"
+printf '%s\n' '{"event":"SessionStart","sid":"s","epoch":1,"transcript":99}' > "$L20/.plinth/session/events.jsonl"
+L21="$FIX/mu-emptyverdict"; mk_git "$L21"
+git -C "$L21" checkout -qb feat/emptyv; echo e > "$L21/e"; git -C "$L21" add -A; git -C "$L21" commit -qm w
+mkdir -p "$L21/.plinth/session/review/feat-emptyv"
+: > "$L21/.plinth/session/review/feat-emptyv/verdict.json"
+L22="$FIX/mu-numverdict"; mk_git "$L22"
+git -C "$L22" checkout -qb feat/numv; echo e > "$L22/e"; git -C "$L22" add -A; git -C "$L22" commit -qm w
+mkdir -p "$L22/.plinth/session/review/feat-numv"
+printf '{"verdict":1,"sha":"abcdef0","round":1}\n' > "$L22/.plinth/session/review/feat-numv/verdict.json"
+L23="$FIX/mu-nosha"; mk_git "$L23"
+git -C "$L23" checkout -qb feat/nosha; echo e > "$L23/e"; git -C "$L23" add -A; git -C "$L23" commit -qm w
+mkdir -p "$L23/.plinth/session/review/feat-nosha"
+printf '{"verdict":"APPROVED","round":1}\n' > "$L23/.plinth/session/review/feat-nosha/verdict.json"
+L24="$FIX/mu-numsha"; mk_git "$L24"
+git -C "$L24" checkout -qb feat/numsha; echo e > "$L24/e"; git -C "$L24" add -A; git -C "$L24" commit -qm w
+mkdir -p "$L24/.plinth/session/review/feat-numsha"
+printf '{"verdict":"APPROVED","sha":1234567,"round":1}\n' > "$L24/.plinth/session/review/feat-numsha/verdict.json"
+L25="$FIX/mu-badhex"; mk_git "$L25"
+git -C "$L25" checkout -qb feat/badhex; echo e > "$L25/e"; git -C "$L25" add -A; git -C "$L25" commit -qm w
+mkdir -p "$L25/.plinth/session/review/feat-badhex"
+printf '{"verdict":"APPROVED","sha":"not-hex!!","round":1}\n' > "$L25/.plinth/session/review/feat-badhex/verdict.json"
 
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
@@ -463,7 +528,7 @@ export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
 fi
-export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L18:$L19:$L20:$L21:$L22:$L23:$L24:$L25:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -479,8 +544,9 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-EXPECTED_N=34
-[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=35
+# Base 34 + 8 extra protocol fixtures (L18–L25) + optional sha256
+EXPECTED_N=42
+[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=43
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
 # Alpha assertions
@@ -641,11 +707,20 @@ for badn in mu-falsev mu-objnull mu-objfalse mu-falseobj mu-nullverdict mu-multi
   ' "$OUT" >/dev/null
 done
 # Malformed events files have a feed → feedless:false + error
-for badn in mu-noevent mu-numevent mu-emptyobj mu-badevent mu-baddetail mu-badevname; do
+for badn in mu-noevent mu-numevent mu-emptyobj mu-badevent mu-baddetail mu-badevname \
+            mu-scalarev mu-badsid mu-badtr; do
   jq -e --arg n "$badn" '
     .projects[] | select(.name == $n)
     | .error == "snapshot_render_failed"
     and .feedless == false
+  ' "$OUT" >/dev/null
+done
+# Invalid verdict shape (feedless projects)
+for badn in mu-emptyverdict mu-numverdict mu-nosha mu-numsha mu-badhex; do
+  jq -e --arg n "$badn" '
+    .projects[] | select(.name == $n)
+    | .error == "snapshot_render_failed"
+    and .feedless == true
   ' "$OUT" >/dev/null
 done
 # Healthy real hook event names
