@@ -208,6 +208,8 @@ jobs:
           [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo=o/r create not gated on feature"; exit 1; }
           [ "$(gcmd 'gh pr -Racme/repo create --fill')" = 2 ] || { echo "::error::gh pr -Ro/r create not gated on feature"; exit 1; }
           [ "$(gcmd '(gh pr create --fill)')" = 2 ] || { echo "::error::parenthesized create on feature not gated"; exit 1; }
+          [ "$(gcmd 'echo $(gh pr create --fill)')" = 2 ] || { echo "::error::\$() create on feature not gated"; exit 1; }
+          [ "$(gcmd '`gh pr create --fill`')" = 2 ] || { echo "::error::backtick-wrapped create on feature not gated"; exit 1; }
           # feature both approved → 0 for create;merge and inherited-option create
           printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
           [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
