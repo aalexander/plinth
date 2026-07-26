@@ -379,26 +379,17 @@ Two operator chores the rules generate:
      public API, dependencies, weakened tests): full review; a non-fresh
      approval is required to take a clean-slate full pass (a warm reviewer can't
      approve its own checklist) — **every** non-fresh Tier-2 approval requires
-     that confirmation (v4.7+ retired the once-per-loop skip). HONEST BOUND
-     (process window): `review.sh` may write `APPROVED` before confirmation
-     starts; re-run at the same SHA recovers pending confirmation, but an
-     intermediate kill can leave APPROVED@HEAD that ship/Stop accept if they only
-     read the verdict field — residual: persist UNBOUND until confirmation
-     (NEEDS-HUMAN). When a cross-vendor auditor is
-     configured (`audit_vendor` — new projects default to `claude`, the v4
-     audit seat; on an upgraded project you add the line yourself, and `plinth
-     update` reminds you if it is unset), every Tier-2 approval also gets a
-     best-effort second opinion from that different vendor; its failure is
-     recorded but the primary review remains the gate.
+     that confirmation (v4.7+ retired the once-per-loop skip). v4.8.1 demotes non-fresh Tier-2 APPROVED to UNBOUND before launching confirmation
+     so ship/Stop fail closed on an interrupted confirmation; re-run recovers.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
    — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved
-   after required confirmation for this run (see process-window bound),
+   after any required Tier-2 confirmation for this run has completed,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is
    too large or dead — a SCOPED verify round that reads
    the open findings plus the cumulative fix diff since the last full read; Tier-1
    verify approvals bind directly, Tier-2 ones require clean-slate confirmation
-   every time (process-window bound above). A reviewer-vendor swap mid-loop instead forces a FRESH full
+   every time (UNBOUND until confirmation succeeds, v4.8.1). A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
    does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
    knob: opt-in — unset or 0 means no cap; set a positive integer to cap) stops a loop that has not converged — exit 2,
@@ -724,9 +715,8 @@ it has run green with a real smoke_cmd.
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
   stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 receipt gate shipped in product
-  v4.8.0; residual canary + #43 Write-tool recombine (NEEDS-HUMAN). Treat lane
-  reports as claims under Rule 10.
+  25k ignored files with byte-identical output. #32/#43 resolved in v4.8.1
+  (Write-tool + delegation receipt + canary). Treat lane reports as claims under Rule 10.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -752,9 +742,8 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE.** Receipt gate shipped in product
-   v4.8.0 (`lane-guard.sh delegation`). Residual with #43: Write-tool recombine +
-   mutation-sensitive canary. See NEEDS-HUMAN.
+2. **Upstream #32 / #43 — delegation CHECKABLE + Write-tool. RESOLVED in v4.8.1.**
+   Write-tool project-local prompt + `lane-guard.sh delegation` + canary.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully

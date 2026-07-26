@@ -918,7 +918,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   cap_unbound=0
   if [ "$prev_verdict" = "UNBOUND" ]; then
     case "$prev_unbound_reason" in
-      *"round cap"*) cap_unbound=1 ;;
+      *"round cap"*|*"confirmation not yet complete"*|*"confirmation pending"*) cap_unbound=1 ;;
     esac
   fi
   # Budget is ADVISORY: warn loudly and continue — never park the loop on a
@@ -1420,6 +1420,9 @@ if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
     unbind_verdict "the Tier-2 clean-slate confirmation could not run (round cap), so this approval never bound"
     die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED was demoted to UNBOUND (non-binding until the confirmation runs) — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
   fi
+  # Demote BEFORE launching confirmation so a kill/crash mid-confirmation never leaves
+  # shippable APPROVED@HEAD (ship/Stop gates trust the verdict field alone).
+  unbind_verdict "Tier-2 clean-slate confirmation not yet complete — non-binding until confirmation succeeds"
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""

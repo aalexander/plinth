@@ -3526,6 +3526,60 @@ jobs:
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
+          # ── v4.8.1: lane-guard delegation (proof-of-artifact) ──
+          LDR="$(mktemp -d)"; git -C "$LDR" init -q
+          git -C "$LDR" config user.email "canary@plinth.ci"; git -C "$LDR" config user.name "plinth canary"
+          ( cd "$LDR" && git commit --allow-empty -qm "delegation canary base" )
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 /no/such/transcript ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on MISSING transcript (rc=$r want 3)"; exit 1; }
+          : > "$LDR/empty.out"
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 "$LDR/empty.out" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on EMPTY transcript (rc=$r want 3)"; exit 1; }
+          printf 'MODEL: decoy\nbody\nMODEL: canary-model-9\n' > "$LDR/out.txt"
+          want_bytes="$(wc -c < "$LDR/out.txt" | tr -d '[:space:]')"
+          want_hash="$( (shasum -a 256 "$LDR/out.txt" 2>/dev/null || sha256sum "$LDR/out.txt") | cut -d' ' -f1 )"
+          dout="$(cd "$LDR" && bash "$LG" delegation grok 7 "$LDR/out.txt")" || { echo "::error::delegation rejected nonempty transcript"; exit 1; }
+          printf '%s\n' "$dout" | grep -qE "^delegation recorded: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 artifact=" \
+            || { echo "::error::delegation recorded line not exact (got: $dout)"; exit 1; }
+          dart="$(printf '%s\n' "$dout" | sed -n 's/.*artifact=//p')"
+          [ -s "$dart" ] || { echo "::error::delegation artifact missing"; exit 1; }
+          case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::artifact not under session/lanes ($dart)"; exit 1 ;; esac
+          hdr="$(head -n1 "$dart")"
+          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 recorded=" \
+            || { echo "::error::artifact header not exact (got: $hdr)"; exit 1; }
+          tail -n +2 "$dart" > "$LDR/body.got"; cmp -s "$LDR/out.txt" "$LDR/body.got" \
+            || { echo "::error::artifact body not byte-identical to transcript"; exit 1; }
+          dig="$LDR/.plinth/session/.gitignore"
+          [ "$(wc -l < "$dig" | tr -d '[:space:]')" = "1" ] && grep -qxF '*' "$dig" \
+            || { echo "::error::session .gitignore is not exact '*'"; exit 1; }
+          printf 'no model\n' > "$LDR/nomodel.txt"
+          dout2="$(cd "$LDR" && bash "$LG" delegation codex 0 "$LDR/nomodel.txt")" || { echo "::error::delegation rejected no-MODEL transcript"; exit 1; }
+          printf '%s\n' "$dout2" | grep -q 'model=unreported' || { echo "::error::want model=unreported (got: $dout2)"; exit 1; }
+          LDR2="$(mktemp -d)"; git -C "$LDR2" init -q
+          git -C "$LDR2" config user.email "canary@plinth.ci"; git -C "$LDR2" config user.name "plinth canary"
+          ( cd "$LDR2" && git commit --allow-empty -qm "symlink base" )
+          mkdir -p "$LDR2/.plinth/session"; OUTSIDE="$(mktemp -d)"; ln -s "$OUTSIDE" "$LDR2/.plinth/session/lanes"
+          printf 'body\n' > "$LDR2/out.txt"
+          r=0; ( cd "$LDR2" && bash "$LG" delegation grok 0 "$LDR2/out.txt" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::delegation did not refuse symlinked lanes (rc=$r)"; exit 1; }
+          # agent wiring: Write-tool + no SPEC_EOF heredoc of the payload + delegation after scope
+          for a in grok codex; do
+            A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$A" || { echo "::error::${a}-implementer lost Write-tool step"; exit 1; }
+            grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer lacks delegation $a"; exit 1; }
+            sc_ln="$(grep -n 'lane-guard.sh scope' "$A" | head -1 | cut -d: -f1)"
+            dg_ln="$(grep -n "lane-guard.sh delegation $a" "$A" | head -1 | cut -d: -f1)"
+            [ -n "$sc_ln" ] && [ -n "$dg_ln" ] && [ "$dg_ln" -gt "$sc_ln" ] \
+              || { echo "::error::${a}-implementer delegation not after scope"; exit 1; }
+            dline="$(sed -n "${dg_ln}p" "$A")"
+            printf '%s\n' "$dline" | grep -q 'RUN_RC' || { echo "::error::${a} delegation line missing RUN_RC"; exit 1; }
+            printf '%s\n' "$dline" | grep -q 'OUT' || { echo "::error::${a} delegation line missing OUT"; exit 1; }
+            grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
+              || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
+            # ban shell heredoc of the five-part payload (allowlisted SPEC_EOF mention in prose only)
+            grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
+          done
+          echo "lane-guard delegation + Write-tool wiring canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
           # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"

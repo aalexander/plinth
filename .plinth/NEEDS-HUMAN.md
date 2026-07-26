@@ -19,14 +19,8 @@
 - [ ] **Instrument refresh to v4.8.0** (separate release-labeled PR): materialize tagged
   shared payload; `.plinth-version` → 4.8.0; then wire receipt job (step 2 above).
 
-- [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
-  Restore non-shell Write-tool flow; keep #41 delegation-receipt wiring; add
-  mutation-sensitive canary for `lane-guard.sh delegation`.
-
-- [ ] **Tier-2 confirmation process window (product):** non-fresh Tier-2 may write
-  `APPROVED` before clean-slate confirmation finishes; ship gates that only read the
-  verdict field can accept that intermediate state. Fix: persist UNBOUND/pending until
-  confirmation succeeds; canary the failed-confirmation state.
+- ~~**#43 / Tier-2 confirmation window**~~ — **DONE in v4.8.1 product** (this PR): Write-tool
+  recombine + UNBOUND-before-confirmation + delegation canary. Closes after merge/tag.
 
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
@@ -41,9 +35,7 @@
     IMPORTANT: the seat lines live ONLY on the `build/async-boot-v2` branch — `main`
     has no seat lines at all (it falls back to the codex default `gpt-5.6-sol`, which
     works). So the repin must be run WITH THAT BRANCH CHECKED OUT, or it silently does
-    nothing. Re-verified 2026-07-25: wren is currently on `build/async-boot-v2` and
-    still pinned `gpt-5.6`; it also still has NO git remote (`gh repo create` is a
-    separate open item below):**
+    nothing:**
     `cd ~/Dev/wren && git checkout build/async-boot-v2 && sed -i '' -e 's/^reviewer_model_tier1 = gpt-5.6$/reviewer_model_tier1 = gpt-5.6-sol/' -e 's/^reviewer_model_tier2 = gpt-5.6$/reviewer_model_tier2 = gpt-5.6-sol/' -e 's/^advisor_model = opus$/advisor_model = fable/' .plinth/config && grep -E '^(reviewer_model|advisor_model)' .plinth/config`
   - ~~**plinth**~~ — **DONE (2026-07-25, applied by the operator).** `.plinth/config` now
     reads reviewer_vendor = codex, reviewer_model_tier1/tier2 = gpt-5.6-sol,

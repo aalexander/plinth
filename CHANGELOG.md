@@ -1,5 +1,18 @@
 # Plinth changelog
 
+## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
+- **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
+  `.plinth-lane.*/prompt` again (SPEC_EOF shell heredoc of the five-part spec is gone),
+  while keeping the #41 **delegation receipt** (`lane-guard.sh delegation` before
+  STATUS: complete). HONEST BOUND unchanged: receipt = nonempty OUT, not authorship.
+- **Tier-2 confirmation process window:** `review.sh` demotes non-fresh Tier-2
+  APPROVED to **UNBOUND** *before* launching clean-slate confirmation, so ship/Stop
+  gates fail closed if confirmation is interrupted. Recovery re-runs confirmation for
+  that UNBOUND reason (and round-cap).
+- **Canary:** behavioral `lane-guard.sh delegation` (missing/empty, exact identity,
+  unreported model, symlink containment) + agent wiring (Write-tool, no SPEC_EOF
+  heredoc, scope-before-delegation, RUN_RC/OUT).
+
 ## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
 - **Release close-out:** required floor/checks pins advanced to tag **v4.7.2**
   (trail-by-one for product 4.8.0). Installed instrument remains **4.6.0**; the
