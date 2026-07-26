@@ -74,11 +74,12 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # and a racing new push cannot desync authorize-from-vs-merge-into). Multi-segment:
 # each real create/merge segment is gated on its own — an APPROVED targeted merge
 # must not authorize an unreviewed create. Quote-stripped argv is not a shell
-# parser: any quote/apostrophe in the original command fail-closes merge segments
-# (multi-word --body values would otherwise invent a false PR target).
+# parser: any quote/apostrophe/backslash in the *merge* original segment
+# fail-closes that segment (multi-word --body values would otherwise invent a
+# false PR target). Sibling create segments may still use quotes.
 ship_gate() {  # <what> <unquoted-command> [original-command]
   local what="$1" command="${2:-}" orig="${3:-$2}"
-  local segments segment tok state need_value
+  local segments segments_o segment oseg tok state need_value
   local target_ref target_repo match_head parse_error merge_seen
   local local_url local_repo url_repo n_repo resolved
   local resolved_branch resolved_sha branch head slug vf v vsha
@@ -201,10 +202,19 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
   }
 
   # Parse only ordinary, directly-invoked gh forms. Unknown merge argv blocks
-  # instead of falling back to the current checkout.
+  # instead of falling back to the current checkout. Walk stripped and original
+  # segments in lockstep so quote/backslash fail-closed is merge-segment-local
+  # (a quoted create sibling must not poison an independent bound merge).
   segments="$(printf '%s' "$command" | tr ';&|`()' '\n')" \
     || block "$what blocked — could not parse gh arguments."
+  segments_o="$(printf '%s' "$orig" | tr ';&|`()' '\n')" \
+    || block "$what blocked — could not parse gh arguments."
+  # FD 3 carries original segments parallel to stripped (bash-3.2 portable).
+  exec 3<<ORIGSEGS
+$segments_o
+ORIGSEGS
   while IFS= read -r segment; do
+    IFS= read -r oseg <&3 || oseg=""
     # Real create segment → bare current-branch gate (independent of sibling merges).
     if printf '%s' "$segment" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
       _ship_bare
@@ -226,9 +236,10 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     match_head=""
     parse_error=0
     merge_seen=0
-    # Unquote is not argv: multi-word quoted values (and quoted delimiters) lose
-    # boundaries. Fail closed rather than invent a shell parser.
-    if printf '%s' "$orig" | grep -q '["'\'']'; then
+    # Unquote deletes " ' \ — multi-word values and escaped spaces lose boundaries
+    # and can invent a positional PR target. Fail closed on those chars in THIS
+    # merge's original segment only (not the whole Bash command).
+    if printf '%s' "$oseg" | grep -q '["'\''\\]'; then
       parse_error=1
     fi
     for tok in "$@"; do
@@ -281,7 +292,7 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     [ -z "$need_value" ] || parse_error=1
     [ "$merge_seen" = 1 ] || parse_error=1
     [ "$parse_error" = 0 ] \
-      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quoted merge argv is not supported by this tripwire; use unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
+      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes/backslashes in the merge segment are not supported by this tripwire; use unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
 
     if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
       _ship_targeted
@@ -289,6 +300,7 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
       _ship_bare
     fi
   done <<< "$segments"
+  exec 3<&-
 }
 
 case "$tool" in

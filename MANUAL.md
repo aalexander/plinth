@@ -581,13 +581,15 @@ it has run green with a real smoke_cmd.
   `gh pr merge 42` is rejected: it would follow `GH_REPO`/default-repo, not origin);
   (2) the command pins `--match-head-commit` to the origin-resolved PR head SHA
   (lookup uses `gh pr view … -R <origin-owner/repo>`, never default-repo alone);
-  (3) that worktree has APPROVED at that SHA for the PR's branch slug. Quoted merge
-  argv fails closed (the tripwire unquotes for matching and is not a shell parser —
-  multi-word `--body "…"` would otherwise invent a false PR target; use unquoted
-  single-token values, `--body=…`, or `--body-file`). Outside a git checkout, bare
-  ships fail open; targeted merges fail closed. Multi-segment Bash gates each real
-  create/merge segment independently (an APPROVED merge does not authorize an
-  unreviewed create). Like every `.claude/` hook it fires only under a Claude driver,
+  (3) that worktree has APPROVED at that SHA for the PR's branch slug. Quotes or
+  backslashes in the *merge* segment fail closed (the tripwire unquotes/`\`-strips
+  for matching and is not a shell parser — multi-word `--body "…"` or
+  `--body Release\ 42` would otherwise invent a false PR target; use unquoted
+  single-token values, `--body=…`, or `--body-file`). Fail-closed is merge-segment
+  local: a quoted sibling `gh pr create` does not poison an independent bound
+  merge. Outside a git checkout, bare ships fail open; targeted merges fail closed.
+  Multi-segment Bash gates each real create/merge segment independently (an
+  APPROVED merge does not authorize an unreviewed create). Like every `.claude/` hook it fires only under a Claude driver,
   or a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe` alone
   shows invocation, not enforcement (grok 0.2.112 reported no execution
   [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing driver

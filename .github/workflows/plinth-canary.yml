@@ -148,9 +148,22 @@ jobs:
           # unresolvable / unparseable → 2
           [ "$(gcmd "gh pr merge 404 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::failed open when gh could not resolve the PR"; exit 1; }
           [ "$(gcmd 'gh pr merge branch-name -R acme/repo')" = 2 ] || { echo "::error::failed open on unparseable positional merge argv"; exit 1; }
-          # quoted merge argv fail-closed (unquote is not a shell parser)
+          # quoted / backslash merge argv fail-closed (unquote is not a shell parser)
           [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body \"Release notes\"")" = 2 ] || { echo "::error::quoted --body was parsed instead of fail-closed"; exit 1; }
           [ "$(gcmd "gh pr merge --body \"Release 42\" -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::quoted multi-word body invented a PR target"; exit 1; }
+          # Escaped whitespace: shell has one body token; stripped invents positional 42 — must block.
+          [ "$(gcmd "gh pr merge --body Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash body invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -b Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -b invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --body=Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body= invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --subject Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --subject invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -t Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -t invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --author-email a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --author-email invented PR target"; exit 1; }
+          [ "$(gcmd "gh pr merge -A a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -A invented PR target"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body-file invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -F ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -F invented PR 42"; exit 1; }
+          # Single-token unquoted value flags stay allowed when fully bound
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body ship-ok --squash")" = 0 ] || { echo "::error::unquoted single-token --body blocked"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body=ship-ok --squash")" = 0 ] || { echo "::error::--body= single-token blocked"; exit 1; }
           # outside git: bare → 0; targeted → 2
           NG="$(mktemp -d)"
           ngcmd() {
@@ -171,6 +184,8 @@ jobs:
           # feature both approved → 0 for create;merge
           printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
           [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
+          # quoted create sibling must NOT poison an independent bound merge (segment-local)
+          [ "$(gcmd "gh pr create --title \"feat x\" --fill; $(bound 42)")" = 0 ] || { echo "::error::quoted create sibling blocked independent bound merge"; exit 1; }
           echo "canary: targeted ship gate origin-bound PR head + multi-segment create|merge OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
