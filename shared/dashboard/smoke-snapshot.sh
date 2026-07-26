@@ -242,7 +242,7 @@ jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
 printf '2026-01-01T00:00:00Z reviewer CLI missing\n' \
   > "$K/.plinth/session/review/feat-err/last-error"
 
-# ── Fixture L: stale verdict (SHA deliberately wrong) ────────────────────────
+# ── Fixture L: stale verdict (SHA deliberately wrong but well-formed hex) ────
 L="$FIX/mu-stale"
 mk_git "$L"
 git -C "$L" checkout -qb feat/stale
@@ -254,6 +254,17 @@ jq -nc \
   '{verdict:"APPROVED",sha:"0000000000000000000000000000000000000000",round:1,mode:"fresh",model:"gpt-test",
     risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
   > "$L/.plinth/session/review/feat-stale/verdict.json"
+
+# ── Fixture L2: parseable-but-invalid verdict enum → error card ──────────────
+L2="$FIX/mu-badenum"
+mk_git "$L2"
+git -C "$L2" checkout -qb feat/badenum
+echo l2 > "$L2/l2.txt"
+git -C "$L2" add -A
+git -C "$L2" commit -qm "work"
+mkdir -p "$L2/.plinth/session/review/feat-badenum"
+jq -nc '{verdict:"NOT_A_VERDICT",round:1,sha:"abcdef0"}' \
+  > "$L2/.plinth/session/review/feat-badenum/verdict.json"
 
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
@@ -351,7 +362,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -367,7 +378,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 19' "$OUT" >/dev/null
+jq -e '(.projects | length) == 20' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -487,6 +498,12 @@ jq -e '
   .projects[] | select(.name == "mu-stale")
   | .review.stale == true
   and .review.verdict == "APPROVED"
+' "$OUT" >/dev/null
+
+# Parseable-invalid verdict enum → error (not painted as normal review)
+jq -e '
+  .projects[] | select(.name == "mu-badenum")
+  | .error == "snapshot_render_failed"
 ' "$OUT" >/dev/null
 
 # Interleaved SIDs: active A keeps original task + ~500s session
