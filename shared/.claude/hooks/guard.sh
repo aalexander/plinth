@@ -206,15 +206,17 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
   }
 
   # Parse only ordinary, directly-invoked gh forms. Unknown merge argv blocks
-  # instead of falling back to the current checkout. Walk stripped and original
-  # segments in lockstep so fail-closed is merge-segment-local (a quoted create
-  # sibling must not poison an independent bound merge). Segment ONLY on ;&| —
-  # do not destroy `() before the expansion check (backtick/process-sub bodies).
+  # instead of falling back to the current checkout.
+  # Clause split is ONLY on ;&| (multi-segment independence; quoted create
+  # siblings stay local). Within a clause, also discover gh after `() so
+  # `(gh pr merge…)`, `$(gh pr merge…)`, and backtick wrappers cannot skip
+  # the gate; those openers are expansion/grouping metacharacters and force
+  # merge fail-closed via the original-clause check.
   segments="$(printf '%s' "$command" | tr ';&|' '\n')" \
     || block "$what blocked — could not parse gh arguments."
   segments_o="$(printf '%s' "$orig" | tr ';&|' '\n')" \
     || block "$what blocked — could not parse gh arguments."
-  # FD 3 carries original segments parallel to stripped (bash-3.2 portable).
+  # FD 3 carries original clauses parallel to stripped (bash-3.2 portable).
   # Route exec failure through block (exit 2): set -e on a bare failed exec would
   # exit 1 and fail-open the ship inspection.
   exec 3<<ORIGSEGS || block "$what blocked — could not open merge-segment parse state (TMPDIR/heredoc failure)."
@@ -222,92 +224,98 @@ $segments_o
 ORIGSEGS
   while IFS= read -r segment; do
     IFS= read -r oseg <&3 || oseg=""
-    # Real create segment → bare current-branch gate (independent of sibling merges).
-    # OPT between pr and create so `gh pr -R o/r create` is still gated.
-    if printf '%s' "$segment" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+create([[:space:]]|$)'; then
-      _ship_bare
-      continue
-    fi
-    # Real merge segment only (argument-position prose in another segment is ignored).
-    printf '%s' "$segment" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+merge([[:space:]]|$)' \
-      || continue
-
-    set -f
-    # Intentional word splitting on the unquoted token approximation; globbing off.
-    # shellcheck disable=SC2086
-    set -- $segment
-    set +f
-    state=seek
-    need_value=""
-    target_ref=""
-    target_repo=""
-    match_head=""
-    parse_error=0
-    merge_seen=0
-    # Unquote deletes " ' \ — multi-word values and escaped spaces lose boundaries.
-    # Unexpanded $BODY / globs / braces / backticks / process-subs change argv
-    # after this inspection. Fail closed on those chars in THIS merge segment only.
-    if printf '%s' "$oseg" | grep -q '["'\''\\$`*?{}()]'; then
-      parse_error=1
-    fi
-    for tok in "$@"; do
-      if [ -n "$need_value" ]; then
-        case "$need_value" in
-          repo) target_repo="$tok" ;;
-          match_head)
-            [ -z "$match_head" ] || parse_error=1
-            match_head="$tok"
-            ;;
-        esac
-        need_value=""
+    # Discover create/merge at clause start OR after subshell/cmd-sub openers.
+    disc="$(printf '%s' "$segment" | tr '`()' '\n')" \
+      || block "$what blocked — could not parse gh arguments."
+    while IFS= read -r dseg; do
+      # Real create → bare current-branch gate (independent of sibling merges).
+      # OPT between pr and create so `gh pr -R o/r create` is still gated.
+      if printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+create([[:space:]]|$)'; then
+        _ship_bare
         continue
       fi
-      case "$state:$tok" in
-        seek:gh) state=gh ;;
-        gh:pr) state=pr ;;
-        pr:merge) state=merge; merge_seen=$((merge_seen + 1)) ;;
-        # -R/--repo may sit on gh, between pr and merge, or on merge itself.
-        gh:-R|gh:--repo|pr:-R|pr:--repo|merge:-R|merge:--repo) need_value=repo ;;
-        gh:-R=*|gh:--repo=*|pr:-R=*|pr:--repo=*|merge:-R=*|merge:--repo=*) target_repo="${tok#*=}" ;;
-        gh:-R?*|pr:-R?*|merge:-R?*) target_repo="${tok#-R}" ;;
-        gh:--hostname|pr:--hostname) need_value=ignore ;;
-        gh:--hostname=*|pr:--hostname=*) ;;
-        gh:-*|pr:-*) ;;
-        gh:*) state=seek ;;
-        pr:*) parse_error=1 ;;
-        merge:--match-head-commit)
-          [ -z "$match_head" ] || parse_error=1
-          need_value=match_head
-          ;;
-        merge:--match-head-commit=*)
-          [ -z "$match_head" ] || parse_error=1
-          match_head="${tok#*=}"
-          ;;
-        merge:-A|merge:--author-email|merge:-b|merge:--body|merge:-F|merge:--body-file|merge:-t|merge:--subject)
-          need_value=ignore
-          ;;
-        merge:-A?*|merge:-b?*|merge:-F?*|merge:-t?*|merge:--author-email=*|merge:--body=*|merge:--body-file=*|merge:--subject=*) ;;
-        merge:--admin|merge:--auto|merge:-d|merge:--delete-branch|merge:--disable-auto|merge:-m|merge:--merge|merge:-r|merge:--rebase|merge:-s|merge:--squash) ;;
-        merge:[0-9]*)
-          case "$tok" in *[!0-9]*) parse_error=1 ;; *) [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1 ;; esac
-          ;;
-        merge:http://*|merge:https://*)
-          [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1
-          ;;
-        merge:--) ;;
-        merge:-*|merge:*) parse_error=1 ;;
-      esac
-    done
-    [ -z "$need_value" ] || parse_error=1
-    [ "$merge_seen" = 1 ] || parse_error=1
-    [ "$parse_error" = 0 ] \
-      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes, backslashes, or expansion metacharacters (\$, \`, (), globs, braces) in the merge segment are not supported by this tripwire; use literal unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
+      # Real merge only (argument-position prose in another discovery line is ignored).
+      printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+merge([[:space:]]|$)' \
+        || continue
 
-    if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
-      _ship_targeted
-    else
-      _ship_bare
-    fi
+      set -f
+      # Intentional word splitting on the unquoted token approximation; globbing off.
+      # shellcheck disable=SC2086
+      set -- $dseg
+      set +f
+      state=seek
+      need_value=""
+      target_ref=""
+      target_repo=""
+      match_head=""
+      parse_error=0
+      merge_seen=0
+      # Unquote deletes " ' \ — multi-word values lose boundaries. Unexpanded
+      # $BODY / globs / braces / backticks / process-subs / subshells change argv
+      # after inspection. Fail closed on those chars in the ORIGINAL clause
+      # (not the discovery fragment — openers are stripped for discovery only).
+      if printf '%s' "$oseg" | grep -q '["'\''\\$`*?{}()]'; then
+        parse_error=1
+      fi
+      for tok in "$@"; do
+        if [ -n "$need_value" ]; then
+          case "$need_value" in
+            repo) target_repo="$tok" ;;
+            match_head)
+              [ -z "$match_head" ] || parse_error=1
+              match_head="$tok"
+              ;;
+          esac
+          need_value=""
+          continue
+        fi
+        case "$state:$tok" in
+          seek:gh) state=gh ;;
+          gh:pr) state=pr ;;
+          pr:merge) state=merge; merge_seen=$((merge_seen + 1)) ;;
+          # -R/--repo may sit on gh, between pr and merge, or on merge itself.
+          gh:-R|gh:--repo|pr:-R|pr:--repo|merge:-R|merge:--repo) need_value=repo ;;
+          gh:-R=*|gh:--repo=*|pr:-R=*|pr:--repo=*|merge:-R=*|merge:--repo=*) target_repo="${tok#*=}" ;;
+          gh:-R?*|pr:-R?*|merge:-R?*) target_repo="${tok#-R}" ;;
+          gh:--hostname|pr:--hostname) need_value=ignore ;;
+          gh:--hostname=*|pr:--hostname=*) ;;
+          gh:-*|pr:-*) ;;
+          gh:*) state=seek ;;
+          pr:*) parse_error=1 ;;
+          merge:--match-head-commit)
+            [ -z "$match_head" ] || parse_error=1
+            need_value=match_head
+            ;;
+          merge:--match-head-commit=*)
+            [ -z "$match_head" ] || parse_error=1
+            match_head="${tok#*=}"
+            ;;
+          merge:-A|merge:--author-email|merge:-b|merge:--body|merge:-F|merge:--body-file|merge:-t|merge:--subject)
+            need_value=ignore
+            ;;
+          merge:-A?*|merge:-b?*|merge:-F?*|merge:-t?*|merge:--author-email=*|merge:--body=*|merge:--body-file=*|merge:--subject=*) ;;
+          merge:--admin|merge:--auto|merge:-d|merge:--delete-branch|merge:--disable-auto|merge:-m|merge:--merge|merge:-r|merge:--rebase|merge:-s|merge:--squash) ;;
+          merge:[0-9]*)
+            case "$tok" in *[!0-9]*) parse_error=1 ;; *) [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1 ;; esac
+            ;;
+          merge:http://*|merge:https://*)
+            [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1
+            ;;
+          merge:--) ;;
+          merge:-*|merge:*) parse_error=1 ;;
+        esac
+      done
+      [ -z "$need_value" ] || parse_error=1
+      [ "$merge_seen" = 1 ] || parse_error=1
+      [ "$parse_error" = 0 ] \
+        || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes, backslashes, or expansion metacharacters (\$, \`, (), globs, braces) in the merge clause are not supported by this tripwire; use literal unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
+
+      if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
+        _ship_targeted
+      else
+        _ship_bare
+      fi
+    done <<< "$disc"
   done <<< "$segments"
   exec 3<&-
 }

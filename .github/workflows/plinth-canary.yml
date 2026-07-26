@@ -180,6 +180,11 @@ jobs:
           [ "$(gcmd "gh pr -Racme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -Ro/r merge was not gated/authorized"; exit 1; }
           [ "$(gcmd "gh pr -R other/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::gh pr -R other/repo merge authorized wrong repo"; exit 1; }
           [ "$(gcmd "gh pr -R acme/repo merge 42 --squash")" = 2 ] || { echo "::error::gh pr -R merge without match-head authorized"; exit 1; }
+          # Subshell / cmd-sub / backtick wrappers must not skip the gate (fail closed)
+          [ "$(gcmd "(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::parenthesized merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "echo \$(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::\$() merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "\`gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash\`")" = 2 ] || { echo "::error::backtick-wrapped merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "(gh pr create --fill)")" = 0 ] || { echo "::error::parenthesized create on main changed base fail-open"; exit 1; }
           # outside git: bare → 0; targeted → 2
           NG="$(mktemp -d)"
           ngcmd() {
@@ -197,9 +202,17 @@ jobs:
           printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
           [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (create;merge)"; exit 1; }
           [ "$(gcmd "$(bound 42); gh pr create --fill")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (merge;create)"; exit 1; }
-          # feature both approved → 0 for create;merge
+          # inherited-option create siblings on feature without verdict → 2
+          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 2 ] || { echo "::error::gh pr -R o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr --repo acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo=o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr -Racme/repo create --fill')" = 2 ] || { echo "::error::gh pr -Ro/r create not gated on feature"; exit 1; }
+          [ "$(gcmd '(gh pr create --fill)')" = 2 ] || { echo "::error::parenthesized create on feature not gated"; exit 1; }
+          # feature both approved → 0 for create;merge and inherited-option create
           printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
           [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
+          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 0 ] || { echo "::error::gh pr -R create blocked despite feature APPROVED"; exit 1; }
+          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 0 ] || { echo "::error::gh pr --repo= create blocked despite feature APPROVED"; exit 1; }
           # quoted create sibling must NOT poison an independent bound merge (segment-local)
           [ "$(gcmd "gh pr create --title \"feat x\" --fill; $(bound 42)")" = 0 ] || { echo "::error::quoted create sibling blocked independent bound merge"; exit 1; }
           echo "canary: targeted ship gate origin-bound PR head + multi-segment create|merge OK"
