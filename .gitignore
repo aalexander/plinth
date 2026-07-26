@@ -12,6 +12,10 @@ Thumbs.db
 # Temp files from bin/plinth's portable in-place edits
 *.plinth-tmp
 
+# Implementer-lane prompt dirs + canary scratch (project-local Write paths)
+/.plinth-lane.*
+/.plinth-lane-canary.*
+
 # Editor droppings
 *.swp
 *~

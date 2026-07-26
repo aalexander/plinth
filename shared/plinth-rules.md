@@ -118,8 +118,11 @@ is the evidence). A NON-Claude driver cannot run those subagents — and doesn't
 it IS the cheap fast model (the grok-RESIDENT alternative topology): type your own volume, consult judgment UP
 via `plinth advise` (`--impactful` for architectural calls), and for a second implementation
 shell out to the other family's CLI with the same five-part spec plus
-`.plinth/lane-guard.sh` (preflight / snapshot / scope — vendor-neutral shell).
-Details + cost discipline: `.plinth/MODELS.md`. When a
+`.plinth/lane-guard.sh` (preflight / snapshot / scope / delegation — vendor-neutral shell).
+A lane report with `STATUS: complete` without a `DELEGATION:` receipt line (and a
+readable artifact path under `.plinth/session/lanes/`) is incomplete — open the
+artifact; a missing receipt is the hole a self-implementing lane leaves. Details +
+cost discipline: `.plinth/MODELS.md`. When a
 delegated spec turns out to be architecturally wrong, that is YOUR call — do not let the lane
 guess; decide it, or consult the advisor.
 
