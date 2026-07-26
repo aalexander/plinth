@@ -41,13 +41,18 @@ jobs:
           set -euo pipefail
           PLINTH_SOURCE="${PLINTH_UNDER_TEST:-$GITHUB_WORKSPACE/bin/plinth}"
           # Contract: warn_live_review keys off the same request-*.json / verdict.json
-          # fields review.sh actually writes (not invented fixture names).
+          # fields review.sh actually writes (not invented fixture names). Session
+          # dirs are single-level: review.sh flattens branch slashes via tr '/ ' '--'.
           grep -qF 'request-$r.json' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
             || { echo "::error::review.sh no longer writes request-\$r.json — warn_live_review contract broken"; exit 1; }
           grep -qF 'verdict.json' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
             || { echo "::error::review.sh no longer writes verdict.json — warn_live_review contract broken"; exit 1; }
           grep -qF 'round:$round' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
             || { echo "::error::review.sh no longer records round:\$round — warn_live_review contract broken"; exit 1; }
+          grep -qF "tr '/ ' '--'" "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::review.sh no longer flattens branch to a single-level slug — warn_live_review glob would miss real sessions"; exit 1; }
+          grep -qF 'session/review/${slug}' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::review.sh session dir path shape changed — update warn_live_review glob"; exit 1; }
           AR="$(mktemp -d)"; AT="$(mktemp -d)"; AB="$(mktemp -d)"; GATE="$(mktemp -u)"
           mkfifo "$GATE"
           cp -R "$GITHUB_WORKSPACE/bin" "$GITHUB_WORKSPACE/shared" "$GITHUB_WORKSPACE/templates" "$AR/"
@@ -93,9 +98,10 @@ jobs:
           this replacement is intentionally invalid {
           NEW_REVIEW
           chmod 755 "$AR/shared/.plinth/review.sh"
-          mkdir -p "$AT/.plinth/session/review/feat"
-          printf '{"round":2,"mode":"FULL"}\n' > "$AT/.plinth/session/review/feat/request-2.json"
-          printf '{"round":1,"verdict":"CHANGES_NEEDED"}\n' > "$AT/.plinth/session/review/feat/verdict.json"
+          # slug for branch feat/atomic would be feat-atomic (single segment under review/).
+          mkdir -p "$AT/.plinth/session/review/feat-atomic"
+          printf '{"round":2,"mode":"FULL"}\n' > "$AT/.plinth/session/review/feat-atomic/request-2.json"
+          printf '{"round":1,"verdict":"CHANGES_NEEDED"}\n' > "$AT/.plinth/session/review/feat-atomic/verdict.json"
           update_out="$(PATH="$AB:$PATH" "$AR/bin/plinth" update "$AT" 2>&1)"
           # Release the old process only after update finished installing the new path.
           : > "$GATE" &
@@ -104,6 +110,12 @@ jobs:
           wait "$gate_pid" 2>/dev/null || true
           [ "$run_rc" = 0 ] && grep -q ATOMIC_DONE "$AT/running.out" || { echo "::error::atomic refresh replaced review.sh in place and crashed the already-running interpreter (rc=$run_rc)"; exit 1; }
           printf '%s' "$update_out" | grep -q 'WARNING: review round 2 appears to be in flight' || { echo "::error::update did not warn when request state outran the last verdict"; exit 1; }
+          # Negative: when verdict has caught up, warn_live_review must stay quiet
+          # (guards against an unconditional or inverted warning).
+          printf '{"round":2,"verdict":"CHANGES_NEEDED"}\n' > "$AT/.plinth/session/review/feat-atomic/verdict.json"
+          quiet_out="$(PATH="$AB:$PATH" "$AR/bin/plinth" update "$AT" 2>&1)"
+          printf '%s' "$quiet_out" | grep -q 'WARNING: review round' \
+            && { echo "::error::warn_live_review fired when request round did not outrun verdict"; exit 1; }
           mode="$(stat -c '%a' "$AT/.plinth/review.sh" 2>/dev/null || stat -f '%Lp' "$AT/.plinth/review.sh")"
           [ "$mode" = 744 ] || { echo "::error::atomic managed refresh changed review.sh mode (got $mode, want exact preserved mode 744)"; exit 1; }
           [ -x "$AT/.plinth/risk-classify.sh" ] || { echo "::error::update did not restore exec bit on risk-classify.sh (exec-bit floor missing)"; exit 1; }
