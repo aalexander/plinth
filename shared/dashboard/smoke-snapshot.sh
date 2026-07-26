@@ -1090,6 +1090,11 @@ for okhost in "127.0.0.1:${SRV_PORT}" "localhost:${SRV_PORT}" "[::1]:${SRV_PORT}
     "http://127.0.0.1:${SRV_PORT}/api/snapshot" || true)"
   [ "$hc" = "200" ] || { echo "smoke-snapshot: Host $okhost should be 200, got $hc" >&2; exit 1; }
 done
+for badhost in "[::1]attacker.example" "[::1]@evil.example" "[::1]:notaport" "127.0.0.1:abc"; do
+  bc="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${badhost}" \
+    "http://127.0.0.1:${SRV_PORT}/api/snapshot" || true)"
+  [ "$bc" = "400" ] || { echo "smoke-snapshot: Host $badhost should be 400, got $bc" >&2; exit 1; }
+done
 # Failing builder surfaces detail and shares one flight (count invocations)
 FAIL_COUNT="$FIX/fail.count"
 : > "$FAIL_COUNT"

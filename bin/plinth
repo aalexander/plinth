@@ -2253,18 +2253,28 @@ SNAP_BIN = os.environ.get("PLINTH_DASH_SNAPSHOT_BIN") or BIN
 def _host_ok(handler):
     # DNS-rebinding defense: only accept loopback Host values.
     # Handles "127.0.0.1:7348", "localhost", "[::1]", "[::1]:7348".
+    # Rejects "[::1]attacker.example" and any non-empty non-:port suffix after ].
     h = (handler.headers.get("Host") or "").strip().lower()
     if not h:
         return False
     if h.startswith("["):
-        # Bracketed IPv6 authority: [::1] or [::1]:port
         end = h.find("]")
         if end < 0:
             return False
         host = h[1:end]
+        rest = h[end + 1:]
+        if rest:
+            # Must be exactly :digits (port); nothing else.
+            if not (rest.startswith(":") and rest[1:].isdigit() and len(rest) > 1):
+                return False
     else:
         # hostname / IPv4, optional :port (exactly one colon for port split)
-        host = h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+        if h.count(":") == 1:
+            host, port = h.rsplit(":", 1)
+            if not port.isdigit():
+                return False
+        else:
+            host = h
     return host in ("127.0.0.1", "localhost", "::1")
 
 def _snapshot_bytes():
