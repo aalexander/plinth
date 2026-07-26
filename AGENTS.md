@@ -41,8 +41,8 @@ you must apply without being asked:
   permission. Verdicts bind to commit SHAs and shipping requires an APPROVED
   review at HEAD (a Claude driver's Stop gate enforces this locally; server-side,
   branch protection's required checks — floor + checks — gate the merge for every
-  driver, and `receipt / verify` is a required context wherever operators enable
-  it with `strict:true` — when the real verifier runs; see MANUAL); a driver
+  driver, and the review verdict itself gains a server-side verifier when the
+  receipt check ships); a driver
   that waits to be asked deadlocks itself. (Opening the PR follows review; pushing
   follows the rules, not impulse.)
 - Rule 10 evidence — pasted runner output — overrides any brevity or style

@@ -1,13 +1,14 @@
 # Blocked on you
 
-- [ ] **Auto mode residual (2026-07-26):** Product **v4.8.0**, instrument **4.8.0**,
-  tags **v4.7.2**/**v4.8.0** pushed, GitHub releases published. `ci.yml` already wires
-  floor/checks@**v4.7.2** and **`receipt`**@**v4.7.2** (step 1 of enablement is done on
-  plinth). **You only (step 2):** require status check `receipt / verify` among required
-  contexts **and** set `"strict":true` ("Require branches to be up to date before merging").
-  Without strict, a green receipt can describe a base that has since advanced. Caller-control
-  bound: a PR can replace the receipt caller with a green spoof of the same context name
-  (ci.yml HONEST BOUND / MANUAL).
+- [ ] **Auto mode residual (2026-07-26):** Product **v4.8.0**, tags **v4.7.2**/**v4.8.0**
+  pushed, GitHub releases published. `ci.yml` wires floor/checks@**v4.7.2** and
+  **`receipt`**@**v4.7.2**. Installed instrument is still **4.6.0** (trail) until a
+  labeled instrument-refresh PR — do not require `receipt / verify` until that lands
+  (pre-v4.7 instruments mint no receipt; the check fails closed).
+  **After instrument ≥ 4.7 is on the base:** require status check `receipt / verify`
+  among required contexts **and** set `"strict":true`. Without strict, a green receipt
+  can describe a base that has since advanced. Caller-control bound: a PR can replace
+  the receipt caller with a green spoof of the same context name (ci.yml HONEST BOUND).
   ```
   gh api -X PATCH repos/aalexander/plinth/branches/main/protection/required_status_checks --input -
   ```
@@ -15,37 +16,25 @@
   `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
   (keep whatever contexts you already require; always include `receipt / verify` and
   `strict:true`) — or via the branch-protection UI.
+  Notes push: `git push origin HEAD refs/notes/plinth-receipts` (never force-push that ref).
 
-  **Other repos:** same two-step order (wire receipt job on base first with a pin of the
-  release you are RUNNING, then require + strict). Push notes with the branch:
-  `git push origin HEAD refs/notes/plinth-receipts`. Never force-push that ref. On a
-  non-fast-forward rejection:
-  ```
-  git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
-  git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
-  ./.plinth/review.sh <base>   # SAME base you reviewed against; remints, no paid round
-  git push origin refs/notes/plinth-receipts
-  ```
-  NOT `-s cat_sort_uniq` (concatenates two receipts for one commit and breaks the verifier).
+- [ ] **Instrument refresh to v4.8.0** (separate PR, release-labeled):
+  `plinth update` / copy tagged shared payload; `.plinth-version` → 4.8.0. Prerequisite
+  for receipt minting and for requiring the receipt context.
 
 - [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
   Both implementers again use shell `SPEC_EOF` heredocs; restore the non-shell Write-tool
   flow from #37 while keeping the #41 delegation-receipt wiring. Also add a mutation-
-  sensitive canary for `lane-guard.sh delegation` (missing/empty transcript, exact
-  header identity, containment, agent wiring order) — #41 shipped the gate without one.
+  sensitive canary for `lane-guard.sh delegation`.
 
-- [ ] **Tier-2 confirmation process window:** non-fresh Tier-2 approval may leave
-  `verdict.json` as APPROVED before the clean-slate confirmation finishes; ship gates
-  that only check the field can accept that intermediate state. Fix: persist
-  pending/UNBOUND until confirmation succeeds; canary the ship gate in the
-  failed-confirmation state. MANUAL documents the bound; code residual.
+- [ ] **Tier-2 confirmation process window (product):** non-fresh Tier-2 approval may
+  leave `verdict.json` as APPROVED before the clean-slate confirmation finishes; ship
+  gates that only check the field can accept that intermediate state. Fix: persist
+  pending/UNBOUND until confirmation succeeds; canary the failed-confirmation state.
+  MANUAL documents the bound.
 
-- [ ] **Instrument lag (v4.8.0 tag-locked install):** product `shared/.claude/hooks/guard.sh`
-  comments now qualify receipt enablement (strict + caller-control). Installed
-  `.claude/hooks/guard.sh` still matches tagged **v4.8.0** (floor byte-cmp). Next
-  instrument refresh after a post-tag product pin. Clean-slate also noted UPSTREAM:
-  `_ship_bare` authorizes argument-less `gh pr merge` from local verdict without binding
-  origin (`GH_REPO` / default-repo can redirect) — product follow-up, not close-out.
+- [ ] **UPSTREAM residuals:** `_ship_bare` / `GH_REPO` redirect on argument-less
+  `gh pr merge`; guard comment prose for strict+caller-control (if not already in tag).
 
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only

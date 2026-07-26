@@ -38,23 +38,6 @@
 #       as the gitlink change. A submodule is a separate repo with its own review; treat its contents
 #       as out-of-scope for the superproject lane (the gitlink change itself IS caught).
 #
-#   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>
-#       The DELEGATION RECEIPT. Copies the delegate CLI's own transcript (with its exit code)
-#       to an artifact under `.plinth/session/lanes/` and prints a one-line receipt naming the
-#       artifact, the transcript's sha256, and the delegate's SELF-REPORTED model. Exits 3
-#       ("unavailable: ...") when the transcript is missing or EMPTY — nothing then shows the
-#       delegate ran, so the lane must report STATUS: unavailable instead of complete.
-#       Run it AFTER `scope`: the artifact lands under `.plinth/session/`, which the pre-run
-#       snapshot covers, so recording it earlier would read as a sensitive-path violation.
-#       WHAT IT DOES NOT GUARANTEE (say it plainly, do not let this claim grow): it proves a
-#       non-empty transcript EXISTS and preserves it for the driver to read. It does NOT prove
-#       which model produced the diff — `model=` is whatever the transcript says, and a lane
-#       that implemented the task itself could write a file. It also does NOT bind the
-#       transcript to THIS run (no BEFORE/SNAP/recency check) — a fallible paste of a STALE
-#       OUT path from a prior invocation still records a green receipt. A skipped delegation
-#       becomes DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not
-#       impossible.
-#
 #   lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>...
 #       After the run: every TRACKED change + NEW (non-ignored) file (vs baseref) must be a spec
 #       file AND must not match a protected pattern; AND, given the pre-run --snapshot, no SENSITIVE
@@ -195,31 +178,6 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
   sens_grep "$SECRET_FILES" "$1" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }
-sens_prefilter() {  # stdin: candidate paths -> stdout: the sensitivity CANDIDATES, in ONE process.
-  # PERFORMANCE, not policy. sens_match is a per-path loop of `printf | grep` pairs (two forks per
-  # pattern per path), and the enumeration in sens_snapshot deliberately lists EVERY ignored file —
-  # a gitignored `.env`/`secrets/…` MUST be caught — so the classification cost was
-  # O(ignored files x patterns) forks: measured 232s on a 25k-file ignored tree (minutes on real
-  # repos with a big node_modules/). The git enumeration itself is ~30ms there and the same bulk
-  # grep is ~50ms, so the forks were the entire cost; pushing pathspecs into `git ls-files` would
-  # not have fixed it — and could not, since .plinth/protected-paths entries are grep -E REGEXES,
-  # not git pathspecs. This runs the SAME pattern set (active_pats + the three builtin constants)
-  # as a single `grep -E -f`, which ORs the patterns exactly as sens_match's loop does.
-  # It is only ever required to be a SUPERSET of sens_match — sens_match still runs on every
-  # survivor and remains the sole classification authority, so this can never widen or narrow
-  # policy, only skip paths no pattern can match. active_pats is a validated CACHE echo by the
-  # time either caller reaches here (validate_prot_pats runs first in both subcommands), so its
-  # use inside a process substitution cannot swallow a producer error — same argument as the
-  # existing `< <(prot_pats)` readers.
-  # -a is REQUIRED: without it GNU grep applies its binary-input heuristic to stdin, and a
-  # path list containing bytes it reads as an encoding error makes it print
-  # "Binary file (standard input) matches" and exit 0 INSTEAD of emitting the matching lines.
-  # The candidate list then collapses to one bogus record, the sensitive baseline empties, and
-  # a later `scope` reads clean — the same fail-open the rc>=2 gate exists to stop, but arriving
-  # with rc=0 where no status check can see it. Needs core.quotePath=false plus a non-UTF-8
-  # filename to trigger, which is exactly the kind of input an attacker chooses.
-  grep -a -E -f <(active_pats; printf '%s\n%s\n%s\n' "$SECRET_DIRS" "$SECRET_DIR_NODES" "$SECRET_FILES")
-}
 ck_sed() {  # sed on stdin, but EXIT 5 (fail closed) on ANY sed error. BSD/macOS sed returns rc=1 on a
   # real error (bad script/input) — indistinguishable from grep's legitimate "no match" rc=1 in a
   # `grep | sed` pipeline, so a sed failure would otherwise be MASKED by a downstream `<=1` check.
@@ -270,14 +228,6 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   local _gv _cp _d; local -a _cpdirs=()
   _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
     || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
-  # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter):
-  # the ignored-file listing stays FULL (that is the security property — gitignored secrets must be
-  # enumerated), only the per-path fork storm goes away. Status-checked: 0 = candidates found,
-  # 1 = no sensitive path anywhere in the tree (legitimate, e.g. a repo with no secrets), >=2 is a
-  # real grep error that must NOT silently empty the baseline and later read as "scope ok".
-  local _gvrc
-  _gv="$(printf '%s\n' "$_gv" | sens_prefilter)"; _gvrc=$?
-  [ "$_gvrc" -le 1 ] || { echo "lane-guard: sensitive-candidate prefilter failed (grep rc=$_gvrc) — refusing (fail closed)" >&2; return 5; }
   # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
   # so a non-zero find is a REAL error (permission, etc.) -> fail closed. Collect into an ARRAY and
   # expand quoted — a gitdir/worktree path containing spaces or glob chars must not word-split (that
@@ -387,204 +337,18 @@ case "$sub" in
     case "$v" in
       grok)
         command -v grok >/dev/null 2>&1 || { echo "unavailable: grok not on PATH — install https://x.ai/cli"; exit 3; }
-        # grok 0.2.112 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
+        # grok 0.2.93 (receipt) prints "You are not authenticated." on stdout but EXITS 0, so the exit
         # code alone does NOT verify auth — inspect the OUTPUT. A nonzero exit (hung/killed/other) is
         # also unavailable. Only a zero exit with NO "not authenticated" marker counts as signed in.
-        _gt0=$(date +%s); _go="$(_cap 30 grok models 2>&1)"; _grc=$?; _gel=$(( $(date +%s) - _gt0 ))
-        # DISAMBIGUATE the failure. One lumped reason ("not signed in (or failed/hung)") cost a
-        # driver a session: a first-call unavailable followed by clean re-runs was unattributable.
-        # HONEST BOUND on the timeout claim (GNU coreutils `timeout -k 5` + our python fallback):
-        #   - Elapsed first: an INSTANT 124/137/142 is not a completed cap (_cap returns 124 when no
-        #     cap tool exists; a child may self-exit 124/137/142).
-        #   - rc=124 + elapsed≈cap: CONSISTENT WITH wall-clock timeout (GNU timeout 124 on TERM-death;
-        #     python fallback always 124). Residual: CLI self-exit 124 after ~30s is indistinguishable.
-        #   - rc=137: GNU -k KILL lands around cap+5 (~35s). Elapsed≥33 is consistent with that path
-        #     OR CLI/external SIGKILL; 28–32s is past TERM but early for completed -k, so prefer
-        #     self-exit/external wording. Never timeout-ONLY; never absolute "NOT a timeout".
-        #   - rc=142: often 128+14 (SIGALRM), not the standard 124/137 cap signature; residual self-exit.
-        # DIAGNOSTIC only — no automatic retry (a blind retry doubles the hang bound), no change to
-        # what counts as authenticated. Operators may re-run deliberately; the text does not instruct it.
-        case "$_grc" in
-          124)
-            if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=124 after ${_gel}s — consistent with the 30s wall-clock timeout (GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire). Residual: a CLI that itself exits 124 after ~30s is not distinguishable from the wrapper."
-            else
-              echo "unavailable: the grok auth check terminated with rc=124 after only ${_gel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'grok models' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'grok models' directly."
-            fi
-            exit 3 ;;
-          137)
-            if [ "$_gel" -ge 33 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
-            elif [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — at/near the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
-            else
-              echo "unavailable: the grok auth check terminated with rc=137 after only ${_gel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). Residual: rc=137 is often SIGKILL (128+9) from an external kill, OR a CLI self-exit 137 — not a completed timeout."
-            fi
-            exit 3 ;;
-          142)
-            if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') ended rc=142 after ${_gel}s — often SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Residual: a CLI may also self-exit 142. Investigate the process, not only a cold start."
-            else
-              echo "unavailable: the grok auth check terminated with rc=142 after only ${_gel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
-            fi
-            exit 3 ;;
-        esac
-        if [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; then :; else
-          # Known unauthenticated signatures: exit 0 + "not authenticated" text, or rc=1.
-          # Other non-cap codes (incl. GNU timeout wrapper 125) are NOT "not signed in".
-          if [ "$_grc" = 0 ] || [ "$_grc" = 1 ]; then
-            echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"
-          else
-            echo "unavailable: the grok auth check ('grok models') failed (rc=$_grc, elapsed ${_gel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
-          fi
-          exit 3
-        fi ;;
+        _go="$(_cap 30 grok models 2>&1)"; _grc=$?
+        { [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; } \
+          || { echo "unavailable: grok not signed in (or auth check failed/hung) — run 'grok login'"; exit 3; } ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
-        _ct0=$(date +%s); _cap 30 codex login status >/dev/null 2>&1; _crc=$?; _cel=$(( $(date +%s) - _ct0 ))
-        case "$_crc" in
-          0) : ;;
-          124)
-            # Same honest bound as grok (see above).
-            if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=124 after ${_cel}s — consistent with the 30s wall-clock timeout (GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire). Residual: a CLI that itself exits 124 after ~30s is not distinguishable from the wrapper."
-            else
-              echo "unavailable: the codex auth check terminated with rc=124 after only ${_cel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'codex login status' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'codex login status' directly."
-            fi
-            exit 3 ;;
-          137)
-            if [ "$_cel" -ge 33 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — consistent with the 30s wall-clock cap after -k 5 KILL escalation (~35s; GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis."
-            elif [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — at/near the 30s TERM deadline but earlier than the typical -k 5 KILL window (~35s); more consistent with CLI self-exit 137 or external SIGKILL than with a completed -k escalation. Not a timeout-only diagnosis."
-            else
-              echo "unavailable: the codex auth check terminated with rc=137 after only ${_cel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window, ~35s). Residual: rc=137 is often SIGKILL (128+9) from an external kill, OR a CLI self-exit 137 — not a completed timeout."
-            fi
-            exit 3 ;;
-          142)
-            if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') ended rc=142 after ${_cel}s — often SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Residual: a CLI may also self-exit 142. Investigate the process, not only a cold start."
-            else
-              echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
-            fi
-            exit 3 ;;
-          1) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
-          *)
-            # Known unauthenticated is rc=1; other codes (incl. GNU timeout 125) are residual.
-            echo "unavailable: the codex auth check ('codex login status') failed (rc=$_crc, elapsed ${_cel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
-            exit 3 ;;
-        esac ;;
+        _cap 30 codex login status >/dev/null 2>&1 || { echo "unavailable: codex not signed in (or auth check hung) — run 'codex login'"; exit 3; } ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
     echo "ready: $v" ;;
-
-  delegation)
-    # PROOF-OF-ARTIFACT, not proof-of-authorship (see the header). The lane's value is that a
-    # DIFFERENT model family typed the diff; a lane that quietly implements the task itself
-    # removes that while the driver believes delegation happened. Nothing here can prove who
-    # typed it — what it CAN do is make the delegate's own transcript a precondition the driver
-    # can open and read, so a skipped delegation leaves a hole instead of a clean report.
-    dv="${1:-}"; dcrc="${2:-}"; dtr="${3:-}"
-    _dusage() { echo "usage: lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>"; exit 2; }
-    # vendor is a free token (vendor-neutral: any delegate CLI), constrained to filename-safe chars:
-    printf '%s' "$dv"   | grep -Eq '^[A-Za-z0-9._-]+$' || _dusage
-    printf '%s' "$dcrc" | grep -Eq '^[0-9]+$'          || _dusage   # the CLI's real rc, not a narrative
-    [ -n "$dtr" ] || _dusage
-    # THE GATE. A missing or EMPTY transcript means nothing shows the delegate ran at all.
-    { [ -f "$dtr" ] && [ -s "$dtr" ]; } || {
-      echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
-    droot="$(git rev-parse --show-toplevel 2>/dev/null)"
-    [ -n "$droot" ] || { echo "unavailable: not inside a git repo — cannot record the delegation artifact"; exit 3; }
-    # CONTAINMENT BEFORE ANY WRITE. A symlinked `.plinth`, `.plinth/session`, or session
-    # `.gitignore` redirects gitignore/lanes outside the repository (data-loss / escape). Refuse
-    # first — mkdir/printf after a symlink check that only looked at `lanes` was too late.
-    dsess="$droot/.plinth/session"
-    if [ -L "$droot/.plinth" ]; then
-      echo "unavailable: '$droot/.plinth' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
-    fi
-    if [ -L "$dsess" ]; then
-      echo "unavailable: '$dsess' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
-    fi
-    if [ -e "$dsess" ] && [ ! -d "$dsess" ]; then
-      echo "unavailable: '$dsess' exists and is not a directory — refusing to write the delegation artifact"; exit 3
-    fi
-    if [ -d "$dsess" ]; then
-      _sreal="$(cd "$dsess" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$dsess'"; exit 3; }
-      case "$_sreal" in
-        "$droot"|"$droot"/*) : ;;
-        *) echo "unavailable: session directory resolves outside the repository ('$_sreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
-      esac
-    fi
-    mkdir -p "$dsess" || { echo "unavailable: cannot create '$dsess' for the delegation artifact"; exit 3; }
-    if [ -L "$dsess" ] || [ ! -d "$dsess" ]; then
-      echo "unavailable: '$dsess' is not a real directory inside the repository — refusing to write the delegation artifact"; exit 3
-    fi
-    _sreal="$(cd "$dsess" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$dsess'"; exit 3; }
-    case "$_sreal" in
-      "$droot"|"$droot"/*) : ;;
-      *) echo "unavailable: session directory resolves outside the repository ('$_sreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
-    esac
-    dig="$dsess/.gitignore"
-    if [ -L "$dig" ]; then
-      echo "unavailable: '$dig' is a symlink — refusing to follow an external session .gitignore"; exit 3
-    fi
-    ddir="$dsess/lanes"
-    # A SYMLINKED `lanes` (or anything that is not a real directory) redirects the artifact outside
-    # the repository — an escape. Refuse before write; after mkdir, re-check and require the
-    # resolved path stays under the repo root. Do NOT rewrite .gitignore until these checks pass
-    # (a later refusal must not leave a truncated gitignore behind).
-    if [ -L "$ddir" ]; then
-      echo "unavailable: '$ddir' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
-    fi
-    if [ -e "$ddir" ] && [ ! -d "$ddir" ]; then
-      echo "unavailable: '$ddir' exists and is not a directory — refusing to write the delegation artifact"; exit 3
-    fi
-    mkdir -p "$ddir" || { echo "unavailable: cannot create '$ddir' for the delegation artifact"; exit 3; }
-    if [ -L "$ddir" ] || [ ! -d "$ddir" ]; then
-      echo "unavailable: '$ddir' is not a real directory inside the repository — refusing to write the delegation artifact"; exit 3
-    fi
-    dreal="$(cd "$ddir" && pwd -P 2>/dev/null)" || { echo "unavailable: cannot resolve '$ddir'"; exit 3; }
-    case "$dreal" in
-      "$droot"|"$droot"/*) : ;;
-      *) echo "unavailable: lanes directory resolves outside the repository ('$dreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
-    esac
-    # Session state SELF-IGNORES with an EXACT `*` file (same contract as bin/plinth / review.sh /
-    # session hooks). Merely finding a `*` line is not enough: `*`, `!lanes/`, `!lanes/**` leaves
-    # lanes tracked and dirties the tree. Rewrite untracked content to exactly one `*` line.
-    # TRACKED .gitignore: never clobber — `*` does not ignore already-tracked files, so a rewrite
-    # would dirty the tree (and destroy committed content). Refuse unless it is already exact `*`.
-    _exact_star_gi() {
-      local f="$1"
-      [ -f "$f" ] || return 1
-      [ "$(wc -l < "$f" | tr -d '[:space:]')" = "1" ] || return 1
-      [ "$(wc -c < "$f" | tr -d '[:space:]')" = "2" ] || return 1
-      grep -qxF '*' "$f"
-    }
-    # ls-files --error-unmatch: 0 = tracked, 1 = untracked/missing, >=2 = command failure (fail closed).
-    _gi_track=0
-    git -C "$droot" ls-files --error-unmatch -- .plinth/session/.gitignore >/dev/null 2>&1 || _gi_track=$?
-    if [ "$_gi_track" -ge 2 ]; then
-      echo "unavailable: cannot determine whether .plinth/session/.gitignore is tracked (git ls-files rc=$_gi_track) — refusing (fail closed)"; exit 3
-    fi
-    if [ "$_gi_track" -eq 0 ]; then
-      if ! _exact_star_gi "$dig"; then
-        echo "unavailable: tracked .plinth/session/.gitignore is not the exact self-ignore '*' — refusing to clobber a tracked file (would dirty the tree and lose committed content)"; exit 3
-      fi
-    else
-      printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
-    fi
-    dhash="$(hashof "$dtr")"; dbytes="$(wc -c < "$dtr" | tr -d '[:space:]')"
-    { [ -n "$dhash" ] && [ -n "$dbytes" ]; } || { echo "unavailable: cannot hash/size the transcript '$dtr'"; exit 3; }
-    # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to END with `MODEL: <id>`.
-    # Take the LAST matching line (terminal self-report), not the first — an earlier decoy MODEL:
-    # must not win. Sanitized to one bare token. Absent -> unreported (not a failure).
-    dmodel="$(grep -E '^[[:space:]]*MODEL:' "$dtr" 2>/dev/null | tail -n1 | sed -E 's/^[[:space:]]*MODEL:[[:space:]]*//' | tr -cd 'A-Za-z0-9._:/-' | cut -c1-64)"
-    [ -n "$dmodel" ] || dmodel=unreported
-    dart="$(mktemp "$ddir/${dv}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")" || { echo "unavailable: cannot create the delegation artifact under '$ddir'"; exit 3; }
-    { printf '# plinth lane delegation v1: vendor=%s rc=%s bytes=%s sha256=%s model=%s recorded=%s\n' \
-        "$dv" "$dcrc" "$dbytes" "$dhash" "$dmodel" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      cat "$dtr"; } > "$dart" || { echo "unavailable: cannot write the delegation artifact '$dart'"; exit 3; }
-    echo "delegation recorded: vendor=$dv rc=$dcrc bytes=$dbytes sha256=$dhash model=$dmodel artifact=$dart" ;;
 
   snapshot)
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "snapshot: not inside a git repo" >&2; exit 5; }
@@ -796,5 +560,5 @@ STAGEDSENS
       echo "scope ok: tracked changes + new files within the spec; no protected path. NOTE: no --snapshot given — gitignored sensitive paths (secrets, .plinth/session/) were NOT verified"
     fi ;;
 
-  *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>... | delegation <vendor> <cli-exit-code> <transcript-file>"; exit 2 ;;
+  *) echo "usage: lane-guard.sh preflight <grok|codex> | snapshot | scope <baseref> [--snapshot <file>] <spec-file>..."; exit 2 ;;
 esac

@@ -4,11 +4,10 @@
 - **Release close-out:** required floor/checks pins advanced to tag **v4.7.2**
   (trail-by-one for product 4.8.0). **`receipt` job** wired on PRs for auto mode
   (`plinth-receipt.yml@v4.7.2`) with caller-control HONEST BOUND documented in
-  ci.yml. Operators: add `receipt / verify` + `strict: true` after instruments ≥ v4.7.
-  MANUAL + `shared/.claude/hooks/guard.sh` comments now qualify that requiring the
-  context name alone is not enough (need strict:true and the real verifier still
-  running). Installed instrument remains on tagged **v4.8.0** bytes until the next
-  instrument refresh after a post-tag product pin.
+  ci.yml. Installed instrument deliberately remains **4.6.0** until a separate
+  instrument-refresh PR. Operators: after instrument ≥ v4.7, require
+  `receipt / verify` + `strict: true`. MANUAL documents Tier-2 confirmation
+  process-window and auto-mode caller-control bounds.
 
 - **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
