@@ -3324,11 +3324,17 @@ jobs:
             [ "$_del_ln" -gt "$_scope_ln" ] || { echo "::error::${a}-implementer runs delegation (line $_del_ln) BEFORE scope (line $_scope_ln) — artifact under .plinth/session/ would trip the pre-run snapshot"; exit 1; }
             # Extract the FIRST documented delegation invocation line (indented command, not prose):
             _dline="$(grep -E "lane-guard\.sh delegation $a " "$A" | head -1)"
-            printf '%s' "$_dline" | grep -q 'RUN_RC' || { echo "::error::${a}-implementer delegation does not pass the run's RUN_RC (got: $_dline) — a hardcoded rc would hide timeouts"; exit 1; }
-            printf '%s' "$_dline" | grep -q 'OUT' || { echo "::error::${a}-implementer delegation does not pass the run's OUT transcript path (got: $_dline) — a fixed path is not the delegate's output"; exit 1; }
-            # Reject a literal numeric rc or a hardcoded absolute path in the invocation template:
-            printf '%s' "$_dline" | grep -Eq "delegation $a [0-9]+ " && { echo "::error::${a}-implementer hardcodes a numeric CLI rc in the delegation invocation (got: $_dline)"; exit 1; } || true
-            printf '%s' "$_dline" | grep -Eq 'delegation '"$a"' /' && { echo "::error::${a}-implementer hardcodes an absolute transcript path in the delegation invocation (got: $_dline)"; exit 1; } || true
+            # POSITIONAL validation (not whole-line substring): usage is
+            #   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>
+            # so after the vendor, arg 2 must be the RUN_RC binding and arg 3 the OUT
+            # binding. A mere grep for RUN_RC/OUT accepts swapped args, `token-RUN_RC
+            # token-OUT`, and `$RUN_RC /tmp/fixed-$OUT.log` — all green while the receipt
+            # wire is broken. Accept only exact shell vars ($RUN_RC/$OUT, braced, quoted)
+            # or angle-bracket placeholders that name those identities.
+            _d_rc='("\$RUN_RC"|"\$\{RUN_RC\}"|\$RUN_RC|\$\{RUN_RC\}|<[^>]*RUN_RC[^>]*>)'
+            _d_out='("\$OUT"|"\$\{OUT\}"|\$OUT|\$\{OUT\}|<[^>]*OUT[^>]*>)'
+            printf '%s' "$_dline" | grep -Eq "delegation ${a} ${_d_rc}[[:space:]]+${_d_out}([[:space:]]|\$)" \
+              || { echo "::error::${a}-implementer delegation does not pass RUN_RC then OUT as positional args after the vendor (got: $_dline) — swapped/hardcoded/substring tokens hide a broken receipt wire"; exit 1; }
           done
           # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
           # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
