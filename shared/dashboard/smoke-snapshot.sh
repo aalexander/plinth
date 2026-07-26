@@ -475,7 +475,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 35' "$OUT" >/dev/null
+jq -e '(.projects | length) == 34' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
