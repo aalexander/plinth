@@ -178,6 +178,31 @@ sens_match() {  # <path> -> 0 if SENSITIVE (a git-visible secret/protected path)
   sens_grep "$SECRET_FILES" "$1" && return 0   # secret names incl. template lookalikes (.env*, id_rsa*, *.pem, *.key)
   return 1
 }
+sens_prefilter() {  # stdin: candidate paths -> stdout: the sensitivity CANDIDATES, in ONE process.
+  # PERFORMANCE, not policy. sens_match is a per-path loop of `printf | grep` pairs (two forks per
+  # pattern per path), and the enumeration in sens_snapshot deliberately lists EVERY ignored file —
+  # a gitignored `.env`/`secrets/…` MUST be caught — so the classification cost was
+  # O(ignored files x patterns) forks: measured 232s on a 25k-file ignored tree (minutes on real
+  # repos with a big node_modules/). The git enumeration itself is ~30ms there and the same bulk
+  # grep is ~50ms, so the forks were the entire cost; pushing pathspecs into `git ls-files` would
+  # not have fixed it — and could not, since .plinth/protected-paths entries are grep -E REGEXES,
+  # not git pathspecs. This runs the SAME pattern set (active_pats + the three builtin constants)
+  # as a single `grep -E -f`, which ORs the patterns exactly as sens_match's loop does.
+  # It is only ever required to be a SUPERSET of sens_match — sens_match still runs on every
+  # survivor and remains the sole classification authority, so this can never widen or narrow
+  # policy, only skip paths no pattern can match. active_pats is a validated CACHE echo by the
+  # time either caller reaches here (validate_prot_pats runs first in both subcommands), so its
+  # use inside a process substitution cannot swallow a producer error — same argument as the
+  # existing `< <(prot_pats)` readers.
+  # -a is REQUIRED: without it GNU grep applies its binary-input heuristic to stdin, and a
+  # path list containing bytes it reads as an encoding error makes it print
+  # "Binary file (standard input) matches" and exit 0 INSTEAD of emitting the matching lines.
+  # The candidate list then collapses to one bogus record, the sensitive baseline empties, and
+  # a later `scope` reads clean — the same fail-open the rc>=2 gate exists to stop, but arriving
+  # with rc=0 where no status check can see it. Needs core.quotePath=false plus a non-UTF-8
+  # filename to trigger, which is exactly the kind of input an attacker chooses.
+  grep -a -E -f <(active_pats; printf '%s\n%s\n%s\n' "$SECRET_DIRS" "$SECRET_DIR_NODES" "$SECRET_FILES")
+}
 ck_sed() {  # sed on stdin, but EXIT 5 (fail closed) on ANY sed error. BSD/macOS sed returns rc=1 on a
   # real error (bad script/input) — indistinguishable from grep's legitimate "no match" rc=1 in a
   # `grep | sed` pipeline, so a sed failure would otherwise be MASKED by a downstream `<=1` check.
@@ -228,6 +253,14 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   local _gv _cp _d; local -a _cpdirs=()
   _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
     || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
+  # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter):
+  # the ignored-file listing stays FULL (that is the security property — gitignored secrets must be
+  # enumerated), only the per-path fork storm goes away. Status-checked: 0 = candidates found,
+  # 1 = no sensitive path anywhere in the tree (legitimate, e.g. a repo with no secrets), >=2 is a
+  # real grep error that must NOT silently empty the baseline and later read as "scope ok".
+  local _gvrc
+  _gv="$(printf '%s\n' "$_gv" | sens_prefilter)"; _gvrc=$?
+  [ "$_gvrc" -le 1 ] || { echo "lane-guard: sensitive-candidate prefilter failed (grep rc=$_gvrc) — refusing (fail closed)" >&2; return 5; }
   # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
   # so a non-zero find is a REAL error (permission, etc.) -> fail closed. Collect into an ARRAY and
   # expand quoted — a gitdir/worktree path containing spaces or glob chars must not word-split (that

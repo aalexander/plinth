@@ -134,6 +134,14 @@ Everything between is the model's call.
   guidance to the model, not an enforced/validated output. `--impactful` (architectural /
   hard-to-reverse decisions) escalates to the stronger model. Vendor-agnostic and
   cross-family (a Grok driver can consult Fable); see the `advisor_*` knobs below.
+- `plinth changelog-collate [<target-repo>]` — **Plinth-repo release helper** (not a
+  per-project command). Folds every `changelog.d/*.md` fragment except `README.md`
+  into a new top section of `CHANGELOG.md`, bumps `VERSION` from the highest fragment
+  `bump:` (major > minor > patch), and deletes the collated fragments. Defaults to
+  the current working directory; pass a target repo path to operate elsewhere.
+  Empty `changelog.d/` is a no-op (exit 0). Invalid/missing `bump:`, empty body, bad
+  slug, or malformed `VERSION` aborts without rewriting `VERSION` or `CHANGELOG.md`.
+  Format and rationale: `changelog.d/README.md`.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
@@ -657,6 +665,21 @@ it has run green with a real smoke_cmd.
   driver consults via `advisor_vendor`/`advisor_model`/`advisor_model_max`.
 - New recommendations ship in `shared/MODELS.md`: `git -C <plinth> pull`, tag, then
   `plinth update` each project when YOU choose. Nothing propagates silently.
+- **Plinth product changes (`shared/`, `bin/`) — changelog fragments (transition).**
+  Parallel branches that each edit `VERSION` and the top of `CHANGELOG.md` collide
+  (same next number, same insert point). Fragments fix that: unique files under
+  `changelog.d/`, number computed at release. **Recording rule (exactly once per
+  change):** either the legacy dual-write (new top `CHANGELOG.md` section + matching
+  `VERSION` bump on that PR) **or** a single `changelog.d/<slug>.md` fragment that
+  the same ship consumes via `plinth changelog-collate` (so the merged PR carries
+  the new VERSION/CHANGELOG), never both. Dual-write still matches the still-ratified
+  project-notes rule; fragment+collate in one ship also produces a matching pair.
+  Fragment-only PRs (no collate, no VERSION bump) wait on the follow-up that switches
+  review/CI + project notes. **Bootstrap exception for landing the mechanism itself:**
+  the collate feature is recorded as a bullet under the existing `v4.7.0` section with
+  `VERSION` left at `4.7.0` and no pending fragment — a deliberate one-time exception
+  so introducing the serial-work fix does not itself race on VERSION. Ordinary product
+  PRs after this land do not inherit that exception. See `changelog.d/README.md`.
 
 ## Watch list
 - **First PR per repo**: confirm the Codex review actually posts (connection
@@ -675,11 +698,12 @@ it has run green with a real smoke_cmd.
   Same hazard as grok printing "You are not authenticated." on exit 0.
 - **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
   the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
-  `.plinth/lane-guard.sh preflight grok`. Two open defects currently make it
-  unreliable — upstream #19 (lane-guard's sensitive-path snapshot enumerates EVERY
-  ignored file, stalling minutes on any repo with `node_modules`/`.venv`) and #32
-  (the lane implemented a task itself instead of delegating, which its contract
-  forbids). Until both are fixed, treat "grok typed it" as a claim to verify, not an
+  `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
+  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
+  the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
+  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
+  instead of delegating, which its contract forbids) remains open. Until it lands, treat
+  "grok typed it" as a claim to verify, not an
   assumption — check the report, and prefer typing it yourself over believing a lane
   that may have silently self-implemented.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
@@ -693,16 +717,20 @@ Ratified 2026-07-25, in this order. The ordering is the point: items 1 and 2 com
 first because item 3 is meant to be BUILT through the lane, and building it through
 a lane that stalls or silently self-implements would defeat the exercise twice.
 
-1. **Upstream #19 — the lane-guard stall.** `sens_snapshot` enumerates every ignored
-   file (`git ls-files -o -i --exclude-standard`) and then classifies/hashes each with
-   a fork apiece, so cost is O(all ignored files) rather than O(sensitive files). Any
-   repo with `node_modules`/`.venv` pays minutes per lane invocation — certeus measured
-   ~6 minutes across ~28,000 files, before the lane ever reached grok. Plinth itself is
-   fast only because it has almost no ignored tree, which is exactly why its own
-   dogfooding never surfaced this. Fix: push the filtering into git by passing the
-   sensitive pathspecs to `git ls-files`, so matching happens in C and only candidates
-   come back. This touches the boundary deciding what a delegated lane may not alter —
-   it wants its own focused Tier-2 review, not a ride-along.
+1. **Upstream #19 — the lane-guard stall. RESOLVED in v4.7.1.** `sens_snapshot`
+   classified each enumerated path with a `printf | grep` pair PER PATTERN, so cost was
+   O(ignored files x patterns) in PROCESSES — certeus measured ~6 minutes across ~28,000
+   files before the lane ever reached grok. The fix is a bulk ERE prefilter: one
+   `grep -E -f` running the same pattern set (`active_pats` plus the builtin secret
+   constants) over the whole list, with `sens_match` still run on every survivor as the
+   sole classification authority, so the filter can only ever be a SUPERSET. Measured
+   232s -> 0.43s on 25k ignored files, byte-identical output.
+   NOTE, because the original plan here was WRONG: this deliberately does NOT push
+   pathspecs into `git ls-files`. The enumeration was never the cost (~31ms), and
+   `.plinth/protected-paths` entries are `grep -E` REGEXES, not git pathspecs — a
+   pathspec-derived candidate list would be faster AND silently blind to any path that
+   is sensitive only by project policy. The full ignored listing is retained: that IS
+   the security property.
 2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
    implement the task itself, but nothing structurally enforces that; a lane that
    struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
@@ -938,3 +966,14 @@ installed copies.
   affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
   wave, consider an explicit `plinth update --regen-shell` that completes the
   migration under a byte-honest no-content-loss check.
+- **`changelog-collate` is not multi-file atomic across CHANGELOG + VERSION +
+  fragment deletes.** Each file is written via temp+mv (so no half-written single
+  file), but if the VERSION install or a fragment `rm` fails after CHANGELOG is
+  installed, a retry can double-insert a section. The command reports the
+  condition; a transactional rollback or a collate lockfile would harden
+  environment failures. (changelog-fragments review round 1, minor.)
+- **`changelog-collate` accepts a 9-digit component that increments past its own
+  next-read bound.** Components of 10+ digits are rejected on input, but
+  `999999999` + 1 produces a 10-digit VERSION the next collate will refuse.
+  Reserve increment headroom (reject 9-digit all-nines) or accept the generated
+  range on read. (changelog-fragments review round 6, minor.)

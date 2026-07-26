@@ -39,13 +39,15 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth smoke <project-path> -- <command...>   (run + write execution receipt)
        plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
        plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
-       plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)"; exit 1; }
+       plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)
+       plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ]; then
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
+     # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -1619,10 +1621,224 @@ except subprocess.TimeoutExpired:
   fi
 }
 
+# plinth changelog-collate [<target-repo>] — fold every changelog.d/*.md fragment
+# (except README.md) into a new top section of CHANGELOG.md, bump VERSION from the
+# highest declared bump, then delete the collated fragments. Branches declare
+# INTENT via fragments; this command computes the NUMBER at release time so
+# parallel branches never collide on VERSION or the top of CHANGELOG.md.
+# Atomic writes via the same .plinth-tmp.XXXXXX idiom as edit_file — never leave
+# CHANGELOG.md or VERSION half-written. Fail closed on any invalid/missing bump
+# (never guess a default; never silently skip a fragment).
+run_changelog_collate() {
+  shift  # drop 'changelog-collate'
+  # Exactly zero or one target path — extra args are not "options to ignore" for a
+  # destructive release helper (would silently collate the wrong tree).
+  local root="."
+  if [ "$#" -gt 1 ]; then
+    echo "usage: plinth changelog-collate [<target-repo>]" >&2; exit 1
+  fi
+  if [ "$#" -eq 1 ]; then
+    root="$1"
+    [ -d "$root" ] || { echo "No such directory: $root" >&2; exit 1; }
+  fi
+  local cdir="$root/changelog.d" vfile="$root/VERSION" clfile="$root/CHANGELOG.md"
+  # Collect fragment paths (sorted for a deterministic summary + body order).
+  # README.md is documentation, never a fragment. An empty or absent dir is a
+  # no-op (exit 0), not an error — nothing to collate is a successful release step.
+  local frags="" f base slug _flist
+  if [ -d "$cdir" ]; then
+    # Enumerate every *.md name (including hidden and non-regular entries).
+    # Do NOT use -type f: that silently omits symlinks the prior glob accepted.
+    # Type validation below accepts regular files and symlinks-to-files, and
+    # hard-errors on directories / broken links so release prose cannot hide.
+    # Capture find status: a failed find must not become a successful no-op.
+    _flist="$(mktemp)" || { echo "changelog-collate: mktemp failed while listing fragments" >&2; exit 1; }
+    # -H: follow a command-line starting-point that is itself a symlink to a
+    # directory (default find does not, and would silently no-op on a linked
+    # changelog.d/). Do not use -L (would also follow links inside the tree).
+    if ! find -H "$cdir" -maxdepth 1 -name '*.md' -print > "$_flist"; then
+      rm -f "$_flist"
+      echo "changelog-collate: failed to list $cdir/*.md" >&2
+      exit 1
+    fi
+    # Sort for deterministic summary/body order.
+    if ! LC_ALL=C sort -o "$_flist" "$_flist"; then
+      rm -f "$_flist"
+      echo "changelog-collate: failed to sort fragment list" >&2
+      exit 1
+    fi
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      base="$(basename "$f")"
+      [ "$base" = "README.md" ] && continue
+      if [ -d "$f" ]; then
+        rm -f "$_flist"
+        echo "changelog-collate: $f is a directory (expected a fragment file)" >&2
+        exit 1
+      fi
+      # [ -f ] is true for a regular file or a symlink to one; false for a
+      # broken symlink or special file — both must hard-error, not skip.
+      if [ ! -f "$f" ]; then
+        rm -f "$_flist"
+        echo "changelog-collate: $f is not a readable regular file (broken symlink or special file?)" >&2
+        exit 1
+      fi
+      slug="${base%.md}"
+      if ! printf '%s' "$slug" | LC_ALL=C grep -Eq '^[a-z0-9][a-z0-9._-]*$'; then
+        rm -f "$_flist"
+        echo "changelog-collate: invalid fragment slug in $f (expected changelog.d/<slug>.md where slug matches [a-z0-9][a-z0-9._-]*)" >&2
+        exit 1
+      fi
+      frags="$frags$f"$'\n'
+    done < "$_flist"
+    rm -f "$_flist"
+  fi
+  if [ -z "$frags" ]; then
+    echo "plinth changelog-collate: nothing to collate in $cdir"
+    exit 0
+  fi
+
+  [ -f "$vfile" ] || { echo "changelog-collate: missing VERSION at $vfile" >&2; exit 1; }
+  [ -f "$clfile" ] || { echo "changelog-collate: missing CHANGELOG.md at $clfile" >&2; exit 1; }
+  # Entire file is exactly MAJOR.MINOR.PATCH with at most one trailing newline —
+  # no whitespace stripping (would turn "1. 2.3" into a false positive), no
+  # second line/junk, no empty components ("1..2"). A missing trailing newline is fine.
+  # Preserve trailing newlines: plain $(cat) strips them all, which would accept
+  # "1.2.3\n\n" as a clean single line. Append a sentinel, then strip it.
+  local raw oldver
+  raw="$(cat "$vfile"; printf x)" || { echo "changelog-collate: failed to read $vfile" >&2; exit 1; }
+  raw="${raw%x}"
+  # Reject NULs via byte-count compare (grep '\0' is not portable — it can match
+  # every file). tr -d '\0' shortens the stream iff a NUL was present.
+  _vbytes="$(wc -c < "$vfile" | tr -d '[:space:]')"
+  _vnul="$(tr -d '\0' < "$vfile" | wc -c | tr -d '[:space:]')"
+  if [ "$_vbytes" != "$_vnul" ]; then
+    echo "changelog-collate: VERSION contains a NUL byte — refusing" >&2; exit 1
+  fi
+  case "$raw" in
+    *$'\n'?*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
+    *$'\n'*$'\n'*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;;
+    *$'\n') oldver="${raw%$'\n'}" ;;
+    *) oldver="$raw" ;;
+  esac
+  # After stripping one optional trailing newline, no newline may remain.
+  case "$oldver" in *$'\n'*) echo "changelog-collate: VERSION must be a single MAJOR.MINOR.PATCH line (got multi-line or trailing junk)" >&2; exit 1 ;; esac
+  local major minor patch
+  major="${oldver%%.*}"
+  local rest="${oldver#*.}"
+  minor="${rest%%.*}"
+  patch="${rest#*.}"
+  # Each component: non-empty digits only, bounded length (Bash integers are
+  # fixed-width; a 20-digit component overflows into a wrong release number).
+  # Reassemble must equal the parsed line (rejects "1..2", "1.2.", ".1.2", "1.2.3.4").
+  case "$major" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  case "$minor" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  case "$patch" in ''|*[!0-9]*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1 ;; esac
+  [ "$oldver" = "$major.$minor.$patch" ] || { echo "changelog-collate: VERSION must be MAJOR.MINOR.PATCH (got '$oldver')" >&2; exit 1; }
+
+  # Parse every fragment BEFORE any write. Rank: patch=1, minor=2, major=3.
+  local win_rank=0 win_bump="" bodies="" slugs="" line bump body rank
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || { echo "changelog-collate: cannot read fragment $f" >&2; exit 1; }
+    line="$(head -n 1 "$f" | tr -d '\r')"
+    case "$line" in
+      "bump: patch") bump=patch; rank=1 ;;
+      "bump: minor") bump=minor; rank=2 ;;
+      "bump: major") bump=major; rank=3 ;;
+      *) echo "changelog-collate: invalid or missing bump: in $f (first line must be 'bump: patch|minor|major')" >&2; exit 1 ;;
+    esac
+    # Body is everything after the first --- separator line. Missing ---, an
+    # empty body, or a body with no bullet line is a hard error — never bump
+    # VERSION for a fragment that records no prose (would drop a shipped change).
+    if ! grep -q '^---$' "$f"; then
+      echo "changelog-collate: missing '---' header/body separator in $f" >&2; exit 1
+    fi
+    body="$(sed -n '/^---$/,$p' "$f" | sed '1d')" || {
+      echo "changelog-collate: failed to read body of $f" >&2; exit 1
+    }
+    if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+      echo "changelog-collate: empty body in $f (need one or more bullet lines after ---)" >&2; exit 1
+    fi
+    # Heredoc (not printf|grep) so pipefail never sees SIGPIPE from grep -q
+    # closing early on a large body.
+    grep -q '^- ' <<EOF || { echo "changelog-collate: body in $f has no bullet line (expected lines starting with '- ')" >&2; exit 1; }
+$body
+EOF
+    slug="$(basename "$f" .md)"
+    if [ "$rank" -gt "$win_rank" ]; then win_rank=$rank; win_bump=$bump; fi
+    if [ -n "$slugs" ]; then slugs="$slugs, $slug"; else slugs="$slug"; fi
+    if [ -n "$bodies" ]; then bodies="$bodies"$'\n'"$body"; else bodies="$body"; fi
+  done <<EOF
+$frags
+EOF
+
+  local newver
+  # 10# forces decimal (leading-zero components must not be parsed as octal).
+  case "$win_bump" in
+    major) newver="$((10#$major + 1)).0.0" ;;
+    minor) newver="$major.$((10#$minor + 1)).0" ;;
+    patch) newver="$major.$minor.$((10#$patch + 1))" ;;
+    *) echo "changelog-collate: internal error: no winning bump" >&2; exit 1 ;;
+  esac
+
+  local today; today="$(date -u +"%B %d, %Y")"
+  local section="## v${newver} — ${slugs} — ${today}"
+  # Build the new CHANGELOG in a temp, then VERSION in a temp, then mv both.
+  # Read original modes first (same fail-closed contract as edit_file).
+  local clmode vmode
+  clmode="$(stat -c '%a' "$clfile" 2>/dev/null || stat -f '%Lp' "$clfile" 2>/dev/null)"
+  case "$clmode" in ''|*[!0-7]*) echo "changelog-collate: cannot determine mode of $clfile — refusing" >&2; exit 1 ;; esac
+  vmode="$(stat -c '%a' "$vfile" 2>/dev/null || stat -f '%Lp' "$vfile" 2>/dev/null)"
+  case "$vmode" in ''|*[!0-7]*) echo "changelog-collate: cannot determine mode of $vfile — refusing" >&2; exit 1 ;; esac
+
+  local cltmp vtmp
+  cltmp="$(mktemp "$(dirname "$clfile")/.plinth-tmp.XXXXXX")" || { echo "changelog-collate: mktemp failed for CHANGELOG.md" >&2; exit 1; }
+  vtmp="$(mktemp "$(dirname "$vfile")/.plinth-tmp.XXXXXX")" || { rm -f "$cltmp"; echo "changelog-collate: mktemp failed for VERSION" >&2; exit 1; }
+  chmod "$clmode" "$cltmp" || { rm -f "$cltmp" "$vtmp"; echo "changelog-collate: could not apply mode $clmode to CHANGELOG temp — refusing" >&2; exit 1; }
+  chmod "$vmode" "$vtmp" || { rm -f "$cltmp" "$vtmp"; echo "changelog-collate: could not apply mode $vmode to VERSION temp — refusing" >&2; exit 1; }
+
+  # New section sits immediately after the "# Plinth changelog" title line.
+  # Fail closed if the title line is missing — never invent a new document shape.
+  if ! head -n 1 "$clfile" | grep -q '^# Plinth changelog$'; then
+    rm -f "$cltmp" "$vtmp"
+    echo "changelog-collate: $clfile does not start with '# Plinth changelog' — refusing" >&2
+    exit 1
+  fi
+  {
+    head -n 1 "$clfile"
+    printf '\n%s\n' "$section"
+    printf '%s\n' "$bodies"
+    # Remainder of the file after the title line (may start with a blank line).
+    tail -n +2 "$clfile"
+  } > "$cltmp" || { rm -f "$cltmp" "$vtmp"; echo "changelog-collate: failed to write CHANGELOG temp" >&2; exit 1; }
+  printf '%s\n' "$newver" > "$vtmp" || { rm -f "$cltmp" "$vtmp"; echo "changelog-collate: failed to write VERSION temp" >&2; exit 1; }
+
+  mv "$cltmp" "$clfile" || { rm -f "$cltmp" "$vtmp"; echo "changelog-collate: failed to install new CHANGELOG.md" >&2; exit 1; }
+  mv "$vtmp" "$vfile" || { rm -f "$vtmp"; echo "changelog-collate: failed to install new VERSION (CHANGELOG.md already updated to v$newver — fix VERSION by hand)" >&2; exit 1; }
+
+  # Drain collated fragments; leave README.md and .gitkeep.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rm -f "$f" || { echo "changelog-collate: failed to delete fragment $f (VERSION=$newver already written)" >&2; exit 1; }
+  done <<EOF
+$frags
+EOF
+
+  echo "plinth changelog-collate: $oldver -> $newver ($win_bump wins)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    echo "  collated: $(basename "$f")"
+  done <<EOF
+$frags
+EOF
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
   hookprobe) run_hookprobe "$@" ;;
+  changelog-collate) run_changelog_collate "$@" ;;
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;

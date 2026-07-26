@@ -337,7 +337,61 @@ own fixtures — the receipt was simply built wrong before verification ever saw
   to the v4.7.0 release commit (their trailing comments corrected too — a stale label on a
   correct pin is the same overclaim class).
 
+## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+- **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
+  #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
+  taken before and after every delegated lane run, so the lane paid it twice.
+- **The measured cause was not the one the issue proposed.** The enumeration deliberately lists
+  every ignored file — a gitignored `.env` or `secrets/…` is precisely what the snapshot exists
+  to catch — and the issue proposed pushing sensitive pathspecs down into
+  `git ls-files -o -i --exclude-standard -- <pathspecs>` so the matching happens in C. Profiling
+  a 25,006-file ignored tree says that would have optimized the wrong thing: the git enumeration
+  takes **31 ms**. The cost was `sens_match`, a per-path loop that forks `printf` + `grep` twice
+  per pattern — O(ignored files × patterns) processes, **232 s** for that tree. The push-down
+  would also have been unsound: `.plinth/protected-paths` entries are `grep -E` REGEXES, not git
+  pathspecs, so a pathspec-derived candidate list stops seeing any path that is sensitive only by
+  project policy.
+- **The fix keeps the full listing and collapses the classification.** A new `sens_prefilter()`
+  runs the SAME pattern set — `active_pats` plus the three builtin secret constants — as one
+  `grep -E -f`, which ORs the patterns exactly as `sens_match`'s loop does, and the per-path
+  record loop then runs over the handful of survivors. Same tree, same 25,006 ignored files:
+  **232.26 s → 0.43 s**, with the two snapshots byte-identical after sorting — measured on
+  one developer machine and NOT committed as a receipt, so treat the exact figures as
+  indicative. What the canary ENFORCES on every run is narrower and is the part to rely on:
+  a wall-clock bound on a >=5,000-file ignored tree, that gitignored secrets and a
+  policy-regex-only protected path are still enumerated, that `node_modules` is not
+  swept in, and — the security property itself — that the prefiltered snapshot is
+  byte-identical to an unfiltered reference run. `sens_match` still
+  runs on every survivor and remains the sole classification authority, so the prefilter can only
+  ever skip paths no pattern can match — it cannot widen or narrow policy. Fails closed on a grep
+  error (rc ≥ 2), like every other producer in the script.
+- **What is enumerated did not change, and the canary now proves it.** A new fixture builds a
+  repo with 5,000 gitignored files plus gitignored `.env`, `secrets/`, `credentials/` and
+  `id_rsa` entries — and a path sensitive ONLY via a protected-paths regex — then asserts every
+  one still appears in the snapshot, that `node_modules/` still does not, that the whole thing
+  finishes well inside a wall-clock bound (31 s pre-fix vs 1 s on that fixture), and that
+  `scope`'s re-snapshot filters against the BASE-unioned policy — a lane that narrows
+  `protected-paths` and PLANTS a new gitignored file only the deleted pattern covered is still
+  caught. Each of the four assertions was mutation-tested against a deliberately broken guard;
+  the base-union one was rewritten after its first form turned out to pass under its own
+  mutation (editing an EXISTING sensitive file is caught either way — only a newly planted one
+  isolates the policy source).
+
 ## v4.7.0 — auto mode: a server-verified APPROVED-at-HEAD receipt — July 25, 2026
+- **Changelog fragments (`changelog.d/`) — mechanism only; VERSION left at 4.7.0
+  (bootstrap exception).** Parallel product branches collide when every branch
+  edits `VERSION` and the top of `CHANGELOG.md` from the same base. Adds the
+  towncrier-style collate path: `changelog.d/<slug>.md` with
+  `bump: patch|minor|major` + bullet body; `plinth changelog-collate
+  [<target-repo>]` folds fragments (highest bump wins), updates
+  `VERSION`/`CHANGELOG.md`, and drains fragments. Empty dir is a no-op;
+  invalid/missing `bump:`, empty/non-bullet body, bad slug, or malformed VERSION
+  aborts without rewriting either release file. See `changelog.d/README.md`.
+  Record each later change once (dual-write **or** fragment+collate in the same
+  ship, never both). This bullet is the sole record of the mechanism — amended
+  into the existing v4.7.0 section with no VERSION bump and no pending fragment,
+  so landing the serial-work fix does not itself race on VERSION. Ordinary
+  product PRs after this do not inherit that exception.
 - **The review verdict becomes a requirable status check.** Until now branch protection
   could gate CI and tooling integrity (floor + checks) but nothing server-side verified
   that an adversarial review had actually APPROVED the commit being merged — the loop was
