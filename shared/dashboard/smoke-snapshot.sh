@@ -625,16 +625,25 @@ const sandbox = {
     });
   },
   document: {
-    getElementById: (id) => elsById[id] || (elsById[id] = el(id)),
+    // Unknown IDs return null so production create/insert path runs for #poll-error.
+    getElementById: (id) => (Object.prototype.hasOwnProperty.call(elsById, id) ? elsById[id] : null),
     createElement: () => el(),
     querySelector: (sel) => {
       if (sel === "header") {
-        return { parentNode: { insertBefore: (node) => { if (node && node.id) elsById[node.id] = node; } } };
+        return {
+          parentNode: {
+            insertBefore: (node) => {
+              if (node && node.id) elsById[node.id] = node;
+            },
+          },
+        };
       }
       return null;
     },
   },
 };
+// Pre-seed only the IDs present in the static HTML (not poll-error).
+["grid", "live-dot", "live-label", "gen-ago", "discovery", "count"].forEach((id) => { elsById[id] = el(id); });
 sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 vm.createContext(sandbox);
@@ -818,23 +827,43 @@ setTimeout(() => {
       api.poll();
       setTimeout(() => {
         const banner = sandbox.document.getElementById("poll-error");
-        const text = banner && (banner.textContent || "");
+        if (!banner) {
+          console.error("poll-error banner was not created/inserted");
+          process.exit(1);
+        }
+        const text = banner.textContent || "";
         if (!String(text).includes("builder boom detail")) {
           console.error("steady-state failure must show detail in banner, got:", text);
           process.exit(1);
+        }
+        if (banner.style.display === "none" || banner.style.display === "") {
+          // production sets display:block on failure
+          if (banner.style.display !== "block") {
+            console.error("poll-error banner must be visible on failure, display=", banner.style.display);
+            process.exit(1);
+          }
         }
         // Stale cards must remain (not replaced by empty error-only grid).
         if (grid.innerHTML !== cardsHtml || !grid.querySelector(".card")) {
           console.error("steady-state failure must keep existing cards");
           process.exit(1);
         }
-        // XSS escape
-        const xss = api.esc('<script>"x"');
-        if (xss.includes("<") || xss.includes('"')) {
-          console.error("esc failed:", xss);
-          process.exit(1);
-        }
-        console.log("ui-card-unit: OK");
+        // Recovery: successful poll clears the banner.
+        failPhase = 0;
+        api.poll();
+        setTimeout(() => {
+          if (banner.style.display !== "none" || (banner.textContent || "") !== "") {
+            console.error("successful poll must hide and clear poll-error banner");
+            process.exit(1);
+          }
+          // XSS escape
+          const xss = api.esc('<script>"x"');
+          if (xss.includes("<") || xss.includes('"')) {
+            console.error("esc failed:", xss);
+            process.exit(1);
+          }
+          console.log("ui-card-unit: OK");
+        }, 0);
       }, 0);
     }, 0);
   }, 0);
@@ -1051,11 +1080,16 @@ if command -v lsof >/dev/null 2>&1; then
     exit 1
   fi
 fi
-# DNS-rebinding: hostile Host rejected
+# DNS-rebinding: hostile Host rejected; documented loopback Host forms accepted.
 host_code="$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Host: attacker.example:${SRV_PORT}" \
   "http://127.0.0.1:${SRV_PORT}/api/snapshot" || true)"
 [ "$host_code" = "400" ] || { echo "smoke-snapshot: hostile Host should be 400, got $host_code" >&2; exit 1; }
+for okhost in "127.0.0.1:${SRV_PORT}" "localhost:${SRV_PORT}" "[::1]:${SRV_PORT}" "[::1]"; do
+  hc="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${okhost}" \
+    "http://127.0.0.1:${SRV_PORT}/api/snapshot" || true)"
+  [ "$hc" = "200" ] || { echo "smoke-snapshot: Host $okhost should be 200, got $hc" >&2; exit 1; }
+done
 # Failing builder surfaces detail and shares one flight (count invocations)
 FAIL_COUNT="$FIX/fail.count"
 : > "$FAIL_COUNT"
