@@ -64,6 +64,9 @@ parts that were wrong on the way:
   early-return before re-resolving the base when origin was missing/unsupported,
   leaving APPROVED readable after a mid-round base move with no abort. Subject
   integrity now runs first; minting remains best-effort after that.
+- **`diff_digest` is set -e safe across hash tools.** Probes `shasum` then
+  `sha256sum` availability before hashing (a missing `shasum` no longer aborts
+  the review under `set -e` before the fallback runs).
 - **Blank `round_cap` / empty `PLINTH_ROUND_CAP` refuse.** A present-but-empty
   config key (`round_cap =`) and an explicitly empty env override are malformed and
   abort (exit 2), not silent "no cap". Unset still means no cap.

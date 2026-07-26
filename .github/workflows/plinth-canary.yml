@@ -613,6 +613,35 @@ jobs:
           out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::healed equal-version tree was REFUSED: $out"; exit 1; }
           printf '%s' "$out" | grep -q 'OK equal' || { echo "::error::healed equal tree did not report OK equal: $out"; exit 1; }
           echo "OK positive: equal-version with matching twins accepted"
+      - name: Digest fallback and base-ref canon (behavioral)
+        run: |
+          set -euo pipefail
+          grep -q 'command -v shasum' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::(digest-fallback) review.sh lacks shasum availability probe"; exit 1; }
+          grep -q 'command -v sha256sum' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::(digest-fallback) review.sh lacks sha256sum availability probe"; exit 1; }
+          DF="$(mktemp -d)"; mkdir -p "$DF/bin"
+          printf '%s
+' '#!/usr/bin/env bash' 'echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  -"' > "$DF/bin/sha256sum"
+          chmod +x "$DF/bin/sha256sum"
+          out="$(PATH="$DF/bin" bash -c 'set -euo pipefail; diff=x
+if command -v shasum >/dev/null 2>&1; then printf %s "$diff" | shasum -a 256 | cut -d" " -f1
+elif command -v sha256sum >/dev/null 2>&1; then printf %s "$diff" | sha256sum | cut -d" " -f1
+else exit 1; fi' 2>&1)" || { echo "::error::(digest-fallback) probe-first failed: $out"; exit 1; }
+          [ "$out" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
+            || { echo "::error::(digest-fallback) unexpected out=$out"; exit 1; }
+          if PATH="$DF/bin" bash -c 'set -euo pipefail; diff=x; d=$(printf %s "$diff" | shasum -a 256 2>/dev/null | cut -d" " -f1); [ -n "$d" ] || d=$(printf %s "$diff" | sha256sum 2>/dev/null | cut -d" " -f1); echo "$d"' >/dev/null 2>&1; then
+            echo "::error::(digest-fallback) old || form unexpectedly succeeded"; exit 1
+          fi
+          echo "OK (digest-fallback) probe-first works; || form fails without shasum under set -e"
+          FNS="$(sed -n '/^canon_base()/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh")"
+          [ -n "$FNS" ] || { echo "::error::(base-canon-4) canon_base missing"; exit 1; }
+          for form in main origin/main refs/heads/main refs/remotes/origin/main; do
+            got="$(bash -c "$FNS; canon_base \"$form\"")"
+            [ "$got" = "main" ] || { echo "::error::(base-canon-4) canon_base($form)=$got want main"; exit 1; }
+          done
+          echo "OK (base-canon-4) four base spellings canonicalize to main"
+
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

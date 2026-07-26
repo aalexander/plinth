@@ -478,9 +478,10 @@ mkdir -p "$SDIR"
 # the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
 # docs/text) is granted by the deterministic floor without a model round; Tier
 # 1/2 get adversarial review. diff_digest is a fingerprint of the REVIEWED DIFF.
-# It is not a merge-time enforcement point by itself (the receipt context is, when
-# the real verifier runs — see MANUAL caller-control bound), but it IS load-bearing
-# for loop continuation: see the base-binding block below, where
+# It is not a merge-time enforcement point by itself (receipt / verify enforces at
+# merge only when required + strict:true + the real verifier still runs — see MANUAL
+# caller-control bound), but it IS load-bearing for loop continuation: see the
+# base-binding block below, where
 # reusing an approval or a coverage anchor keyed on a base ref's SPELLING was found to
 # be unsound because a ref is mutable. Real use showed the need, which is the bar.
 # Probe availability first: under set -e a missing shasum makes the pipeline fail
