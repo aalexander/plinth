@@ -6,9 +6,9 @@
   *narrow simple form*: delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''`; consumer
   basename `cat`/`tee`; complete single physical header (no trailing `\`, no open quote
   after `<<`, not a `\`-continuation of a prior line); no pipe/process-sub on that segment.
-  Word-concat/mixed delims, ANSI-C, continued/incomplete headers, executable consumers,
-  unquoted bodies, and other ambiguous parses stay fully scanned (fail closed). Not the
-  over-broad “any quoted heredoc” suppress.
+  Word-concat/mixed delims, ANSI-C, continued/incomplete headers (incl. open `$(…)` /
+  backticks), executable consumers, unquoted bodies, and other ambiguous parses stay fully
+  scanned (fail closed). Not the over-broad “any quoted heredoc” suppress.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

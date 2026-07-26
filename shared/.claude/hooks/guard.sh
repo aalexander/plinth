@@ -182,6 +182,32 @@ case "$tool" in
         }
         return (st!="")
       }
+      # Unclosed $(...) depth or backtick on s — header may continue on later lines.
+      function has_unclosed_expansion(s,    i,n,c,st,depth) {
+        n=length(s); st=""; depth=0
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (st=="bt") {
+            if (c=="\\") { i++; continue }
+            if (c=="`") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="`") { st="bt"; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c==")") { depth--; continue }
+          if (c=="\\") { i++; continue }
+        }
+        return (st=="bt" || depth>0)
+      }
       # First command word of the simple command owning <<. "" = fail closed.
       function first_consumer(prefix,    s,n,a,i,w,sep) {
         s=prefix
@@ -302,9 +328,11 @@ case "$tool" in
           if (dst!="") ok=0
           # backslash-continued header: pipe/redir may sit on the next physical line
           if (unquoted_line_continues(line)) ok=0
-          # rest of physical line still open-quoted => header not complete (pipe may follow)
+          # rest of physical line still open-quoted / open $(...) / open backtick => header incomplete
           rest=substr(line,j)
-          if (has_unclosed_quote(rest)) ok=0
+          if (has_unclosed_quote(rest) || has_unclosed_expansion(rest)) ok=0
+          # whole line incomplete expansions (e.g. consumer from $( on prior fragment)
+          if (has_unclosed_expansion(line)) ok=0
           pref=substr(line,1,i-1)
           sep=last_unquoted_sep(pref)
           simple=(sep>0)?substr(pref,sep+1):pref
@@ -334,7 +362,7 @@ case "$tool" in
         print
         scan($0)
         # carry physical-line continuation into the next record (logical header span)
-        cont=unquoted_line_continues($0)
+        cont=(unquoted_line_continues($0) || has_unclosed_quote($0) || has_unclosed_expansion($0))
       }
     ')"
     # rm/git patterns are anchored to command position. Upstream issue #1

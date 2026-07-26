@@ -2537,6 +2537,8 @@ jobs:
           [ "$(gcmd $'cat <<X$\'\\x59\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat X\$'\\x59' delim left post-body rm unscanned"; exit 1; }
           [ "$(gcmd $'bash <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: queued bash heredocs first-body rm not blocked"; exit 1; }
           [ "$(gcmd $'cat <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 0 ] || { echo "::error::heredoc-matrix: queued cat heredocs inert body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' $(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open \$(...) header then | bash not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' `\necho x\n` | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open backtick header then | bash not blocked"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

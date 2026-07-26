@@ -573,10 +573,11 @@ it has run green with a real smoke_cmd.
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
   those text scans only for a *narrow simple form*: inert consumer (`cat`/`tee`), a single
   simple quoted delimiter (`'D'`, pure `"D"` / `$'D'` with no backslash, or `<<''`), a
-  *complete* physical header line (no trailing unquoted `\`, no unclosed quote after `<<`,
-  and not a `\`-continuation of a prior line), and no pipe/process-sub on that header
-  segment. Word-concat or mixed delimiters (`'X'$'Y'`, `X$'\x59'`, backslash-bearing
-  `"…"`), incomplete/continued headers (including continuation *before* `<<`), executable
+  *complete* physical header line (no trailing unquoted `\`, no unclosed quote / `$(…)` /
+  backtick after `<<`, and not a continuation of a prior incomplete line), and no
+  pipe/process-sub on that header segment. Word-concat or mixed delimiters (`'X'$'Y'`,
+  `X$'\x59'`, backslash-bearing `"…"`), incomplete/continued headers (including
+  continuation *before* `<<` and open command substitutions), executable
   consumers, unquoted bodies, and other ambiguous parses stay fully scanned (fail closed).
   Cross-line shell quote state is tracked so a heredoc-looking token inside an unclosed
   quote is not treated as a real header. The header line itself (including redirect
