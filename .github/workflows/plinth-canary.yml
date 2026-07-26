@@ -91,8 +91,11 @@ jobs:
               | grep -E '^tools:' | head -1
           }
           code_block_lines() {
-            # Indented code: 4+ spaces OR any leading tabs (Markdown code may use either).
-            grep -E '^( {4,}|\t+)' "$1" || true
+            # Indented code (4+ spaces or tabs) PLUS fenced ``` blocks — both are shell source.
+            {
+              grep -E '^( {4,}|\t+)' "$1" || true
+              awk 'BEGIN{f=0} /^```/{f=1-f; next} f{print}' "$1" || true
+            }
           }
           # Static SPEC-line allowlist (full-line match after strip). Exit 0 if clean, 1 if bad.
           assert_spec_allowlist() {
@@ -103,7 +106,7 @@ jobs:
               echo "::error::${lane} code block contains a shell heredoc"; return 1; } || true
             while IFS= read -r line; do
               norm="$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-              case "$norm" in \#*) continue ;; esac
+              case "$norm" in \#*|'') continue ;; esac
               printf '%s\n' "$norm" | grep -Eq 'SPEC|\$\{?SPEC' || continue
               case "$norm" in
                 'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
@@ -125,7 +128,7 @@ jobs:
           }
           for lane in grok codex; do
             agent="$AGENT_DIR/${lane}-implementer.md"
-            tools_line="$(frontmatter_tools "$agent")"
+            tools_line="$(frontmatter_tools "$agent" | sed 's/#.*//;s/[[:space:]]*$//')"
             [ -n "$tools_line" ] || { echo "::error::${lane} lane has no tools: line in YAML frontmatter"; exit 1; }
             printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' || {
               echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
@@ -346,6 +349,29 @@ jobs:
           fail_neg braced-dir-prompt $'\t: > "${SPEC_DIR}/prompt"'
           fail_neg tab-append $'\t> "$OUT" 2>&1 || RC=$?; : > "$SPEC"'
           fail_neg python-spec-dir '       python3 -c "from pathlib import Path; Path(\"$SPEC_DIR/prompt\").write_text(\"x\")"'
+          fail_neg fenced-bash $'```bash\n: > "$SPEC"\n```'
+          # tools: line must not treat a comment "# Write" as granting the Write tool.
+          {
+            cp "$GA" "$NEG/grok-tools.md"
+            python3 - "$NEG/grok-tools.md" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path(sys.argv[1])
+          t = p.read_text()
+          t2, n = re.subn(
+              r'^tools:.*$',
+              'tools: Bash, Read, Grep, Glob # Write removed',
+              t, count=1, flags=re.M,
+          )
+          if n != 1:
+              raise SystemExit("could not rewrite tools frontmatter")
+          p.write_text(t2)
+          PY
+            tools_line="$(frontmatter_tools "$NEG/grok-tools.md" | sed 's/#.*//;s/[[:space:]]*$//')"
+            if printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)'; then
+              echo "::error::tools comment '# Write removed' still counted as Write token (got: $tools_line)"; exit 1
+            fi
+            echo "canary: negative fixture rejected: tools-comment-write"
+          }
           # Remove only fixture-owned paths (array — safe with spaces/glob in paths).
           rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
           # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
