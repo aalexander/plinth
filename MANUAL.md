@@ -617,7 +617,7 @@ it has run green with a real smoke_cmd.
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
-  merge-time required context until `receipt / verify` is required with `strict:true`, and
+  merge-time required context until `receipt / verify` is required with `strict:true` and the real verifier still runs, and
   the cloud review is advisory comments). Deliberately-quoted obfuscation is out of
   scope (see above); the merge gate proper is branch protection's required status
   checks.
