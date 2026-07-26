@@ -371,25 +371,27 @@ DEF_OUT="$FIX/def.json"
 jq -e '.discovery == "default:~/Dev/*/.plinth/config"' "$DEF_OUT" >/dev/null
 jq -e '(.projects | length) >= 1 and ([.projects[].name] | index("tilde-proj") != null)' "$DEF_OUT" >/dev/null
 
-# Port range validation (serve path — fails before bind)
-rc=0
-"$PLINTH" dash --port 0 >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: --port 0 should fail" >&2; exit 1; }
-rc=0
-"$PLINTH" dash --port 70000 >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: --port 70000 should fail" >&2; exit 1; }
-rc=0
-"$PLINTH" dash --port 99999999999999999999999 >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: oversized --port should fail cleanly" >&2; exit 1; }
-rc=0
-PLINTH_DASH_PORT=0 "$PLINTH" dash >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=0 should fail" >&2; exit 1; }
-rc=0
-PLINTH_DASH_PORT=notaport "$PLINTH" dash >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=notaport should fail" >&2; exit 1; }
-rc=0
-PLINTH_DASH_PORT=99999999999999999999999 "$PLINTH" dash >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] || { echo "smoke-snapshot: oversized PLINTH_DASH_PORT should fail" >&2; exit 1; }
+# Port range validation (serve path — fails before bind with the intended
+# diagnostic, not via bash "integer expression expected" / Python OverflowError).
+assert_port_reject() {
+  local label="$1"; shift
+  local out rc=0
+  out="$("$@" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || { echo "smoke-snapshot: $label should fail" >&2; exit 1; }
+  printf '%s' "$out" | grep -q 'port out of range\|bad port' \
+    || { echo "smoke-snapshot: $label missing clean port diagnostic:" >&2; printf '%s\n' "$out" >&2; exit 1; }
+  printf '%s' "$out" | grep -qiE 'integer expression expected|OverflowError|Traceback' \
+    && { echo "smoke-snapshot: $label leaked internal error:" >&2; printf '%s\n' "$out" >&2; exit 1; }
+  printf '%s' "$out" | grep -q 'plinth dash: http://' \
+    && { echo "smoke-snapshot: $label must not start the server:" >&2; printf '%s\n' "$out" >&2; exit 1; }
+  return 0
+}
+assert_port_reject "--port 0" "$PLINTH" dash --port 0
+assert_port_reject "--port 70000" "$PLINTH" dash --port 70000
+assert_port_reject "--port oversized" "$PLINTH" dash --port 99999999999999999999999
+assert_port_reject "PLINTH_DASH_PORT=0" env PLINTH_DASH_PORT=0 "$PLINTH" dash
+assert_port_reject "PLINTH_DASH_PORT=notaport" env PLINTH_DASH_PORT=notaport "$PLINTH" dash
+assert_port_reject "PLINTH_DASH_PORT=oversized" env PLINTH_DASH_PORT=99999999999999999999999 "$PLINTH" dash
 
 # ── Short-lived server: loopback HTTP surface ────────────────────────────────
 # Process group + child kill so the python ThreadingHTTPServer cannot leak.
