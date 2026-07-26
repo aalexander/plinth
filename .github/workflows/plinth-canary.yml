@@ -65,29 +65,25 @@ jobs:
           # `4.7.1\n\n` into accepted `4.7.1`. Preserve bytes with a sentinel; reject
           # NUL (Bash cannot store it) and CR.
           read_xyz_label() {  # <file> -> prints label on stdout, exit 1 if malformed
-            local f="$1" raw first trail
+            local f="$1" raw first
             [ -f "$f" ] || { echo "missing $f" >&2; return 1; }
             if python3 -c 'import sys; sys.exit(0 if b"\x00" in open(sys.argv[1],"rb").read() else 1)' "$f"; then
               echo "label file $f contains a NUL byte" >&2; return 1
             fi
+            # Sentinel preserves trailing newlines (and CR) through command substitution.
             raw="$(cat "$f"; printf x)"
             raw="${raw%x}"
-            case "$raw" in
-              *$'\r'*) echo "label file $f contains CR" >&2; return 1 ;;
-            esac
+            # Strip exactly one terminal LF, or one terminal CRLF. Nothing else.
             first="$raw"
-            trail=0
-            while true; do
-              case "$first" in
-                *$'\n') first="${first%$'\n'}"; trail=$((trail+1)) ;;
-                *) break ;;
-              esac
-            done
-            if [ "$trail" -gt 1 ]; then
-              echo "label file $f has $trail trailing newlines (max 1)" >&2; return 1
-            fi
             case "$first" in
-              *$'\n'*) echo "label file $f has embedded newlines" >&2; return 1 ;;
+              *$'\r\n') first="${first%$'\r\n'}" ;;
+              *$'\n')   first="${first%$'\n'}" ;;
+              *$'\r')   echo "label file $f ends with bare CR (need LF or CRLF)" >&2; return 1 ;;
+            esac
+            # After that single optional terminator: no CR or LF may remain.
+            case "$first" in
+              *$'\n'*) echo "label file $f has embedded or extra newlines" >&2; return 1 ;;
+              *$'\r'*) echo "label file $f has embedded CR" >&2; return 1 ;;
             esac
             printf '%s' "$first" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
               || { echo "label in $f is not strict X.Y.Z (got '$(printf '%s' "$first" | head -c 40)')" >&2; return 1; }
@@ -324,6 +320,20 @@ jobs:
           fi
           echo "OK mutant: NUL-bearing labels refused"
 
+          # Positive: single terminal CRLF is valid (Windows-style label files).
+          seed_equal_tree
+          python3 -c "open('$FX/VERSION','wb').write(b'9.9.9\r\n')"
+          python3 -c "open('$FX/.plinth-version','wb').write(b'9.9.9\r\n')"
+          out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::equal-version with CRLF terminators was REFUSED: $out"; exit 1; }
+          printf '%s' "$out" | grep -q 'OK equal' || { echo "::error::CRLF equal tree did not report OK equal: $out"; exit 1; }
+          echo "OK positive: equal-version with CRLF terminators accepted"
+          # Negative: bare CR mid-label still refused.
+          seed_equal_tree
+          python3 -c "open('$FX/.plinth-version','wb').write(b'9.9\r.9\n')"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::embedded-CR .plinth-version was ACCEPTED: $out"; exit 1
+          fi
+          echo "OK mutant: embedded-CR label refused"
           # Positive equal: fully matching +x twins.
           seed_equal_tree
           out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::healed equal-version tree was REFUSED: $out"; exit 1; }
