@@ -200,12 +200,14 @@ not accepted; it fails loud if the diff is uncomputable or a sensitive file is u
 After scope, the lane records a **delegation receipt**
 (`lane-guard.sh delegation <vendor> <cli-rc> <transcript>`) and puts the printed
 `delegation recorded: ...` line on the report's `DELEGATION:` field. That is the
-checkable hole: a lane that skipped the external CLI and implemented the task itself
-cannot produce a non-empty delegate transcript, so it cannot honestly report
+checkable hole: an *honestly skipped* delegation (no external CLI run, no transcript
+path handed to `delegation`) leaves no receipt and blocks a truthful
 `STATUS: complete`. As the driver, treat a complete report without a `DELEGATION:`
 line (or with an unreadable/missing artifact under `.plinth/session/lanes/`) as
 incomplete — open the artifact; do not trust the narrative alone. HONEST BOUND: the
-receipt proves a transcript exists, not which model typed the diff.
+receipt proves a non-empty transcript *exists and is preserved*, not which model
+typed the diff — a self-implementing lane could still write a file and call
+`delegation` on it; omission becomes DETECTABLE, not impossible.
 `.plinth/session/` verdict/receipt state is compared too — a delegated CLI bypasses the `.claude/`
 guard, so scope is what stops it forging a fake approval; only the hook-appended
 `.plinth/session/events.jsonl` (pulse.sh, every tool use) is excluded to avoid false-flagging every

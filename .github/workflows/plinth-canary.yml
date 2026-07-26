@@ -3518,6 +3518,9 @@ jobs:
             printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-137: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-137: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'not a completed timeout' || { echo "::error::preflight[$_v] fast-137: must say not a completed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            # Must NOT claim definite SIGKILL — canary uses explicit exit 137 (self-exit residual):
+            printf '%s' "$out" | grep -qi 'self-exit' || { echo "::error::preflight[$_v] fast-137: must name CLI self-exit residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -Eqi 'is SIGKILL( |$)' && { echo "::error::preflight[$_v] fast-137: must not claim definite 'is SIGKILL' (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
           # rc=142: often SIGALRM, not the standard GNU timeout/python cap signature. Pin both
           # directions and both vendors — fast is too-fast; slow names SIGALRM + residual self-exit.
@@ -3533,6 +3536,9 @@ jobs:
             printf '%s' "$out" | grep -Eqi 'consistent with the 30s wall-clock timeout|hit the 30s wall-clock timeout' && { echo "::error::preflight[$_v] fast-142: wrongly claimed timeout (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
             printf '%s' "$out" | grep -qi 'too fast to be the 30s wall-clock cap' || { echo "::error::preflight[$_v] fast-142: must say too-fast (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'SIGALRM' || { echo "::error::preflight[$_v] fast-142: must name SIGALRM (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            # "often SIGALRM" + residual self-exit — a definite "is SIGALRM" without residual is overclaim:
+            printf '%s' "$out" | grep -Eqi 'often SIGALRM|Residual|self-exit' || { echo "::error::preflight[$_v] fast-142: must hedge SIGALRM (often/residual/self-exit) (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -Eqi 'is SIGALRM( |,)' && { echo "::error::preflight[$_v] fast-142: must not claim definite 'is SIGALRM' (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
           for _v in grok codex; do
             _s142="$(mktemp -d)"
@@ -3957,6 +3963,18 @@ jobs:
             [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED .plinth/session (rc=$r, want 3)"; exit 1; }
             printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::session-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             [ -z "$(ls -A "$EXT2" 2>/dev/null)" ] || { echo "::error::delegation wrote through symlinked session into $EXT2: $(ls -A "$EXT2")"; exit 1; }
+            # (9b) SYMLINKED parent `.plinth` dir: same escape; refuse before any write:
+            rm -rf .plinth
+            EXT2B="$(mktemp -d)"; mkdir -p "$EXT2B/keep"; ln -s "$EXT2B" .plinth
+            # protected-paths lived under .plinth — recreate a real one is impossible while
+            # .plinth is a symlink; delegation only needs git root + the path checks:
+            r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::delegation ACCEPTED a SYMLINKED .plinth parent (rc=$r, want 3)"; exit 1; }
+            printf '%s' "$out" | grep -qi 'symlink' || { echo "::error::.plinth-symlink refusal did not mention symlink (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            # only the pre-existing keep/ should be there — no session/lanes/gitignore written through:
+            [ -z "$(ls -A "$EXT2B" 2>/dev/null | grep -v '^keep$')" ] \
+              || { echo "::error::delegation wrote through symlinked .plinth into $EXT2B: $(ls -A "$EXT2B")"; exit 1; }
+            rm -rf .plinth; mkdir -p .plinth; printf '(^|/)\.plinth/session/\n' > .plinth/protected-paths
             # (10) SYMLINKED session .gitignore: refuse before following:
             rm -rf .plinth/session
             mkdir -p .plinth/session
