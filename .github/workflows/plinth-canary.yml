@@ -79,36 +79,89 @@ jobs:
       - name: Implementer prompt files cannot terminate a shell heredoc
         run: |
           set -euo pipefail
+          # The fixed-delimiter heredoc bug: a spec line equal to SPEC_EOF terminated the
+          # shell source and the rest executed. Lanes must (1) create the prompt file with
+          # the non-shell Write tool, (2) pass only its path into the real CLI command block
+          # via $SPEC — not $OUT or a rebuilt string. Assertions below are mutation-sensitive
+          # on those contracts; a freehand stub that ignores the agent files would be hollow.
           AGENT_DIR="${AGENTS_UNDER_TEST:-$GITHUB_WORKSPACE/shared/.claude/agents}"
           for lane in grok codex; do
             agent="$AGENT_DIR/${lane}-implementer.md"
             grep -q '^tools: .*Write' "$agent" || { echo "::error::${lane} lane cannot use the required non-shell Write tool"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || { echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            grep -Eq "cat .*SPEC.*<<|<<.*SPEC_EOF" "$agent" && { echo "::error::${lane} lane embeds arbitrary spec data in shell source via a fixed heredoc"; exit 1; } || true
+            # Any cat/heredoc into $SPEC re-embeds arbitrary bytes as shell source.
+            grep -Eq 'cat[[:space:]]*>[[:space:]]*"?\$SPEC|<<['\''"]?SPEC_EOF' "$agent" && {
+              echo "::error::${lane} lane embeds arbitrary spec data in shell source via a fixed heredoc or cat into \$SPEC"; exit 1; } || true
+            # Step 0 allocates a unique SPEC path and prints it so the Write tool targets that path.
+            grep -qE 'SPEC="\$\(mktemp' "$agent" || { echo "::error::${lane} lane does not mktemp a unique SPEC path"; exit 1; }
+            grep -q "printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q" "$agent" || {
+              echo "::error::${lane} lane does not print SPEC= for the non-shell Write handoff"; exit 1; }
           done
-          PD="$(mktemp -d)"; SPEC="$PD/spec"; RECEIVED="$PD/received"; ESCAPED="$PD/escaped"
+          # Mutation-sensitive: the REAL command blocks (not prose) must feed "$SPEC".
+          # A swap to "$OUT" still satisfies flag-presence greps elsewhere; pin the variable.
+          GA="$AGENT_DIR/grok-implementer.md"
+          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$SPEC"' || {
+            echo "::error::grok COMMAND does not pass --prompt-file \"\$SPEC\" (path-based prompt wiring lost or mutated)"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$OUT"' && {
+            echo "::error::grok COMMAND feeds \$OUT as the prompt file — must be \$SPEC"; exit 1; } || true
+          CA="$AGENT_DIR/codex-implementer.md"
+          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$SPEC"' || {
+            echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\" (path-based prompt wiring lost or mutated)"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$OUT"' && {
+            echo "::error::codex COMMAND feeds \$OUT as the prompt — must be \$SPEC"; exit 1; } || true
+          # Behavioral: non-shell write (Write-tool analog) of a payload with a literal SPEC_EOF
+          # line, then exercise EACH lane's documented CLI input wiring against stubs that
+          # capture what the real command form would deliver.
+          PD="$(mktemp -d)"; SPEC="$PD/spec"; ESCAPED="$PD/escaped"
           python3 - "$SPEC" "$ESCAPED" <<'PYWRITE'
           import pathlib, sys
+          # Simulates the non-shell Write tool: bytes land on the path, never shell-parsed.
           pathlib.Path(sys.argv[1]).write_text(
               "objective: preserve arbitrary bytes\nSPEC_EOF\ntouch " + sys.argv[2] + "\nverification: exact payload\n"
           )
           PYWRITE
-          if [ -z "${PROMPT_CLI_UNDER_TEST:-}" ]; then
-            cat > "$PD/grok" <<'CLISTUB'
+          mkdir -p "$PD/bin"
+          # Grok-shaped stub: same --prompt-file contract the extracted GCMD uses.
+          cat > "$PD/bin/grok" <<'CLISTUB'
           #!/usr/bin/env bash
+          set -euo pipefail
           while [ "$#" -gt 0 ]; do
-            if [ "$1" = "--prompt-file" ]; then cp "$2" "$RECEIVED"; exit 0; fi
+            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 0; fi
             shift
           done
-          exit 2
+          echo "stub-grok: missing --prompt-file" >&2; exit 2
           CLISTUB
-            chmod +x "$PD/grok"
-            PROMPT_CLI_UNDER_TEST="$PD/grok"
+          # Codex-shaped stub: prompt on stdin (matches `codex exec ... - < "$SPEC"`).
+          cat > "$PD/bin/codex" <<'CLISTUB'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cat > "${RECEIVED:?}"
+          exit 0
+          CLISTUB
+          chmod +x "$PD/bin/grok" "$PD/bin/codex"
+          # Optional override for a single-CLI harness; default exercises both lane wirings.
+          if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
+            RECEIVED="$PD/received" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
+            cmp -s "$SPEC" "$PD/received" || {
+              echo "::error::PROMPT_CLI_UNDER_TEST path transport changed a SPEC_EOF-containing payload"; exit 1; }
+          else
+            # Exact input forms from the agent command blocks (variable + flag/redirect).
+            RECEIVED="$PD/received-grok" SPEC="$SPEC" PATH="$PD/bin:$PATH" \
+              bash -c 'grok --prompt-file "$SPEC"'
+            cmp -s "$SPEC" "$PD/received-grok" || {
+              echo "::error::grok --prompt-file \"\$SPEC\" transport changed a SPEC_EOF-containing payload"; exit 1; }
+            RECEIVED="$PD/received-codex" SPEC="$SPEC" PATH="$PD/bin:$PATH" \
+              bash -c 'codex - < "$SPEC"'
+            cmp -s "$SPEC" "$PD/received-codex" || {
+              echo "::error::codex stdin-from-\"\$SPEC\" transport changed a SPEC_EOF-containing payload"; exit 1; }
           fi
-          RECEIVED="$RECEIVED" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
-          cmp -s "$SPEC" "$RECEIVED" || { echo "::error::path-based prompt transport changed a spec containing a literal SPEC_EOF line"; exit 1; }
           [ ! -e "$ESCAPED" ] || { echo "::error::a spec line after literal SPEC_EOF escaped into shell execution"; exit 1; }
-          echo "canary: non-shell prompt file carries literal SPEC_EOF without execution OK"
+          rm -rf "$PD"
+          echo "canary: each lane's \$SPEC path wiring carries literal SPEC_EOF without execution OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail

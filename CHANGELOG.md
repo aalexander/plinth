@@ -7,8 +7,10 @@
   heredoc and execute. The review harness documents that project-owned `.plinth` files
   (DRIVER-project.md, AGENTS-project.md, config, protected-paths, NEEDS-HUMAN.md) remain
   outside the pinned-tooling set used for tamper arithmetic. Canary: implementer agents
-  declare Write, ban fixed-heredoc shell embedding, and prove path-based prompt transport
-  preserves a payload that contains a literal `SPEC_EOF` line.
+  declare Write, allocate/print a unique `$SPEC` path, ban fixed-heredoc shell embedding,
+  pin each real command block to feed `"$SPEC"` (not `"$OUT"`), and exercise both lanes'
+  documented CLI input wiring so a payload containing a literal `SPEC_EOF` line is
+  delivered unchanged without shell execution.
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.
