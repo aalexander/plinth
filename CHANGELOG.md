@@ -25,13 +25,17 @@
   check's residual — a skipped delegation becomes DETECTABLE (no artifact, no receipt,
   nothing to open), not impossible. A subagent's compliance with prose cannot be
   enforced by more prose; what changed is that the omission now leaves a hole.
-- **Preflight failure reasons are disambiguated (diagnostic only).** A driver reported
-  `unavailable: grok not signed in` on a first call and `ready` on three re-runs, with
-  grok authenticated — unattributable, because a fast auth failure and a 30s wall-clock
-  cap hit printed the same reason. Both vendors now name which one happened. Explicitly
-  NOT a fix for that flake and not a retry: it is not reproducible here, and a blind
-  retry would double the bound on a hanging CLI and weaken the fixtures that prove the
-  auth check is capped. Logged under `## Noticed` for the next occurrence.
+- **Preflight failure reasons are disambiguated (diagnostic only), with an honest
+  timeout bound.** A driver reported `unavailable: grok not signed in` on a first call
+  and `ready` on three re-runs, with grok authenticated — unattributable, because a fast
+  auth failure and a 30s wall-clock timeout printed the same reason. Both vendors now
+  split by exit code **and** elapsed: only **rc=124 with elapsed ≈ cap** is labeled the
+  wall-clock **timeout** (GNU `timeout` / python fallback both exit 124 on cap fire);
+  **non-124** (137/142) is never labeled timeout-only, even when slow; an instant 124 is
+  "too fast" (no-tool refuse or child self-exit). Residual: a CLI that itself exits 124
+  after ~30s is not distinguishable from the wrapper. Explicitly NOT a fix for that flake
+  and not a retry: a blind retry would double the bound on a hanging CLI and weaken the
+  fixtures that prove the auth check is capped. Logged under `## Noticed`.
 - **Canary coverage in both directions** (`plinth-canary.yml`): artifact present and
   non-empty → receipt permitted; artifact missing or empty → exit 3; a nonzero CLI rc
   still records (timeout/partial keeps its evidence); a non-numeric rc is a usage error;
