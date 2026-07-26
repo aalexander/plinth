@@ -90,60 +90,22 @@ jobs:
             awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n==1{print} n>=2{exit}' "$1" \
               | grep -E '^tools:' | head -1
           }
-          code_block_lines() {
-            # Indented code (4+ spaces or tabs) PLUS fenced blocks — both are shell source.
-            # CommonMark-ish fences: optional blockquote prefixes, 0–3 spaces, ```/~~~ of
-            # length N>=3; close only with same char, length >= N, only trailing spaces after.
-            {
-              grep -E '^( {4,}|\t+)' "$1" || true
-              python3 - "$1" <<'PY'
-          import re, sys
-          text = open(sys.argv[1], encoding="utf-8").read().splitlines()
-          # Optional repeated blockquote markers, then 0–3 spaces, then fence run.
-          open_re = re.compile(
-              r"^(?P<prefix>(?: {0,3}> ?)*)(?P<indent> {0,3})(?P<fence>(`{3,}|~{3,}))(?P<info>[^\n]*)$"
-          )
-          in_fence = False
-          fence_ch = ""
-          fence_len = 0
-          for line in text:
-              m = open_re.match(line)
-              if m:
-                  run = m.group("fence")
-                  ch = run[0]
-                  info = m.group("info")
-                  if not in_fence:
-                      # opener: info may have language; must not start with the fence char
-                      if info.startswith(ch):
-                          pass  # not a valid opener; treat as content if somehow inside
-                      else:
-                          in_fence = True
-                          fence_ch = ch
-                          fence_len = len(run)
-                          continue
-                  else:
-                      # closer: same char, length >= opener, only spaces after the run
-                      if ch == fence_ch and len(run) >= fence_len and info.strip() == "":
-                          in_fence = False
-                          fence_ch = ""
-                          fence_len = 0
-                          continue
-              if in_fence:
-                  print(line)
-          PY
-            }
-          }
-          # Static SPEC-line allowlist (full-line match after strip). Exit 0 if clean, 1 if bad.
+          # Full-file allowlist for any line that expands $SPEC / $SPEC_DIR / ${SPEC}…
+          # (Markdown-container parsing is deliberately NOT used: indented-under-blockquote,
+          # list-nested fences, etc. fail open if we only scan "code blocks".) Exit 0 if clean.
           assert_spec_allowlist() {
             local agent="$1" lane="$2"
-            local code line norm
-            code="$(code_block_lines "$agent")"
-            printf '%s\n' "$code" | grep -E '<<' >/dev/null && {
-              echo "::error::${lane} code block contains a shell heredoc"; return 1; } || true
-            while IFS= read -r line; do
-              norm="$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            local line norm
+            # Any shell heredoc anywhere is banned (fixed delimiters reintroduce SPEC_EOF).
+            grep -E '<<' "$agent" >/dev/null && {
+              echo "::error::${lane} contains a shell heredoc"; return 1; } || true
+            while IFS= read -r line || [ -n "$line" ]; do
+              # Strip common Markdown container prefixes then whitespace.
+              norm="$(printf '%s\n' "$line" \
+                | sed -E 's/^( {0,3}> ?)*//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
               case "$norm" in \#*|'') continue ;; esac
-              printf '%s\n' "$norm" | grep -Eq 'SPEC|\$\{?SPEC' || continue
+              # Only lines that expand SPEC as a shell parameter.
+              printf '%s\n' "$norm" | grep -Eq '\$\{?SPEC(_DIR)?\}?' || continue
               case "$norm" in
                 'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
                 'SPEC="$SPEC_DIR/prompt"') continue ;;
@@ -157,10 +119,14 @@ jobs:
                 'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
                 'rm -rf "$SPEC_DIR"') continue ;;
               esac
-              echo "::error::${lane} code block has non-allowlisted SPEC line (shell must not write the prompt): $norm"
+              echo "::error::${lane} has non-allowlisted shell SPEC line (shell must not write the prompt): $norm"
               return 1
-            done < <(printf '%s\n' "$code")
+            done < "$agent"
             return 0
+          }
+          code_block_lines() {
+            # Used only for positive allocation greps (not the write ban).
+            grep -E '^( {4,}|\t+)' "$1" || true
           }
           for lane in grok codex; do
             agent="$AGENT_DIR/${lane}-implementer.md"
@@ -392,8 +358,10 @@ jobs:
           fail_neg fenced-tilde $'~~~bash\n: > "$SPEC"\n~~~'
           fail_neg fenced-4tick $'````bash\n: > "$SPEC"\n````'
           fail_neg fenced-blockquote $'> ```bash\n> : > "$SPEC"\n> ```'
-          # shorter closer must NOT close a longer opener — content after false-close still scanned
           fail_neg fenced-short-closer $'````bash\n: > "$SPEC"\n```\nstill-inside\n````'
+          fail_neg bq-indented $'>     : > "$SPEC"'
+          fail_neg list-fence $'- ```bash\n  : > "$SPEC"\n  ```'
+          fail_neg ordered-fence $'1. ```bash\n   : > "$SPEC"\n   ```'
           # tools: line must not treat a comment "# Write" as granting the Write tool.
           {
             cp "$GA" "$NEG/grok-tools.md"
