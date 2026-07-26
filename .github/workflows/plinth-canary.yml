@@ -3520,6 +3520,27 @@ jobs:
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
+          # ── v4.8.0: lane-guard delegation (proof-of-artifact, not proof-of-authorship) ──
+          # Missing/empty transcript must fail closed (rc=3); nonempty transcript records an
+          # artifact under .plinth/session/lanes/ and prints `delegation recorded:` with model.
+          LDR="$(mktemp -d)"; git -C "$LDR" init -q
+          git -C "$LDR" config user.email "canary@plinth.ci"; git -C "$LDR" config user.name "plinth canary"
+          ( cd "$LDR" && git commit --allow-empty -qm "delegation canary base" )
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 /no/such/transcript ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on MISSING transcript (rc=$r)"; exit 1; }
+          : > "$LDR/empty.out"
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 "$LDR/empty.out" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on EMPTY transcript (rc=$r)"; exit 1; }
+          printf 'delegate did work\nMODEL: canary-model-9\n' > "$LDR/out.txt"
+          dout="$(cd "$LDR" && bash "$LG" delegation grok 7 "$LDR/out.txt")" || { echo "::error::lane-guard delegation rejected a nonempty transcript"; exit 1; }
+          printf '%s\n' "$dout" | grep -q 'delegation recorded:' || { echo "::error::lane-guard delegation did not print 'delegation recorded:' line"; exit 1; }
+          printf '%s\n' "$dout" | grep -q 'model=canary-model-9' || { echo "::error::lane-guard delegation did not extract MODEL: from transcript (got: $dout)"; exit 1; }
+          printf '%s\n' "$dout" | grep -q 'rc=7' || { echo "::error::lane-guard delegation did not record cli rc (got: $dout)"; exit 1; }
+          dart="$(printf '%s\n' "$dout" | sed -n 's/.*artifact=//p')"
+          [ -n "$dart" ] && [ -s "$dart" ] || { echo "::error::lane-guard delegation did not create a nonempty artifact file"; exit 1; }
+          case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::delegation artifact not under .plinth/session/lanes/ ($dart)"; exit 1 ;; esac
+          grep -q 'delegate did work' "$dart" || { echo "::error::delegation artifact missing transcript body"; exit 1; }
+          echo "lane-guard delegation canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
           # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"

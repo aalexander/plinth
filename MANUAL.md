@@ -716,8 +716,10 @@ it has run green with a real smoke_cmd.
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
   stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 is FIXED in v4.8.0 (`lane-guard.sh delegation` receipt for nonempty OUT).
-  Still treat lane reports as claims under Rule 10 (re-run verification).
+  25k ignored files with byte-identical output. #32 is IMPLEMENTED in v4.8.0
+  (`lane-guard.sh delegation` receipt for nonempty OUT; canary covers missing/empty
+  transcript, artifact path, and MODEL extraction). Still treat lane reports as claims
+  under Rule 10 (re-run verification).
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -743,8 +745,9 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE. RESOLVED in v4.8.0.**
-   `lane-guard.sh delegation` records nonempty OUT before STATUS: complete.
+2. **Upstream #32 — make delegation CHECKABLE. Implemented in v4.8.0.**
+   `lane-guard.sh delegation` records nonempty OUT before STATUS: complete;
+   plinth-canary exercises missing/empty rejection, artifact creation, and MODEL.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully

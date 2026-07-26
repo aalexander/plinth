@@ -42,8 +42,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # Stop review-gate fires for a non-Claude
 # driver — for them the ship gate is purely SERVER-SIDE: branch protection's required
 # checks (floor + checks; the cloud review is advisory comments, and the review verdict
-# is verified server-side only where `receipt / verify` is required), plus the trusted driver running
-# the loop. For a Claude driver this hook
+# is verified server-side only where `receipt / verify` is wired, required with
+# strict:true, AND the real verifier still runs — caller-control bound: a PR can
+# replace the caller with a green spoof of the same context name; see MANUAL / ci.yml
+# HONEST BOUND), plus the trusted driver running the loop. For a Claude driver this hook
 # complements the Stop review-gate by
 # refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
 # the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
@@ -59,8 +61,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    deliberately hidden in quotes is OUT OF SCOPE.
 #  - The ACTUAL gate against merging unreviewed work is SERVER-SIDE: branch protection's
 #    required checks (floor + checks, plus `receipt / verify` where the operator has
-#    required it — that is what puts the review verdict itself under branch
-#    protection). A client hook can never replace those.
+#    wired it, required it with strict:true, AND the real verifier still runs —
+#    caller-control bound: the context name alone is not unforgeable; see MANUAL).
+#    A client hook can never replace those.
 #    This tripwire only turns "ship without review" from a reflexive one-liner into a
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate
