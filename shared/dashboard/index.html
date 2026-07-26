@@ -232,6 +232,17 @@
   const discoveryEl = document.getElementById("discovery");
   const countEl = document.getElementById("count");
   let lastGen = null;
+  // Sticky diagnostic under the header when a later poll fails after cards exist.
+  let errBanner = document.getElementById("poll-error");
+  if (!errBanner) {
+    errBanner = document.createElement("div");
+    errBanner.id = "poll-error";
+    errBanner.style.cssText =
+      "display:none;font-family:var(--font);font-size:0.75rem;color:var(--red);" +
+      "padding:0.4rem 1.5rem;border-bottom:1px solid var(--border);background:var(--red-bg)";
+    const hdr = document.querySelector("header");
+    if (hdr && hdr.parentNode) hdr.parentNode.insertBefore(errBanner, hdr.nextSibling);
+  }
 
   function hum(secs) {
     if (secs == null || secs < 0 || Number.isNaN(secs)) return "—";
@@ -400,13 +411,20 @@
         render(data);
         liveDot.className = "dot";
         liveLabel.textContent = "live";
+        if (errBanner) { errBanner.style.display = "none"; errBanner.textContent = ""; }
       }
     } catch (e) {
       if (seq === pollSeq) {
         liveDot.className = "dot err";
         liveLabel.textContent = "error";
+        const msg = e && e.message ? e.message : String(e);
+        // Always surface actionable detail (even when stale cards remain).
+        if (errBanner) {
+          errBanner.style.display = "block";
+          errBanner.textContent = "Snapshot failed: " + msg;
+        }
         if (!grid.querySelector(".card")) {
-          grid.innerHTML = '<div class="empty">Snapshot failed: ' + esc(e.message) + "</div>";
+          grid.innerHTML = '<div class="empty">Snapshot failed: ' + esc(msg) + "</div>";
         }
       }
     } finally {

@@ -769,13 +769,13 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
-- **`plinth dash` backlog (v4.8 review):** (a) loopback bind is code-enforced
-  (HOST + `LoopbackServer.server_bind`); smoke asserts lsof shows `127.0.0.1`
-  but not a multi-homed non-loopback probe on every platform. (b) server has
-  single-flight + 2.5s TTL for snapshot bodies; ThreadingHTTPServer still allows
-  unlimited concurrent *caller threads* (not builders) — further hardening
-  optional. (c) a discovered path with `.plinth/config` but no git repo paints
-  branch `detached` / head `-` rather than "git unavailable".
+- **`plinth dash` backlog (v4.8 review):** (a) ThreadingHTTPServer still allows
+  unlimited concurrent *caller threads* (builders are single-flight). (b) a
+  discovered path with `.plinth/config` but no git repo paints branch
+  `detached` / head `-` rather than "git unavailable". (c) 10k-line events cap
+  is not a byte cap; transcript mktemp/tail failure modes; config CRLF/whitespace
+  discovery; `sha_match` min-length; smoke port cleanup via lsof (not only the
+  spawn group).
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

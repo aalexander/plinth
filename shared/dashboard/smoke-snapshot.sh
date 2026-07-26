@@ -571,9 +571,16 @@ const path = process.env.PLINTH_DASH_HTML;
 const html = fs.readFileSync(path, "utf8");
 const m = html.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/i);
 if (!m) { console.error("no script block"); process.exit(2); }
-const el = () => {
-  const o = { textContent: "", className: "", innerHTML: "" };
+const elsById = Object.create(null);
+const el = (id) => {
+  const o = { textContent: "", className: "", innerHTML: "", style: { display: "", cssText: "" } };
   o.querySelector = () => null;
+  let _id = id || "";
+  Object.defineProperty(o, "id", {
+    get() { return _id; },
+    set(v) { _id = v; if (v) elsById[v] = o; },
+  });
+  if (id) elsById[id] = o;
   return o;
 };
 let pending = 0;
@@ -611,7 +618,16 @@ const sandbox = {
       });
     });
   },
-  document: { getElementById: () => el() },
+  document: {
+    getElementById: (id) => elsById[id] || (elsById[id] = el(id)),
+    createElement: () => el(),
+    querySelector: (sel) => {
+      if (sel === "header") {
+        return { parentNode: { insertBefore: (node) => { if (node && node.id) elsById[node.id] = node; } } };
+      }
+      return null;
+    },
+  },
 };
 sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
@@ -760,13 +776,50 @@ setTimeout(() => {
       console.error("last_error card must not show RUNNING");
       process.exit(1);
     }
-    // XSS escape
-    const xss = api.esc('<script>"x"');
-    if (xss.includes("<") || xss.includes('"')) {
-      console.error("esc failed:", xss);
-      process.exit(1);
+    // Steady-state failure: after cards exist, a non-OK fetch must surface detail.
+    // Drive poll() with a failing fetch once cards are present.
+    resolvers.length = 0;
+    fetchStarts = 0;
+    pending = 0;
+    // Seed a successful state by resolving any prior — force poll with OK then fail.
+    let failPhase = 0;
+    sandbox.fetch = () => {
+      fetchStarts += 1;
+      return Promise.resolve({
+        ok: failPhase === 0,
+        status: failPhase === 0 ? 200 : 500,
+        json: async () => failPhase === 0
+          ? { generated_at: 2, discovery: "t", projects: [{
+              name: "alpha", path: "/a", branch: "main", head: "abc",
+              feedless: true, needs_human: { open: 0, blocking: 0 }, review: null,
+            }] }
+          : { error: "snapshot_failed", detail: "builder boom detail" },
+      });
+    };
+    // Clear inFlight if stuck
+    if (api.getPollState && api.getPollState().inFlight) {
+      // allow next poll by waiting prior finally
     }
-    console.log("ui-card-unit: OK");
+    api.poll();
+    setTimeout(() => {
+      failPhase = 1;
+      api.poll();
+      setTimeout(() => {
+        const banner = sandbox.document.getElementById("poll-error");
+        const text = banner && (banner.textContent || banner._t || "");
+        if (!String(text).includes("builder boom detail")) {
+          console.error("steady-state failure must show detail in banner, got:", text);
+          process.exit(1);
+        }
+        // XSS escape
+        const xss = api.esc('<script>"x"');
+        if (xss.includes("<") || xss.includes('"')) {
+          console.error("esc failed:", xss);
+          process.exit(1);
+        }
+        console.log("ui-card-unit: OK");
+      }, 0);
+    }, 0);
   }, 0);
 }, 0);
 NODE
