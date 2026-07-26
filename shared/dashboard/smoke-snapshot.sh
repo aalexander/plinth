@@ -629,10 +629,13 @@ jq -e '
 jq -e '
   .projects[] | select(.name == "mu-falsev")
   | .error == "snapshot_render_failed"
+  and .feedless == true
 ' "$OUT" >/dev/null
-for badn in mu-objnull mu-objfalse mu-falseobj mu-noevent mu-numevent mu-emptyobj; do
+for badn in mu-objnull mu-objfalse mu-falseobj mu-noevent mu-numevent mu-emptyobj mu-nullverdict mu-multiv; do
   jq -e --arg n "$badn" '
-    .projects[] | select(.name == $n) | .error == "snapshot_render_failed"
+    .projects[] | select(.name == $n)
+    | .error == "snapshot_render_failed"
+    and .feedless == true
   ' "$OUT" >/dev/null
 done
 # Healthy real hook event names

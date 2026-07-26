@@ -2059,8 +2059,8 @@ snapshot_one_project() {
   if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
-      --argjson nhn "$nhn" --argjson nhb "$nhb" \
-      '{path:$path,name:$name,branch:$branch,head:$head,feedless:false,
+      --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
@@ -2103,7 +2103,8 @@ snapshot_one_project() {
     def verdict_ok($v):
       $v == "APPROVED" or $v == "CHANGES_NEEDED";
     def sha_ok($s):
-      ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,40}$"));
+      # 7–40 hex (sha1) or up to 64 hex (sha256 object format).
+      ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));
     ($vd[0] // null) as $V0
     # Protocol-shape guard: a present verdict.json must carry enum + hex sha.
     | (if $V0 == null then null
