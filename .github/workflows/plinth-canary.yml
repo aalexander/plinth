@@ -2592,11 +2592,14 @@ jobs:
           [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: ;# comment on simple header wrongly blocked"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' > /tmp/plinth-heredoc-out\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: redirect after delimiter wrongly blocked"; exit 1; }
           [ "$(gcmd $'tee <<\'S\' /tmp/plinth-heredoc-tee\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee arg after delimiter wrongly blocked"; exit 1; }
+          # Operand-taking wrappers with cat/tee as the option operand (not the consumer).
           [ "$(gcmd $'env -P cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env -P cat bash should full-scan (executable)"; exit 1; }
-          [ "$(gcmd $'env --chdir=/tmp bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --chdir should full-scan"; exit 1; }
-          [ "$(gcmd $'env --unset=PATH bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --unset should full-scan"; exit 1; }
-          [ "$(gcmd $'time --output=/tmp/t bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: time --output should full-scan"; exit 1; }
-          [ "$(gcmd $'sudo -u root bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -u should full-scan"; exit 1; }
+          [ "$(gcmd $'env --chdir=/tmp cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --chdir cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'env --unset=PATH cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --unset cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'time --output=/tmp/t cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: time --output cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -u root cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -u cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -D cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -D cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -h cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -h cat bash should full-scan"; exit 1; }
           [ "$(gcmd $'cat > /tmp/plinth-pre-redir <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pre-delimiter redirect wrongly blocked"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' < /dev/null\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: input redirect after delimiter wrongly blocked"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"

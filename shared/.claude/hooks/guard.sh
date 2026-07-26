@@ -512,23 +512,12 @@ case "$tool" in
             if (delim ~ /\\/) { bad=1; exit }
             rest=substr(rest,p+1)
           } else { bad=1; exit }
-          # after delimiter: allow plain args and redirects (>/>>/</N>/N>> targets), nothing else
+          # after delimiter: opaque TOKENs (args / redirect ops / targets) without |;&(){}
           while (rest!="") {
             sub(/^[[:space:]]+/, "", rest)
             if (rest=="") break
-            if (match(rest, /^[0-9]*>>?/) || match(rest, /^[0-9]*</)) {
-              rest=substr(rest, RLENGTH+1)
-              sub(/^[[:space:]]+/, "", rest)
-              if (rest=="" || rest ~ /^[|;&(){}]/) { bad=1; exit }
-              if (!match(rest, /^[^[:space:]|;&(){}]+/)) { bad=1; exit }
-              rest=substr(rest, RLENGTH+1)
-              continue
-            }
-            if (match(rest, /^[^[:space:]|;&(){}]+/)) {
-              rest=substr(rest, RLENGTH+1)
-              continue
-            }
-            bad=1; exit
+            if (!match(rest, /^[^[:space:]|;&(){}]+/)) { bad=1; exit }
+            rest=substr(rest, RLENGTH+1)
           }
           state=1
           next

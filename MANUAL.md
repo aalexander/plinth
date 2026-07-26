@@ -573,12 +573,14 @@ it has run green with a real smoke_cmd.
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
   those text scans only for a *strict simple form* — the **entire** command must match:
   optional blank lines; one header line of
-  `[VAR=val …] [bare sudo|command|env|nice|nohup|time …] (cat|tee) [args|redirects]
-  <<[-]?('D'|"D"|$'D'|''|"") [args|redirects] [[:space:]#…| ;#…]`,
-  where: wrappers are bare names only (**no option flags** — `env -P`, `env --chdir`,
-  `sudo -u`, `time -o`/`--output`, … fail closed); args/redirects on either side of `<<`
-  are plain words or `>/>>/</N>/N>>` targets without `|;&(){}`; the delimiter is one simple
-  quoted form (not `$"D"`, no backslash inside `"…"` / `$'…'`); trailing comment is
+  `[VAR=val …] [bare sudo|command|env|nice|nohup|time …] (cat|tee) TOKEN*
+  <<[-]?('D'|"D"|$'D'|''|"") TOKEN* [[:space:]#…| ;#…]`,
+  where: wrappers are bare names only (**any option flag fails closed** — including
+  `env -P` / `--chdir` / `--unset`, `sudo -u` / `-D` / `-h`, `time -o` / `--output`);
+  each TOKEN is a non-empty run of characters excluding `|;&(){}` and whitespace (so ordinary
+  args and redirect operators/targets such as `>`, `>>`, `<`, `<>`, `N>`, `N<` are accepted
+  as opaque tokens — the gate is not a redirect parser); the delimiter is one simple quoted
+  form (not `$"D"`, no backslash inside `"…"` / `$'…'`); trailing comment is
   `[[:space:]]#…` or `;#…`; optional blank lines after the terminator; no other statements.
   Multi-statement commands, compounds, pipelines, multi-heredoc headers, option-bearing
   wrappers, unquoted delimiters, executable consumers, and other ambiguous forms stay fully
