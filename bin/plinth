@@ -1999,7 +1999,11 @@ snapshot_one_project() {
       tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
       meta_out="$(jq -nr '
         reduce inputs as $e ({cur:null, by:{}};
-          if ($e.sid == null) then .
+          if ($e | type) != "object" then error("bad_event_type")
+          elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
+          elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
+          elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
+          elif ($e.sid == null) then .
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0: null, task: null, tr: null}
@@ -2008,6 +2012,7 @@ snapshot_one_project() {
             | if ($e.event == "SessionStart") and ($e.epoch != null)
               then .by[$e.sid].t0 = $e.epoch else . end
             | if ($e.event == "UserPromptSubmit")
+                and (($e.detail // "") | type == "string")
                 and (($e.detail // "") | length > 0)
                 and ((($e.detail // "") | test("^\\s*<")) | not)
               then .by[$e.sid].task = $e.detail else . end
@@ -2078,16 +2083,16 @@ snapshot_one_project() {
       and (($a | startswith($b)) or ($b | startswith($a)));
     def toksum: .i + .cc + .cr + .o;
     def verdict_ok($v):
-      $v == null or $v == "APPROVED" or $v == "CHANGES_NEEDED";
+      $v == "APPROVED" or $v == "CHANGES_NEEDED";
     def sha_ok($s):
-      $s == null or ($s | type == "string" and test("^[0-9a-fA-F]{7,40}$"));
+      ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,40}$"));
     ($vd[0] // null) as $V0
-    # Protocol-shape guard: parseable-but-invalid verdict objects fail the card
-    # (same surface as invalid JSON) rather than painting as a normal review.
+    # Protocol-shape guard: a present verdict.json must carry enum + hex sha.
     | (if $V0 == null then null
        elif ($V0 | type) != "object" then error("bad_verdict_shape")
-       elif (verdict_ok($V0.verdict // null) | not) then error("bad_verdict_enum")
-       elif (sha_ok($V0.sha // null) | not) then error("bad_verdict_sha")
+       elif ($V0.verdict == null) or ($V0.verdict | type != "string")
+            or (verdict_ok($V0.verdict) | not) then error("bad_verdict_enum")
+       elif ($V0.sha == null) or (sha_ok($V0.sha) | not) then error("bad_verdict_sha")
        else $V0 end) as $V
     | ($rq[0] // null) as $RQ
     # RUNNING only when a newer request exists AND no last-error (infra failure

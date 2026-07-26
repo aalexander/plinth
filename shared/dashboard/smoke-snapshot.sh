@@ -266,6 +266,23 @@ mkdir -p "$L2/.plinth/session/review/feat-badenum"
 jq -nc '{verdict:"NOT_A_VERDICT",round:1,sha:"abcdef0"}' \
   > "$L2/.plinth/session/review/feat-badenum/verdict.json"
 
+# ── Fixture L3: missing verdict field → error ────────────────────────────────
+L3="$FIX/mu-missingv"
+mk_git "$L3"
+git -C "$L3" checkout -qb feat/missv
+echo l3 > "$L3/l3.txt"
+git -C "$L3" add -A
+git -C "$L3" commit -qm "work"
+mkdir -p "$L3/.plinth/session/review/feat-missv"
+jq -nc '{round:1,sha:"abcdef0123456789"}' \
+  > "$L3/.plinth/session/review/feat-missv/verdict.json"
+
+# ── Fixture L4: parseable event with bad epoch type → error ──────────────────
+L4="$FIX/mu-badevent"
+mk_git "$L4"
+printf '%s\n' '{"event":"SessionStart","sid":"s","epoch":"not-a-number","transcript":null}' \
+  > "$L4/.plinth/session/events.jsonl"
+
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
 mk_git "$M"
@@ -362,7 +379,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -378,7 +395,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 20' "$OUT" >/dev/null
+jq -e '(.projects | length) == 22' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -500,9 +517,17 @@ jq -e '
   and .review.verdict == "APPROVED"
 ' "$OUT" >/dev/null
 
-# Parseable-invalid verdict enum → error (not painted as normal review)
+# Parseable-invalid verdict enum / missing fields / bad event types → error
 jq -e '
   .projects[] | select(.name == "mu-badenum")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-missingv")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-badevent")
   | .error == "snapshot_render_failed"
 ' "$OUT" >/dev/null
 
