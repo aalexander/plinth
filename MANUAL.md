@@ -335,9 +335,9 @@ Two operator chores the rules generate:
    protection's required checks (floor + checks — CI and tooling integrity; they do
    not verify the review verdict, and the cloud review is advisory comments). The
    adversarial loop is contract-bound for a non-Claude driver until the receipt
-   check (auto mode, v4.7) is required in branch protection with `strict:true` —
-   which is the merge-time required context for the receipt (see honest bound on caller control)
-   (the check itself only describes the subject as of job execution). Wiring the
+   check (auto mode, v4.7) is required with `strict:true` *and the real verifier
+   still runs* (see honest bound on caller control; the check itself only describes
+   the subject as of job execution). Wiring the
    hooks into codex's own hook system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
@@ -433,12 +433,11 @@ Two operator chores the rules generate:
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
    cannot close that gap (it posts comments, not a requirable status check). Under
    the grok-RESIDENT alternative the review loop is therefore contract-bound driver
-   discipline wherever the receipt check is not required with `strict:true`; the
-   server-side check of `review.sh`'s own APPROVED-at-HEAD verdict —
-   `receipt / verify` (auto mode, v4.7+) — is what supplies the merge-time required context once wired into
-   `ci.yml`, required in branch protection, and protected with `strict:true`
-   (the check verifies as of execution; strict keeps that verdict about the base
-   at merge).
+   discipline wherever the receipt check is not required with `strict:true` or the
+   real verifier does not run; `receipt / verify` (auto mode, v4.7+) supplies the
+   merge-time required context when wired into `ci.yml`, required, protected with
+   `strict:true`, *and still the job that executes* (caller-control bound; verifies
+   as of execution; strict keeps that about the base at merge).
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
