@@ -1,6 +1,9 @@
 # Plinth changelog
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+- **Managed-file refresh is atomic (upstream #10).** `plinth update` installs shared
+  files via same-dir temp + `rename(2)` so a running `review.sh` keeps its inode;
+  destination mode is preserved exactly; a live review round only warns (does not hard-fail).
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.
