@@ -170,6 +170,16 @@ jobs:
           [ "$(gcmd "gh pr merge --body \$(echo 42) -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::command-substitution body was not fail-closed"; exit 1; }
           [ "$(gcmd "gh pr merge --body Release{42} -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::brace expansion body was not fail-closed"; exit 1; }
           [ "$(gcmd "gh pr merge --body-file ./x*42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::glob body-file was not fail-closed"; exit 1; }
+          # Backtick / process-sub must remain visible (segment only on ;&|, not `())
+          [ "$(gcmd "gh pr merge --body=Release\`printf 42\` -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backtick body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file=<(printf notes) 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::process-sub body-file was not fail-closed"; exit 1; }
+          # -R/--repo between pr and merge (gh inherited-option placement)
+          [ "$(gcmd "gh pr -R acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -R o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr --repo acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr --repo=acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo=o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr -Racme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -Ro/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr -R other/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::gh pr -R other/repo merge authorized wrong repo"; exit 1; }
+          [ "$(gcmd "gh pr -R acme/repo merge 42 --squash")" = 2 ] || { echo "::error::gh pr -R merge without match-head authorized"; exit 1; }
           # outside git: bare → 0; targeted → 2
           NG="$(mktemp -d)"
           ngcmd() {
