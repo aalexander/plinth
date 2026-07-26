@@ -20,8 +20,13 @@
   zeroing queue counts. Vendor quota always unavailable. Port 1–65535.
 - **Serve cache + bounded scan.** Single-flight builder + **2.5s TTL**
   (`time.monotonic`, ≥ 2s UI poll) so concurrent `/api/snapshot` callers share
-  one shell snapshot. Event-stream meta is capped at the last **10k** lines per
-  project (bounded per-poll cost). UI serializes client polls (`pollInFlight`).
+  one shell snapshot (success or short-lived failure with stderr detail).
+  Event-stream meta is capped at the last **10k** lines per project. UI
+  serializes client polls (`pollInFlight`).
+- **Loopback hardening + steady-state errors.** HTTP `Host` must be loopback
+  (`127.0.0.1` / `localhost` / `::1`) — rejects DNS-rebinding `Host` headers.
+  After cards are shown, a later snapshot failure keeps them and surfaces the
+  builder detail in a sticky `#poll-error` banner (not only the live label).
 - **`--snapshot` + smoke.** Offline JSON builder; `shared/dashboard/smoke-snapshot.sh`
   covers fixtures (tilde, detached, abbrev, multi-digit request, completed
   queue, long session, interleave, last-error/retry/same-second, stale, bad

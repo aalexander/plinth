@@ -775,7 +775,7 @@ installed copies.
   `detached` / head `-` rather than "git unavailable". (c) 10k-line events cap
   is not a byte cap; transcript mktemp/tail failure modes; config CRLF/whitespace
   discovery; `sha_match` min-length; smoke port cleanup via lsof (not only the
-  spawn group).
+  spawn group); failing-builder stderr is buffered fully before 2k truncation.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
