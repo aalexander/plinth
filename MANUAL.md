@@ -481,11 +481,14 @@ plinth dash --snapshot   # print the same JSON the UI polls (offline / CI)
 
 Requires **python3** on PATH to serve the UI (`--snapshot` is bash+jq only).
 The server binds **127.0.0.1 only**, is read-only, and serves a single static
-page plus `GET /api/snapshot`. Observed burn/tokens come from a **recent
-transcript tail** (not full session history). A review round is RUNNING only
-while a request outruns the verdict **and** no `last-error` is present (infra
-failures do not stick as RUNNING). It does **not** replace `plinth watch` — the
-TTY dashboard stays the per-session deep view.
+page plus `GET /api/snapshot` (short single-flight cache so the 2s UI poll does
+not re-shell every tick). Observed burn/tokens come from a **recent transcript
+tail**. A review round is RUNNING when a `request-N` outruns the verdict **and**
+either there is no `last-error`, or the request file is **strictly newer** than
+`last-error` (a retry after infra failure). A `last-error` that is same-age or
+newer than the request keeps the card on “review infra error”, not RUNNING. It
+does **not** replace `plinth watch` — the TTY dashboard stays the per-session
+deep view.
 
 **Discovery** (first match wins):
 

@@ -249,10 +249,16 @@ git -C "$O" commit -qm "work"
 mkdir -p "$O/.plinth/session/review/feat-firsterr"
 jq -nc '{round:1,mode:"fresh",model:"gpt-test"}' \
   > "$O/.plinth/session/review/feat-firsterr/request-1.json"
-# last-error newer than request → stuck error, not running
-sleep 1
 printf '2026-01-01T00:00:00Z reviewer missing\n' \
   > "$O/.plinth/session/review/feat-firsterr/last-error"
+# last-error strictly newer than request → stuck error, not running
+python3 - "$O/.plinth/session/review/feat-firsterr/request-1.json" \
+  "$O/.plinth/session/review/feat-firsterr/last-error" <<'PY'
+import os, sys, time
+base = time.time() - 10
+os.utime(sys.argv[1], (base, base))
+os.utime(sys.argv[2], (base + 5, base + 5))
+PY
 
 # ── Fixture P: last-error then NEWER request → RUNNING (retry in flight) ─────
 P="$FIX/pi-retry"
@@ -268,11 +274,41 @@ jq -nc --arg sha "$PFULL" \
     risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
   > "$P/.plinth/session/review/feat-retry/verdict.json"
 printf 'old infra error\n' > "$P/.plinth/session/review/feat-retry/last-error"
-sleep 1
 jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
   > "$P/.plinth/session/review/feat-retry/request-2.json"
+# Pin mtimes: error older, request strictly newer (no sleep race).
+python3 - "$P/.plinth/session/review/feat-retry/last-error" \
+  "$P/.plinth/session/review/feat-retry/request-2.json" <<'PY'
+import os, sys, time
+base = time.time() - 10
+os.utime(sys.argv[1], (base, base))
+os.utime(sys.argv[2], (base + 5, base + 5))
+PY
+# Same-second equal mtimes must NOT flip to RUNNING (error wins when not -nt).
+Q="$FIX/rho-samesec"
+mk_git "$Q"
+git -C "$Q" checkout -qb feat/samesec
+echo q > "$Q/q.txt"
+git -C "$Q" add -A
+git -C "$Q" commit -qm "work"
+QFULL="$(git -C "$Q" rev-parse HEAD)"
+mkdir -p "$Q/.plinth/session/review/feat-samesec"
+jq -nc --arg sha "$QFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$Q/.plinth/session/review/feat-samesec/verdict.json"
+printf 'infra error\n' > "$Q/.plinth/session/review/feat-samesec/last-error"
+jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
+  > "$Q/.plinth/session/review/feat-samesec/request-2.json"
+python3 - "$Q/.plinth/session/review/feat-samesec/last-error" \
+  "$Q/.plinth/session/review/feat-samesec/request-2.json" <<'PY'
+import os, sys, time
+t = time.time() - 3
+os.utime(sys.argv[1], (t, t))
+os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
+PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L:$M:$N:$O:$P"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L:$M:$N:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -288,7 +324,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 16' "$OUT" >/dev/null
+jq -e '(.projects | length) == 17' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -428,12 +464,19 @@ jq -e '
   and .review.verdict == null
 ' "$OUT" >/dev/null
 
-# Retry: request newer than last-error → RUNNING
+# Retry: request strictly newer than last-error → RUNNING
 jq -e '
   .projects[] | select(.name == "pi-retry")
   | .review.running == true
   and .review.round == 2
   and .review.last_error == false
+' "$OUT" >/dev/null
+
+# Same-second request/error mtimes → stuck error (not RUNNING)
+jq -e '
+  .projects[] | select(.name == "rho-samesec")
+  | .review.running == false
+  and .review.last_error == true
 ' "$OUT" >/dev/null
 
 # ── Pure UI card render (node + __plinthDash seam) ───────────────────────────

@@ -1933,26 +1933,15 @@ snapshot_one_project() {
   local rqfile
   rqfile="$(_dash_latest_request "$dir" "$slug")"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
-  # Infra failure leaves last-error. A NEWER request means a retry is in flight
-  # (review.sh writes request before invoking the reviewer and only clears
-  # last-error after a successful round) — treat that as RUNNING, not stuck error.
+  # Infra failure leaves last-error. A request file strictly newer than last-error
+  # means a retry is in flight (review.sh writes request, then on fail last-error;
+  # a later retry rewrites request). Same-second or older request → keep error.
   local has_last_error=false
   local errfile="$dir/.plinth/session/review/$slug/last-error"
   if [ -f "$errfile" ]; then
-    if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
-      local rq_m err_m
-      rq_m="$(_dash_mtime "$rqfile")"
-      err_m="$(_dash_mtime "$errfile")"
-      case "$rq_m:$err_m" in
-        *[!0-9:]*|'') has_last_error=true ;;
-        *)
-          if [ "$rq_m" -gt "$err_m" ] 2>/dev/null; then
-            has_last_error=false
-          else
-            has_last_error=true
-          fi
-          ;;
-      esac
+    if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ] \
+       && [ "$rqfile" -nt "$errfile" ]; then
+      has_last_error=false
     else
       has_last_error=true
     fi
@@ -1982,49 +1971,42 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Session identity from events.jsonl. Prefer an mtime/size-keyed cache so the
-  # 2s poll does not re-scan unbounded logs every tick. On cache miss: streaming
-  # reduce keeps per-SID metadata (interleaved SIDs must not reset the final one).
+  # Session identity: streaming reduce over events.jsonl (O(1) memory, per-SID
+  # map so interleaved SIDs keep the active session's task/t0). No on-disk cache
+  # (predictable /tmp + eval is a local multi-user hazard). Serve mode amortizes
+  # cost with a short single-flight snapshot cache in the Python server.
   local sid="" session_t0="" task="" transcript_path=""
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
-    local cache_dir="${TMPDIR:-/tmp}/plinth-dash-meta" cache_key meta_out meta_rc=0
-    mkdir -p "$cache_dir" 2>/dev/null || true
-    cache_key="$(printf '%s' "$EV_RAW:$events_mtime:$(wc -c < "$EV_RAW" 2>/dev/null | tr -d ' ')" \
-      | { shasum 2>/dev/null || sha256sum 2>/dev/null || cksum; } | awk '{print $1}')"
-    if [ -n "$cache_key" ] && [ -f "$cache_dir/$cache_key" ]; then
-      meta_out="$(cat "$cache_dir/$cache_key")"
+    local meta_out meta_rc=0
+    meta_out="$(jq -nr '
+      reduce inputs as $e ({cur:null, by:{}};
+        if ($e.sid == null) then .
+        else
+          (if .by[$e.sid] == null then
+             .by[$e.sid] = {t0: ($e.epoch // null), task: null, tr: null}
+           else . end)
+          | .cur = $e.sid
+          | if (.by[$e.sid].t0 == null) and ($e.epoch != null)
+            then .by[$e.sid].t0 = $e.epoch else . end
+          | if ($e.event == "UserPromptSubmit")
+              and (($e.detail // "") | length > 0)
+              and ((($e.detail // "") | test("^\\s*<")) | not)
+            then .by[$e.sid].task = $e.detail else . end
+          | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+        end
+      )
+      | .cur as $sid
+      | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
+      | @json
+    ' "$EV_RAW" 2>/dev/null)" || meta_rc=$?
+    if [ "$meta_rc" -ne 0 ] || [ -z "$meta_out" ]; then
+      events_parse_failed=true
     else
-      meta_out="$(jq -nr '
-        reduce inputs as $e ({cur:null, by:{}};
-          if ($e.sid == null) then .
-          else
-            (if .by[$e.sid] == null then
-               .by[$e.sid] = {t0: ($e.epoch // null), task: null, tr: null}
-             else . end)
-            | .cur = $e.sid
-            | if (.by[$e.sid].t0 == null) and ($e.epoch != null)
-              then .by[$e.sid].t0 = $e.epoch else . end
-            | if ($e.event == "UserPromptSubmit")
-                and (($e.detail // "") | length > 0)
-                and ((($e.detail // "") | test("^\\s*<")) | not)
-              then .by[$e.sid].task = $e.detail else . end
-            | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
-          end
-        )
-        | .cur as $sid
-        | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
-        | "sid=\(.sid // "" | @sh)\nsession_t0=\(.t0 // "" | @sh)\ntask=\(.task // "" | @sh)\ntranscript_path=\(.tr // "" | @sh)"
-      ' "$EV_RAW" 2>/dev/null)" || meta_rc=$?
-      if [ "$meta_rc" -ne 0 ]; then
-        events_parse_failed=true
-        meta_out=""
-      elif [ -n "$cache_key" ] && [ -n "$meta_out" ]; then
-        printf '%s\n' "$meta_out" > "$cache_dir/$cache_key" 2>/dev/null || true
-      fi
-    fi
-    if [ -n "$meta_out" ]; then
-      eval "$meta_out"
+      sid="$(printf '%s' "$meta_out" | jq -r '.sid // empty')"
+      session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
+      task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
+      transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
     fi
   fi
 
@@ -2225,7 +2207,7 @@ run_dashboard() {
   PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
   PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
   python3 - "$port" <<'PY'
-import json, os, subprocess, sys
+import json, os, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1])
@@ -2234,6 +2216,31 @@ HTML = os.environ["PLINTH_DASH_HTML"]
 BIN = os.environ["PLINTH_BIN"]
 # Preserve operator discovery overrides for snapshot child.
 CHILD_ENV = os.environ.copy()
+
+# Single-flight + short TTL cache: concurrent /api/snapshot callers share one
+# builder, and the 2s UI poll reuses a fresh result instead of re-scanning every
+# project's events.jsonl on every tick. Loopback-only; not a multi-tenant cache.
+_snap_lock = threading.Lock()
+_snap_body = None
+_snap_at = 0.0
+_SNAP_TTL = 1.5
+
+def _snapshot_bytes():
+    global _snap_body, _snap_at
+    now = time.time()
+    with _snap_lock:
+        if _snap_body is not None and (now - _snap_at) < _SNAP_TTL:
+            return _snap_body
+        out = subprocess.check_output(
+            [BIN, "dash", "--snapshot"],
+            env=CHILD_ENV,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        json.loads(out)  # validate before caching
+        _snap_body = out
+        _snap_at = time.time()
+        return out
 
 class H(BaseHTTPRequestHandler):
     server_version = "plinth-dash/1"
@@ -2262,15 +2269,7 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/api/snapshot":
             try:
-                # Fresh snapshot each request — thin shell-out to the same offline builder.
-                out = subprocess.check_output(
-                    [BIN, "dash", "--snapshot"],
-                    env=CHILD_ENV,
-                    stderr=subprocess.DEVNULL,
-                    timeout=120,
-                )
-                # Validate JSON so a broken builder cannot serve garbage as 200 application/json.
-                json.loads(out)
+                out = _snapshot_bytes()
             except Exception as e:
                 err = json.dumps({"error": "snapshot_failed", "detail": str(e)}).encode()
                 self._send(500, err, "application/json; charset=utf-8")
