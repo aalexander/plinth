@@ -613,46 +613,10 @@ jobs:
           out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::healed equal-version tree was REFUSED: $out"; exit 1; }
           printf '%s' "$out" | grep -q 'OK equal' || { echo "::error::healed equal tree did not report OK equal: $out"; exit 1; }
           echo "OK positive: equal-version with matching twins accepted"
-      - name: Digest fallback and base-ref canon (behavioral)
+      - name: Digest fallback and base-ref canon (entry points)
         run: |
           set -euo pipefail
-          # Production must probe hash tools before use (set -e safe).
-          grep -q 'command -v shasum' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
-            || { echo "::error::review.sh lacks shasum probe"; exit 1; }
-          grep -q 'command -v sha256sum' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
-            || { echo "::error::review.sh lacks sha256sum probe"; exit 1; }
-          # Behavioral: hide shasum, keep system tools + a sha256sum stub.
-          DF="$(mktemp -d)"; mkdir -p "$DF/bin"
-          # Stub only sha256sum; rest of PATH stays so env/bash/cut resolve.
-          printf '%s
-' '#!/bin/sh' 'echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$DF/bin/sha256sum"
-          chmod +x "$DF/bin/sha256sum"
-          # Hide real shasum by an empty file earlier on PATH that is not executable? Better: rename not available.
-          # Use a wrapper dir that shadows only shasum with a non-executable placeholder via function in bash -c.
-          out="$(PATH="$DF/bin:$PATH" bash -c '
-            set -euo pipefail
-            # Shadow shasum so command -v finds nothing usable
-            shasum() { return 127; }
-            command() { if [ "$1" = -v ] && [ "$2" = shasum ]; then return 1; fi; builtin command "$@"; }
-            diff=x
-            if command -v shasum >/dev/null 2>&1; then printf %s "$diff" | shasum -a 256 | awk "{print \$1}"
-            elif command -v sha256sum >/dev/null 2>&1; then printf %s "$diff" | sha256sum | awk "{print \$1}"
-            else exit 1; fi
-          ' 2>&1)" || { echo "::error::probe-first digest failed: $out"; exit 1; }
-          [ "$out" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
-            || { echo "::error::unexpected digest: $out"; exit 1; }
-          echo "OK digest-fallback under shadowed shasum"
-          # canon_base four spellings — pure function test matching production definition.
-          canon_base() { local b="${1:-}"; b="${b#refs/heads/}"; b="${b#refs/remotes/}"; b="${b#origin/}"; printf "%s" "$b"; }
-          # Ensure production has the same three-strip order.
-          grep -q 'b#refs/remotes/' "$GITHUB_WORKSPACE/shared/.plinth/receipt-verify.sh" \
-            || { echo "::error::receipt-verify.sh missing refs/remotes/ strip"; exit 1; }
-          for form in main origin/main refs/heads/main refs/remotes/origin/main; do
-            got="$(canon_base "$form")"
-            [ "$got" = "main" ] || { echo "::error::canon_base($form)=$got"; exit 1; }
-          done
-          echo "OK base-canon-4 four spellings"
-
+          bash "$GITHUB_WORKSPACE/.github/scripts/canary-digest-base.sh"
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail
