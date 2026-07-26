@@ -188,631 +188,148 @@ jobs:
                             f"fixture into its own step.")
           sys.exit(1 if bad else 0)
           PYLIMIT
-      - name: Implementer prompt files cannot terminate a shell heredoc
+      - name: Targeted ship gate binds merge to origin-resolved PR head
         run: |
           set -euo pipefail
-          # Fixed-delimiter heredoc: a SPEC_EOF line terminated shell source and the rest
-          # executed. Lanes must (1) Write-tool create a not-yet-existing prompt under the
-          # project CWD, (2) pass only that path via $SPEC into the real CLI command block,
-          # (3) remove SPEC_DIR after the CLI consumes it.
-          AGENT_DIR="${AGENTS_UNDER_TEST:-$GITHUB_WORKSPACE/shared/.claude/agents}"
-          # --- helpers: frontmatter + indented code-block extraction ---
-          frontmatter_tools() {
-            # Only the YAML frontmatter between the first two --- lines.
-            awk 'BEGIN{n=0} /^---[[:space:]]*$/{n++; next} n==1{print} n>=2{exit}' "$1" \
-              | grep -E '^tools:' | head -1
-          }
-          # Full-file allowlist for any line that expands $SPEC / $SPEC_DIR / ${SPEC}…
-          # (Markdown-container parsing is deliberately NOT used: indented-under-blockquote,
-          # list-nested fences, etc. fail open if we only scan "code blocks".) Exit 0 if clean.
-          assert_spec_allowlist() {
-            local agent="$1" lane="$2"
-            local line norm
-            # Any shell heredoc anywhere is banned (fixed delimiters reintroduce SPEC_EOF).
-            grep -E '<<' "$agent" >/dev/null && {
-              echo "::error::${lane} contains a shell heredoc"; return 1; } || true
-            while IFS= read -r line || [ -n "$line" ]; do
-              # Strip common Markdown container prefixes then whitespace.
-              norm="$(printf '%s\n' "$line" \
-                | sed -E 's/^( {0,3}> ?)*//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
-              case "$norm" in \#*|'') continue ;; esac
-              # Only lines that expand SPEC as a shell parameter.
-              printf '%s\n' "$norm" | grep -Eq '\$\{?SPEC(_DIR)?\}?' || continue
-              case "$norm" in
-                'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
-                'SPEC="$SPEC_DIR/prompt"') continue ;;
-                'OUT="$(mktemp -t grok-out.XXXXXX)" || {') continue ;;
-                'OUT="$(mktemp -t codex-out.XXXXXX)" || {') continue ;;
-                '_orc=$?') continue ;;
-                'rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup after OUT mktemp failed rc=$?"; exit 1; }') continue ;;
-                'echo "OUT mktemp failed rc=$_orc"; exit 1') continue ;;
-                '[ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }') continue ;;
-                "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' \"\$BEFORE\" \"\$SNAP\" \"\$SPEC_DIR\" \"\$SPEC\" \"\$OUT\"") continue ;;
-                'RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \') continue ;;
-                '--sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \') continue ;;
-                'rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"') continue ;;
-                'case "$SPEC_DIR" in') continue ;;
-                '"${PWD}/.plinth-lane."*)') continue ;;
-                'case "$rest" in ''|*/*|*..*)') continue ;;
-                'echo "SPEC_DIR not a direct \${PWD}/.plinth-lane.* dir — refusing cleanup (got: $SPEC_DIR)"; exit 1 ;;') continue ;;
-                'esac') continue ;;
-                '[ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
-                'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
-                'rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }') continue ;;
-                'rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }') continue ;;
-                'echo "SPEC_DIR not under \${PWD}/.plinth-lane.* — refusing cleanup (got: $SPEC_DIR)"; exit 1') continue ;;
-              esac
-              echo "::error::${lane} has non-allowlisted shell SPEC line (shell must not write the prompt): $norm"
-              return 1
-            done < "$agent"
-            return 0
-          }
-          code_block_lines() {
-            # Used only for positive allocation greps (not the write ban).
-            grep -E '^( {4,}|\t+)' "$1" || true
-          }
-          for lane in grok codex; do
-            agent="$AGENT_DIR/${lane}-implementer.md"
-            tools_line="$(frontmatter_tools "$agent" | sed 's/#.*//;s/[[:space:]]*$//')"
-            [ -n "$tools_line" ] || { echo "::error::${lane} lane has no tools: line in YAML frontmatter"; exit 1; }
-            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' || {
-              echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
-            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
-              echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            assert_spec_allowlist "$agent" "$lane" || exit 1
-            # Allocation contract — CODE BLOCK only. Handoff MUST print SPEC_DIR for cleanup.
-            code="$(code_block_lines "$agent")"
-            printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' || {
-              echo "::error::${lane} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
-            printf '%s\n' "$code" | grep -qE 'SPEC="\$SPEC_DIR/prompt"' || {
-              echo "::error::${lane} code block must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
-            printf '%s\n' "$code" | grep -q "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" || {
-              echo "::error::${lane} handoff printf must include SPEC_DIR (cleanup cannot re-derive across tool calls)"; exit 1; }
-            printf '%s\n' "$code" | grep -E 'SPEC="\$SPEC_DIR/\.\.' >/dev/null && {
-              echo "::error::${lane} SPEC escapes SPEC_DIR via .."; exit 1; } || true
-            printf '%s\n' "$code" | grep -E 'SPEC="\$\(mktemp[^-]' >/dev/null && {
-              echo "::error::${lane} uses file-mktemp for SPEC"; exit 1; } || true
-            printf '%s\n' "$code" | grep -q 'SPEC_DIR mktemp failed' || {
-              echo "::error::${lane} code block does not fail loud on SPEC_DIR mktemp failure"; exit 1; }
-            printf '%s\n' "$code" | grep -q 'rmdir -- "$SPEC_DIR"' || {
-              echo "::error::${lane} code block does not rmdir \"\$SPEC_DIR\" after CLI consumes the prompt"; exit 1; }
-            printf '%s\n' "$code" | grep -q 'rm -f -- "$SPEC"' || {
-              echo "::error::${lane} code block does not rm -f the prompt file before rmdir"; exit 1; }
-            printf '%s\n' "$code" | grep -qF '.plinth-lane.' || {
-              echo "::error::${lane} cleanup does not restrict SPEC_DIR to project-local .plinth-lane.*"; exit 1; }
-            printf '%s\n' "$code" | grep -q 'SPEC_DIR handoff missing or mismatched' || {
-              echo "::error::${lane} code block does not validate SPEC_DIR handoff before cleanup"; exit 1; }
-            grep -q 'does not exist yet' "$agent" || {
-              echo "::error::${lane} step 1 no longer states SPEC must not exist yet before Write"; exit 1; }
-            grep -q 'project CWD' "$agent" || {
-              echo "::error::${lane} no longer documents project-CWD Write authorization"; exit 1; }
-          done
-          # Command blocks: from cap 600 through cleanup (blank line ends the block).
-          GA="$AGENT_DIR/grok-implementer.md"
-          GCMD="$(awk '/cap 600 grok /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
-          [ -n "$GCMD" ] || { echo "::error::could not locate the grok cap-600 command block"; exit 1; }
-          printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$SPEC"' || {
-            echo "::error::grok COMMAND does not pass --prompt-file \"\$SPEC\""; exit 1; }
-          printf '%s\n' "$GCMD" | grep -q 'rmdir -- "$SPEC_DIR"' || {
-            echo "::error::grok COMMAND block lacks rmdir \"\$SPEC_DIR\" cleanup"; exit 1; }
-          CA="$AGENT_DIR/codex-implementer.md"
-          CCMD="$(awk '/cap 600 codex /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
-          [ -n "$CCMD" ] || { echo "::error::could not locate the codex cap-600 command block"; exit 1; }
-          printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$SPEC"' || {
-            echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\""; exit 1; }
-          printf '%s\n' "$CCMD" | grep -q 'rmdir -- "$SPEC_DIR"' || {
-            echo "::error::codex COMMAND block lacks rmdir \"\$SPEC_DIR\" cleanup"; exit 1; }
-          # Behavioral: extract+run each lane's step-0 allocation (code block), Write-analog
-          # create on the resulting not-yet-existing path, run extracted GCMD/CCMD against
-          # stubs using ONLY the step-0 handoff variables (including SPEC_DIR — not injected),
-          # assert payload transport + SPEC_DIR cleanup.
-          # Write-analog stands in for Claude Code's Write tool: same create-only + project-CWD
-          # constraints the canary can enforce without a live Claude Code session.
-          PD="$(mktemp -d "${PWD}/.plinth-lane-canary.XXXXXX")"
-          owned_dirs=("$PD")
-          cleanup_owned() { /bin/rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true; }
-          trap cleanup_owned EXIT
-          mkdir -p "$PD/bin" "$PD/mock-plinth"
-          # lane-guard stub so extracted step-0 allocation can run.
-          cat > "$PD/mock-plinth/lane-guard.sh" <<'LG'
+          # Upstream #16: targeted `gh pr merge` is authorized only by APPROVED at the
+          # *resolved PR head* bound to the checkout's origin — and the actionable
+          # command must itself pin -R (or a same-repo PR URL) plus
+          # --match-head-commit equal to that head. Sibling matrix (all green).
+          GUARD="${GITHUB_WORKSPACE}/shared/.claude/hooks/guard.sh"
+          GD="$(mktemp -d)"; GB="$(mktemp -d)"
+          git -C "$GD" init -qb main .
+          git -C "$GD" config user.email canary@plinth.ci
+          git -C "$GD" config user.name "plinth canary"
+          printf 'base\n' > "$GD/file"; git -C "$GD" add file; git -C "$GD" commit -qm base
+          git -C "$GD" remote add origin https://github.com/acme/repo.git
+          mkdir -p "$GD/.plinth/session/review/pr-head" "$GD/.plinth/session/review/feat-x"
+          HEAD_OK=1111111111111111111111111111111111111111
+          HEAD_BAD=2222222222222222222222222222222222222222
+          # Stub REQUIRES -R acme/repo or -R github.com/acme/repo so a missing origin
+          # bind cannot pass by accident (gh default-repo trap).
+          cat > "$GB/gh" <<'GHSTUB'
           #!/usr/bin/env bash
-          exit 0
-          LG
-          chmod +x "$PD/mock-plinth/lane-guard.sh"
-          cat > "$PD/bin/grok" <<'CLISTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          while [ "$#" -gt 0 ]; do
-            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 0; fi
-            shift
-          done
-          echo "stub-grok: missing --prompt-file" >&2; exit 2
-          CLISTUB
-          cat > "$PD/bin/codex" <<'CLISTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cat > "${RECEIVED:?}"
-          exit 0
-          CLISTUB
-          chmod +x "$PD/bin/grok" "$PD/bin/codex"
-          # Negative control: fixed-delimiter heredoc MUST run post-SPEC_EOF shell.
-          ESCAPED_NEG="$PD/escaped-neg"
-          {
-            printf '%s\n' 'cat > /dev/null <<SPEC_EOF' 'line-before' 'SPEC_EOF'
-            printf 'touch %q\n' "$ESCAPED_NEG"
-            printf '%s\n' 'leftover' 'SPEC_EOF'
-          } > "$PD/neg-heredoc.sh"
-          bash "$PD/neg-heredoc.sh" 2>/dev/null || true
-          [ -e "$ESCAPED_NEG" ] || {
-            echo "::error::negative control failed — fixed SPEC_EOF heredoc did not execute post-delimiter touch"; exit 1; }
-          # Write-tool analog: create not-yet-existing path only (Claude Code Write contract).
-          write_analog() {
-            python3 - "$1" "$2" <<'PYWRITE'
-          import pathlib, sys
-          p = pathlib.Path(sys.argv[1])
-          if p.exists():
-              raise SystemExit("Write analog refused: path already exists (Claude Code requires Read first to overwrite)")
-          # Refuse paths outside the project CWD — models the default file-access scope.
-          cwd = pathlib.Path.cwd().resolve()
-          try:
-              p.resolve().relative_to(cwd)
-          except ValueError as e:
-              raise SystemExit(f"Write analog refused: path outside project CWD ({p})") from e
-          p.write_text(
-              "objective: preserve arbitrary bytes\nSPEC_EOF\ntouch " + sys.argv[2] + "\nverification: exact payload\n"
-          )
-          PYWRITE
-          }
-          exercise_lane() {
-            # $1=lane name, $2=agent path, $3=command block
-            local lane="$1" agent="$2" block="$3"
-            local allocf="$PD/alloc-$lane.sh" statef="$PD/state-$lane" recv="$PD/received-$lane" out="$PD/out-$lane"
-            local escaped="$PD/escaped-$lane"
-            # Extract step-0 allocation: indented code from BEFORE= through the handoff printf.
-            awk '
-              /^ {4,}BEFORE="\$\(git rev-parse HEAD\)"/{f=1}
-              f && /^ {4,}/{print; if ($0 ~ /printf .*SPEC_DIR=%q SPEC=%q/) exit; next}
-              f{exit}
-            ' "$agent" | sed 's/^[[:space:]]*//' > "$allocf"
-            grep -q 'SPEC_DIR=' "$allocf" || {
-              echo "::error::${lane}: could not extract step-0 allocation"; cat "$allocf"; exit 1; }
-            grep -q 'SPEC_DIR=%q' "$allocf" || {
-              echo "::error::${lane}: extracted allocation handoff omits SPEC_DIR=%q"; exit 1; }
-            # Point lane-guard at the mock without touching the repo's real .plinth tree.
-            sed -i.bak "s|.plinth/lane-guard.sh|$PD/mock-plinth/lane-guard.sh|g" "$allocf"
-            rm -f "$allocf.bak"
-            # Run allocation; capture the printf handoff line (includes SPEC_DIR).
-            set +e
-            bash -c 'set -euo pipefail; source "$1"' _ "$allocf" > "$statef" 2>"$PD/alloc-err-$lane"
-            alloc_rc=$?
-            set -e
-            [ "$alloc_rc" = 0 ] || {
-              echo "::error::${lane}: step-0 allocation failed rc=$alloc_rc"; cat "$PD/alloc-err-$lane"; exit 1; }
-            # Use ONLY the handoff line — do not invent SPEC_DIR.
-            handoff="$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$statef" | tail -1)"
-            [ -n "$handoff" ] || { echo "::error::${lane}: allocation did not print SPEC_DIR handoff"; cat "$statef"; exit 1; }
-            # shellcheck disable=SC1090
-            eval "$handoff"
-            [ -n "${SPEC:-}" ] && [ -n "${SPEC_DIR:-}" ] || {
-              echo "::error::${lane}: handoff missing SPEC or SPEC_DIR"; exit 1; }
-            [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
-              echo "::error::${lane}: handoff SPEC is not \$SPEC_DIR/prompt"; exit 1; }
-            case "$SPEC" in
-              "$PWD"/.plinth-lane.*) : ;;
-              *) echo "::error::${lane}: allocated SPEC not under \${PWD}/.plinth-lane.* (got $SPEC)"; exit 1 ;;
+          ok_r=0
+          for a in "$@"; do
+            case "$a" in
+              acme/repo|github.com/acme/repo) ok_r=1 ;;
             esac
-            owned_dirs+=("$SPEC_DIR")
-            # Track SNAP/OUT from handoff for cleanup (allocation leaves them in /tmp).
-            [ -n "${SNAP:-}" ] && owned_dirs+=("$SNAP")
-            [ -n "${OUT:-}" ] && owned_dirs+=("$OUT")
-            [ ! -e "$SPEC" ] || { echo "::error::${lane}: allocation pre-created SPEC path $SPEC"; exit 1; }
-            write_analog "$SPEC" "$escaped"
-            [ -f "$SPEC" ] || { echo "::error::${lane}: Write analog did not create $SPEC"; exit 1; }
-            cp "$SPEC" "$PD/expected-$lane"
-            # Run command block with the EXACT handoff assignments (paste simulation).
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=canary-isolation"
-              echo "$handoff"
-              echo "OUT=$(printf %q "$out")"
-              echo "RECEIVED=$(printf %q "$recv"); export RECEIVED"
-              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$PD/run-$lane.sh"
-            bash "$PD/run-$lane.sh"
-            [ -f "$recv" ] || { echo "::error::${lane}: stub never received a prompt"; exit 1; }
-            cmp -s "$PD/expected-$lane" "$recv" || {
-              echo "::error::${lane}: extracted command block did not deliver the SPEC_EOF payload unchanged"; exit 1; }
-            [ ! -e "$SPEC_DIR" ] || {
-              echo "::error::${lane}: SPEC_DIR residue remains after command block ($SPEC_DIR)"; exit 1; }
-            [ ! -e "$escaped" ] || {
-              echo "::error::${lane}: SPEC_EOF payload escaped into shell execution"; exit 1; }
-            # Mutation: handoff without SPEC_DIR must fail the cleanup guard.
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=x; BEFORE=x; SNAP=x; SPEC=$(printf %q "$PD/expected-$lane"); OUT=$(printf %q "$out"); unset SPEC_DIR"
-              echo "RECEIVED=$(printf %q "$PD/recv-mut-$lane"); export RECEIVED"
-              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$PD/run-mut-$lane.sh"
-            set +e
-            bash "$PD/run-mut-$lane.sh" >/dev/null 2>&1
-            mut_rc=$?
-            set -e
-            [ "$mut_rc" != 0 ] || {
-              echo "::error::${lane}: command block accepted missing SPEC_DIR handoff (cleanup unguarded)"; exit 1; }
-            # Mutation: nested/.. paths under .plinth-lane. prefix must NOT delete trees.
-            # (shell * matches slashes — prefix-only guards are unsafe.)
-            nest="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
-            mkdir -p "$nest/src"; echo keep > "$nest/src/important"
-            : > "$nest/src/prompt"
-            owned_dirs+=("$nest")
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=x; BEFORE=x; SNAP=x"
-              echo "SPEC_DIR=$(printf %q "$nest/src")"
-              echo "SPEC=$(printf %q "$nest/src/prompt")"
-              echo "OUT=$(printf %q "$PD/out-victim-$lane")"
-              echo "RECEIVED=$(printf %q "$PD/recv-victim-$lane"); export RECEIVED"
-              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$PD/run-victim-$lane.sh"
-            set +e
-            vic_out="$(bash "$PD/run-victim-$lane.sh" 2>&1)"
-            vic_rc=$?
-            set -e
-            [ "$vic_rc" != 0 ] || {
-              echo "::error::${lane}: cleanup accepted nested .plinth-lane.*/src SPEC_DIR"; exit 1; }
-            printf '%s\n' "$vic_out" | grep -q 'not a direct' || {
-              echo "::error::${lane}: nested SPEC_DIR missing direct-path guard diagnostic (got: $vic_out)"; exit 1; }
-            [ -f "$nest/src/important" ] || {
-              echo "::error::${lane}: cleanup deleted a nested project directory (data-loss path)"; exit 1; }
-            [ -f "$nest/src/prompt" ] || {
-              echo "::error::${lane}: cleanup deleted nested prompt before refusing (guard regressed)"; exit 1; }
-            # Failure-path cleanup: CLI exits nonzero; SPEC_DIR must still be removed and RUN_RC preserved.
-            cat > "$PD/bin/grok" <<'FAILSTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          while [ "$#" -gt 0 ]; do
-            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 7; fi
-            shift
           done
-          exit 7
-          FAILSTUB
-            cat > "$PD/bin/codex" <<'FAILSTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cat > "${RECEIVED:?}"
-          exit 7
-          FAILSTUB
-            chmod +x "$PD/bin/grok" "$PD/bin/codex"
-            # Fresh allocation + Write for the failure path.
-            set +e
-            bash -c 'set -euo pipefail; source "$1"' _ "$allocf" > "$PD/state-fail-$lane" 2>"$PD/alloc-err-fail-$lane"
-            set -e
-            eval "$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$PD/state-fail-$lane" | tail -1)"
-            write_analog "$SPEC" "$PD/escaped-fail-$lane"
-            cp "$SPEC" "$PD/expected-fail-$lane"
-            fail_spec_dir="$SPEC_DIR"
-            owned_dirs+=("$fail_spec_dir")
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=canary-isolation"
-              echo "$(grep -E 'BEFORE=.*SPEC_DIR=.*SPEC=' "$PD/state-fail-$lane" | tail -1)"
-              echo "OUT=$(printf %q "$PD/out-fail-$lane")"
-              echo "RECEIVED=$(printf %q "$PD/recv-fail-$lane"); export RECEIVED"
-              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$PD/run-fail-$lane.sh"
-            fail_out="$(bash "$PD/run-fail-$lane.sh" 2>&1)" || true
-            printf '%s\n' "$fail_out" | grep -q 'RUN_RC=7' || {
-              echo "::error::${lane}: failure-path did not preserve CLI rc 7 (got: $fail_out)"; exit 1; }
-            [ ! -e "$fail_spec_dir" ] || {
-              echo "::error::${lane}: SPEC_DIR residue after CLI failure path ($fail_spec_dir)"; exit 1; }
-            cmp -s "$PD/expected-fail-$lane" "$PD/recv-fail-$lane" || {
-              echo "::error::${lane}: failure-path stub did not receive the prompt before exiting nonzero"; exit 1; }
-            # Restore success stubs for any subsequent use.
-            cat > "$PD/bin/grok" <<'CLISTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          while [ "$#" -gt 0 ]; do
-            if [ "$1" = "--prompt-file" ]; then cp "$2" "${RECEIVED:?}"; exit 0; fi
-            shift
-          done
-          echo "stub-grok: missing --prompt-file" >&2; exit 2
-          CLISTUB
-            cat > "$PD/bin/codex" <<'CLISTUB'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cat > "${RECEIVED:?}"
-          exit 0
-          CLISTUB
-            chmod +x "$PD/bin/grok" "$PD/bin/codex"
-            echo "canary: ${lane} allocation+Write-analog+handoff+command-block+cleanup OK (incl. CLI failure path)"
+          case " $* " in *" -R "*|*" --repo "*) ;; *) exit 1 ;; esac
+          [ "$ok_r" = 1 ] || exit 1
+          case " $* " in *" 404 "*) exit 1 ;; esac
+          printf '%s\n' '{"headRefName":"pr/head","headRefOid":"1111111111111111111111111111111111111111","headRepository":{"nameWithOwner":"acme/repo"}}'
+          GHSTUB
+          chmod +x "$GB/gh"
+          gcmd() {
+            local command="$1" rc=0
+            printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$command" '$c')" |
+              PATH="$GB:$PATH" CLAUDE_PROJECT_DIR="$GD" bash "$GUARD" >/dev/null 2>&1 || rc=$?
+            printf '%s' "$rc"
           }
-          if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
-            SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"; SPEC="$SPEC_DIR/prompt"
-            owned_dirs+=("$SPEC_DIR")
-            write_analog "$SPEC" "$PD/escaped-override"
-            RECEIVED="$PD/received" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
-            cmp -s "$SPEC" "$PD/received" || {
-              echo "::error::PROMPT_CLI_UNDER_TEST path transport changed payload"; exit 1; }
-            [ ! -e "$PD/escaped-override" ] || {
-              echo "::error::PROMPT_CLI_UNDER_TEST allowed SPEC_EOF payload to escape into shell execution"; exit 1; }
-          else
-            exercise_lane grok "$GA" "$GCMD"
-            exercise_lane codex "$CA" "$CCMD"
-          fi
-          # Behavioral failure injection against EXTRACTED allocation + command blocks.
-          inj="$(mktemp -d "$PD/inject.XXXXXX")"
-          owned_dirs+=("$inj")
-          mkdir -p "$inj/bin" "$inj/mock-plinth"
-          cat > "$inj/mock-plinth/lane-guard.sh" <<'LG'
-          #!/usr/bin/env bash
-          exit 0
-          LG
-          chmod +x "$inj/mock-plinth/lane-guard.sh"
-          extract_alloc() {
-            local agent="$1" dest="$2"
-            awk '
-              /^ {4,}BEFORE="\$\(git rev-parse HEAD\)"/{f=1}
-              f && /^ {4,}/{print; if ($0 ~ /printf .*SPEC_DIR=%q SPEC=%q/) exit; next}
-              f{exit}
-            ' "$agent" | sed 's/^[[:space:]]*//' > "$dest"
-            sed -i.bak "s|.plinth/lane-guard.sh|$inj/mock-plinth/lane-guard.sh|g" "$dest"
-            rm -f "$dest.bak"
+          bound() { printf 'gh pr merge %s -R acme/repo --match-head-commit %s --squash' "$1" "$HEAD_OK"; }
+          # bare merge on main → 0
+          [ "$(gcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::targeted ship gate changed bare current-branch behavior on main"; exit 1; }
+          # create + echo prose merge → 0 (prose not ship)
+          [ "$(gcmd 'gh pr create --fill; echo gh pr merge 404')" = 0 ] || { echo "::error::target parser treated argument-position prose as a targeted merge"; exit 1; }
+          # unqualified / incomplete targeted forms fail closed even with a matching verdict
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd 'gh pr merge 42 --squash')" = 2 ] || { echo "::error::unqualified PR merge authorized without -R and --match-head-commit"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --squash")" = 2 ] || { echo "::error::targeted merge authorized without --match-head-commit"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::targeted merge authorized without -R (GH_REPO/default-repo trap)"; exit 1; }
+          # fully bound, no verdict file match → still 2 if we clear APPROVED
+          rm -f "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::bound merge authorized without APPROVED at resolved head"; exit 1; }
+          # fully bound + APPROVED at resolved SHA → 0
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 0 ] || { echo "::error::bound merge blocked despite APPROVED at resolved head SHA"; exit 1; }
+          # wrong verdict SHA → 2
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_BAD" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::targeted ship gate accepted APPROVED bound to a different SHA"; exit 1; }
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          # wrong --match-head-commit (command not pinned to resolved head) → 2
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_BAD --squash")" = 2 ] || { echo "::error::--match-head-commit mismatch was accepted"; exit 1; }
+          # PR URL same repo + match-head → 0; other repo → 2; URL without match-head → 2
+          [ "$(gcmd "gh pr merge https://github.com/acme/repo/pull/42 --match-head-commit $HEAD_OK")" = 0 ] || { echo "::error::same-repo PR URL + match-head was blocked"; exit 1; }
+          [ "$(gcmd "gh pr merge https://github.com/other/repo/pull/42 --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::other-repo PR URL authorized by local verdict"; exit 1; }
+          [ "$(gcmd 'gh pr merge https://github.com/acme/repo/pull/42')" = 2 ] || { echo "::error::PR URL without --match-head-commit was authorized"; exit 1; }
+          # -R acme/repo → 0; -R github.com/acme/repo → 0; -R other/repo → 2
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::-R acme/repo + match-head rejected"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R github.com/acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::host-qualified -R github.com/owner/repo + match-head rejected"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R other/repo --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::-R other/repo authorized by local verdict"; exit 1; }
+          # unresolvable / unparseable → 2
+          [ "$(gcmd "gh pr merge 404 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::failed open when gh could not resolve the PR"; exit 1; }
+          [ "$(gcmd 'gh pr merge branch-name -R acme/repo')" = 2 ] || { echo "::error::failed open on unparseable positional merge argv"; exit 1; }
+          # quoted / backslash merge argv fail-closed (unquote is not a shell parser)
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body \"Release notes\"")" = 2 ] || { echo "::error::quoted --body was parsed instead of fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \"Release 42\" -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::quoted multi-word body invented a PR target"; exit 1; }
+          # Escaped whitespace: shell has one body token; stripped invents positional 42 — must block.
+          [ "$(gcmd "gh pr merge --body Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash body invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -b Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -b invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --body=Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body= invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --subject Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --subject invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -t Release\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -t invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge --author-email a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --author-email invented PR target"; exit 1; }
+          [ "$(gcmd "gh pr merge -A a\\ 42@x -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -A invented PR target"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash --body-file invented PR 42"; exit 1; }
+          [ "$(gcmd "gh pr merge -F ./x\\ 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backslash -F invented PR 42"; exit 1; }
+          # Single-token unquoted value flags stay allowed when fully bound
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body ship-ok --squash")" = 0 ] || { echo "::error::unquoted single-token --body blocked"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body=ship-ok --squash")" = 0 ] || { echo "::error::--body= single-token blocked"; exit 1; }
+          # Dynamic expansion: shell can invent a PR target after inspection — fail closed
+          [ "$(gcmd "BODY=Release_42; gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::\$BODY expansion was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::unexpanded \$BODY body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \$(echo 42) -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::command-substitution body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body Release{42} -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::brace expansion body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file ./x*42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::glob body-file was not fail-closed"; exit 1; }
+          # Backtick / process-sub must remain visible (segment only on ;&|, not `())
+          [ "$(gcmd "gh pr merge --body=Release\`printf 42\` -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::backtick body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file=<(printf notes) 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::process-sub body-file was not fail-closed"; exit 1; }
+          # -R/--repo between pr and merge (gh inherited-option placement)
+          [ "$(gcmd "gh pr -R acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -R o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr --repo acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr --repo=acme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr --repo=o/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr -Racme/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::gh pr -Ro/r merge was not gated/authorized"; exit 1; }
+          [ "$(gcmd "gh pr -R other/repo merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::gh pr -R other/repo merge authorized wrong repo"; exit 1; }
+          [ "$(gcmd "gh pr -R acme/repo merge 42 --squash")" = 2 ] || { echo "::error::gh pr -R merge without match-head authorized"; exit 1; }
+          # Subshell / cmd-sub / backtick wrappers must not skip the gate (fail closed)
+          [ "$(gcmd "(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::parenthesized merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "echo \$(gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash)")" = 2 ] || { echo "::error::\$() merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "\`gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash\`")" = 2 ] || { echo "::error::backtick-wrapped merge skipped ship gate"; exit 1; }
+          [ "$(gcmd "(gh pr create --fill)")" = 0 ] || { echo "::error::parenthesized create on main changed base fail-open"; exit 1; }
+          # outside git: bare → 0; targeted → 2
+          NG="$(mktemp -d)"
+          ngcmd() {
+            local command="$1" rc=0
+            printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$command" '$c')" |
+              PATH="$GB:$PATH" CLAUDE_PROJECT_DIR="$NG" bash "$GUARD" >/dev/null 2>&1 || rc=$?
+            printf '%s' "$rc"
           }
-          # SNAP mktemp failure via extracted alloc (first plain mktemp is SNAP).
-          for lane in grok codex; do
-            agent="$AGENT_DIR/${lane}-implementer.md"
-            extract_alloc "$agent" "$inj/alloc-$lane.sh"
-            cat > "$inj/bin/mktemp" <<'INJ'
-          #!/usr/bin/env bash
-          # Fail the first call with no -d/-t (SNAP="$(mktemp)").
-          if [[ "$#" -eq 0 ]]; then echo "mktemp: forced SNAP failure" >&2; exit 41; fi
-          exec /usr/bin/mktemp "$@"
-          INJ
-            chmod +x "$inj/bin/mktemp"
-            set +e
-            out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} SNAP mktemp want exit 1 got $rc"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SNAP mktemp failed rc=41' || {
-              echo "::error::${lane} SNAP mktemp missing rc=41 diagnostic (got: $out)"; exit 1; }
-          done
-          # SPEC_DIR mktemp failure via extracted alloc.
-          for lane in grok codex; do
-            cat > "$inj/bin/mktemp" <<'INJ'
-          #!/usr/bin/env bash
-          for a in "$@"; do case "$a" in *plinth-lane*) echo "mktemp: forced SPEC_DIR failure" >&2; exit 42 ;; esac; done
-          exec /usr/bin/mktemp "$@"
-          INJ
-            chmod +x "$inj/bin/mktemp"
-            set +e
-            out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} SPEC_DIR mktemp want exit 1 got $rc"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC_DIR mktemp failed rc=42' || {
-              echo "::error::${lane} SPEC_DIR mktemp missing rc=42 diagnostic (got: $out)"; exit 1; }
-          done
-          # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
-          for lane in grok codex; do
-            before_dirs="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null | sort || true)"
-            cat > "$inj/bin/mktemp" <<'INJ'
-          #!/usr/bin/env bash
-          if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then exec /usr/bin/mktemp "$@"; fi
-          if [[ " $* " == *" -t "* ]]; then echo "mktemp: forced OUT failure" >&2; exit 43; fi
-          exec /usr/bin/mktemp "$@"
-          INJ
-            chmod +x "$inj/bin/mktemp"
-            set +e
-            out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} OUT mktemp failure want exit 1 got $rc (out: $out)"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'OUT mktemp failed rc=43' || {
-              echo "::error::${lane} OUT mktemp did not report rc=43 (got: $out)"; exit 1; }
-            after_dirs="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null | sort || true)"
-            [ "$before_dirs" = "$after_dirs" ] || {
-              echo "::error::${lane} OUT mktemp left new SPEC_DIR residue (before=$before_dirs after=$after_dirs)"; exit 1; }
-          done
-          # OUT path with forced rm -rf failure: must fail loud on cleanup (not silent residue).
-          for lane in grok codex; do
-            cat > "$inj/bin/mktemp" <<INJ
-          #!/usr/bin/env bash
-          if [[ " \$* " == *" -d "* ]] && [[ " \$* " == *"plinth-lane"* ]]; then
-            d="\$(/usr/bin/mktemp "\$@")"
-            printf '%s' "\$d" > "$inj/last-spec-dir"
-            printf '%s\\n' "\$d"
-            exit 0
-          fi
-          if [[ " \$* " == *" -t "* ]]; then echo "mktemp: forced OUT failure" >&2; exit 43; fi
-          exec /usr/bin/mktemp "\$@"
-          INJ
-            cat > "$inj/bin/rm" <<'INJ'
-          #!/usr/bin/env bash
-          if [[ "$*" == *"-rf"* ]] || [[ "$1" == -rf ]]; then
-            echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45
-          fi
-          exec /bin/rm "$@"
-          INJ
-            chmod +x "$inj/bin/mktemp" "$inj/bin/rm"
-            set +e
-            out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} OUT+rm-rf failure want exit 1 got $rc (out: $out)"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC_DIR cleanup after OUT mktemp failed rc=45' || {
-              echo "::error::${lane} OUT+rm-rf missing rc=45 diagnostic (got: $out)"; exit 1; }
-            leftover="$(cat "$inj/last-spec-dir" 2>/dev/null || true)"
-            [ -n "$leftover" ] && [ -d "$leftover" ] || {
-              echo "::error::${lane} OUT+rm-rf should leave the exact SPEC_DIR residue"; exit 1; }
-            owned_dirs+=("$leftover")
-            /bin/rm -f "$inj/bin/rm"
-          done
-          # rmdir failure via EXTRACTED command block (nonempty dir): loud fail, keep extra file.
-          for lane in grok codex; do
-            block="$GCMD"; [ "$lane" = codex ] && block="$CCMD"
-            rmdir_victim="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
-            owned_dirs+=("$rmdir_victim")
-            : > "$rmdir_victim/prompt"
-            : > "$rmdir_victim/extra"
-            # CLI stub succeeds so we reach cleanup.
-            cat > "$inj/bin/grok" <<'ST'
-          #!/usr/bin/env bash
-          while [ "$#" -gt 0 ]; do [ "$1" = "--prompt-file" ] && exit 0; shift; done; exit 0
-          ST
-            cat > "$inj/bin/codex" <<'ST'
-          #!/usr/bin/env bash
-          cat >/dev/null; exit 0
-          ST
-            chmod +x "$inj/bin/grok" "$inj/bin/codex"
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=x; BEFORE=x; SNAP=x"
-              echo "SPEC_DIR=$(printf %q "$rmdir_victim")"
-              echo "SPEC=$(printf %q "$rmdir_victim/prompt")"
-              echo "OUT=$(printf %q "$inj/out-$lane")"
-              echo "RECEIVED=$(printf %q "$inj/recv-$lane"); export RECEIVED"
-              echo "PATH=$(printf %q "$inj/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$inj/run-rmdir-$lane.sh"
-            set +e
-            out="$(bash "$inj/run-rmdir-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} rmdir want exit 1 got $rc"; exit 1; }
-            printf '%s\n' "$out" | grep -Eq 'SPEC_DIR rmdir failed rc=[1-9]' || {
-              echo "::error::${lane} rmdir missing rc diagnostic (got: $out)"; exit 1; }
-            [ -f "$rmdir_victim/extra" ] || {
-              echo "::error::${lane} rmdir path deleted unrelated content"; exit 1; }
-            [ -d "$rmdir_victim" ] || {
-              echo "::error::${lane} rmdir failure removed the directory tree"; exit 1; }
-          done
-          # rm -f failure via extracted command block.
-          for lane in grok codex; do
-            block="$GCMD"; [ "$lane" = codex ] && block="$CCMD"
-            rm_victim="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
-            owned_dirs+=("$rm_victim")
-            : > "$rm_victim/prompt"
-            echo keep > "$rm_victim/unrelated"
-            mkdir -p "$inj/bin"
-            cat > "$inj/bin/rm" <<'INJ'
-          #!/usr/bin/env bash
-          # Fail only when removing the prompt file (-f -- path).
-          if [[ "$*" == *"/prompt"* ]]; then echo "rm: forced prompt failure" >&2; exit 44; fi
-          exec /bin/rm "$@"
-          INJ
-            chmod +x "$inj/bin/rm"
-            cat > "$inj/bin/grok" <<'ST'
-          #!/usr/bin/env bash
-          while [ "$#" -gt 0 ]; do [ "$1" = "--prompt-file" ] && exit 0; shift; done; exit 0
-          ST
-            cat > "$inj/bin/codex" <<'ST'
-          #!/usr/bin/env bash
-          cat >/dev/null; exit 0
-          ST
-            chmod +x "$inj/bin/grok" "$inj/bin/codex"
-            {
-              echo 'set -euo pipefail'
-              echo 'cap() { shift; "$@"; }'
-              echo "LANE_RULES=x; BEFORE=x; SNAP=x"
-              echo "SPEC_DIR=$(printf %q "$rm_victim")"
-              echo "SPEC=$(printf %q "$rm_victim/prompt")"
-              echo "OUT=$(printf %q "$inj/out-rm-$lane")"
-              echo "RECEIVED=$(printf %q "$inj/recv-rm-$lane"); export RECEIVED"
-              echo "PATH=$(printf %q "$inj/bin"):\"\$PATH\"; export PATH"
-              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
-            } > "$inj/run-rm-$lane.sh"
-            set +e
-            out="$(bash "$inj/run-rm-$lane.sh" 2>&1)"
-            rc=$?
-            set -e
-            [ "$rc" = 1 ] || { echo "::error::${lane} rm -f want exit 1 got $rc"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC cleanup failed rc=44' || {
-              echo "::error::${lane} rm -f missing rc=44 diagnostic (got: $out)"; exit 1; }
-            [ -d "$rm_victim" ] || {
-              echo "::error::${lane} rm -f failure removed the whole SPEC_DIR unexpectedly"; exit 1; }
-            [ -f "$rm_victim/prompt" ] || {
-              echo "::error::${lane} rm -f failure removed the prompt unexpectedly"; exit 1; }
-            [ -f "$rm_victim/unrelated" ] || {
-              echo "::error::${lane} rm -f failure removed unrelated files"; exit 1; }
-            # Drop injected rm from PATH for later fixture cleanup.
-            rm -f "$inj/bin/rm"
-          done
-          echo "canary: extracted-block allocation/cleanup failure injection OK"
-          # Negative fixtures: known bypass forms MUST fail the full-line allowlist.
-          NEG="$(mktemp -d "$PD/neg.XXXXXX")"
-          owned_dirs+=("$NEG")
-          fail_neg() {
-            local name="$1" mut="$2"
-            cp "$GA" "$NEG/grok-implementer.md"
-            # Apply mutation via python for reliable bytes.
-            python3 - "$NEG/grok-implementer.md" "$mut" <<'PY'
-          import pathlib, sys
-          p = pathlib.Path(sys.argv[1])
-          p.write_text(p.read_text() + "\n" + sys.argv[2] + "\n")
-          PY
-            if assert_spec_allowlist "$NEG/grok-implementer.md" "neg-$name"; then
-              echo "::error::negative fixture '$name' was accepted by the allowlist"; exit 1
-            fi
-            echo "canary: negative fixture rejected: $name"
-          }
-          fail_neg piggyback-trunc '       [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] && : > "$SPEC" || {'
-          fail_neg braced-spec $'\t: > "${SPEC}"'
-          fail_neg braced-dir-prompt $'\t: > "${SPEC_DIR}/prompt"'
-          fail_neg tab-append $'\t> "$OUT" 2>&1 || RC=$?; : > "$SPEC"'
-          fail_neg python-spec-dir '       python3 -c "from pathlib import Path; Path(\"$SPEC_DIR/prompt\").write_text(\"x\")"'
-          fail_neg fenced-bash $'```bash\n: > "$SPEC"\n```'
-          fail_neg fenced-indented $'   ```bash\n   : > "$SPEC"\n   ```'
-          fail_neg fenced-tilde $'~~~bash\n: > "$SPEC"\n~~~'
-          fail_neg fenced-4tick $'````bash\n: > "$SPEC"\n````'
-          fail_neg fenced-blockquote $'> ```bash\n> : > "$SPEC"\n> ```'
-          fail_neg fenced-short-closer $'````bash\n: > "$SPEC"\n```\nstill-inside\n````'
-          fail_neg bq-indented $'>     : > "$SPEC"'
-          fail_neg list-fence $'- ```bash\n  : > "$SPEC"\n  ```'
-          fail_neg ordered-fence $'1. ```bash\n   : > "$SPEC"\n   ```'
-          # tools: line must not treat a comment "# Write" as granting the Write tool.
-          {
-            cp "$GA" "$NEG/grok-tools.md"
-            python3 - "$NEG/grok-tools.md" <<'PY'
-          import pathlib, re, sys
-          p = pathlib.Path(sys.argv[1])
-          t = p.read_text()
-          t2, n = re.subn(
-              r'^tools:.*$',
-              'tools: Bash, Read, Grep, Glob # Write removed',
-              t, count=1, flags=re.M,
-          )
-          if n != 1:
-              raise SystemExit("could not rewrite tools frontmatter")
-          p.write_text(t2)
-          PY
-            tools_line="$(frontmatter_tools "$NEG/grok-tools.md" | sed 's/#.*//;s/[[:space:]]*$//')"
-            if printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)'; then
-              echo "::error::tools comment '# Write removed' still counted as Write token (got: $tools_line)"; exit 1
-            fi
-            echo "canary: negative fixture rejected: tools-comment-write"
-          }
-          # Remove only fixture-owned paths (array — safe with spaces/glob in paths).
-          # Use absolute /bin/rm so a failure-injection PATH wrapper cannot break cleanup.
-          /bin/rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
-          trap - EXIT
-          # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
-          [ -f "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" ] || {
-            echo "::error::missing docs/receipts/claude-write-project-local-plinth-lane.txt (live Write receipt)"; exit 1; }
-          grep -q 'write-receipt-ok' "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" || {
-            echo "::error::Write receipt does not show successful create"; exit 1; }
-          grep -q '\.plinth-lane\.' "$GITHUB_WORKSPACE/docs/receipts/claude-write-project-local-plinth-lane.txt" || {
-            echo "::error::Write receipt path is not under .plinth-lane.*"; exit 1; }
-          echo "canary: project-local Write path + handoff SPEC_DIR + extracted CLI wiring + cleanup OK"
+          [ "$(ngcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::bare ship outside git no longer fail-open"; exit 1; }
+          [ "$(ngcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::targeted ship gate failed open outside a local repository checkout"; exit 1; }
+          # multi-segment: APPROVED merge must not authorize unreviewed create (both orders)
+          git -C "$GD" checkout -qb feat/x
+          HEAD_SHA="$(git -C "$GD" rev-parse HEAD)"
+          rm -f "$GD/.plinth/session/review/feat-x/verdict.json"
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (create;merge)"; exit 1; }
+          [ "$(gcmd "$(bound 42); gh pr create --fill")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (merge;create)"; exit 1; }
+          # inherited-option create siblings on feature without verdict → 2
+          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 2 ] || { echo "::error::gh pr -R o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr --repo acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 2 ] || { echo "::error::gh pr --repo=o/r create not gated on feature"; exit 1; }
+          [ "$(gcmd 'gh pr -Racme/repo create --fill')" = 2 ] || { echo "::error::gh pr -Ro/r create not gated on feature"; exit 1; }
+          [ "$(gcmd '(gh pr create --fill)')" = 2 ] || { echo "::error::parenthesized create on feature not gated"; exit 1; }
+          [ "$(gcmd 'echo $(gh pr create --fill)')" = 2 ] || { echo "::error::\$() create on feature not gated"; exit 1; }
+          [ "$(gcmd '`gh pr create --fill`')" = 2 ] || { echo "::error::backtick-wrapped create on feature not gated"; exit 1; }
+          # feature both approved → 0 for create;merge and inherited-option create
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
+          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
+          [ "$(gcmd 'gh pr -R acme/repo create --fill')" = 0 ] || { echo "::error::gh pr -R create blocked despite feature APPROVED"; exit 1; }
+          [ "$(gcmd 'gh pr --repo=acme/repo create --fill')" = 0 ] || { echo "::error::gh pr --repo= create blocked despite feature APPROVED"; exit 1; }
+          # quoted create sibling must NOT poison an independent bound merge (segment-local)
+          [ "$(gcmd "gh pr create --title \"feat x\" --fill; $(bound 42)")" = 0 ] || { echo "::error::quoted create sibling blocked independent bound merge"; exit 1; }
+          echo "canary: targeted ship gate origin-bound PR head + multi-segment create|merge OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -4049,8 +3566,8 @@ jobs:
           # and drops it silently; bypassPermissions needs a turn budget AND a sandbox. Extract the real command
           # block (the flag words also appear in the surrounding explanation, so a whole-file grep is hollow):
           GA="$GITHUB_WORKSPACE/shared/.claude/agents/grok-implementer.md"
-          GCMD="$(awk '/cap 600 grok /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
-          [ -n "$GCMD" ] || { echo "::error::could not locate the grok cap-600 invocation command block in the agent"; exit 1; }
+          GCMD="$(awk '/grok --prompt-file/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$GA")"
+          [ -n "$GCMD" ] || { echo "::error::could not locate the grok invocation command block in the agent"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'permission-mode bypassPermissions' || { echo "::error::grok COMMAND lacks --permission-mode bypassPermissions (acceptEdits drops edits headlessly)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'max-turns'                          || { echo "::error::grok COMMAND lacks --max-turns (a single turn ends before the edit lands)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q 'sandbox workspace'                  || { echo "::error::grok COMMAND lacks --sandbox workspace (bypassPermissions alone leaves the CLI unfenced)"; exit 1; }
@@ -4058,8 +3575,8 @@ jobs:
           printf '%s\n' "$GCMD" | grep -q 'cap 600'                            || { echo "::error::grok COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           printf '%s\n' "$GCMD" | grep -q -- '--rules'                         || { echo "::error::grok COMMAND lacks --rules isolation — grok auto-loads CLAUDE.md/AGENTS.md (driver contract) and acts as a driver, not a lane"; exit 1; }
           CA="$GITHUB_WORKSPACE/shared/.claude/agents/codex-implementer.md"
-          CCMD="$(awk '/cap 600 codex /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
-          [ -n "$CCMD" ] || { echo "::error::could not locate the codex cap-600 invocation command block in the agent"; exit 1; }
+          CCMD="$(awk '/codex exec/{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
+          [ -n "$CCMD" ] || { echo "::error::could not locate the codex invocation command block in the agent"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'sandbox workspace-write' || { echo "::error::codex COMMAND lacks --sandbox workspace-write (writes not fenced to the workspace)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'cap 600'                 || { echo "::error::codex COMMAND is not wall-clock capped (missing 'cap 600' wrapper)"; exit 1; }
           printf '%s\n' "$CCMD" | grep -q 'project_doc_max_bytes=0' || { echo "::error::codex COMMAND lacks -c project_doc_max_bytes=0 — codex auto-loads AGENTS.md (driver contract) instead of acting as a lane"; exit 1; }

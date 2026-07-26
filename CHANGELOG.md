@@ -1,5 +1,18 @@
 # Plinth changelog
 
+## v4.7.2 — ship-gate-target — July 26, 2026
+- **Targeted `gh pr merge` binds end-to-end to origin + resolved PR head (upstream #16).**
+  Authorization requires: (1) the actionable command names the checkout's `origin`
+  via `-R`/`--repo` or a same-repo PR URL (unqualified `gh pr merge 42` is rejected —
+  it would follow `GH_REPO`/default-repo); (2) `--match-head-commit` equals the
+  origin-resolved head (`gh pr view … -R <origin>`); (3) APPROVED at that SHA for
+  the PR branch slug. Quotes/backslashes/expansion metacharacters (`$`,
+  backticks, `()`, globs, braces) in the merge segment fail closed (not a shell
+  parser; segment only on `;|&`); fail-closed is segment-local so a quoted create
+  sibling does not poison a bound merge. Inherited-option placement
+  (`gh pr -R o/r merge`) is gated. Multi-segment Bash gates each create/merge
+  independently. Bare current-branch create/merge and outside-git bare fail-open
+  are unchanged.
 ## v4.7.2 — implementer specs stay data, never shell source — July 26, 2026
 - **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
   lane contracts require the non-shell Write tool for their unique prompt file and pass
