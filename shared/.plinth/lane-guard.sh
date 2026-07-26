@@ -430,12 +430,12 @@ case "$sub" in
             exit 3 ;;
         esac
         if [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; then :; else
-          # Ordinary unauthenticated path (rc=1, or exit 0 + "not authenticated" text) stays
-          # "not signed in". GNU timeout's own failure is 125 — do not send the user to login.
-          if [ "$_grc" = 125 ]; then
-            echo "unavailable: the grok auth check ('grok models') failed (rc=125, elapsed ${_gel}s) — not necessarily unsigned-in (GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
-          else
+          # Known unauthenticated signatures: exit 0 + "not authenticated" text, or rc=1.
+          # Other non-cap codes (incl. GNU timeout wrapper 125) are NOT "not signed in".
+          if [ "$_grc" = 0 ] || [ "$_grc" = 1 ]; then
             echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"
+          else
+            echo "unavailable: the grok auth check ('grok models') failed (rc=$_grc, elapsed ${_gel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
           fi
           exit 3
         fi ;;
@@ -468,10 +468,11 @@ case "$sub" in
               echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
             fi
             exit 3 ;;
-          125)
-            echo "unavailable: the codex auth check ('codex login status') failed (rc=125, elapsed ${_cel}s) — not necessarily unsigned-in (GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
+          1) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
+          *)
+            # Known unauthenticated is rc=1; other codes (incl. GNU timeout 125) are residual.
+            echo "unavailable: the codex auth check ('codex login status') failed (rc=$_crc, elapsed ${_cel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
             exit 3 ;;
-          *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
         esac ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac

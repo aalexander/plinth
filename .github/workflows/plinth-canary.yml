@@ -3453,7 +3453,7 @@ jobs:
             printf '%s' "$out" | grep -Eqi 'not signed in \(auth check' \
               && { echo "::error::preflight[$_v] rc-125: must not use plain not-signed-in attribution (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
-          # Ordinary rc=1 auth failure still says "not signed in" (not the 125 residual):
+          # Ordinary rc=1 auth failure still says "not signed in" (not the residual):
           for _v in grok codex; do
             _w1="$(mktemp -d)"
             if [ "$_v" = grok ]; then
@@ -3465,6 +3465,20 @@ jobs:
             [ "$r" = 3 ] || { echo "::error::preflight[$_v] rc-1: want rc=3 got $r"; exit 1; }
             printf '%s' "$out" | grep -qi 'not signed in' || { echo "::error::preflight[$_v] rc-1: must say not signed in (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
             printf '%s' "$out" | grep -qi 'not necessarily unsigned-in' && { echo "::error::preflight[$_v] rc-1: wrongly used wrapper residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
+          done
+          # rc=2 (and similar non-auth codes) must NOT be labeled "not signed in":
+          for _v in grok codex; do
+            _w2="$(mktemp -d)"
+            if [ "$_v" = grok ]; then
+              printf '#!/usr/bin/env bash\n[ "$1" = models ] && exit 2\n' > "$_w2/grok"; chmod +x "$_w2/grok"
+            else
+              printf '#!/usr/bin/env bash\n[ "$1" = login ] && exit 2; exit 0\n' > "$_w2/codex"; chmod +x "$_w2/codex"
+            fi
+            r=0; out="$(PATH="$_w2:$PATH" bash "$LG" preflight "$_v" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::preflight[$_v] rc-2: want rc=3 got $r"; exit 1; }
+            printf '%s' "$out" | grep -qi 'not necessarily unsigned-in' || { echo "::error::preflight[$_v] rc-2: must use non-auth residual (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -Eqi 'not signed in \(auth check' \
+              && { echo "::error::preflight[$_v] rc-2: wrongly labeled not-signed-in (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; } || true
           done
           # PREFLIGHT DIAGNOSTICS (both vendors) — honest timeout claim (GNU coreutils + python):
           #   elapsed first; then by exit code:
@@ -4058,6 +4072,26 @@ jobs:
             r=0; out="$(bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
             [ "$r" = 3 ] || { echo "::error::non-dir lanes should refuse (rc=$r)"; exit 1; }
             grep -qx 'keep-pre-nondir' .plinth/session/.gitignore || { echo "::error::non-dir lanes refusal rewrote .gitignore (got: $(cat .plinth/session/.gitignore | tr '\n' ' '))"; exit 1; }
+            # git ls-files --error-unmatch command failure (rc>=2) must fail closed, not treat as untracked:
+            rm -rf .plinth/session; mkdir -p .plinth/session
+            printf 'keep-ls-fail\n' > .plinth/session/.gitignore
+            GWRAP="$(mktemp -d)"; ln -s "$(command -v true)" "$GWRAP/true" 2>/dev/null || true
+            # Real git shim: pass-through except error-unmatch on the session gitignore path.
+            cat > "$GWRAP/git" <<'GSH'
+#!/usr/bin/env bash
+if [ "$1" = "-C" ]; then shift 2; fi
+if [ "$1" = "ls-files" ] && printf '%s\n' "$@" | grep -q -- '--error-unmatch' \
+  && printf '%s\n' "$@" | grep -q '\.plinth/session/\.gitignore'; then
+  exit 128
+fi
+exec /usr/bin/git "$@"
+GSH
+            chmod +x "$GWRAP/git"
+            r=0; out="$(PATH="$GWRAP:$PATH" bash "$LG" delegation grok 0 "$TR" 2>&1)" || r=$?
+            [ "$r" = 3 ] || { echo "::error::ls-files failure must fail closed (rc=$r, want 3; out=$(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            printf '%s' "$out" | grep -qi 'ls-files\|tracked\|fail closed\|cannot determine' \
+              || { echo "::error::ls-files failure diagnostic missing (got: $(printf '%s' "$out" | tr '\n' ' '))"; exit 1; }
+            grep -qx 'keep-ls-fail' .plinth/session/.gitignore || { echo "::error::ls-files failure path rewrote .gitignore as if untracked"; exit 1; }
             )
           # ── v4.5: index/ref-file scope probes, each in a HERMETIC fresh fixture (no cross-probe
           # contamination — skip-worktree state is sticky, so isolation beats in-place cleanup). Each
