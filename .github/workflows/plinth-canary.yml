@@ -1716,6 +1716,47 @@ jobs:
               || { echo "::error::re-run did not announce recovery of unconfirmed/UNBOUND approval"; exit 1; }
             [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; }
             [ "$(jq -r .verdict "$vj")" = "APPROVED" ] || { echo "::error::recovery did not bind APPROVED (got $(jq -r .verdict "$vj"))"; exit 1; } )
+          # Mutation-sensitive process window: after a non-fresh Tier-2 verify APPROVED is
+          # written but BEFORE confirmation can run, verdict.json must already be UNBOUND.
+          # Inject an early exit immediately after the first run_round when mode was verify.
+          PW="$(mktemp -d)"; mkstate "$PW"; mk_cap_codex "$PW"
+          printf '%s' "$CNF" > "$PW/verdict-1"; printf '%s' "$APF" > "$PW/verdict-2"
+          pwd_d="$(mktemp -d)"
+          ( cd "$pwd_d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$pwd_d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+            cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            # After any run_round returns, if verdict is UNBOUND with confirmation reason, stop
+            # BEFORE the confirmation gate — that proves the write itself was UNBOUND.
+            python3 - <<'PY'
+from pathlib import Path
+p = Path('.plinth/review.sh')
+t = p.read_text()
+needle = 'run_round "$mode" "$round" "" ;;\nesac\n# Confirmation gate'
+insert = '''run_round "$mode" "$round" "" ;;
+esac
+# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate
+if [ "${RVERDICT:-}" = "APPROVED" ] && [ "$(jq -r .verdict "$SDIR/verdict.json" 2>/dev/null)" = "UNBOUND" ]; then
+  echo "CANARY_PROCESS_WINDOW_UNBOUND"
+  exit 42
+fi
+# Confirmation gate'''
+if needle not in t:
+    raise SystemExit('hook insertion point missing in review.sh')
+p.write_text(t.replace(needle, insert, 1))
+PY
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$PW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; out="$(PATH="$PW:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 42 ] || { echo "::error::process-window canary: expected exit 42 after UNBOUND write (rc=$rc out=$(printf '%s' "$out" | tail -5))"; exit 1; }
+            printf '%s' "$out" | grep -q CANARY_PROCESS_WINDOW_UNBOUND || { echo "::error::process-window canary hook did not fire"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::process-window: after verify APPROVED write got $(jq -r .verdict "$vj") want UNBOUND (before confirmation)"; exit 1; }
+            jq -r '.unbound_reason // empty' "$vj" | grep -qi 'confirmation' \
+              || { echo "::error::process-window UNBOUND lacks confirmation reason"; exit 1; }
+          )
           echo "v4.6 loop-efficiency canary block OK"
           # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
           # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
@@ -3593,57 +3634,50 @@ jobs:
             grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
               || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
             grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
-            # Behavioral lifecycle: EXTRACT allocation+cleanup from the shipped agent and
-            # RUN them with a stub CLI that only succeeds if it path-consumes $SPEC.
+            # Behavioral lifecycle: extract and eval the SHIPPED multi-line CLI + cleanup
+            # fragments from the agent (not a hand copy). Stub CLIs require path consumption.
             WL="$(mktemp -d)"; STUBS="$(mktemp -d)"
             (
               set -euo pipefail
               cd "$WL"
-              # Extract the allocation fragment the agent documents (must stay exact):
               eval "$(grep -E '^\s+SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" | head -1 | sed 's/^[[:space:]]*//')"
               eval "$(grep -E '^\s+SPEC="\$SPEC_DIR/prompt"' "$A" | head -1 | sed 's/^[[:space:]]*//')"
               OUT="$(mktemp -t canary-out.XXXXXX)"
-              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC from agent"; exit 1; }
+              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
-              # Simulate the Write tool (creates not-yet-existing project-local path):
-              printf 'objective: test\nMODEL: canary\n' > "$SPEC"
-              [ -s "$SPEC" ] || { echo "Write simulation failed"; exit 1; }
-              # Stub the delegate CLI: must be invoked with --prompt-file $SPEC (grok) or
-              # stdin-from-file $SPEC (codex), and must read that path.
+              printf 'objective: test\nMODEL: canary\n' > "$SPEC"   # Write tool creates the file
               export PATH="$STUBS:$PATH"
+              cap() { shift; "$@"; }
+              LANE_RULES=x
+              # Extract the RC=0; cap 600 ... block (multi-line until blank or comment) from agent:
+              CMD="$(awk -v a="$a" '
+                $0 ~ "RC=0; cap 600 " a {p=1}
+                p { sub(/^[[:space:]]+/, ""); print }
+                p && /OUT=|2>&1 \|\| RC=\$\?/ { if (/RC=\$\?/) exit }
+              ' "$A")"
+              [ -n "$CMD" ] || { echo "failed to extract CLI invocation from $a agent"; exit 1; }
               if [ "$a" = grok ]; then
-                printf '#!/usr/bin/env bash\nset -e\npf=""; while [ $# -gt 0 ]; do case "$1" in --prompt-file) pf="$2"; shift 2;; *) shift;; esac; done\n[ -n "$pf" ] && [ -s "$pf" ] || { echo "stub grok: missing nonempty --prompt-file"; exit 9; }\ncat "$pf"\n' > "$STUBS/grok"
+                printf '#!/usr/bin/env bash\nset -e\npf=""; while [ $# -gt 0 ]; do case "$1" in --prompt-file) pf="$2"; shift 2;; *) shift;; esac; done\n[ -n "$pf" ] && [ -s "$pf" ] || { echo "stub: no --prompt-file"; exit 9; }\ncat "$pf"\n' > "$STUBS/grok"
                 chmod +x "$STUBS/grok"
-                # Same command shape the agent ships (cap identity; PATH has stub first):
-                LANE_RULES=x
-                cap() { shift; "$@"; }
-                RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \
-                  --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
-                  --output-format plain --cwd "$(pwd)" \
-                  > "$OUT" 2>&1 || RC=$?
               else
-                printf '#!/usr/bin/env bash\nset -e\n# codex is fed SPEC on stdin via: - < "$SPEC"\n[ -t 0 ] && { echo "stub codex: stdin is a TTY — SPEC was not redirected"; exit 9; }\ncat\n' > "$STUBS/codex"
+                printf '#!/usr/bin/env bash\nset -e\n[ -t 0 ] && { echo "stub: no stdin redirect from SPEC"; exit 9; }\ncat\n' > "$STUBS/codex"
                 chmod +x "$STUBS/codex"
-                cap() { shift; "$@"; }
-                RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
-                  --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
-                  > "$OUT" 2>&1 || RC=$?
               fi
-              [ "$RC" = 0 ] || { echo "stub CLI failed rc=$RC out=$(cat "$OUT")"; exit 1; }
-              grep -q 'objective: test' "$OUT" || { echo "CLI did not consume SPEC contents"; exit 1; }
-              # Shipped cleanup fragment from the agent (must remove prompt then rmdir SPEC_DIR):
-              rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"
-              case "$SPEC_DIR" in
-                "${PWD}/.plinth-lane."*)
-                  case "$rest" in ''|*/*|*..*) echo "SPEC_DIR not direct"; exit 1 ;; esac
-                  [ "$SPEC" = "$SPEC_DIR/prompt" ] || { echo "SPEC_DIR handoff mismatch"; exit 1; }
-                  rm -f -- "$SPEC"
-                  rmdir -- "$SPEC_DIR" || { echo "rmdir SPEC_DIR failed"; exit 1; }
-                  ;;
-                *) echo "SPEC_DIR not under plinth-lane"; exit 1 ;;
-              esac
-              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after cleanup"; exit 1; }
-            ) || { echo "::error::${a} shipped Write-tool/CLI SPEC lifecycle canary failed"; exit 1; }
+              RC=0; eval "$CMD" || RC=$?
+              [ "$RC" = 0 ] || { echo "extracted CLI failed rc=$RC out=$(cat "$OUT" 2>/dev/null)"; exit 1; }
+              grep -q 'objective: test' "$OUT" || { echo "extracted CLI did not consume SPEC"; exit 1; }
+              # Extract cleanup: rest=... through rmdir -- "$SPEC_DIR"
+              CLEAN="$(awk '
+                /rest="\$\{SPEC_DIR#/ {p=1}
+                p { sub(/^[[:space:]]+/, ""); print }
+                p && /rmdir -- "\$SPEC_DIR"/ { exit }
+              ' "$A")"
+              [ -n "$CLEAN" ] || { echo "failed to extract cleanup from $a agent"; exit 1; }
+              # Agent removes the prompt before rmdir (prompt is not empty):
+              rm -f -- "$SPEC"
+              eval "$CLEAN"
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after extracted cleanup"; exit 1; }
+            ) || { echo "::error::${a} extracted shipped CLI/cleanup lifecycle canary failed"; exit 1; }
           done
           echo "lane-guard delegation + Write-tool lifecycle canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
