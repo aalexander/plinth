@@ -3569,20 +3569,23 @@ jobs:
           printf 'body\n' > "$LDR2/out.txt"
           r=0; ( cd "$LDR2" && bash "$LG" delegation grok 0 "$LDR2/out.txt" ) >/dev/null 2>&1 || r=$?
           [ "$r" = 3 ] || { echo "::error::delegation did not refuse symlinked lanes (rc=$r)"; exit 1; }
-          # agent wiring: Write authorized + project-local SPEC lifecycle + delegation after scope
+          # agent wiring: Write authorized + project-local SPEC lifecycle + delegation after scope.
+          # Extract indented run-block lines (agents use indented Markdown, not fenced ```).
           for a in grok codex; do
             A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
             tools_line="$(awk '/^tools:/{print; exit}' "$A")"
             printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' \
               || { echo "::error::${a}-implementer frontmatter tools lacks Write (got: $tools_line)"; exit 1; }
             grep -q 'Use the \*\*Write tool\*\*, not Bash' "$A" || { echo "::error::${a}-implementer lost Write-tool step"; exit 1; }
-            code="$(awk '/^```/{f=!f;next} f' "$A")"
-            printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' \
-              || { echo "::error::${a} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
-            printf '%s\n' "$code" | grep -qE 'SPEC="\$SPEC_DIR/prompt"' \
-              || { echo "::error::${a} code block must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
-            printf '%s\n' "$code" | grep -q 'rmdir -- "$SPEC_DIR"' \
-              || { echo "::error::${a} code block does not rmdir SPEC_DIR after CLI"; exit 1; }
+            # Indented shell lines from the step-0 allocation block (mutation-sensitive path):
+            grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" \
+              || { echo "::error::${a} lacks project-local SPEC_DIR mktemp"; exit 1; }
+            grep -qE 'SPEC="\$SPEC_DIR/prompt"' "$A" \
+              || { echo "::error::${a} must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
+            grep -q 'rmdir -- "$SPEC_DIR"' "$A" \
+              || { echo "::error::${a} does not rmdir SPEC_DIR after CLI"; exit 1; }
+            grep -q "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" \
+              || { echo "::error::${a} handoff printf missing SPEC_DIR"; exit 1; }
             grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer lacks delegation $a"; exit 1; }
             sc_ln="$(grep -n 'lane-guard.sh scope' "$A" | head -1 | cut -d: -f1)"
             dg_ln="$(grep -n "lane-guard.sh delegation $a" "$A" | head -1 | cut -d: -f1)"
