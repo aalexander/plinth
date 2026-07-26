@@ -51,11 +51,11 @@ jobs:
 
   # Auto mode (v4.7+): APPROVED-at-HEAD receipt as a requirable status context.
   # Pin trails by one tagged release (same rule as floor/checks). Require
-  #  + branch protection strict:true after instrument ≥ v4.7.
+  # `receipt / verify` + branch protection strict:true after instrument ≥ v4.7.
   # HONEST BOUND (caller control): on pull_request, GitHub selects workflow files from
   # the PR merge ref (merge commit incorporating the PR's workflow changes). A PR can
   # replace this caller with a different always-green job that still reports the
-  # required context name  — then the reusable verifier never runs.
+  # required context name `receipt / verify` — then the reusable verifier never runs.
   # The base-pin inside plinth-receipt.yml only helps when this job still executes
   # (see MANUAL caller-control bound). Not a cryptographic bind of the context name
   # to this verifier.

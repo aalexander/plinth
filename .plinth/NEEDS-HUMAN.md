@@ -1,13 +1,37 @@
 # Blocked on you
 
-- [ ] **Branch protection — auto mode residual (2026-07-26)**  
-  Product **v4.8.0**, instrument **4.8.0**, tags **v4.7.2**/**v4.8.0** pushed.
-  `ci.yml` wires floor/checks@**v4.7.2** and **`receipt`**@**v4.7.2**.  
-  **You only:** require status check `receipt / verify` and enable **strict**
-  (up-to-date before merge). Caller-control bound: PR can spoof context name
+- [ ] **Auto mode residual (2026-07-26):** Product **v4.8.0**, instrument **4.8.0**,
+  tags **v4.7.2**/**v4.8.0** pushed, GitHub releases published. `ci.yml` already wires
+  floor/checks@**v4.7.2** and **`receipt`**@**v4.7.2** (step 1 of enablement is done on
+  plinth). **You only (step 2):** require status check `receipt / verify` among required
+  contexts **and** set `"strict":true` ("Require branches to be up to date before merging").
+  Without strict, a green receipt can describe a base that has since advanced. Caller-control
+  bound: a PR can replace the receipt caller with a green spoof of the same context name
   (ci.yml HONEST BOUND / MANUAL).
+  ```
+  gh api -X PATCH repos/aalexander/plinth/branches/main/protection/required_status_checks --input -
+  ```
+  body like
+  `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
+  (keep whatever contexts you already require; always include `receipt / verify` and
+  `strict:true`) — or via the branch-protection UI.
 
-- [ ] **#43** — Write-tool implementers regressed after #41 overwrote #37.
+  **Other repos:** same two-step order (wire receipt job on base first with a pin of the
+  release you are RUNNING, then require + strict). Push notes with the branch:
+  `git push origin HEAD refs/notes/plinth-receipts`. Never force-push that ref. On a
+  non-fast-forward rejection:
+  ```
+  git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
+  git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
+  ./.plinth/review.sh <base>   # SAME base you reviewed against; remints, no paid round
+  git push origin refs/notes/plinth-receipts
+  ```
+  NOT `-s cat_sort_uniq` (concatenates two receipts for one commit and breaks the verifier).
+
+- [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
+  Recombine Write-tool guidance with the #41 delegation receipt wiring; do not ship
+  one without the other. Related residual: no canary yet drives `lane-guard.sh
+  delegation` (missing/empty transcript rejection, artifact creation, model extraction).
 
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
@@ -46,68 +70,6 @@
   until the repo exists on GitHub. Re-verified 2026-07-25: `git remote -v` in
   `~/Dev/wren` is still empty.
   `cd ~/Dev/wren && gh repo create wren --private --source=. --remote=origin && git push -u origin --all`
-
-- [ ] **Turn ON the v4.7 receipt gate (per repo) — TWO steps, IN THIS ORDER.** v4.7 ships
-  the APPROVED-at-HEAD receipt check (required context when enabled), but SHIPPING IT IS NOT ENABLING
-  IT. I deliberately did NOT do this for plinth itself: enabling changes what can merge
-  in every future PR, so it is yours to switch on after you have seen a receipt mint for
-  real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
-  one mints nothing, so the check fails closed — correct, but it would block every PR).
-  plinth itself ships product VERSION 4.7.2 on this branch. The installed instrument
-  (`.plinth-version` = 4.6.0) matches tag `v4.6.0`'s `shared/` payload (what floor
-  byte-compares) and deliberately lags until a labeled instrument-refresh commit —
-  do not read VERSION as the running instrument.
-
-  **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
-  per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand
-  (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the SHA of
-  **the release you are RUNNING** — after tagging, `git rev-parse v<version>`. Do NOT pin
-  an older release such as v4.7.0 (`ed8d75b2b90685eddbebb24bd11c2770ed489341`): that
-  verifier predates this release's live base-SHA check, notes-probe error classification,
-  strict-enablement diagnostic and repo-mismatch redaction — a v4.7.2 instrument with a
-  v4.7.0 pin silently ships the older verifier. Merge that PR before doing step 2.
-
-  Why the order is not optional: the check reads the receipt job's pin from the BASE
-  branch and refuses any PR-supplied pin that differs. That is what stops a PR from
-  repointing the verifier at a fork that always passes. A base branch with no receipt job
-  has no operator-owned pin to anchor against, so the check fails closed and says so. If
-  you require the context BEFORE the wiring is on the base, every PR blocks.
-
-  Expect ONE red `receipt / verify` on the wiring PR itself — its base has no receipt job
-  yet, so it correctly fails closed. That is the bootstrap, not a defect; the context is
-  not required at that point, so it does not block the merge.
-
-  **Step 2 — require the context with strict up-to-date**, once step 1 is on the
-  base. Include `receipt / verify` among the required contexts AND set
-  `"strict":true` ("Require branches to be up to date before merging"). The
-  receipt job verifies the subject **as of job execution**; after it exits green
-  the base can still advance while the PR head and the successful status stay
-  unchanged — only `strict:true` forces re-evaluation before merge. A job cannot
-  invalidate its own status after it exits.
-  `gh api -X PATCH repos/aalexander/<repo>/branches/main/protection/required_status_checks --input -`
-  with body like
-  `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
-  (keep whatever contexts you already require; always include `receipt / verify`
-  and `strict:true`) — or via the branch-protection UI with both the context and
-  "Require branches to be up to date" ticked.
-
-  **Then, every branch:** push the notes ref alongside it, or the check fails closed with
-  nothing to verify: `git push origin HEAD refs/notes/plinth-receipts`. Never force-push
-  that ref. On a non-fast-forward rejection, recover with these four commands, in order —
-  `git notes merge` needs the side ref NAMED (bare `git notes --ref=X merge` exits
-  "must specify a notes ref to merge"), which the earlier wording here got wrong. Pass
-  the SAME base you reviewed against: the re-run re-mints for free only when the stored
-  verdict's base matches, and bare `./.plinth/review.sh` means `main`:
-  ```
-  git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
-  git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
-  ./.plinth/review.sh <base>   # SAME base you reviewed against (defaults to main);
-                            # re-mints YOUR receipt at HEAD, no paid round
-  git push origin refs/notes/plinth-receipts
-  ```
-  NOT `-s cat_sort_uniq`: it CONCATENATES two differing receipts for the same commit, so
-  the note holds two JSON objects and every field read in receipt-verify.sh returns two
-  lines — failing a legitimately approved commit.
 
 <!-- Resolved 2026-07-24 (operator-delegated close-out): driver-shell migrations done in
      plinth/wren/certeus/anvil (shells byte-identical); seat lines applied — wren by the

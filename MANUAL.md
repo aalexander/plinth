@@ -21,7 +21,9 @@ Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop
 contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7 — the
 server-side review gate) is REQUIRED in branch protection. Shipping it is not
 enabling it: it gates only where an operator wires `receipt / verify` into ci.yml
-AND requires that context. The name is the design:
+AND requires that context (plus `strict: true`). Caller-control bound: a PR can
+replace the receipt caller with a green spoof of the same context name (ci.yml
+HONEST BOUND). The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -369,9 +371,8 @@ Two operator chores the rules generate:
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
      approval binds only after a clean-slate full pass (a warm reviewer can't
-     approve its own checklist) — run at most ONCE per loop: the unanchored
-     read is recorded, and later non-fresh approvals in the same loop bind with
-     the skip noted in `verdict.json`. When a cross-vendor auditor is
+     approve its own checklist) — **every** non-fresh Tier-2 approval requires
+     that confirmation (v4.7+ retired the once-per-loop skip). When a cross-vendor auditor is
      configured (`audit_vendor` — new projects default to `claude`, the v4
      audit seat; on an upgraded project you add the line yourself, and `plinth
      update` reminds you if it is unset), every Tier-2 approval also gets a
@@ -387,7 +388,7 @@ Two operator chores the rules generate:
    pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
    does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
-   knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
+   knob: opt-in — unset or 0 means no cap; set a positive integer to cap) stops a loop that has not converged — exit 2,
    surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
    `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
@@ -703,11 +704,8 @@ it has run green with a real smoke_cmd.
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
   stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
-  instead of delegating, which its contract forbids) remains open. Until it lands, treat
-  "grok typed it" as a claim to verify, not an
-  assumption — check the report, and prefer typing it yourself over believing a lane
-  that may have silently self-implemented.
+  25k ignored files with byte-identical output. #32 is FIXED in v4.8.0 (`lane-guard.sh delegation` receipt for nonempty OUT).
+  Still treat lane reports as claims under Rule 10 (re-run verification).
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -733,12 +731,8 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
-   implement the task itself, but nothing structurally enforces that; a lane that
-   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
-   require a grok-invocation artifact (transcript + exit) under the session dir before
-   the lane may report `STATUS: complete`, and surface the delegate model in the report
-   so "typed by grok-4.5" is verifiable rather than asserted.
+2. **Upstream #32 — make delegation CHECKABLE. RESOLVED in v4.8.0.**
+   `lane-guard.sh delegation` records nonempty OUT before STATUS: complete.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully
@@ -747,9 +741,11 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    and Tier 2 the deepest one. Keep the audit vendor different from BOTH.
 
 **Auto mode is an ordering, not a switch.** Enabling the receipt gate requires, in
-sequence: merge v4.7 → refresh the instrument to v4.7 (a pre-v4.7 instrument mints no
+sequence: merge v4.7 → refresh the instrument to v4.7+ (a pre-v4.7 instrument mints no
 receipt) → wire the `receipt` job into `ci.yml` → add `receipt / verify` to branch
-protection. Requiring the context before the refresh fails every PR closed.
+protection **with `strict:true`**. Requiring the context before the refresh fails every
+PR closed. Caller-control bound: requiring the context name alone does not prove the real
+verifier ran (a PR can replace the caller — ci.yml HONEST BOUND).
 
 **Audit-seat rule, refined.** The auditor must differ from whoever PRODUCED the diff,
 not merely from the reviewer. While the driver types directly, `audit_vendor = grok`
