@@ -1,5 +1,33 @@
 # Blocked on you
 
+- [ ] **Auto mode residual (2026-07-26):** Product **v4.8.0**, tags **v4.7.2**/**v4.8.0**
+  pushed, GitHub releases published. Close-out trails floor/checks pins to **v4.7.2**.
+  Installed instrument is still **4.6.0**. **Order (do not skip):**
+  1. Land instrument-refresh PR → `.plinth-version` **≥ 4.7** (preferably 4.8.0).
+  2. Wire the `receipt` job in `ci.yml` (pin `plinth-receipt.yml` to the release you run).
+  3. Require `receipt / verify` **and** `"strict":true` in branch protection.
+  Do not require the context before step 1 (pre-v4.7 mints nothing; fails closed).
+  Caller-control bound: a PR can replace the receipt caller with a green spoof of the
+  same context name (ci.yml HONEST BOUND / MANUAL).
+  ```
+  gh api -X PATCH repos/aalexander/plinth/branches/main/protection/required_status_checks --input -
+  ```
+  body like
+  `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
+  Notes: `git push origin HEAD refs/notes/plinth-receipts` (never force-push that ref).
+
+- [ ] **Instrument refresh to v4.8.0** (separate release-labeled PR): materialize tagged
+  shared payload; `.plinth-version` → 4.8.0; then wire receipt job (step 2 above).
+
+- [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
+  Restore non-shell Write-tool flow; keep #41 delegation-receipt wiring; add
+  mutation-sensitive canary for `lane-guard.sh delegation`.
+
+- [ ] **Tier-2 confirmation process window (product):** non-fresh Tier-2 may write
+  `APPROVED` before clean-slate confirmation finishes; ship gates that only read the
+  verdict field can accept that intermediate state. Fix: persist UNBOUND/pending until
+  confirmation succeeds; canary the failed-confirmation state.
+
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
   (guard-protected), so these are paste-ready — one command per repo, then commit on
@@ -20,92 +48,18 @@
   - ~~**plinth**~~ — **DONE (2026-07-25, applied by the operator).** `.plinth/config` now
     reads reviewer_vendor = codex, reviewer_model_tier1/tier2 = gpt-5.6-sol,
     audit_vendor = claude, audit_model = opus, advisor_model/advisor_model_max = fable.
-    It rides in the v4.7.0 PR. NOTE: seats are read from the BASE branch, so this takes
-    effect for branches cut AFTER that merge — the v4.7 branch's own review ran under
-    main's previous claude/sonnet seat.
   - **anvil:**
     `cd ~/Dev/anvil && sed -i '' -e 's/^reviewer_vendor = claude/reviewer_vendor = codex/' -e 's/^reviewer_model_tier1 = sonnet/reviewer_model_tier1 = gpt-5.6-sol/' -e 's/^reviewer_model_tier2 = sonnet/reviewer_model_tier2 = gpt-5.6-sol/' -e 's/^audit_vendor = codex/audit_vendor = claude/' -e 's/^advisor_model = opus/advisor_model = fable/' .plinth/config && printf 'audit_model = opus\n' >> .plinth/config`
   - **certeus (currently ALL-DEFAULT seats — note the cross-vendor audit is silently
     OFF there today because reviewer and audit both default to codex):**
     `cd ~/Dev/certeus && printf 'reviewer_vendor = codex\nreviewer_model_tier1 = gpt-5.6-sol\nreviewer_model_tier2 = gpt-5.6-sol\naudit_vendor = claude\naudit_model = opus\nadvisor_model = fable\nadvisor_model_max = fable\n' >> .plinth/config`
   - Rationale: audit_vendor = claude everywhere (differs from BOTH the codex reviewer
-    and the grok worker); advisor = fable per your direction (advise is rare,
-    driver-initiated, non-blocking — low Fable spend).
+    and the grok worker); advisor = fable per your direction.
 
 - [ ] **wren has no git remote** — its `chore/instrument-v4.6.0` branch is staged and
-  APPROVED at HEAD but cannot become a PR (and so cannot be merged through the gates)
-  until the repo exists on GitHub. Re-verified 2026-07-25: `git remote -v` in
-  `~/Dev/wren` is still empty.
+  APPROVED at HEAD but cannot become a PR until the repo exists on GitHub.
   `cd ~/Dev/wren && gh repo create wren --private --source=. --remote=origin && git push -u origin --all`
 
-- [ ] **Turn ON the v4.7 receipt gate (per repo) — TWO steps, IN THIS ORDER.** v4.7 ships
-  the APPROVED-at-HEAD receipt check (required context when enabled), but SHIPPING IT IS NOT ENABLING
-  IT. I deliberately did NOT do this for plinth itself: enabling changes what can merge
-  in every future PR, so it is yours to switch on after you have seen a receipt mint for
-  real. Prerequisite: the repo's reviewed branches must run a v4.7+ instrument (an older
-  one mints nothing, so the check fails closed — correct, but it would block every PR).
-  plinth itself ships product VERSION 4.7.2 on this branch. The installed instrument
-  (`.plinth-version` = 4.6.0) matches tag `v4.6.0`'s `shared/` payload (what floor
-  byte-compares) and deliberately lags until a labeled instrument-refresh commit —
-  do not read VERSION as the running instrument.
-
-  **Step 1 — wire the job, and MERGE that to the base branch first.** `ci.yml` is
-  per-project and never rewritten by `plinth update`, so add the `receipt:` job by hand
-  (copy from `templates/.github/workflows/ci.yml`) and pin its `uses:` ref to the SHA of
-  **the release you are RUNNING** — after tagging, `git rev-parse v<version>`. Do NOT pin
-  an older release such as v4.7.0 (`ed8d75b2b90685eddbebb24bd11c2770ed489341`): that
-  verifier predates this release's live base-SHA check, notes-probe error classification,
-  strict-enablement diagnostic and repo-mismatch redaction — a v4.7.2 instrument with a
-  v4.7.0 pin silently ships the older verifier. Merge that PR before doing step 2.
-
-  Why the order is not optional: the check reads the receipt job's pin from the BASE
-  branch and refuses any PR-supplied pin that differs. That is what stops a PR from
-  repointing the verifier at a fork that always passes. A base branch with no receipt job
-  has no operator-owned pin to anchor against, so the check fails closed and says so. If
-  you require the context BEFORE the wiring is on the base, every PR blocks.
-
-  Expect ONE red `receipt / verify` on the wiring PR itself — its base has no receipt job
-  yet, so it correctly fails closed. That is the bootstrap, not a defect; the context is
-  not required at that point, so it does not block the merge.
-
-  **Step 2 — require the context with strict up-to-date**, once step 1 is on the
-  base. Include `receipt / verify` among the required contexts AND set
-  `"strict":true` ("Require branches to be up to date before merging"). The
-  receipt job verifies the subject **as of job execution**; after it exits green
-  the base can still advance while the PR head and the successful status stay
-  unchanged — only `strict:true` forces re-evaluation before merge. A job cannot
-  invalidate its own status after it exits.
-  `gh api -X PATCH repos/aalexander/<repo>/branches/main/protection/required_status_checks --input -`
-  with body like
-  `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
-  (keep whatever contexts you already require; always include `receipt / verify`
-  and `strict:true`) — or via the branch-protection UI with both the context and
-  "Require branches to be up to date" ticked.
-
-  **Then, every branch:** push the notes ref alongside it, or the check fails closed with
-  nothing to verify: `git push origin HEAD refs/notes/plinth-receipts`. Never force-push
-  that ref. On a non-fast-forward rejection, recover with these four commands, in order —
-  `git notes merge` needs the side ref NAMED (bare `git notes --ref=X merge` exits
-  "must specify a notes ref to merge"), which the earlier wording here got wrong. Pass
-  the SAME base you reviewed against: the re-run re-mints for free only when the stored
-  verdict's base matches, and bare `./.plinth/review.sh` means `main`:
-  ```
-  git fetch origin +refs/notes/plinth-receipts:refs/notes/remote-receipts
-  git notes --ref=plinth-receipts merge -s theirs refs/notes/remote-receipts
-  ./.plinth/review.sh <base>   # SAME base you reviewed against (defaults to main);
-                            # re-mints YOUR receipt at HEAD, no paid round
-  git push origin refs/notes/plinth-receipts
-  ```
-  NOT `-s cat_sort_uniq`: it CONCATENATES two differing receipts for the same commit, so
-  the note holds two JSON objects and every field read in receipt-verify.sh returns two
-  lines — failing a legitimately approved commit.
-
 <!-- Resolved 2026-07-24 (operator-delegated close-out): driver-shell migrations done in
-     plinth/wren/certeus/anvil (shells byte-identical); seat lines applied — wren by the
-     operator, certeus (2cb4577) and anvil (83614f4) delegated (Sonnet 5 reviewer, codex
-     audit, opus/fable advisor); plinth main branch protection set via API with required
-     contexts floor / secrets, floor / sast, floor / dependencies / osv-scan,
-     floor / harness, checks / checks, scaffold; certeus cloud reviews confirmed flowing
-     (merged PR #29 addresses a cloud P2 from #28; no open PRs pending); ci.yml gates
-     repinned to v4.5.0 in the v4.5.1 release. Earlier resolved: this repo's migration
-     (173fd80), charter ratification, seat change on main. -->
+     plinth/wren/certeus/anvil; seat lines applied; plinth main branch protection set with
+     floor/checks contexts; earlier migration and charter ratification. -->

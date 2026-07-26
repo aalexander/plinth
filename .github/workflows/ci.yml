@@ -35,16 +35,20 @@ jobs:
   # .plinth/NEEDS-HUMAN.md). Downstream pins a Plinth release the same way (see templates/ci.yml).
   # Require `floor` and `checks` (the pinned jobs), not the `-current` twins.
   floor:
-    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@0d0d657e7a1c199516d76dc59d9fc41665404800 # v4.7.1
+    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@9d318aca4c7b9a0d1e73c737c159ff9952593486 # v4.7.2
 
   floor-current:
     uses: ./.github/workflows/plinth-floor.yml
 
   checks:
-    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@0d0d657e7a1c199516d76dc59d9fc41665404800 # v4.7.1
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@9d318aca4c7b9a0d1e73c737c159ff9952593486 # v4.7.2
 
   checks-current:
     uses: ./.github/workflows/plinth-checks.yml
     # For Apple-Silicon parity (e.g. Anvil), uncomment:
     # with:
     #   runner: macos-latest
+
+  # Auto mode receipt job: wire AFTER instrument refresh to ≥ v4.7 (MANUAL order:
+  # refresh → wire → require+strict). Deferred to the instrument-refresh PR so this
+  # close-out does not turn every PR red while minting is still unavailable.

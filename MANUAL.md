@@ -21,7 +21,9 @@ Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop
 contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7 — the
 server-side review gate) is REQUIRED in branch protection. Shipping it is not
 enabling it: it gates only where an operator wires `receipt / verify` into ci.yml
-AND requires that context. The name is the design:
+AND requires that context (plus `strict: true`). Caller-control bound: a PR can
+replace the receipt caller with a green spoof of the same context name (ci.yml
+HONEST BOUND). The name is the design:
 models are the statue, swapped freely; Plinth is the base that doesn't move. You
 own two things — the spec (what to build) and the gates (what may merge).
 Everything between is the model's call.
@@ -48,11 +50,13 @@ Everything between is the model's call.
   the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
-  **KNOWN LIMITATION (until the receipt check is REQUIRED in branch protection):**
-  under the grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
+  **KNOWN LIMITATION (until auto mode is fully enabled):** under the grok-RESIDENT
+  alternative the review-before-PR loop is CONTRACT discipline — no local Stop
   gate fires (grok 0.2.112 executes no `.claude/` hooks) and, until `receipt / verify`
-  is wired and required, no status check verifies APPROVED-at-HEAD. v4.7 ships that
-  check; enabling it per repo is an operator step. Where it is not yet required, the
+  is wired, required with `strict:true`, **and** the real verifier still runs
+  (caller-control bound — context name alone is spoofable; ci.yml HONEST BOUND), no
+  status check reliably verifies APPROVED-at-HEAD. v4.7 ships that check; enabling
+  it per repo is an operator step. Where those conditions do not all hold, the
   ENFORCED-gate path is a Claude driver; choose per task, and treat non-Claude-driven
   PRs accordingly (the PR body's review audit is the evidence trail).
 - **Under the architect-resident default** the in-family routing still applies —
@@ -293,7 +297,9 @@ Two operator chores the rules generate:
      the full hook machinery enforced, and delegates the coding volume to the
      grok worker lane. The grok-RESIDENT alternative — `grok` instead — trades
      the enforced Stop gate for wall-clock: review is contract discipline until
-     the receipt check is required in branch protection; see the known limitation.)
+     auto mode is fully enabled — `receipt / verify` wired, required with
+     `strict:true`, and the real verifier still running (caller-control bound;
+     see intro / known limitation).)
    - Pane B: `plinth watch ~/Dev/<repo>` — the dashboard (below).
    *Background (Claude driver):* the moment the session starts, `session-start.sh`
    records the current commit (so the review gate knows whether this session
@@ -325,9 +331,12 @@ Two operator chores the rules generate:
    protection's required checks (floor + checks — CI and tooling integrity; they do
    not verify the review verdict, and the cloud review is advisory comments). The
    adversarial loop is contract-bound for a non-Claude driver until the receipt
-   check (auto mode, v4.7) is required in branch protection — which closes exactly
-   this gap, server-side and driver-agnostic. Wiring the hooks into codex's own
-   hook system is future work.
+   check (auto mode, v4.7) is wired, required as `receipt / verify`, and protected
+   with `strict:true` — and only when the real verifier still runs (caller-control
+   bound: a PR can replace the caller with a green spoof of the same context name;
+   see ci.yml HONEST BOUND). That is the server-side, driver-agnostic path for the
+   gap; it is not an unforgeable name. Wiring the hooks into codex's own hook
+   system is future work.
 3. **The model:** implements, writes real tests, runs the project's checks, and
    pastes real runner output (Rule 10: its commentary is not evidence).
    **You:** watch Pane B, not the scrollback. Under a CLAUDE driver the live feed
@@ -368,26 +377,31 @@ Two operator chores the rules generate:
      existence-checked only; the ancestry guard is backlog (see `## Noticed`).
    - **Tier 2** — high-consequence surface (tooling, spec, security, migrations,
      public API, dependencies, weakened tests): full review; a non-fresh
-     approval binds only after a clean-slate full pass (a warm reviewer can't
-     approve its own checklist) — run at most ONCE per loop: the unanchored
-     read is recorded, and later non-fresh approvals in the same loop bind with
-     the skip noted in `verdict.json`. When a cross-vendor auditor is
+     approval is required to take a clean-slate full pass (a warm reviewer can't
+     approve its own checklist) — **every** non-fresh Tier-2 approval requires
+     that confirmation (v4.7+ retired the once-per-loop skip). HONEST BOUND
+     (process window): `review.sh` may write `APPROVED` before confirmation
+     starts; re-run at the same SHA recovers pending confirmation, but an
+     intermediate kill can leave APPROVED@HEAD that ship/Stop accept if they only
+     read the verdict field — residual: persist UNBOUND until confirmation
+     (NEEDS-HUMAN). When a cross-vendor auditor is
      configured (`audit_vendor` — new projects default to `claude`, the v4
      audit seat; on an upgraded project you add the line yourself, and `plinth
      update` reminds you if it is unset), every Tier-2 approval also gets a
      best-effort second opinion from that different vendor; its failure is
      recorded but the primary review remains the gate.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
-   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved,
+   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved
+   after required confirmation for this run (see process-window bound),
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is
    too large or dead — a SCOPED verify round that reads
    the open findings plus the cumulative fix diff since the last full read; Tier-1
-   verify approvals bind directly, Tier-2 ones only after a clean-slate confirmation
-   pass, every time. A reviewer-vendor swap mid-loop instead forces a FRESH full
+   verify approvals bind directly, Tier-2 ones require clean-slate confirmation
+   every time (process-window bound above). A reviewer-vendor swap mid-loop instead forces a FRESH full
    round: the recorded full read belongs to the previous vendor, and coverage credit
    does not transfer between models), 2 = the review DID NOT RUN. A hard `round_cap` circuit breaker (config
-   knob, default 8; 0 disables) stops a loop that has not converged — exit 2,
+   knob: opt-in — unset or 0 means no cap; set a positive integer to cap) stops a loop that has not converged — exit 2,
    surface to the human. Operator env overrides — `PLINTH_REVIEWER_VENDOR`,
    `PLINTH_REVIEWER_MODEL`, `PLINTH_AUDIT_VENDOR`, `PLINTH_AUDIT_MODEL`,
    `PLINTH_ROUND_CAP` — beat the ratified-base config for ONE run (e.g. a vendor's
@@ -395,11 +409,13 @@ Two operator chores the rules generate:
    tampering-class), every override is announced and recorded in session state
    (`verdict.json` and the per-round `usage.jsonl` ledger) and must be listed in
    the PR body's audit summary. That disclosure IS cross-checked automatically
-   wherever `receipt / verify` is wired and required: the receipt carries the
-   override ledger and the verifier holds the PR body to EXACT tuple-set equality
-   with it, rejecting a missing OR a phantom disclosure line (auto mode, v4.7+).
-   Where the check is not required, the duty stays contract-bound and the operator
-   audits `usage.jsonl` directly. A vendor swap never resumes the previous vendor's
+   wherever `receipt / verify` is wired, required, protected with `strict:true`,
+   **and the real verifier still runs** (caller-control bound — a PR can replace
+   the caller so the verifier never executes; see ci.yml HONEST BOUND): the receipt
+   carries the override ledger and the verifier holds the PR body to EXACT
+   tuple-set equality with it, rejecting a missing OR a phantom disclosure line
+   (auto mode, v4.7+). Where those conditions do not all hold, the duty stays
+   contract-bound and the operator audits `usage.jsonl` directly. A vendor swap never resumes the previous vendor's
    thread — and, since v4.7, forces a fresh full round rather than a scoped verify.
    *Background, enforcement (Claude driver):* if the model tries to end its turn
    with commits but no APPROVED verdict at the current HEAD, the `.claude/` Stop
@@ -411,10 +427,11 @@ Two operator chores the rules generate:
    floor and tooling integrity, NOT the review verdict — and the Codex cloud review
    cannot close that gap (it posts comments, not a requirable status check). Under
    the grok-RESIDENT alternative the review loop is therefore contract-bound driver
-   discipline wherever the receipt check is not required; the server-side check of
-   `review.sh`'s own APPROVED-at-HEAD verdict — `receipt / verify` (auto mode,
-   v4.7+) — is what closes it, once wired into `ci.yml` and required in branch
-   protection.
+   discipline wherever the receipt check is not fully enabled; the server-side check
+   of `review.sh`'s own APPROVED-at-HEAD verdict — `receipt / verify` (auto mode,
+   v4.7+) — is what closes it once wired into `ci.yml`, required in branch
+   protection with `strict:true`, and still executed by the real verifier
+   (caller-control bound; see intro and ci.yml HONEST BOUND).
 5. **The model:** opens the PR. *Background:* `ci.yml` fires the floor
    (gitleaks secrets scan, semgrep SAST, OSV dependency scan) and the
    stack-detected checks; Codex cloud review posts on the PR if the repo is
@@ -633,9 +650,10 @@ it has run green with a real smoke_cmd.
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
-  server-side verifier until `receipt / verify` is required, and the cloud review is
-  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
-  the merge gate proper is branch protection's required status checks.
+  server-side verifier until `receipt / verify` is wired, required, and protected
+  with `strict:true` **and** the real verifier still runs — caller-control bound;
+  the cloud review is advisory comments). Deliberately-quoted obfuscation is out of
+  scope (see above); the merge gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
@@ -644,17 +662,20 @@ it has run green with a real smoke_cmd.
   `plinth hookprobe`; grok 0.2.112: no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]) has no
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop — unless
-  `receipt / verify` is wired and required, which is exactly what puts its APPROVED-at-HEAD
-  verdict under a server-side verifier (auto mode, v4.7+). Where it is not required, the
-  verdict still has no server-side check. Every gate release (a Claude driver ending
-  its turn without approval, e.g. on a broken review pipeline) is logged as a
-  `gate_release` event the dashboard shows in red.
+  `receipt / verify` is wired, required, and protected with `strict:true` **and** the
+  real verifier still runs (caller-control bound: a PR can replace the caller with a
+  green spoof of the same context name — ci.yml HONEST BOUND). That combination is what
+  puts its APPROVED-at-HEAD verdict under a server-side verifier (auto mode, v4.7+).
+  Where those conditions do not all hold, the verdict still has no reliable
+  server-side check. Every gate release (a Claude driver ending its turn without
+  approval, e.g. on a broken review pipeline) is logged as a `gate_release` event
+  the dashboard shows in red.
 - Branch protection: ALL FOUR floor jobs (secrets, sast, dependencies/osv-scan,
   harness) + `checks` required to merge (requires public repo or GitHub Pro; the
   preflight reports which state you're in AND names any missing required
-  context). The cloud review is advisory; adding `receipt / verify` (auto mode,
-  v4.7) to the required contexts is what puts the review verdict itself under
-  branch protection.
+  context). The cloud review is advisory; enabling auto mode for the review
+  verdict means requiring `receipt / verify` **with `strict:true`** (and accepting
+  the caller-control bound: the context name alone is not unforgeable).
 
 ## When models change (they will)
 - New reviewer: set `reviewer_vendor` (codex | claude | grok) in `.plinth/config` —
@@ -703,11 +724,9 @@ it has run green with a real smoke_cmd.
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
   stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
-  instead of delegating, which its contract forbids) remains open. Until it lands, treat
-  "grok typed it" as a claim to verify, not an
-  assumption — check the report, and prefer typing it yourself over believing a lane
-  that may have silently self-implemented.
+  25k ignored files with byte-identical output. #32 receipt gate shipped in product
+  v4.8.0; residual canary + #43 Write-tool recombine (NEEDS-HUMAN). Treat lane
+  reports as claims under Rule 10.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -733,12 +752,9 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
-   implement the task itself, but nothing structurally enforces that; a lane that
-   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
-   require a grok-invocation artifact (transcript + exit) under the session dir before
-   the lane may report `STATUS: complete`, and surface the delegate model in the report
-   so "typed by grok-4.5" is verifiable rather than asserted.
+2. **Upstream #32 — make delegation CHECKABLE.** Receipt gate shipped in product
+   v4.8.0 (`lane-guard.sh delegation`). Residual with #43: Write-tool recombine +
+   mutation-sensitive canary. See NEEDS-HUMAN.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully
@@ -747,9 +763,11 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    and Tier 2 the deepest one. Keep the audit vendor different from BOTH.
 
 **Auto mode is an ordering, not a switch.** Enabling the receipt gate requires, in
-sequence: merge v4.7 → refresh the instrument to v4.7 (a pre-v4.7 instrument mints no
+sequence: merge v4.7 → refresh the instrument to v4.7+ (a pre-v4.7 instrument mints no
 receipt) → wire the `receipt` job into `ci.yml` → add `receipt / verify` to branch
-protection. Requiring the context before the refresh fails every PR closed.
+protection **with `strict:true`**. Requiring the context before the refresh fails every
+PR closed. Caller-control bound: requiring the context name alone does not prove the real
+verifier ran (a PR can replace the caller — ci.yml HONEST BOUND).
 
 **Audit-seat rule, refined.** The auditor must differ from whoever PRODUCED the diff,
 not merely from the reviewer. While the driver types directly, `audit_vendor = grok`

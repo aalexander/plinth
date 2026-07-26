@@ -573,7 +573,9 @@ jobs:
           ( cd "$SR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'spec_path = BASE.md\n' > .plinth/config
             git add -A; git commit -qm b >/dev/null; git remote add origin "$SORG2"; git push -q origin main
             printf 'spec_path = EVIL.md\n' > .plinth/config )
-          SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$SB"; echo "$SPEC_PATH" )"
+          # Product review.sh pins base_tip (SHA) then reads via git show "${base_tip}:…";
+          # baseref alone is insufficient under set -u.
+          SPR="$( cd "$SR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; base_tip="$(git rev-parse --verify origin/main)"; source "$SB"; echo "$SPEC_PATH" )"
           [ "$SPR" = "BASE.md" ] || { echo "::error::review.sh spec_path -> '$SPR': a same-PR working-tree repoint redirected the review target (want BASE.md from base config)"; exit 1; }
           # review.sh first-adoption fallback: base has NO .plinth/config. The SAME extracted
           # block must NOT abort under pipefail and must fall back to the working-tree
@@ -585,7 +587,7 @@ jobs:
           # Run the extracted block in a REAL subprocess under set -euo pipefail — a `||`
           # or command-sub wrapper around `source` SUPPRESSES set -e and would HIDE a
           # pipefail-abort regression (a child bash keeps its own real set -e).
-          DRV="$(mktemp)"; printf '%s\n' 'set -euo pipefail' 'cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }' 'baseref="origin/main"' 'source "$1"' 'printf "%s" "$SPEC_PATH"' > "$DRV"
+          DRV="$(mktemp)"; printf '%s\n' 'set -euo pipefail' 'cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }' 'baseref="origin/main"' 'base_tip="$(git rev-parse --verify origin/main)"' 'source "$1"' 'printf "%s" "$SPEC_PATH"' > "$DRV"
           sprc=0; SPR2="$( cd "$SR2" && bash "$DRV" "$SB" )" || sprc=$?
           [ "$sprc" = "0" ] && [ "$SPR2" = "WORK.md" ] || { echo "::error::review.sh spec_path first-adoption fallback failed (exit=$sprc, got '$SPR2', want WORK.md) — pipefail abort or wrong fallback"; exit 1; }
           # Classifier must FAIL-SOFT when the BASE lacks .plinth/config (first-adoption PR
@@ -606,7 +608,7 @@ jobs:
           ( cd "$BR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'audit_vendor = grok\n' > .plinth/config
             git add -A; git commit -qm b >/dev/null; git remote add origin "$BORG"; git push -q origin main
             printf 'audit_vendor = codex\n' > .plinth/config )
-          AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
+          AV="$( cd "$BR"; cfg() { sed -n "s/^\$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }; baseref="origin/main"; base_tip="$(git rev-parse --verify origin/main)"; source "$BC"; printf '%s' "$AUDIT_VENDOR" )"
           [ "$AV" = "grok" ] || { echo "::error::review.sh audit_vendor -> '$AV': a PR could set audit_vendor=codex to drop its own cross-vendor audit (want grok from base)"; exit 1; }
           # Wiring: every governing knob reads via bcfg (base) — catches a revert to cfg.
           for k in spec_path exec_gated round_budget audit_model audit_vendor reviewer_vendor reviewer_model_tier1 reviewer_model_tier2; do
@@ -2957,10 +2959,14 @@ jobs:
             printf '%s' "$out" | grep -q "$2" || { echo "::error::preflight[$3]: expected '$2' in: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           }
           FULLCTX='["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]'
-          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
+          # Healthy configs that include receipt / verify must also set strict:true (v4.7.2+).
+          pf_probe "{\"required_status_checks\":{\"strict\":true,\"contexts\":$FULLCTX}}" 'required: floor / secrets' full
           # ONE floor job present is NOT a gated floor — each of the four is independent:
           pf_probe '{"required_status_checks":{"contexts":["floor / secrets","checks / checks"]}}' 'MISSING: floor/sast' partial-floor
           pf_probe '{"required_status_checks":{"contexts":["checks / checks"]}}' 'MISSING: floor/secrets' no-floor
+          # receipt required WITHOUT strict must be incomplete (not healthy):
+          pf_probe "{\"required_status_checks\":{\"strict\":false,\"contexts\":$FULLCTX}}" 'strict=true' receipt-strict-false
+          pf_probe "{\"required_status_checks\":{\"contexts\":$FULLCTX}}" 'strict=true' receipt-strict-absent
           # misleading SIBLING names must not satisfy the contexts (loose-substring regression):
           pf_probe '{"required_status_checks":{"contexts":["floor / not-sast","oldfloor / harness","prechecks","floor / dependencies / npm-audit","old-checks"]}}' 'MISSING: floor/secrets, floor/sast, floor/dependencies/osv-scan, floor/harness, checks' misleading-names
           # SUFFIX siblings share the prefix but are DIFFERENT exact contexts — none matches a required
@@ -2975,7 +2981,7 @@ jobs:
           NONAMES="$PFG/nonames"; : > "$NONAMES"
           d="$(mktemp -d)"; ( cd "$d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$d" >/dev/null 2>&1
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / old"]}}' > "$PFG/p.json"
+          printf '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / old"]}}' > "$PFG/p.json"
           out="$(GHP_JSON="$PFG/p.json" GHC_NAMES="$NONAMES" PATH="$PFG:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$d" 2>&1)"
           printf '%s' "$out" | grep -q "UNVERIFIED: no check-run data" || { echo "::error::preflight[no-run-data]: checks verification fell open without run data: $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           # context names are case-EXACT (job names) — a wrong-cased job name must read as missing:
@@ -2984,11 +2990,11 @@ jobs:
           # a DIRECT checks job (template-supported: in-line steps) has context exactly "checks" —
           # must read HEALTHY. Its context is cross-checked against the check-runs:
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks\nreceipt / verify\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks","receipt / verify"]}}' 'required: floor / secrets' direct-checks-job
+          pf_probe '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks","receipt / verify"]}}' 'required: floor / secrets' direct-checks-job
           # GHOST floor gate: a required floor context whose job is NOT among the actual check-runs
           # (job removed/renamed) must read MISSING, not healthy:
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
-          pf_probe '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
+          pf_probe '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' 'not among actual check runs: floor / harness' ghost-floor-job
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"
           # WORKFLOW-PREFIXED contexts ("CI / floor / secrets") do NOT exist on GitHub — must read MISSING:
           pf_probe '{"required_status_checks":{"contexts":["CI / floor / secrets","CI / floor / sast","CI / floor / dependencies / osv-scan","CI / floor / harness","CI / checks / checks"]}}' 'MISSING: floor/secrets' workflow-prefixed-is-invalid
@@ -3016,7 +3022,7 @@ jobs:
           dq="$(mktemp -d)"; ( cd "$dq"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$dq" >/dev/null 2>&1
             sed -i 's/^name: CI$/name: "CI"/' .github/workflows/ci.yml
             git remote add origin "https://github.com/o/r.git"; git add -A; git commit -qm base >/dev/null 2>&1 || true )
-          pj="$(mktemp)"; printf '{"required_status_checks":{"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' > "$pj"
+          pj="$(mktemp)"; printf '{"required_status_checks":{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}}' > "$pj"
           out="$(GHP_JSON="$pj" PATH="$PGB:$PATH" "$GITHUB_WORKSPACE/bin/plinth" update "$dq" 2>&1)"
           printf '%s' "$out" | grep -q "required: floor / secrets" || { echo "::error::preflight[quoted-name/paginated]: healthy config read as unhealthy WITHOUT effective pagination (--paginate missing): $(printf '%s' "$out" | grep -A1 'protection:' | tr '\n' ' ')"; exit 1; }
           printf 'floor / secrets\nfloor / sast\nfloor / dependencies / osv-scan\nfloor / harness\nchecks / checks\nreceipt / verify\n' > "$PFG/names"

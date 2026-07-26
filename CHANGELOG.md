@@ -1,6 +1,13 @@
 # Plinth changelog
 
 ## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
+- **Release close-out:** required floor/checks pins advanced to tag **v4.7.2**
+  (trail-by-one for product 4.8.0). Installed instrument remains **4.6.0**; the
+  `receipt` job is deferred until the instrument-refresh PR (MANUAL order:
+  refresh → wire → require+strict). MANUAL updates: Tier-2 confirmation is every
+  non-fresh approval (once-per-loop retired), `round_cap` is opt-in, auto-mode
+  enablement includes `strict:true` and the caller-control HONEST BOUND.
+
 - **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
   page plus `GET /api/snapshot`, read-only (**python3** required for serve;
