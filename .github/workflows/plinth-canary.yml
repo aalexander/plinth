@@ -150,7 +150,12 @@ jobs:
               lag_pair shared/.claude/agents/grok-implementer.md .claude/agents/grok-implementer.md
               lag_pair shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
               lag_pair shared/driver-shell.md AGENTS.md
-              if [ -f "$root/CLAUDE.md" ] && { grep -qF 'Plinth driver shell (version-pinned)' "$root/CLAUDE.md" 2>/dev/null || true; }; then
+              # Same production classification as equal-version: marker OR stock OR absent.
+              if [ ! -f "$root/CLAUDE.md" ]; then
+                echo "missing CLAUDE.md under lag instrument $inst"
+                mism=1
+              elif grep -qF "$DRIVER_SHELL_MARKER" "$root/CLAUDE.md" 2>/dev/null \
+                || is_stock_old_claude "$root/CLAUDE.md"; then
                 lag_pair shared/driver-shell.md CLAUDE.md
               fi
               for xpath in .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh .plinth/receipt-verify.sh .claude/hooks/guard.sh .claude/hooks/session-start.sh .claude/hooks/review-gate.sh .claude/hooks/pulse.sh; do
@@ -167,6 +172,10 @@ jobs:
               local src="$root/$1" dst="$root/$2"
               [ -f "$src" ] || { echo "missing shared source $1"; mism=1; return; }
               [ -f "$dst" ] || { echo "missing installed twin $2 while .plinth-version=$inst equals VERSION=$prod"; mism=1; return; }
+              if [ -L "$dst" ]; then
+                echo "$2 is a SYMLINK — floor rejects symlinked installed twins"
+                mism=1; return
+              fi
               if ! cmp -s "$src" "$dst"; then
                 echo "$2 differs from $1 while .plinth-version equals VERSION ($prod)"
                 mism=1
@@ -359,6 +368,54 @@ jobs:
             fi
             printf '%s' "$out" | grep -qi 'CLAUDE\|differs' || { echo "::error::lag CLAUDE mutant did not name CLAUDE: $out"; exit 1; }
             echo "OK mutant: lag stale managed CLAUDE.md refused"
+            # Mutant: lag missing CLAUDE.md entirely.
+            HYC="$(mktemp -d)"
+            mkdir -p "$HYC/.plinth" "$HYC/.claude/hooks" "$HYC/.claude/agents"
+            printf '9.9.9\n' > "$HYC/VERSION"; printf '4.6.0\n' > "$HYC/.plinth-version"
+            for pair in \
+              'shared/.plinth/review.sh|.plinth/review.sh' \
+              'shared/.plinth/risk-classify.sh|.plinth/risk-classify.sh' \
+              'shared/.plinth/lane-guard.sh|.plinth/lane-guard.sh' \
+              'shared/.plinth/review-schema.json|.plinth/review-schema.json' \
+              'shared/plinth-rules.md|.plinth/plinth-rules.md' \
+              'shared/MODELS.md|.plinth/MODELS.md' \
+              'shared/reviewer.md|.plinth/reviewer.md' \
+              'shared/.claude/hooks/guard.sh|.claude/hooks/guard.sh' \
+              'shared/.claude/hooks/session-start.sh|.claude/hooks/session-start.sh' \
+              'shared/.claude/hooks/review-gate.sh|.claude/hooks/review-gate.sh' \
+              'shared/.claude/hooks/pulse.sh|.claude/hooks/pulse.sh' \
+              'shared/.claude/agents/grok-implementer.md|.claude/agents/grok-implementer.md' \
+              'shared/.claude/agents/codex-implementer.md|.claude/agents/codex-implementer.md' \
+              'shared/driver-shell.md|AGENTS.md'; do
+              src="${pair%%|*}"; dst="${pair##*|}"
+              mkdir -p "$HYC/$(dirname "$dst")"
+              git -C "$GITHUB_WORKSPACE" show "v4.6.0:${src}" > "$HYC/$dst"
+            done
+            chmod +x "$HYC/.plinth/"*.sh "$HYC/.claude/hooks/"*.sh
+            # no CLAUDE.md
+            if out="$(check_instrument_identity "$HYC" 2>&1)"; then
+              echo "::error::lag missing CLAUDE.md was ACCEPTED: $out"; exit 1
+            fi
+            echo "OK mutant: lag missing CLAUDE.md refused"
+            # Mutant: lag stock pre-v4.4 CLAUDE.md (managed, must match driver-shell).
+            python3 - "$GITHUB_WORKSPACE/bin/plinth" "$HYC/CLAUDE.md" <<'PYSTOCK'
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+out = []; capture = False
+for l in lines:
+    if "OLDSTOCK" in l and "<<" in l:
+        capture = True; continue
+    if capture and l.strip() == "OLDSTOCK":
+        break
+    if capture:
+        out.append(l)
+open(sys.argv[2], "w").write("\n".join(out) + "\n")
+PYSTOCK
+            is_stock_old_claude "$HYC/CLAUDE.md" || { echo "::error::stock CLAUDE fixture not recognized"; exit 1; }
+            if out="$(check_instrument_identity "$HYC" 2>&1)"; then
+              echo "::error::lag stock CLAUDE.md was ACCEPTED as matching instrument: $out"; exit 1
+            fi
+            echo "OK mutant: lag stock pre-v4.4 CLAUDE.md refused"
             fi
           else
             echo "::error::tag v4.6.0 missing — cannot exercise lag provenance (fetch tags in checkout)"; exit 1
@@ -472,6 +529,15 @@ jobs:
           printf '%s' "$out" | grep -qi 'executable' \
             || { echo "::error::mode mutant did not name executable: $out"; exit 1; }
           echo "OK mutant: equal-version + non-executable review.sh refused"
+          # Mutant: equal-version symlinked twin (floor rejects).
+          seed_equal_tree
+          rm -f "$FX/.plinth/review.sh"
+          ln -s "$FX/shared/.plinth/review.sh" "$FX/.plinth/review.sh"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::equal-version symlink review.sh was ACCEPTED: $out"; exit 1
+          fi
+          printf '%s' "$out" | grep -qi 'SYMLINK\|symlink' || { echo "::error::equal-version symlink did not name symlink: $out"; exit 1; }
+          echo "OK mutant: equal-version symlink twin refused"
 
           # Mutant: instrument ahead of product.
           seed_equal_tree

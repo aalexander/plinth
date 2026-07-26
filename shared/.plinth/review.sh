@@ -626,32 +626,13 @@ canon_base() {
 
 mint_receipt() {  # mint_receipt <round>
   local mround="$1" repo_nwo htree mb ledger subj receipt origin_url live_tip pinned
-  origin_url="$(git config --get remote.origin.url 2>/dev/null)" || origin_url=""
-  repo_nwo="$(receipt_nwo "$origin_url")"
-  # NEVER echo the URL. The credential guarantee covers parts that are NOT repository
-  # identity: userinfo, query string, fragment — and the fact that this diagnostic never
-  # reproduces the URL. It does NOT cover the path segments identity is DERIVED from
-  # (owner/repo): those are recorded in the receipt by design so the server can compare
-  # them to ${{ github.repository }}. An origin that embeds a secret in a path segment
-  # will have that segment recorded; that is not a supported origin form. Naming the
-  # remote and telling the operator to run `git remote -v` is the whole non-identity
-  # leak class, without enumerating URL positions.
-  [ -n "$repo_nwo" ] || {
-    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential in userinfo/query/fragment. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
-    return 0
-  }
-  htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
-  # Bind minting to the tip the round pinned before the diff was taken. Re-resolve the
-  # named ref: if it has moved, abort (exit 2) rather than mint a subject the reviewer
-  # never saw. Fixtures that inject only baseref (no base_tip) pin now and skip the
-  # movement check — production always sets base_tip before the first subject read.
+  # SUBJECT INTEGRITY FIRST — before any best-effort mint early-return. A missing
+  # or unsupported origin must not skip the base-movement guard: otherwise a
+  # mid-round base move leaves verdict.json APPROVED (ship/Stop gates honor it)
+  # with no receipt and no abort. Fixtures that inject only baseref (no base_tip)
+  # pin now and skip the movement check — production always sets base_tip first.
   pinned="${base_tip:-}"
   if [ -n "$pinned" ]; then
-    # BOTH actions, or neither, on every mint-time abort: demote the persisted APPROVED
-    # *and* exit 2. Leaving APPROVED readable lets guard.sh's ship gate and the Stop gate
-    # release on a verdict the loop refused to bind. The disappear path is the sibling of
-    # "moved" — same fail-open without demotion. Splitting the compound into a bare
-    # die_infra made it unconditional and would have aborted every mint.
     live_tip="$(git rev-parse --verify "$baseref" 2>/dev/null)" || {
       unbind_verdict "the base ref disappeared during the round, so this approval never bound to a mintable subject"
       die_infra "base ref '${baseref}' disappeared during this review — re-run ./.plinth/review.sh"
@@ -660,7 +641,16 @@ mint_receipt() {  # mint_receipt <round>
       unbind_verdict "the base ref moved during the round, so this approval never bound to a mintable subject"
       die_infra "base ref '${baseref}' moved during this review (${pinned:0:12} → ${live_tip:0:12}). The reviewed subject is no longer the one that would be minted — re-run ./.plinth/review.sh."
     }
-  else
+  fi
+  origin_url="$(git config --get remote.origin.url 2>/dev/null)" || origin_url=""
+  repo_nwo="$(receipt_nwo "$origin_url")"
+  # NEVER echo the URL. Credential guarantee covers non-identity parts only.
+  [ -n "$repo_nwo" ] || {
+    echo "Plinth review: NOTE — receipt NOT minted: the 'origin' remote is unset, or its URL is not one of the two forms this parser accepts. Accepted: 'scheme://[user@]host[:port]/owner/repo' (scheme = http, https, git, ssh or git+ssh) and scp-style '[user@]host:owner/repo'. NOT accepted, even though git itself takes them: ftp:// and ftps://, a schemeless 'host/owner/repo', scp-style with an absolute path ('host:/owner/repo'), scp-style with a bracketed IPv6 host, file:// and local paths. Run 'git remote -v' to inspect it — this message deliberately does not print the URL, which can carry a credential in userinfo/query/fragment. Point origin at an accepted form, then re-run ./.plinth/review.sh to mint."
+    return 0
+  }
+  htree="$(git rev-parse "${sha}^{tree}" 2>/dev/null)" || { echo "Plinth review: NOTE — receipt not minted (cannot resolve head tree)."; return 0; }
+  if [ -z "$pinned" ]; then
     pinned="$(git rev-parse --verify "$baseref" 2>/dev/null)" \
       || { echo "Plinth review: NOTE — receipt not minted (cannot resolve ${baseref})."; return 0; }
   fi

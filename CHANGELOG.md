@@ -60,6 +60,10 @@ parts that were wrong on the way:
   labels (including multi-trailing-LF and NUL forms that command-substitution would
   silently normalize), and loads stock-CLAUDE classification from `bin/plinth`. Mid-release, the installed tree matches tag `v4.6.0` shared/ (`.plinth-version` =
   4.6.0, what floor compares); product may lead until a labeled refresh aligns them.
+- **Base-movement guard runs even when no origin is set.** `mint_receipt` used to
+  early-return before re-resolving the base when origin was missing/unsupported,
+  leaving APPROVED readable after a mid-round base move with no abort. Subject
+  integrity now runs first; minting remains best-effort after that.
 - **Blank `round_cap` / empty `PLINTH_ROUND_CAP` refuse.** A present-but-empty
   config key (`round_cap =`) and an explicitly empty env override are malformed and
   abort (exit 2), not silent "no cap". Unset still means no cap.
