@@ -166,6 +166,12 @@ printf '%s\n' '- [ ] [BLOCKING] keep me through render failure' \
 export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
+# Alias parity: `dashboard` must accept --snapshot the same way.
+ALIAS_OUT="$FIX/alias.json"
+"$PLINTH" dashboard --snapshot > "$ALIAS_OUT"
+ac="$(jq '.projects | length' "$OUT")"
+bc="$(jq '.projects | length' "$ALIAS_OUT")"
+[ "$ac" = "$bc" ] || { echo "smoke-snapshot: dashboard alias project count $bc != dash $ac" >&2; exit 1; }
 
 echo "smoke-snapshot: snapshot written ($OUT)"
 jq -e . "$OUT" >/dev/null
@@ -273,13 +279,38 @@ const el = () => {
   o.querySelector = () => null;
   return o;
 };
+let pending = 0;
+let fetchStarts = 0;
+const resolvers = [];
 const sandbox = {
   console,
   Date, Math, String, Number, JSON, Array, Object, parseInt, isNaN,
-  setInterval: () => 0,
+  // Capture interval callbacks so the harness can fire them (poll timer).
+  __intervals: [],
+  setInterval: (fn) => { sandbox.__intervals.push(fn); return sandbox.__intervals.length; },
   clearInterval: () => {},
-  // Hang forever so poll never mutates state under test.
-  fetch: () => new Promise(() => {}),
+  fetch: () => {
+    fetchStarts += 1;
+    pending += 1;
+    return new Promise((resolve) => {
+      resolvers.push((body) => {
+        pending -= 1;
+        resolve({
+          ok: true,
+          json: async () => body || {
+            generated_at: 1, discovery: "t",
+            projects: [{
+              name: "alpha", path: "/a", branch: "feat/dash", head: "abc1234",
+              feedless: false, task: "do the thing", burn_per_min: 12,
+              tokens_total: 100, needs_human: { open: 0, blocking: 0 },
+              review: { verdict: "CHANGES_NEEDED", round: 2, sha7: "abc1234",
+                        stale: false, running: false, mode: "fresh", tier: 1 },
+            }],
+          },
+        });
+      });
+    });
+  },
   document: { getElementById: () => el() },
 };
 sandbox.globalThis = sandbox;
@@ -291,54 +322,110 @@ if (!api || typeof api.cardHTML !== "function" || typeof api.cardTone !== "funct
   console.error("missing __plinthDash.cardHTML/cardTone");
   process.exit(2);
 }
-const errProj = {
-  error: "snapshot_render_failed",
-  name: "iota", path: "/tmp/iota", branch: "feat/badv", head: "abc1234",
-  needs_human: { open: 1, blocking: 1 },
-  feedless: false, review: null,
-};
-if (api.cardTone(errProj) !== "bad") {
-  console.error("cardTone(error) expected bad, got", api.cardTone(errProj));
+// Initial poll() from the IIFE started one fetch.
+if (fetchStarts !== 1 || pending !== 1) {
+  console.error("expected 1 in-flight fetch after boot, got starts=", fetchStarts, "pending=", pending);
   process.exit(1);
 }
-const htmlCard = api.cardHTML(errProj);
-if (!htmlCard.includes('class="card bad"')) {
-  console.error("error card missing tone class bad");
+// Fire every interval callback twice (simulates two 2s ticks while still pending).
+for (const fn of sandbox.__intervals) { fn(); fn(); }
+if (fetchStarts !== 1 || pending !== 1) {
+  console.error("overlapping poll: starts=", fetchStarts, "pending=", pending);
   process.exit(1);
 }
-if (!htmlCard.includes("error: snapshot_render_failed")) {
-  console.error("error chip missing from cardHTML");
+// Explicit concurrent poll() calls must no-op while in flight.
+api.poll();
+api.poll();
+if (fetchStarts !== 1) {
+  console.error("explicit poll overlap: starts=", fetchStarts);
   process.exit(1);
 }
-if (htmlCard.includes("no review")) {
-  console.error("error card must not show 'no review'");
-  process.exit(1);
-}
-if (!htmlCard.includes("NEEDS-HUMAN ×1")) {
-  console.error("error card must still show NEEDS-HUMAN");
-  process.exit(1);
-}
-// Healthy idle: no review chip present, tone idle
-const idle = {
-  name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
-  feedless: true, review: null, needs_human: { open: 0, blocking: 0 },
-};
-if (api.cardTone(idle) !== "idle") {
-  console.error("cardTone(idle) expected idle");
-  process.exit(1);
-}
-const idleHtml = api.cardHTML(idle);
-if (!idleHtml.includes("no review")) {
-  console.error("idle card should show no review");
-  process.exit(1);
-}
-// XSS escape
-const xss = api.esc('<script>"x"');
-if (xss.includes("<") || xss.includes('"')) {
-  console.error("esc failed:", xss);
-  process.exit(1);
-}
-console.log("ui-card-unit: OK");
+// Complete the first fetch; a subsequent poll may start another.
+resolvers[0]();
+// Allow microtasks
+setTimeout(() => {
+  if (api.getPollState().inFlight) {
+    console.error("poll still inFlight after resolve");
+    process.exit(1);
+  }
+  api.poll();
+  if (fetchStarts !== 2 || pending !== 1) {
+    console.error("second poll after idle failed: starts=", fetchStarts, "pending=", pending);
+    process.exit(1);
+  }
+  resolvers[1]();
+  setTimeout(() => {
+    // Error card
+    const errProj = {
+      error: "snapshot_render_failed",
+      name: "iota", path: "/tmp/iota", branch: "feat/badv", head: "abc1234",
+      needs_human: { open: 1, blocking: 1 },
+      feedless: false, review: null,
+    };
+    if (api.cardTone(errProj) !== "bad") {
+      console.error("cardTone(error) expected bad, got", api.cardTone(errProj));
+      process.exit(1);
+    }
+    const htmlCard = api.cardHTML(errProj);
+    if (!htmlCard.includes('class="card bad"')) {
+      console.error("error card missing tone class bad");
+      process.exit(1);
+    }
+    if (!htmlCard.includes("error: snapshot_render_failed")) {
+      console.error("error chip missing from cardHTML");
+      process.exit(1);
+    }
+    if (htmlCard.includes("no review")) {
+      console.error("error card must not show 'no review'");
+      process.exit(1);
+    }
+    if (!htmlCard.includes("NEEDS-HUMAN ×1")) {
+      console.error("error card must still show NEEDS-HUMAN");
+      process.exit(1);
+    }
+    // Full field card: branch/head/review/burn/task
+    const full = {
+      name: "alpha", path: "/tmp/alpha", branch: "feat/dash", head: "abc1234",
+      feedless: false, task: "do the thing", burn_per_min: 12, tokens_total: 1500,
+      model_driver: "claude-test", model_reviewer: "gpt-test",
+      needs_human: { open: 0, blocking: 0 },
+      review: { verdict: "CHANGES_NEEDED", round: 2, sha7: "abc1234",
+                stale: false, running: false, mode: "fresh", tier: 1 },
+      activity_secs_ago: 5, session_secs: 60,
+    };
+    const fullHtml = api.cardHTML(full);
+    for (const needle of [
+      "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
+      "12/min", "1.5k observed", "r2",
+    ]) {
+      if (!fullHtml.includes(needle)) {
+        console.error("cardHTML missing field representation:", needle);
+        process.exit(1);
+      }
+    }
+    // Healthy idle: no review chip present, tone idle
+    const idle = {
+      name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
+      feedless: true, review: null, needs_human: { open: 0, blocking: 0 },
+    };
+    if (api.cardTone(idle) !== "idle") {
+      console.error("cardTone(idle) expected idle");
+      process.exit(1);
+    }
+    const idleHtml = api.cardHTML(idle);
+    if (!idleHtml.includes("no review")) {
+      console.error("idle card should show no review");
+      process.exit(1);
+    }
+    // XSS escape
+    const xss = api.esc('<script>"x"');
+    if (xss.includes("<") || xss.includes('"')) {
+      console.error("esc failed:", xss);
+      process.exit(1);
+    }
+    console.log("ui-card-unit: OK");
+  }, 0);
+}, 0);
 NODE
 
 # Empty roots still valid JSON
@@ -370,6 +457,27 @@ DEF_OUT="$FIX/def.json"
 "$PLINTH" dash --snapshot > "$DEF_OUT"
 jq -e '.discovery == "default:~/Dev/*/.plinth/config"' "$DEF_OUT" >/dev/null
 jq -e '(.projects | length) >= 1 and ([.projects[].name] | index("tilde-proj") != null)' "$DEF_OUT" >/dev/null
+
+# First-match precedence: PLINTH_DASH_ROOTS wins over config file when both set.
+printf '%s\n' '~/Dev/tilde-proj' > "$CFG_HOME/.config/plinth/dashboard-projects"
+export PLINTH_DASH_ROOTS="$A"
+PREC_OUT="$FIX/prec.json"
+"$PLINTH" dash --snapshot > "$PREC_OUT"
+jq -e '
+  .discovery == "env:PLINTH_DASH_ROOTS"
+  and (.projects | length) == 1
+  and .projects[0].name == "alpha"
+' "$PREC_OUT" >/dev/null
+unset PLINTH_DASH_ROOTS
+# Config wins over default scan (restore config; default root still set).
+PREC2_OUT="$FIX/prec2.json"
+"$PLINTH" dash --snapshot > "$PREC2_OUT"
+jq -e '
+  .discovery == "config:~/.config/plinth/dashboard-projects"
+  and (.projects | length) == 1
+  and .projects[0].name == "tilde-proj"
+' "$PREC2_OUT" >/dev/null
+rm -f "$CFG_HOME/.config/plinth/dashboard-projects"
 
 # Port range validation (serve path — fails before bind with the intended
 # diagnostic, not via bash "integer expression expected" / Python OverflowError).

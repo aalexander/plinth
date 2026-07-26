@@ -371,24 +371,46 @@
     genAgo.textContent = "snap " + hum(Math.max(0, ago)) + " ago";
   }
 
+  // Serialize polls: never start a new fetch while one is pending. Slow
+  // multi-project snapshots must not fan out concurrent subprocesses or let
+  // an older response overwrite a newer one.
+  let pollInFlight = false;
+  let pollSeq = 0;
   async function poll() {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    const seq = ++pollSeq;
+    liveDot.className = "dot spin";
     try {
       const res = await fetch("/api/snapshot", { cache: "no-store" });
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
       if (data.error) throw new Error(data.detail || data.error);
-      render(data);
-      liveDot.className = "dot";
-      liveLabel.textContent = "live";
-    } catch (e) {
-      liveDot.className = "dot err";
-      liveLabel.textContent = "error";
-      if (!grid.querySelector(".card")) {
-        grid.innerHTML = '<div class="empty">Snapshot failed: ' + esc(e.message) + "</div>";
+      // Only apply if we are still the latest completed sequence owner.
+      if (seq === pollSeq) {
+        render(data);
+        liveDot.className = "dot";
+        liveLabel.textContent = "live";
       }
+    } catch (e) {
+      if (seq === pollSeq) {
+        liveDot.className = "dot err";
+        liveLabel.textContent = "error";
+        if (!grid.querySelector(".card")) {
+          grid.innerHTML = '<div class="empty">Snapshot failed: ' + esc(e.message) + "</div>";
+        }
+      }
+    } finally {
+      pollInFlight = false;
+      tickClocks();
     }
-    tickClocks();
   }
+
+  // Test seam: expose poll controller for the smoke harness.
+  globalThis.__plinthDash.poll = poll;
+  globalThis.__plinthDash.getPollState = function () {
+    return { inFlight: pollInFlight, seq: pollSeq };
+  };
 
   poll();
   setInterval(poll, 2000);
