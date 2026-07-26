@@ -2089,6 +2089,13 @@ snapshot_one_project() {
     ;; esac
   fi
 
+  local rq_round_from_name=null
+  if [ -n "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
+    local rqbn="${rqfile##*/}"
+    local rqn="${rqbn#request-}"
+    rqn="${rqn%.json}"
+    case "$rqn" in ''|*[!0-9]*) ;; *) rq_round_from_name="$rqn" ;; esac
+  fi
   jq -nc --slurpfile vd "$vfile" --slurpfile rq "$rqfile" --slurpfile tr "$transcript" \
         --arg path "$dir" --arg name "$(basename "$dir")" \
         --arg head "$head" --arg head_full "$head_full" --arg branch "$branch" \
@@ -2097,7 +2104,8 @@ snapshot_one_project() {
         --argjson activity_ago "${activity_ago:-null}" \
         --argjson session_secs "${session_secs_json:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
-        --argjson has_last_error "$has_last_error" '
+        --argjson has_last_error "$has_last_error" \
+        --argjson rq_round_from_name "$rq_round_from_name" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2122,6 +2130,8 @@ snapshot_one_project() {
     | (if $RQ0 == null then null
        elif ($RQ0 | type) != "object" then error("bad_request_shape")
        elif ($RQ0.round == null) or (round_ok($RQ0.round) | not) then error("bad_request_round")
+       elif ($rq_round_from_name != null)
+            and (($RQ0.round | floor) != $rq_round_from_name) then error("bad_request_round_mismatch")
        else $RQ0 end) as $RQ
     # RUNNING only when a newer request exists AND no last-error (infra failure
     # leaves request-N behind without a live reviewer).

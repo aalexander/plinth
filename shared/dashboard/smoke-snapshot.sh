@@ -783,6 +783,34 @@ export PLINTH_DASH_ROOTS="$MR"
   .projects[] | select(.name == "mu-noround") | .error == "snapshot_render_failed"
 ' >/dev/null
 
+# Request filename/body round mismatch → error (request-2.json with round 10)
+MM="$FIX/mu-rqmismatch"
+mk_git "$MM"
+git -C "$MM" checkout -qb feat/rqm
+echo m > "$MM/m"; git -C "$MM" add -A; git -C "$MM" commit -qm w
+MFULL="$(git -C "$MM" rev-parse HEAD)"
+mkdir -p "$MM/.plinth/session/review/feat-rqm"
+jq -nc --arg sha "$MFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["t"]},ts:"t"}' \
+  > "$MM/.plinth/session/review/feat-rqm/verdict.json"
+jq -nc '{round:10,mode:"resume"}' > "$MM/.plinth/session/review/feat-rqm/request-2.json"
+export PLINTH_DASH_ROOTS="$MM"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "mu-rqmismatch") | .error == "snapshot_render_failed"
+' >/dev/null
+# Negative/fractional request round
+MN="$FIX/mu-rqneg"
+mk_git "$MN"
+git -C "$MN" checkout -qb feat/rqneg
+echo m > "$MN/m"; git -C "$MN" add -A; git -C "$MN" commit -qm w
+mkdir -p "$MN/.plinth/session/review/feat-rqneg"
+jq -nc '{round:-1}' > "$MN/.plinth/session/review/feat-rqneg/request-1.json"
+export PLINTH_DASH_ROOTS="$MN"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "mu-rqneg") | .error == "snapshot_render_failed"
+' >/dev/null
+
 # --snapshot works without python3 (only bash+jq); serve fails without python3
 PATH_SAVE="$PATH"
 # Prefer a PATH that still has git/jq/bash but not python3
