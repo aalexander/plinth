@@ -617,7 +617,7 @@ it has run green with a real smoke_cmd.
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
-  server-side verifier until `receipt / verify` is required with `strict:true`, and
+  merge-time required context until `receipt / verify` is required with `strict:true`, and
   the cloud review is advisory comments). Deliberately-quoted obfuscation is out of
   scope (see above); the merge gate proper is branch protection's required status
   checks.
@@ -630,7 +630,7 @@ it has run green with a real smoke_cmd.
   local hard block; the server-side hard gate is branch protection's required checks
   (floor + checks), and the driver is trusted to run the risk-tiered review loop — unless
   `receipt / verify` is wired, required, and protected with `strict:true`, which is
-  exactly what puts its APPROVED-at-HEAD verdict under a server-side verifier that
+  exactly what requires a green `receipt / verify` context (when the real verifier runs) that
   still describes the base at merge (auto mode, v4.7+; the check alone is as-of
   execution). Where that trio is not in place, the verdict still has no merge-time
   server-side check. Every gate release (a Claude driver ending its turn without

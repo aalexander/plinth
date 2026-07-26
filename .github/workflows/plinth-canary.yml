@@ -252,6 +252,23 @@ jobs:
             fi
             printf '%s' "$out" | grep -qi 'differs\|review.sh' || { echo "::error::hybrid lag failure did not name the twin: $out"; exit 1; }
             echo "OK mutant: hybrid lag payload refused"
+            # Mutant: missing tag fails closed (not silent OK lag).
+            HY2="$(mktemp -d)"
+            mkdir -p "$HY2/.plinth"
+            printf '9.9.9\n' > "$HY2/VERSION"
+            printf '3.2.1\n' > "$HY2/.plinth-version"
+            if out="$(check_instrument_identity "$HY2" 2>&1)"; then
+              echo "::error::lag with missing tag v3.2.1 was ACCEPTED: $out"; exit 1
+            fi
+            printf '%s' "$out" | grep -qi 'missing\|tag' || { echo "::error::missing-tag lag did not name the tag: $out"; exit 1; }
+            echo "OK mutant: missing-tag lag refused"
+            # Mutant: leading-zero label refused.
+            printf '9.9.9\n' > "$HY2/VERSION"
+            printf '04.7.2\n' > "$HY2/.plinth-version"
+            if out="$(check_instrument_identity "$HY2" 2>&1)"; then
+              echo "::error::leading-zero label 04.7.2 was ACCEPTED: $out"; exit 1
+            fi
+            echo "OK mutant: leading-zero label refused"
           else
             echo "::error::tag v4.6.0 missing — cannot exercise lag provenance (fetch tags in checkout)"; exit 1
           fi
@@ -1416,7 +1433,7 @@ jobs:
               || { echo "::error::(3c-blank) empty env abort did not name PLINTH_ROUND_CAP empty: $(printf '%s' "$out" | tail -c 250)"; exit 1; }
             [ "$(cat "$BL/state")" = 0 ] || { echo "::error::(3c-blank) reviewer ran despite empty PLINTH_ROUND_CAP"; exit 1; } )
 
-# (3b) NO round_cap in config = NO CAP (v4.7.1 change of default). Previously an
+          # (3b) NO round_cap in config = NO CAP (v4.7.1 change of default). Previously an
           # unset knob meant 8, so DELETING round_cap from .plinth/config looked like
           # disabling the breaker while silently restoring a default — the loop stopped at
           # 8 and the config held no evidence why. This drives a loop well past the old
