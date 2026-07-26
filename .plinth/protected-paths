@@ -21,3 +21,4 @@
 (^|plinth/)\.plinth/lane-guard\.sh$
 (^|plinth/)\.plinth/reviewer\.md$
 (^|plinth/)CLAUDE\.md$
+(^|plinth/)\.plinth/receipt-verify\.sh$

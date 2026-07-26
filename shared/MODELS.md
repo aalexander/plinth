@@ -18,7 +18,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 | Seat | Model | Wiring |
 |------|-------|--------|
 | **Architect** — the resident session: judgment, specs, routing, final read-only audit (DEFAULT) | **Fable 5** by exception / **Opus 4.8** (Claude Code is the harness) | Guard + Stop gate ENFORCED; the coding volume goes to the Worker lane. The architect does not type routine code and does not edit the worker's diff directly — corrections go back as specs |
-| **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until the `receipt / verify` check is required in branch protection) and consults judgment via `plinth advise` |
+| **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until `receipt / verify` is required with `strict:true` *and the real verifier still runs*; see MANUAL caller-control bound) and consults judgment via `plinth advise` |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
 | **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both the WORKER (the diff's producer) and the reviewer, in either topology; pinned so a Sonnet/Fable CLI default can't drift the seat |
@@ -58,13 +58,14 @@ is the floor unless end-to-end verification passes. The binding layer is unchang
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review
 verdict, and the Codex cloud review cannot close that gap (it posts PR comments;
-there is no status-check context to require). The server-verifiable
-APPROVED-at-HEAD receipt check (auto mode, v4.7+) is the adversarial gate that
-closes it — but only where its `receipt / verify` context is wired into ci.yml
-AND required by branch protection; elsewhere the review loop stays
-contract-bound. (If in-session interception ever proves
-necessary, the designated fix is one CI-side protected-paths tamper check —
-vendor-neutral, covers every driver — not per-vendor hook ports.)
+there is no status-check context to require). The APPROVED-at-HEAD receipt check (auto mode, v4.7+) is the merge-time required
+context for that gap — but only where `receipt / verify` is wired into ci.yml,
+required by branch protection, AND `strict:true`, and only when the real verifier
+job still runs (PR caller replacement can forge the context name; see MANUAL);
+elsewhere the review loop stays contract-bound. (If
+in-session interception ever proves necessary, the designated fix is one CI-side
+protected-paths tamper check — vendor-neutral, covers every driver — not
+per-vendor hook ports.)
 
 ### Contingency — Fable access lapses (live risk)
 Fable has been suspended once already and runs credits-only with no metered
