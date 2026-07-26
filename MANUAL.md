@@ -18,8 +18,9 @@ each PR (security-briefed via the reviewer contract .plinth/reviewer.md). It is 
 mechanism, not just by choice: it posts as PR comments and exposes no status-check context
 that branch protection could require. Under the architect-resident DEFAULT the local
 Stop gate enforces the review loop; under the grok-RESIDENT alternative the loop is
-contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7 — the
-server-side review gate) is REQUIRED in branch protection with `strict:true`.
+contract-bound until the APPROVED-at-HEAD receipt check (auto mode, v4.7) is
+REQUIRED in branch protection with `strict:true` *and the real verifier job still
+runs* (caller-control bound above — the context name alone is not enough).
 
 **HONEST BOUND — caller workflow control.** Branch protection requires a *context
 name* (`receipt / verify`). On `pull_request`, GitHub runs workflow files from the
@@ -64,12 +65,14 @@ Everything between is the model's call.
   the WORKER that produced the diff and the reviewer, in either topology). Contingency: if Fable's availability lapses
   (export-control risk — it was suspended once already), the advisor seat moves to
   GPT-5.6 (`advisor_vendor = codex`); the audit seat keeps Anthropic coverage.
-  **KNOWN LIMITATION (until the receipt check is REQUIRED with `strict:true`):**
+  **KNOWN LIMITATION (until the receipt check is REQUIRED with `strict:true` and
+  the real verifier still runs — see caller-control bound):**
   under the grok-RESIDENT alternative the review-before-PR loop is CONTRACT discipline — no local Stop
   gate fires (grok 0.2.112 executes no `.claude/` hooks) and, until `receipt / verify`
-  is wired, required, and protected with `strict:true`, no status check holds
-  APPROVED-at-HEAD against an up-to-date base at merge time. v4.7 ships that check;
-  enabling it per repo is an operator step (context + strict). Where it is not yet
+  is wired, required, protected with `strict:true`, *and actually executes the
+  reusable verifier*, no status check holds APPROVED-at-HEAD against an up-to-date
+  base at merge time. v4.7 ships that check; enabling it per repo is an operator
+  step (context + strict + honest bound). Where it is not yet
   required with strict, the ENFORCED-gate path is a Claude driver; choose per task,
   and treat non-Claude-driven PRs accordingly (the PR body's review audit is the
   evidence trail).

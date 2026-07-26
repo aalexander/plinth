@@ -439,6 +439,10 @@ jobs:
                    "$FX/shared/.claude/agents" "$FX/.claude/agents"
           # Helper: build a fully-matching equal-version tree at 9.9.9 (all twins equal +x).
           seed_equal_tree() {
+            # Drop any leftover symlinks from prior mutants (cp -f will not replace a symlink with itself).
+            rm -rf "$FX/.plinth" "$FX/.claude" "$FX/AGENTS.md" "$FX/CLAUDE.md" "$FX/shared"
+            mkdir -p "$FX/shared/.plinth" "$FX/.plinth" "$FX/shared/.claude/hooks" "$FX/.claude/hooks" \
+                     "$FX/shared/.claude/agents" "$FX/.claude/agents"
             printf '9.9.9\n' > "$FX/VERSION"
             printf '9.9.9\n' > "$FX/.plinth-version"
             for pair in \
