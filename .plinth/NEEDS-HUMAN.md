@@ -29,13 +29,15 @@
   NOT `-s cat_sort_uniq` (concatenates two receipts for one commit and breaks the verifier).
 
 - [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
-  Recombine Write-tool guidance with the #41 delegation receipt wiring; do not ship
-  one without the other.
+  Both implementers again use shell `SPEC_EOF` heredocs; restore the non-shell Write-tool
+  flow from #37 while keeping the #41 delegation-receipt wiring.
 
 - [ ] **Instrument lag (v4.8.0 tag-locked install):** product `shared/.claude/hooks/guard.sh`
   comments now qualify receipt enablement (strict + caller-control). Installed
   `.claude/hooks/guard.sh` still matches tagged **v4.8.0** (floor byte-cmp). Next
-  instrument refresh after a post-tag product pin.
+  instrument refresh after a post-tag product pin. Clean-slate also noted UPSTREAM:
+  `_ship_bare` authorizes argument-less `gh pr merge` from local verdict without binding
+  origin (`GH_REPO` / default-repo can redirect) — product follow-up, not close-out.
 
 - [ ] **Seat topology swap (your 2026-07-24 direction: Opus 5 driver / grok worker /
   gpt-5.6-sol reviewer / Fable 5 advisor).** `.plinth/config` is operator-only
