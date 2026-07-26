@@ -741,6 +741,11 @@ summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
 
 ## Noticed
+- github_preflight strict diagnostic is behind an elif after missing contexts, so missing floor+missing-strict only reports missing contexts first (v4.7.2 audit minor).
+- Lag instrument OK message is honest only for files the pin shipped; installed-only managed files absent at the tag are skipped (v4.7.2 audit minor).
+- Live `base.sha` binding in plinth-receipt.yml assumes GitHub recomputes base.sha on API read; if it is a creation/synchronize snapshot, base-advanced PRs can stick red until head is pushed (v4.7.2 audit; confirm against real PR API before treating as blocking forever).
+- GitHub preflight/`detect_owner` only parse scp-style and HTTP(S) origins; accepted ssh:// git+ssh:// git:// skip protection inspection (v4.7.2 audit minor).
+- GitHub preflight / `detect_owner` parse only scp-style and HTTP(S) origins; accepted `ssh://`/`git+ssh://`/`git://` forms skip protection inspection (audit minor, v4.7.2).
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.

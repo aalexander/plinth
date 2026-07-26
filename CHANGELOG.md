@@ -330,7 +330,7 @@ own fixtures — the receipt was simply built wrong before verification ever saw
   skip and a `verdict.json` `confirmation` field that v4.7 deleted, contradicting the same
   file two paragraphs later. The canonical spec is what every future review is judged
   against; a stale claim there is the defect class this repo blocks on.
-- Instrument refreshed to this version, and `ci.yml`'s required floor/checks gates repinned
+- ci.yml required floor/checks gates were repinned after v4.7.0; instrument deliberately lags (see .plinth-version) until a labeled refresh. `ci.yml`'s required floor/checks gates repinned
   to the v4.7.0 release commit (their trailing comments corrected too — a stale label on a
   correct pin is the same overclaim class).
 
