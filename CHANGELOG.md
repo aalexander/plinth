@@ -1,5 +1,15 @@
 # Plinth changelog
 
+## v4.7.2 — ship-gate-target — July 26, 2026
+- **Targeted `gh pr merge` binds end-to-end to origin + resolved PR head (upstream #16).**
+  Authorization requires: (1) the actionable command names the checkout's `origin`
+  via `-R`/`--repo` or a same-repo PR URL (unqualified `gh pr merge 42` is rejected —
+  it would follow `GH_REPO`/default-repo); (2) `--match-head-commit` equals the
+  origin-resolved head (`gh pr view … -R <origin>`); (3) APPROVED at that SHA for
+  the PR branch slug. Quoted merge argv fails closed (unquote is not a shell parser).
+  Multi-segment Bash gates each create/merge independently. Bare current-branch
+  create/merge and outside-git bare fail-open are unchanged.
+
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is

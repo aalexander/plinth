@@ -68,12 +68,18 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # A BARE current-branch ship keeps the old fail-open behavior outside a git repo
 # and on the base branch. A targeted merge is different: its PR is resolved against
 # the checkout's origin (always `gh pr view … -R <origin-owner/repo>`) and every
-# error blocks. Multi-segment: each real create/merge segment is gated on its own
-# — an APPROVED targeted merge must not authorize an unreviewed create.
-ship_gate() {  # <what> <unquoted-command> — called only when the command is a ship action
-  local what="$1" command="${2:-}"
+# error blocks. The actionable merge must ALSO be origin- and head-bound: either a
+# same-repo PR URL or an explicit -R/--repo naming origin, plus
+# --match-head-commit equal to the origin-resolved head (so GH_REPO / default-repo
+# and a racing new push cannot desync authorize-from-vs-merge-into). Multi-segment:
+# each real create/merge segment is gated on its own — an APPROVED targeted merge
+# must not authorize an unreviewed create. Quote-stripped argv is not a shell
+# parser: any quote/apostrophe in the original command fail-closes merge segments
+# (multi-word --body values would otherwise invent a false PR target).
+ship_gate() {  # <what> <unquoted-command> [original-command]
+  local what="$1" command="${2:-}" orig="${3:-$2}"
   local segments segment tok state need_value
-  local target_ref target_repo parse_error merge_seen
+  local target_ref target_repo match_head parse_error merge_seen
   local local_url local_repo url_repo n_repo resolved
   local resolved_branch resolved_sha branch head slug vf v vsha
 
@@ -108,6 +114,7 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
   }
 
   # Targeted merge: bind to origin, resolve PR head, require APPROVED at that SHA.
+  # The command under review must itself name origin and pin the head SHA.
   _ship_targeted() {
     git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 \
       || block "$what blocked — targeted merge cannot be bound to a local repository checkout."
@@ -123,16 +130,8 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
       *) block "$what blocked — targeted merge but origin repository parsing failed." ;;
     esac
 
-    if [ -n "$target_repo" ]; then
-      n_repo="$(_ship_norm_repo "$target_repo")"
-      case "$n_repo" in
-        */*) case "${n_repo#*/}" in */*) block "$what blocked — -R/--repo must name one owner/repository." ;; esac ;;
-        *) block "$what blocked — -R/--repo must name owner/repository." ;;
-      esac
-      [ "$n_repo" = "$local_repo" ] \
-        || block "$what blocked — -R/--repo names '$target_repo', not local repository '$local_repo'; a local verdict cannot authorize another repository."
-    fi
-
+    # Actionable command must bind the repository: -R/--repo matching origin, or a
+    # same-repo PR URL. Unqualified `gh pr merge 42` follows GH_REPO/default-repo.
     case "$target_ref" in
       http://github.com/*/pull/*|https://github.com/*/pull/*)
         url_repo="${target_ref#*://github.com/}"; url_repo="${url_repo%%/pull/*}"
@@ -145,7 +144,21 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
           || block "$what blocked — PR URL names '$url_repo', not local repository '$local_repo'."
         ;;
       https://*|http://*) block "$what blocked — PR URL is not a recognizable GitHub pull-request URL." ;;
+      *)
+        [ -n "$target_repo" ] \
+          || block "$what blocked — targeted merge must include -R/--repo naming the local origin repository (unqualified PR numbers follow gh default-repo/GH_REPO, not origin)."
+        ;;
     esac
+
+    if [ -n "$target_repo" ]; then
+      n_repo="$(_ship_norm_repo "$target_repo")"
+      case "$n_repo" in
+        */*) case "${n_repo#*/}" in */*) block "$what blocked — -R/--repo must name one owner/repository." ;; esac ;;
+        *) block "$what blocked — -R/--repo must name owner/repository." ;;
+      esac
+      [ "$n_repo" = "$local_repo" ] \
+        || block "$what blocked — -R/--repo names '$target_repo', not local repository '$local_repo'; a local verdict cannot authorize another repository."
+    fi
 
     # Always bind resolve to origin — never gh's implicit default repo (upstream #16).
     if [ -n "$target_ref" ]; then
@@ -165,6 +178,14 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
       || block "$what blocked — pull-request resolution returned incomplete head metadata."
     printf '%s' "$resolved_sha" | grep -Eq '^[0-9a-fA-F]{40}$' \
       || block "$what blocked — pull-request resolution returned an invalid head SHA."
+
+    # Actionable command must pin the head so the merge cannot race past the verdict.
+    [ -n "$match_head" ] \
+      || block "$what blocked — targeted merge must include --match-head-commit <origin-resolved-head-sha> so the ship is bound to the APPROVED head."
+    printf '%s' "$match_head" | grep -Eq '^[0-9a-fA-F]{40}$' \
+      || block "$what blocked — --match-head-commit is not a 40-char commit SHA."
+    [ "$match_head" = "$resolved_sha" ] \
+      || block "$what blocked — --match-head-commit does not match the origin-resolved PR head ($resolved_sha)."
 
     branch="$resolved_branch"
     head="$resolved_sha"
@@ -202,11 +223,23 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
     need_value=""
     target_ref=""
     target_repo=""
+    match_head=""
     parse_error=0
     merge_seen=0
+    # Unquote is not argv: multi-word quoted values (and quoted delimiters) lose
+    # boundaries. Fail closed rather than invent a shell parser.
+    if printf '%s' "$orig" | grep -q '["'\'']'; then
+      parse_error=1
+    fi
     for tok in "$@"; do
       if [ -n "$need_value" ]; then
-        case "$need_value" in repo) target_repo="$tok" ;; esac
+        case "$need_value" in
+          repo) target_repo="$tok" ;;
+          match_head)
+            [ -z "$match_head" ] || parse_error=1
+            match_head="$tok"
+            ;;
+        esac
         need_value=""
         continue
       fi
@@ -222,10 +255,18 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
         gh:-*) ;;
         gh:*) state=seek ;;
         pr:*) state=seek ;;
-        merge:-A|merge:--author-email|merge:-b|merge:--body|merge:-F|merge:--body-file|merge:--match-head-commit|merge:-t|merge:--subject)
+        merge:--match-head-commit)
+          [ -z "$match_head" ] || parse_error=1
+          need_value=match_head
+          ;;
+        merge:--match-head-commit=*)
+          [ -z "$match_head" ] || parse_error=1
+          match_head="${tok#*=}"
+          ;;
+        merge:-A|merge:--author-email|merge:-b|merge:--body|merge:-F|merge:--body-file|merge:-t|merge:--subject)
           need_value=ignore
           ;;
-        merge:-A?*|merge:-b?*|merge:-F?*|merge:-t?*|merge:--author-email=*|merge:--body=*|merge:--body-file=*|merge:--match-head-commit=*|merge:--subject=*) ;;
+        merge:-A?*|merge:-b?*|merge:-F?*|merge:-t?*|merge:--author-email=*|merge:--body=*|merge:--body-file=*|merge:--subject=*) ;;
         merge:--admin|merge:--auto|merge:-d|merge:--delete-branch|merge:--disable-auto|merge:-m|merge:--merge|merge:-r|merge:--rebase|merge:-s|merge:--squash) ;;
         merge:[0-9]*)
           case "$tok" in *[!0-9]*) parse_error=1 ;; *) [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1 ;; esac
@@ -240,7 +281,7 @@ ship_gate() {  # <what> <unquoted-command> — called only when the command is a
     [ -z "$need_value" ] || parse_error=1
     [ "$merge_seen" = 1 ] || parse_error=1
     [ "$parse_error" = 0 ] \
-      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely."
+      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quoted merge argv is not supported by this tripwire; use unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
 
     if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
       _ship_targeted
@@ -318,7 +359,7 @@ case "$tool" in
     # position) is OUT OF SCOPE by design (see the header): a client-side hook can't win
     # that race; branch protection can.
     if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr[[:space:]]+(create|merge)'; then
-      ship_gate "gh pr create/merge" "$stripped"
+      ship_gate "gh pr create/merge" "$stripped" "$cmd"
     fi
     while IFS= read -r pattern; do
       # Path patterns are anchored for bare paths ((^|/)…$); in command TEXT a

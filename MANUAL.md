@@ -575,20 +575,27 @@ it has run green with a real smoke_cmd.
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
   refused unless the branch has an APPROVED review at HEAD. A *targeted* `gh pr merge`
-  (positional PR number/URL and/or `-R`/`--repo`, including `github.com/owner/repo`) is
-  authorized only by APPROVED at the *resolved PR head* for that PR's branch slug, bound
-  to the checkout's `origin` — resolution always uses `gh pr view … -R <origin-owner/repo>`,
-  never gh's default repo alone. Outside a git checkout, bare ships fail open; targeted
-  merges fail closed. Multi-segment Bash gates each real create/merge segment independently
-  (an APPROVED merge does not authorize an unreviewed create). Like every `.claude/` hook it
-  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
-  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
-  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
-  driver this hook does NOT fire — their merge gate is branch protection's required
-  checks (floor + checks — CI and tooling integrity; the review verdict has no
-  server-side verifier until `receipt / verify` is required, and the cloud review is
-  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
-  the merge gate proper is branch protection's required status checks.
+  (positional PR number/URL and/or `-R`/`--repo`) is authorized only when **all** of:
+  (1) the actionable command itself binds the repository — either a same-repo GitHub
+  PR URL or an explicit `-R`/`--repo` naming the checkout's `origin` (unqualified
+  `gh pr merge 42` is rejected: it would follow `GH_REPO`/default-repo, not origin);
+  (2) the command pins `--match-head-commit` to the origin-resolved PR head SHA
+  (lookup uses `gh pr view … -R <origin-owner/repo>`, never default-repo alone);
+  (3) that worktree has APPROVED at that SHA for the PR's branch slug. Quoted merge
+  argv fails closed (the tripwire unquotes for matching and is not a shell parser —
+  multi-word `--body "…"` would otherwise invent a false PR target; use unquoted
+  single-token values, `--body=…`, or `--body-file`). Outside a git checkout, bare
+  ships fail open; targeted merges fail closed. Multi-segment Bash gates each real
+  create/merge segment independently (an APPROVED merge does not authorize an
+  unreviewed create). Like every `.claude/` hook it fires only under a Claude driver,
+  or a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe` alone
+  shows invocation, not enforcement (grok 0.2.112 reported no execution
+  [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing driver
+  this hook does NOT fire — their merge gate is branch protection's required checks
+  (floor + checks — CI and tooling integrity; the review verdict has no server-side
+  verifier until `receipt / verify` is required, and the cloud review is advisory
+  comments). Deliberately-quoted obfuscation is out of scope (see above); the merge
+  gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review

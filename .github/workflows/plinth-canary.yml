@@ -80,8 +80,9 @@ jobs:
         run: |
           set -euo pipefail
           # Upstream #16: targeted `gh pr merge` is authorized only by APPROVED at the
-          # *resolved PR head* bound to the checkout's origin — not the current branch
-          # alone, not gh's default repo. Sibling matrix (all must stay green).
+          # *resolved PR head* bound to the checkout's origin — and the actionable
+          # command must itself pin -R (or a same-repo PR URL) plus
+          # --match-head-commit equal to that head. Sibling matrix (all green).
           GUARD="${GITHUB_WORKSPACE}/shared/.claude/hooks/guard.sh"
           GD="$(mktemp -d)"; GB="$(mktemp -d)"
           git -C "$GD" init -qb main .
@@ -90,6 +91,8 @@ jobs:
           printf 'base\n' > "$GD/file"; git -C "$GD" add file; git -C "$GD" commit -qm base
           git -C "$GD" remote add origin https://github.com/acme/repo.git
           mkdir -p "$GD/.plinth/session/review/pr-head" "$GD/.plinth/session/review/feat-x"
+          HEAD_OK=1111111111111111111111111111111111111111
+          HEAD_BAD=2222222222222222222222222222222222222222
           # Stub REQUIRES -R acme/repo or -R github.com/acme/repo so a missing origin
           # bind cannot pass by accident (gh default-repo trap).
           cat > "$GB/gh" <<'GHSTUB'
@@ -112,29 +115,42 @@ jobs:
               PATH="$GB:$PATH" CLAUDE_PROJECT_DIR="$GD" bash "$GUARD" >/dev/null 2>&1 || rc=$?
             printf '%s' "$rc"
           }
+          bound() { printf 'gh pr merge %s -R acme/repo --match-head-commit %s --squash' "$1" "$HEAD_OK"; }
           # bare merge on main → 0
           [ "$(gcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::targeted ship gate changed bare current-branch behavior on main"; exit 1; }
           # create + echo prose merge → 0 (prose not ship)
           [ "$(gcmd 'gh pr create --fill; echo gh pr merge 404')" = 0 ] || { echo "::error::target parser treated argument-position prose as a targeted merge"; exit 1; }
-          # merge 42 without verdict → 2
-          [ "$(gcmd 'gh pr merge 42 --squash')" = 2 ] || { echo "::error::targeted ship gate authorized PR 42 without APPROVED at resolved head"; exit 1; }
-          # merge 42 with APPROVED at resolved SHA → 0
-          printf '{"verdict":"APPROVED","sha":"1111111111111111111111111111111111111111"}\n' > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd 'gh pr merge 42 --squash')" = 0 ] || { echo "::error::targeted ship gate blocked PR 42 despite APPROVED at resolved head SHA"; exit 1; }
-          # wrong SHA verdict → 2
-          printf '{"verdict":"APPROVED","sha":"2222222222222222222222222222222222222222"}\n' > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd 'gh pr merge 42 --squash')" = 2 ] || { echo "::error::targeted ship gate accepted APPROVED bound to a different SHA"; exit 1; }
-          printf '{"verdict":"APPROVED","sha":"1111111111111111111111111111111111111111"}\n' > "$GD/.plinth/session/review/pr-head/verdict.json"
-          # PR URL same repo → 0; other repo → 2
-          [ "$(gcmd 'gh pr merge https://github.com/acme/repo/pull/42')" = 0 ] || { echo "::error::targeted ship gate did not resolve same-repository PR URL"; exit 1; }
-          [ "$(gcmd 'gh pr merge https://github.com/other/repo/pull/42')" = 2 ] || { echo "::error::targeted ship gate let local verdict authorize another repo PR URL"; exit 1; }
+          # unqualified / incomplete targeted forms fail closed even with a matching verdict
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd 'gh pr merge 42 --squash')" = 2 ] || { echo "::error::unqualified PR merge authorized without -R and --match-head-commit"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --squash")" = 2 ] || { echo "::error::targeted merge authorized without --match-head-commit"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::targeted merge authorized without -R (GH_REPO/default-repo trap)"; exit 1; }
+          # fully bound, no verdict file match → still 2 if we clear APPROVED
+          rm -f "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::bound merge authorized without APPROVED at resolved head"; exit 1; }
+          # fully bound + APPROVED at resolved SHA → 0
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 0 ] || { echo "::error::bound merge blocked despite APPROVED at resolved head SHA"; exit 1; }
+          # wrong verdict SHA → 2
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_BAD" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "$(bound 42)")" = 2 ] || { echo "::error::targeted ship gate accepted APPROVED bound to a different SHA"; exit 1; }
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          # wrong --match-head-commit (command not pinned to resolved head) → 2
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_BAD --squash")" = 2 ] || { echo "::error::--match-head-commit mismatch was accepted"; exit 1; }
+          # PR URL same repo + match-head → 0; other repo → 2; URL without match-head → 2
+          [ "$(gcmd "gh pr merge https://github.com/acme/repo/pull/42 --match-head-commit $HEAD_OK")" = 0 ] || { echo "::error::same-repo PR URL + match-head was blocked"; exit 1; }
+          [ "$(gcmd "gh pr merge https://github.com/other/repo/pull/42 --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::other-repo PR URL authorized by local verdict"; exit 1; }
+          [ "$(gcmd 'gh pr merge https://github.com/acme/repo/pull/42')" = 2 ] || { echo "::error::PR URL without --match-head-commit was authorized"; exit 1; }
           # -R acme/repo → 0; -R github.com/acme/repo → 0; -R other/repo → 2
-          [ "$(gcmd 'gh pr merge 42 -R acme/repo')" = 0 ] || { echo "::error::targeted ship gate rejected -R naming local repository"; exit 1; }
-          [ "$(gcmd 'gh pr merge 42 -R github.com/acme/repo')" = 0 ] || { echo "::error::targeted ship gate rejected host-qualified -R github.com/owner/repo"; exit 1; }
-          [ "$(gcmd 'gh pr merge 42 -R other/repo')" = 2 ] || { echo "::error::targeted ship gate let local verdict authorize another repository"; exit 1; }
-          # merge 404 → 2; branch-name → 2
-          [ "$(gcmd 'gh pr merge 404')" = 2 ] || { echo "::error::targeted ship gate failed open when gh could not resolve the PR"; exit 1; }
-          [ "$(gcmd 'gh pr merge branch-name')" = 2 ] || { echo "::error::targeted ship gate failed open on unparseable positional merge argv"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::-R acme/repo + match-head rejected"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R github.com/acme/repo --match-head-commit $HEAD_OK --squash")" = 0 ] || { echo "::error::host-qualified -R github.com/owner/repo + match-head rejected"; exit 1; }
+          [ "$(gcmd "gh pr merge 42 -R other/repo --match-head-commit $HEAD_OK --squash")" = 2 ] || { echo "::error::-R other/repo authorized by local verdict"; exit 1; }
+          # unresolvable / unparseable → 2
+          [ "$(gcmd "gh pr merge 404 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::failed open when gh could not resolve the PR"; exit 1; }
+          [ "$(gcmd 'gh pr merge branch-name -R acme/repo')" = 2 ] || { echo "::error::failed open on unparseable positional merge argv"; exit 1; }
+          # quoted merge argv fail-closed (unquote is not a shell parser)
+          [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body \"Release notes\"")" = 2 ] || { echo "::error::quoted --body was parsed instead of fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \"Release 42\" -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::quoted multi-word body invented a PR target"; exit 1; }
           # outside git: bare → 0; targeted → 2
           NG="$(mktemp -d)"
           ngcmd() {
@@ -144,17 +160,17 @@ jobs:
             printf '%s' "$rc"
           }
           [ "$(ngcmd 'gh pr merge --squash')" = 0 ] || { echo "::error::bare ship outside git no longer fail-open"; exit 1; }
-          [ "$(ngcmd 'gh pr merge 42')" = 2 ] || { echo "::error::targeted ship gate failed open outside a local repository checkout"; exit 1; }
+          [ "$(ngcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::targeted ship gate failed open outside a local repository checkout"; exit 1; }
           # multi-segment: APPROVED merge must not authorize unreviewed create (both orders)
           git -C "$GD" checkout -qb feat/x
           HEAD_SHA="$(git -C "$GD" rev-parse HEAD)"
           rm -f "$GD/.plinth/session/review/feat-x/verdict.json"
-          printf '{"verdict":"APPROVED","sha":"1111111111111111111111111111111111111111"}\n' > "$GD/.plinth/session/review/pr-head/verdict.json"
-          [ "$(gcmd 'gh pr create --fill; gh pr merge 42')" = 2 ] || { echo "::error::approved merge authorized unreviewed create (create;merge)"; exit 1; }
-          [ "$(gcmd 'gh pr merge 42; gh pr create --fill')" = 2 ] || { echo "::error::approved merge authorized unreviewed create (merge;create)"; exit 1; }
+          printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_OK" > "$GD/.plinth/session/review/pr-head/verdict.json"
+          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (create;merge)"; exit 1; }
+          [ "$(gcmd "$(bound 42); gh pr create --fill")" = 2 ] || { echo "::error::approved merge authorized unreviewed create (merge;create)"; exit 1; }
           # feature both approved → 0 for create;merge
           printf '{"verdict":"APPROVED","sha":"%s"}\n' "$HEAD_SHA" > "$GD/.plinth/session/review/feat-x/verdict.json"
-          [ "$(gcmd 'gh pr create --fill; gh pr merge 42')" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
+          [ "$(gcmd "gh pr create --fill; $(bound 42)")" = 0 ] || { echo "::error::create;merge blocked despite both feature and PR-head APPROVED"; exit 1; }
           echo "canary: targeted ship gate origin-bound PR head + multi-segment create|merge OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
