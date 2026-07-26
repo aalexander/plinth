@@ -178,12 +178,16 @@ case "$tool" in
         }
         return 0
       }
-      # Keyword compound openers/closers at line start (if/while/for/case/select … fi/done/esac).
-      function update_kw_depth(line,    s) {
+      # Keyword compound openers/closers per ;-separated segment (if/while/… fi/done/esac).
+      function update_kw_depth(line,    s,n,a,i,w) {
         s=line
-        sub(/^[[:space:]]+/,"",s)
-        if (s ~ /^(if|while|until|for|case|select)([^[:alnum:]_]|$)/) kw_depth++
-        if (s ~ /^(fi|done|esac)([^[:alnum:]_]|$)/ && kw_depth>0) kw_depth--
+        n=split(s,a,/;/)
+        for (i=1;i<=n;i++) {
+          w=a[i]
+          sub(/^[[:space:]]+/,"",w)
+          if (w ~ /^(if|while|until|for|case|select)([^[:alnum:]_]|$)/) kw_depth++
+          if (w ~ /^(fi|done|esac)([^[:alnum:]_]|$)/ && kw_depth>0) kw_depth--
+        }
       }
       # Advance global qst / exp_depth / bt_open / brace_depth / paren_depth over s.
       # depth: $(...) / ${...} / <(...) / >(...). brace/paren: {…} / (… ) compound groups.
@@ -453,31 +457,16 @@ case "$tool" in
         advance_globals($0)
       }
     ')"
-    # Fail-closed: if non-suppressed text still contains an unquoted pipeline, body
-    # suppression is unsafe (e.g. { cat <<'S' … S; } | bash, if/fi | bash, or a
-    # missed compound). Rescan the full command with no body stripping.
-    if printf '%s\n' "$inert_stripped" | awk '
-      BEGIN { found=0 }
-      {
-        n=length($0); st=""; prev=""; prev_esc=0
-        for (i=1;i<=n;i++) {
-          c=substr($0,i,1)
-          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
-          if (st=="dq") {
-            if (c=="\\") { i++; if (i<=n) { prev=substr($0,i,1); prev_esc=1 } continue }
-            if (c=="\"") st=""
-            prev=c; prev_esc=0; continue
-          }
-          if (c=="\\") { i++; if (i<=n) { prev=substr($0,i,1); prev_esc=1 } continue }
-          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
-          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
-          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
-          if (c=="|") { found=1; exit }
-          prev=c; prev_esc=0
-        }
-      }
-      END { exit(found ? 0 : 1) }
-    '; then
+    # Fail-closed: if residual (non-suppressed) text still shows a compound closer
+    # feeding a pipeline or process-sub (fi|bash, }|bash, ) > >(bash), …), body
+    # suppression is unsafe — rescan the full command. Unrelated pipelines elsewhere
+    # in the command do not trip this.
+    if printf '%s\n' "$inert_stripped" | grep -Eq \
+      '(^|[[:space:];&|])(fi|done|esac)[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()' \
+      || printf '%s\n' "$inert_stripped" | grep -Eq \
+      '(\}|\) )[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()' \
+      || printf '%s\n' "$inert_stripped" | grep -Eq \
+      '(\}|\))[[:space:]]*(\||>[[:space:]]*>\(|<[[:space:]]*<\()'; then
       inert_stripped=$(printf '%s\n' "$cmd")
     fi
     # rm/git patterns are anchored to command position. Upstream issue #1

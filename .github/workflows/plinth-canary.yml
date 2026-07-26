@@ -2583,6 +2583,9 @@ jobs:
           [ "$(gcmd $'for x in 1; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: for/done | bash hid body"; exit 1; }
           [ "$(gcmd $'case x in x)\ncat <<\'S\'\nrm -rf build\nS\n;; esac | bash')" = 2 ] || { echo "::error::heredoc-matrix: case/esac | bash hid body"; exit 1; }
           [ "$(gcmd $'select x in a; do\ncat <<\'S\'\nrm -rf build\nS\nbreak; done | bash')" = 2 ] || { echo "::error::heredoc-matrix: select/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi > >(cat)')" = 2 ] || { echo "::error::heredoc-matrix: if/fi > >(cat) hid body"; exit 1; }
+          # Independent pipeline must not force full-scan false positives on inert cat.
+          [ "$(gcmd $'echo a | cat\ncat <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: unrelated pipeline forced false-positive on inert cat body"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
