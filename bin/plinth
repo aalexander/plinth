@@ -2057,10 +2057,6 @@ run_dashboard() {
         port="${1:-}"
         [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
         shift || true
-        case "$port" in ''|*[!0-9]*) echo "plinth dash: bad port: $port" >&2; exit 1 ;; esac
-        if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-          echo "plinth dash: port out of range (1-65535): $port" >&2; exit 1
-        fi
         ;;
       --help|-h) usage ;;
       *) echo "plinth dash: unknown arg: $arg" >&2; usage ;;
@@ -2070,6 +2066,13 @@ run_dashboard() {
   if [ "$mode" = snapshot ]; then
     build_dashboard_snapshot
     exit 0
+  fi
+
+  # Validate the final port whether it came from --port or PLINTH_DASH_PORT
+  # (serve mode only — snapshot never binds).
+  case "$port" in ''|*[!0-9]*) echo "plinth dash: bad port: $port" >&2; exit 1 ;; esac
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "plinth dash: port out of range (1-65535): $port" >&2; exit 1
   fi
 
   command -v python3 >/dev/null 2>&1 || { echo "plinth dash: python3 required to serve the UI" >&2; exit 1; }

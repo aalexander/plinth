@@ -113,7 +113,7 @@ mk_git "$F"
 printf '%s\n' '# Queue' '- [x] already done' '- [x] also done' \
   > "$F/.plinth/NEEDS-HUMAN.md"
 
-# ── Fixture G: malformed usage.jsonl must not zero real NEEDS-HUMAN ──────────
+# ── Fixture G: unused/malformed usage.jsonl is ignored (not read) ────────────
 G="$FIX/eta-badusage"
 mk_git "$G"
 git -C "$G" checkout -qb feat/bad
@@ -147,7 +147,19 @@ jq -nc --argjson epoch "$NOW" --arg tr "$HTR" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-burn",transcript:$tr,tool:null,detail:null,rc:null}' \
   > "$H/.plinth/session/events.jsonl"
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H"
+# ── Fixture I: malformed verdict → real snapshot_render_failed, NH preserved ─
+I="$FIX/iota-badverdict"
+mk_git "$I"
+git -C "$I" checkout -qb feat/badv
+echo i > "$I/i.txt"
+git -C "$I" add -A
+git -C "$I" commit -qm "work"
+mkdir -p "$I/.plinth/session/review/feat-badv"
+printf 'not-json{\n' > "$I/.plinth/session/review/feat-badv/verdict.json"
+printf '%s\n' '- [ ] [BLOCKING] keep me through render failure' \
+  > "$I/.plinth/NEEDS-HUMAN.md"
+
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 
@@ -157,7 +169,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 8' "$OUT" >/dev/null
+jq -e '(.projects | length) == 9' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -217,7 +229,7 @@ jq -e '
   and .needs_human.blocking == 0
 ' "$OUT" >/dev/null
 
-# Malformed usage must not zero NEEDS-HUMAN or drop the project
+# Malformed unused usage must not break a healthy card
 jq -e '
   .projects[] | select(.name == "eta-badusage")
   | .needs_human.open == 1
@@ -234,6 +246,21 @@ jq -e '
   and .model_driver == "claude-test"
 ' "$OUT" >/dev/null
 
+# Real render failure: error field set, NH counts preserved, project not dropped
+jq -e '
+  .projects[] | select(.name == "iota-badverdict")
+  | .error == "snapshot_render_failed"
+  and .needs_human.open == 1
+  and .needs_human.blocking == 1
+  and .review == null
+' "$OUT" >/dev/null
+
+# UI error-card code present (static JS — server serves this file as-is)
+grep -q 'p.error' "$ROOT/shared/dashboard/index.html" \
+  || { echo "smoke-snapshot: index.html missing error-card branch" >&2; exit 1; }
+grep -q 'error:' "$ROOT/shared/dashboard/index.html" \
+  || { echo "smoke-snapshot: index.html missing error chip" >&2; exit 1; }
+
 # Empty roots still valid JSON
 export PLINTH_DASH_ROOTS="/nonexistent/path/nope"
 EMPTY="$FIX/empty.json"
@@ -249,7 +276,7 @@ mk_git "$FIX/Dev/tilde-proj"
 # Point HOME at our fixture so ~/.config and ~/ expand into FIX.
 export HOME="$CFG_HOME"
 # Create a symlink so ~/Dev resolves into FIX/Dev
-ln -s "$FIX/Dev" "$CFG_HOME/Dev"
+ln -sfn "$FIX/Dev" "$CFG_HOME/Dev"
 printf '%s\n' '# comment' '~/Dev/tilde-proj' > "$CFG_HOME/.config/plinth/dashboard-projects"
 CFG_OUT="$FIX/cfg.json"
 "$PLINTH" dash --snapshot > "$CFG_OUT"
@@ -271,5 +298,66 @@ rc=0
 rc=0
 "$PLINTH" dash --port 70000 >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || { echo "smoke-snapshot: --port 70000 should fail" >&2; exit 1; }
+rc=0
+PLINTH_DASH_PORT=0 "$PLINTH" dash >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=0 should fail" >&2; exit 1; }
+rc=0
+PLINTH_DASH_PORT=notaport "$PLINTH" dash >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=notaport should fail" >&2; exit 1; }
+
+# ── Short-lived server: loopback HTTP surface ────────────────────────────────
+# Uses a free high port; killed on exit. Asserts static page, snapshot API,
+# read-only POST, and that a render-failed project surfaces over /api/snapshot.
+command -v curl >/dev/null 2>&1 || { echo "smoke-snapshot: curl required for server check" >&2; exit 1; }
+export PLINTH_DASH_ROOTS="$A:$I"
+export HOME="$CFG_HOME"
+SRV_PORT=18734
+# If busy, walk up a few ports.
+for try in 18734 18735 18736 18737 18738; do
+  SRV_PORT="$try"
+  if ! (echo >/dev/tcp/127.0.0.1/"$SRV_PORT") 2>/dev/null; then
+    break
+  fi
+done
+"$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
+SRV_PID=$!
+srv_cleanup() { kill "$SRV_PID" 2>/dev/null || true; wait "$SRV_PID" 2>/dev/null || true; }
+trap 'srv_cleanup; cleanup' EXIT
+ready=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  # Bail early if the server already died.
+  if ! kill -0 "$SRV_PID" 2>/dev/null; then
+    echo "smoke-snapshot: server exited early:" >&2
+    cat "$FIX/srv.err" >&2 || true
+    exit 1
+  fi
+  sleep 0.15
+done
+[ "$ready" = 1 ] || { echo "smoke-snapshot: server did not become ready on :$SRV_PORT" >&2; cat "$FIX/srv.err" >&2; exit 1; }
+# Static UI
+curl -sf "http://127.0.0.1:${SRV_PORT}/" | grep -q 'Plinth dashboard' \
+  || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
+# Snapshot API includes the render-failed project with NH preserved
+curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" > "$FIX/api.json"
+jq -e '
+  (.projects | length) == 2
+  and ([.projects[] | select(.name == "iota-badverdict")
+        | .error == "snapshot_render_failed"
+        and .needs_human.open == 1] | any)
+' "$FIX/api.json" >/dev/null
+# Read-only
+post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
+[ "$post_code" = "405" ] || { echo "smoke-snapshot: POST should be 405, got $post_code" >&2; exit 1; }
+# Unknown path
+nf_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SRV_PORT}/nope" || true)"
+[ "$nf_code" = "404" ] || { echo "smoke-snapshot: unknown path should be 404, got $nf_code" >&2; exit 1; }
+# Banner claims loopback
+grep -q '127.0.0.1' "$FIX/srv.out" \
+  || { echo "smoke-snapshot: server banner missing 127.0.0.1" >&2; exit 1; }
+srv_cleanup
+trap cleanup EXIT
 
 echo "smoke-snapshot: OK"
