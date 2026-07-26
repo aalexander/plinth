@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Plinth CLI v4.6.0 — scaffold and update projects from a pinned Plinth release.
+# Plinth CLI v4.8.0 — scaffold and update projects from a pinned Plinth release.
 #
 #   plinth init   <project-path>  Bootstrap: create per-project files (only where
 #                                 absent) + copy shared files. Idempotent.
 #   plinth watch  <project-path>  Live session dashboard (task, stage pipeline,
 #                                 tokens, burn, review/gate state). --once for a
 #                                 single frame.
+#   plinth dash|dashboard         Multi-instance HTML wallboard on 127.0.0.1
+#                                 (--snapshot for offline JSON; --port N).
 #   plinth update <project-path>  Propagate a Plinth version to an existing project:
 #                                 refresh shared files (always overwritten), backfill
 #                                 any per-project files new to this Plinth version
@@ -40,14 +42,17 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth queue <project-path>                   (full NEEDS-HUMAN queue, untruncated)
        plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
        plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)
-       plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)"; exit 1; }
+       plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
+       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ]; then
+if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
+   || [ "$cmd" = "dash" ] || [ "$cmd" = "dashboard" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
+     # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -1819,6 +1824,313 @@ $frags
 EOF
 }
 
+# ── plinth dash / dashboard ───────────────────────────────────────────────────
+# Multi-instance HTML wallboard. Discovery (first match wins):
+#   1. PLINTH_DASH_ROOTS — colon-separated absolute paths (tests / operators)
+#   2. ~/.config/plinth/dashboard-projects — one absolute path per line (# comments)
+#   3. Default: every ~/Dev/* that has .plinth/config
+# Serves only on 127.0.0.1. Read-only. --snapshot prints JSON and exits (CI/smoke).
+
+_dash_mtime() {  # epoch seconds or 0
+  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+}
+
+_dash_realpath() {
+  # Prefer realpath; fall back to cd/pwd (no -P on pure logical paths).
+  if command -v realpath >/dev/null 2>&1; then realpath "$1" 2>/dev/null && return 0; fi
+  ( cd "$1" 2>/dev/null && pwd -P ) || return 1
+}
+
+discover_dashboard_projects() {
+  local p cfg="$HOME/.config/plinth/dashboard-projects" line rp
+  if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
+    local IFS=':'
+    for p in $PLINTH_DASH_ROOTS; do
+      [ -n "$p" ] || continue
+      [ -d "$p" ] || continue
+      [ -f "$p/.plinth/config" ] || continue
+      rp="$(_dash_realpath "$p")" || continue
+      printf '%s\n' "$rp"
+    done
+    return 0
+  fi
+  if [ -f "$cfg" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|\#*) continue ;; esac
+      # Expand leading ~/ only (no arbitrary shell expansion).
+      case "$line" in "~/"*) line="$HOME/${line#~/}" ;; esac
+      [ -d "$line" ] || continue
+      [ -f "$line/.plinth/config" ] || continue
+      rp="$(_dash_realpath "$line")" || continue
+      printf '%s\n' "$rp"
+    done < "$cfg"
+    return 0
+  fi
+  # Default scan: ~/Dev/*/.plinth/config
+  local dev="${PLINTH_DASH_DEV_ROOT:-$HOME/Dev}"
+  [ -d "$dev" ] || return 0
+  for p in "$dev"/*; do
+    [ -d "$p" ] || continue
+    [ -f "$p/.plinth/config" ] || continue
+    rp="$(_dash_realpath "$p")" || continue
+    printf '%s\n' "$rp"
+  done
+}
+
+# One project card as a compact JSON object on stdout (single line).
+snapshot_one_project() {
+  local dir="$1" NOW
+  NOW="$(date +%s)"
+  local feedless=0 EV="$dir/.plinth/session/events.jsonl"
+  if [ ! -f "$EV" ]; then feedless=1; EV=/dev/null; fi
+
+  local head branch slug
+  head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
+  branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo '-')"
+  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+
+  local vfile="$dir/.plinth/session/review/$slug/verdict.json"
+  [ -f "$vfile" ] || vfile=/dev/null
+  local ufile="$dir/.plinth/session/review/$slug/usage.jsonl"
+  [ -f "$ufile" ] || ufile=/dev/null
+  local rqfile
+  rqfile="$(ls "$dir/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
+  [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
+
+  local activity_ago=null events_mtime=0
+  if [ "$feedless" -eq 0 ]; then
+    events_mtime="$(_dash_mtime "$dir/.plinth/session/events.jsonl")"
+    case "$events_mtime" in ''|*[!0-9]*) events_mtime=0 ;; esac
+    if [ "$events_mtime" -gt 0 ] 2>/dev/null; then
+      activity_ago=$((NOW - events_mtime))
+      [ "$activity_ago" -ge 0 ] 2>/dev/null || activity_ago=0
+    fi
+  fi
+
+  local nhn=0 nhb=0 nhf raw
+  nhf="$(needs_human_file "$dir")"
+  if [ -s "$nhf" ]; then
+    raw="$(open_items "$nhf")"
+    [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf" || true)"
+    nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
+    nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
+    case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
+  fi
+
+  # Optional driver burn from Claude transcript (same 5-min window as watch). Absent → null.
+  local transcript=/dev/null
+  if [ "$feedless" -eq 0 ]; then
+    transcript="$(jq -rs '[.[] | select(.transcript != null)] | last | .transcript // empty' \
+      "$dir/.plinth/session/events.jsonl" 2>/dev/null || true)"
+    [ -n "$transcript" ] && [ -f "$transcript" ] || transcript=/dev/null
+  fi
+
+  jq -nc --slurpfile ev "$EV" --slurpfile vd "$vfile" --slurpfile us "$ufile" \
+        --slurpfile rq "$rqfile" --slurpfile tr "$transcript" \
+        --arg path "$dir" --arg name "$(basename "$dir")" \
+        --arg head "$head" --arg branch "$branch" \
+        --argjson feedless "$feedless" --argjson now "$NOW" \
+        --argjson activity_ago "${activity_ago:-null}" \
+        --argjson nhn "$nhn" --argjson nhb "$nhb" '
+    def nullish: if . == null or . == "" then null else . end;
+    ($ev | map(select(type == "object"))) as $all
+    | (([$all[] | select(.sid != null)] | .[-1].sid) // null) as $sid
+    | ($all | map(select(.sid == $sid))) as $sev
+    | ($vd[0] // null) as $V
+    | ($rq[0] // null) as $RQ
+    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) then true else false end) as $running
+    | (if $V == null then null
+       else (($V.sha // "")[0:7] != $head) end) as $stale
+    | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
+        | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
+           i: (.message.usage.input_tokens // 0),
+           cc: (.message.usage.cache_creation_input_tokens // 0),
+           o: (.message.usage.output_tokens // 0),
+           m: (.message.model // null)}
+        | select(.e != null))) as $use
+    | (if ($use | length) == 0 then null
+       else ([$use[] | select(.e > $now - 300) | .i + .cc + .o] | add // 0) / 5 | floor end) as $burn
+    | (if ($use | length) == 0 then null
+       else ([$use[] | .i + .cc + .o] | add // 0) end) as $tok
+    | (($use | map(.m) | map(select(. != null)) | .[-1]) // null) as $driver_model
+    | (if ($sev | length) == 0 then null else ($now - $sev[0].epoch) end) as $session_secs
+    | (([$sev[] | select(.event == "UserPromptSubmit") | .detail // ""
+         | select((test("^\\s*<") | not) and length > 0)] | .[-1]) // null) as $task
+    | {
+        path: $path,
+        name: $name,
+        branch: $branch,
+        head: $head,
+        feedless: ($feedless == 1),
+        sid: $sid,
+        task: $task,
+        session_secs: $session_secs,
+        activity_secs_ago: (if $activity_ago == null then null else $activity_ago end),
+        model_driver: $driver_model,
+        model_reviewer: ($V.model // null),
+        tokens_total: $tok,
+        burn_per_min: $burn,
+        review: (if $V == null and ($running | not) then null else {
+          verdict: ($V.verdict // null),
+          round: (if $running then ($RQ.round // null) else ($V.round // null) end),
+          sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
+          stale: $stale,
+          running: $running,
+          mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
+          tier: ($V.risk.tier // null)
+        } end),
+        needs_human: { open: $nhn, blocking: $nhb },
+        quota: {
+          available: false,
+          note: "Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"
+        }
+      }
+  ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
+      --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
+      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+        error:"snapshot_render_failed",
+        needs_human:{open:0,blocking:0},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+}
+
+build_dashboard_snapshot() {
+  local roots tmp dir projects_json discovery
+  tmp="$(mktemp)" || { echo "plinth dash: mktemp failed" >&2; exit 1; }
+  : > "$tmp"
+  roots="$(discover_dashboard_projects | sort -u)"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    snapshot_one_project "$dir" >> "$tmp" || true
+  done <<< "$roots"
+  # jq -s on an empty file yields []; --slurpfile errors on empty.
+  projects_json="$(jq -s '.' "$tmp" 2>/dev/null || echo '[]')"
+  rm -f "$tmp"
+  if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then
+    discovery="env:PLINTH_DASH_ROOTS"
+  elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then
+    discovery="config:~/.config/plinth/dashboard-projects"
+  else
+    discovery="default:~/Dev/*/.plinth/config"
+  fi
+  jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
+     --arg discovery "$discovery" \
+     '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+}
+
+run_dashboard() {
+  shift  # drop cmd
+  local mode=serve port="${PLINTH_DASH_PORT:-7348}" arg
+  while [ $# -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --snapshot) mode=snapshot ;;
+      --port)
+        port="${1:-}"
+        [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
+        shift || true
+        case "$port" in ''|*[!0-9]*) echo "plinth dash: bad port: $port" >&2; exit 1 ;; esac
+        ;;
+      --help|-h) usage ;;
+      *) echo "plinth dash: unknown arg: $arg" >&2; usage ;;
+    esac
+  done
+
+  if [ "$mode" = snapshot ]; then
+    build_dashboard_snapshot
+    exit 0
+  fi
+
+  command -v python3 >/dev/null 2>&1 || { echo "plinth dash: python3 required to serve the UI" >&2; exit 1; }
+  local html="$PLINTH_ROOT/shared/dashboard/index.html"
+  [ -f "$html" ] || { echo "plinth dash: missing $html" >&2; exit 1; }
+
+  # Resolve self for the child to re-invoke --snapshot (same checkout / same env).
+  local self="$PLINTH_ROOT/bin/plinth"
+  [ -x "$self" ] || self="$(command -v plinth 2>/dev/null || true)"
+  [ -n "$self" ] || { echo "plinth dash: cannot locate plinth binary" >&2; exit 1; }
+
+  echo "plinth dash: http://127.0.0.1:${port}/  (loopback only · ctrl-c to quit)"
+  echo "  discovery: $(if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then echo "PLINTH_DASH_ROOTS"; elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then echo "~/.config/plinth/dashboard-projects"; else echo "~/Dev/*/.plinth/config"; fi)"
+  # Env passed explicitly so the child inherits roots/config the same way.
+  PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
+  PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
+  python3 - "$port" <<'PY'
+import json, os, subprocess, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(sys.argv[1])
+HOST = "127.0.0.1"
+HTML = os.environ["PLINTH_DASH_HTML"]
+BIN = os.environ["PLINTH_BIN"]
+# Preserve operator discovery overrides for snapshot child.
+CHILD_ENV = os.environ.copy()
+
+class H(BaseHTTPRequestHandler):
+    server_version = "plinth-dash/1"
+    def log_message(self, fmt, *args):
+        sys.stderr.write("plinth dash: %s - %s\n" % (self.address_string(), fmt % args))
+
+    def _send(self, code, body: bytes, ctype: str):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            try:
+                with open(HTML, "rb") as f:
+                    body = f.read()
+            except OSError as e:
+                self._send(500, str(e).encode(), "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        if path == "/api/snapshot":
+            try:
+                # Fresh snapshot each request — thin shell-out to the same offline builder.
+                out = subprocess.check_output(
+                    [BIN, "dash", "--snapshot"],
+                    env=CHILD_ENV,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                )
+                # Validate JSON so a broken builder cannot serve garbage as 200 application/json.
+                json.loads(out)
+            except Exception as e:
+                err = json.dumps({"error": "snapshot_failed", "detail": str(e)}).encode()
+                self._send(500, err, "application/json; charset=utf-8")
+                return
+            self._send(200, out, "application/json; charset=utf-8")
+            return
+        self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        self._send(405, b"read-only", "text/plain; charset=utf-8")
+
+class LoopbackServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    def server_bind(self):
+        # Belt: refuse non-loopback even if HOST were ever changed above.
+        if self.server_address[0] not in ("127.0.0.1", "::1"):
+            raise RuntimeError("plinth dash refuses non-loopback bind")
+        super().server_bind()
+
+httpd = LoopbackServer((HOST, PORT), H)
+try:
+    httpd.serve_forever()
+except KeyboardInterrupt:
+    pass
+finally:
+    httpd.server_close()
+PY
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -1827,6 +2139,7 @@ case "$cmd" in
   queue) run_queue ;;
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
+  dash|dashboard) run_dashboard "$@" ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent

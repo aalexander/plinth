@@ -121,6 +121,12 @@ Everything between is the model's call.
   Empty `changelog.d/` is a no-op (exit 0). Invalid/missing `bump:`, empty body, bad
   slug, or malformed `VERSION` aborts without rewriting `VERSION` or `CHANGELOG.md`.
   Format and rationale: `changelog.d/README.md`.
+- `plinth dash` / `plinth dashboard` — multi-instance HTML wallboard on
+  **127.0.0.1** only (`--port N`, default 7348). Discovers Plinth projects
+  (`PLINTH_DASH_ROOTS`, else `~/.config/plinth/dashboard-projects`, else
+  `~/Dev/*/.plinth/config`), serves a dark card UI, and exposes
+  `GET /api/snapshot`. `--snapshot` prints that JSON offline (no server). Does
+  not replace `plinth watch`. See “Multi-instance wallboard” below.
 - **Implementer lanes** (`.claude/agents/grok-implementer`, `codex-implementer`) — for a
   Claude/Fable driver, delegate the TYPING of well-specified work to a cheaper cross-family
   CLI instead of typing it yourself. Hand a lane a five-part spec (objective · files ·
@@ -461,6 +467,36 @@ statusline (opt-in, in project or user settings.json):
 
 It shows the current stage + time in stage, the verdict vs HEAD, and red
 guard/gate alerts. Token economics stay on `plinth watch`.
+
+## Multi-instance wallboard (`plinth dash`)
+`plinth watch` is one project in a TTY. When you have several Plinth checkouts
+going, use the HTML wallboard:
+
+```
+plinth dash            # http://127.0.0.1:7348/  (loopback only)
+plinth dashboard       # alias
+plinth dash --port 9   # pick a free port
+plinth dash --snapshot # print the same JSON the UI polls (offline / CI)
+```
+
+The server binds **127.0.0.1 only**, is read-only, and serves a single static
+page plus `GET /api/snapshot`. It does **not** replace `plinth watch` — the TTY
+dashboard stays the per-session deep view.
+
+**Discovery** (first match wins):
+
+1. `PLINTH_DASH_ROOTS` — colon-separated absolute paths (useful for tests).
+2. `~/.config/plinth/dashboard-projects` — one absolute path per line (`#` comments; `~/` expanded).
+3. **Default:** every `~/Dev/*` directory that has a `.plinth/config`.
+
+Each card shows project path, branch @ head, review verdict / round / stale vs
+HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
+open/blocking counts, a **feedless** flag when there is no event feed (typical
+for non-Claude drivers), and **observed** driver burn when a Claude transcript is
+reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
+no scrapers, no fake %.
+
+Smoke (offline, no server): `shared/dashboard/smoke-snapshot.sh`.
 
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.

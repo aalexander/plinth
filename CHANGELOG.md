@@ -1,5 +1,21 @@
 # Plinth changelog
 
+## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
+- **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
+  project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
+  page plus `GET /api/snapshot`, read-only. Discovery (first match):
+  `PLINTH_DASH_ROOTS` (colon paths), else `~/.config/plinth/dashboard-projects`
+  (one path per line), else default `~/Dev/*` with `.plinth/config`.
+- **Per-card snapshot.** Project path, branch @ head, review verdict / round /
+  stale vs HEAD / in-flight round, `events.jsonl` activity age, NEEDS-HUMAN
+  open+blocking, feedless flag, observed driver burn when a Claude transcript is
+  reachable. Vendor plan remaining quota and reset times are explicitly
+  **unavailable** (honest empty — no scrapers).
+- **`--snapshot`.** Offline JSON builder used by the server and by
+  `shared/dashboard/smoke-snapshot.sh` (fixture session → field asserts; no
+  long-lived server in CI). UI auto-refreshes every 2s. Does not replace
+  `plinth watch` (TTY stays the per-session deep view).
+
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
