@@ -2573,8 +2573,16 @@ jobs:
           [ "$(gcmd $'(\ncat <<\'S\'\nrm -rf build\nS\n) | bash')" = 2 ] || { echo "::error::heredoc-matrix: subshell | bash hid body"; exit 1; }
           [ "$(gcmd $'tee <<\'S\' $(printf /dev/null)#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: )#suffix not a comment; pipe to bash missed"; exit 1; }
           [ "$(gcmd $'tee <<\'S\' /dev/null\\ #suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-space #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\;#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-semi #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\&#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-amp #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\|#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-pipe #suffix pipe missed"; exit 1; }
           [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: if/fi | bash hid body"; exit 1; }
           [ "$(gcmd $'while false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: while/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'true; if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: mid-line if after ; | bash hid body"; exit 1; }
+          [ "$(gcmd $'until false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: until/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'for x in 1; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: for/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'case x in x)\ncat <<\'S\'\nrm -rf build\nS\n;; esac | bash')" = 2 ] || { echo "::error::heredoc-matrix: case/esac | bash hid body"; exit 1; }
+          [ "$(gcmd $'select x in a; do\ncat <<\'S\'\nrm -rf build\nS\nbreak; done | bash')" = 2 ] || { echo "::error::heredoc-matrix: select/done | bash hid body"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

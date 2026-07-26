@@ -453,6 +453,33 @@ case "$tool" in
         advance_globals($0)
       }
     ')"
+    # Fail-closed: if non-suppressed text still contains an unquoted pipeline, body
+    # suppression is unsafe (e.g. { cat <<'S' … S; } | bash, if/fi | bash, or a
+    # missed compound). Rescan the full command with no body stripping.
+    if printf '%s\n' "$inert_stripped" | awk '
+      BEGIN { found=0 }
+      {
+        n=length($0); st=""; prev=""; prev_esc=0
+        for (i=1;i<=n;i++) {
+          c=substr($0,i,1)
+          if (st=="sq") { if (c=="\047") st=""; prev=c; prev_esc=0; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; if (i<=n) { prev=substr($0,i,1); prev_esc=1 } continue }
+            if (c=="\"") st=""
+            prev=c; prev_esc=0; continue
+          }
+          if (c=="\\") { i++; if (i<=n) { prev=substr($0,i,1); prev_esc=1 } continue }
+          if (c=="#" && !prev_esc && (prev=="" || prev ~ /[[:space:];&|]/)) break
+          if (c=="\047") { st="sq"; prev=c; prev_esc=0; continue }
+          if (c=="\"") { st="dq"; prev=c; prev_esc=0; continue }
+          if (c=="|") { found=1; exit }
+          prev=c; prev_esc=0
+        }
+      }
+      END { exit(found ? 0 : 1) }
+    '; then
+      inert_stripped=$(printf '%s\n' "$cmd")
+    fi
     # rm/git patterns are anchored to command position. Upstream issue #1
     # hardenings (driver-reported): backticks open command substitutions —
     # they are boundaries too; and quotes are REMOVED (not the spans — the shell
