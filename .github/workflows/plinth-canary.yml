@@ -91,26 +91,18 @@ jobs:
               | grep -E '^tools:' | head -1
           }
           code_block_lines() {
-            # Indented code lines (4+ leading spaces) only — ignores prose/comments outside blocks.
-            grep -E '^ {4,}' "$1" || true
+            # Indented code: 4+ spaces OR any leading tabs (Markdown code may use either).
+            grep -E '^( {4,}|\t+)' "$1" || true
           }
-          for lane in grok codex; do
-            agent="$AGENT_DIR/${lane}-implementer.md"
-            tools_line="$(frontmatter_tools "$agent")"
-            [ -n "$tools_line" ] || { echo "::error::${lane} lane has no tools: line in YAML frontmatter"; exit 1; }
-            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' || {
-              echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
-            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
-              echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
-            # Full-line allowlist for any code line that mentions SPEC / $SPEC / ${SPEC}:
-            # shell must not create the prompt. Substring greps are insufficient (a write can
-            # piggyback on an allowed fragment). The whole stripped line must match exactly.
+          # Static SPEC-line allowlist (full-line match after strip). Exit 0 if clean, 1 if bad.
+          assert_spec_allowlist() {
+            local agent="$1" lane="$2"
+            local code line norm
             code="$(code_block_lines "$agent")"
             printf '%s\n' "$code" | grep -E '<<' >/dev/null && {
-              echo "::error::${lane} code block contains a shell heredoc"; exit 1; } || true
+              echo "::error::${lane} code block contains a shell heredoc"; return 1; } || true
             while IFS= read -r line; do
               norm="$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-              # Skip pure comments and lines with no SPEC token.
               case "$norm" in \#*) continue ;; esac
               printf '%s\n' "$norm" | grep -Eq 'SPEC|\$\{?SPEC' || continue
               case "$norm" in
@@ -127,9 +119,21 @@ jobs:
                 'rm -rf "$SPEC_DIR"') continue ;;
               esac
               echo "::error::${lane} code block has non-allowlisted SPEC line (shell must not write the prompt): $norm"
-              exit 1
+              return 1
             done < <(printf '%s\n' "$code")
+            return 0
+          }
+          for lane in grok codex; do
+            agent="$AGENT_DIR/${lane}-implementer.md"
+            tools_line="$(frontmatter_tools "$agent")"
+            [ -n "$tools_line" ] || { echo "::error::${lane} lane has no tools: line in YAML frontmatter"; exit 1; }
+            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' || {
+              echo "::error::${lane} frontmatter tools lacks Write as a tool token (got: $tools_line)"; exit 1; }
+            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || {
+              echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
+            assert_spec_allowlist "$agent" "$lane" || exit 1
             # Allocation contract — CODE BLOCK only. Handoff MUST print SPEC_DIR for cleanup.
+            code="$(code_block_lines "$agent")"
             printf '%s\n' "$code" | grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' || {
               echo "::error::${lane} code block lacks project-local SPEC_DIR mktemp"; exit 1; }
             printf '%s\n' "$code" | grep -qE 'SPEC="\$SPEC_DIR/prompt"' || {
@@ -264,6 +268,9 @@ jobs:
               *) echo "::error::${lane}: allocated SPEC not under \${PWD}/.plinth-lane.* (got $SPEC)"; exit 1 ;;
             esac
             owned_dirs+=("$SPEC_DIR")
+            # Track SNAP/OUT from handoff for cleanup (allocation leaves them in /tmp).
+            [ -n "${SNAP:-}" ] && owned_dirs+=("$SNAP")
+            [ -n "${OUT:-}" ] && owned_dirs+=("$OUT")
             [ ! -e "$SPEC" ] || { echo "::error::${lane}: allocation pre-created SPEC path $SPEC"; exit 1; }
             write_analog "$SPEC" "$escaped"
             [ -f "$SPEC" ] || { echo "::error::${lane}: Write analog did not create $SPEC"; exit 1; }
@@ -306,15 +313,39 @@ jobs:
           }
           if [ -n "${PROMPT_CLI_UNDER_TEST:-}" ]; then
             SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"; SPEC="$SPEC_DIR/prompt"
+            owned_dirs+=("$SPEC_DIR")
             write_analog "$SPEC" "$PD/escaped-override"
             RECEIVED="$PD/received" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
             cmp -s "$SPEC" "$PD/received" || {
               echo "::error::PROMPT_CLI_UNDER_TEST path transport changed payload"; exit 1; }
-            rm -rf "$SPEC_DIR"
+            [ ! -e "$PD/escaped-override" ] || {
+              echo "::error::PROMPT_CLI_UNDER_TEST allowed SPEC_EOF payload to escape into shell execution"; exit 1; }
           else
             exercise_lane grok "$GA" "$GCMD"
             exercise_lane codex "$CA" "$CCMD"
           fi
+          # Negative fixtures: known bypass forms MUST fail the full-line allowlist.
+          NEG="$(mktemp -d "$PD/neg.XXXXXX")"
+          owned_dirs+=("$NEG")
+          fail_neg() {
+            local name="$1" mut="$2"
+            cp "$GA" "$NEG/grok-implementer.md"
+            # Apply mutation via python for reliable bytes.
+            python3 - "$NEG/grok-implementer.md" "$mut" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          p.write_text(p.read_text() + "\n" + sys.argv[2] + "\n")
+          PY
+            if assert_spec_allowlist "$NEG/grok-implementer.md" "neg-$name"; then
+              echo "::error::negative fixture '$name' was accepted by the allowlist"; exit 1
+            fi
+            echo "canary: negative fixture rejected: $name"
+          }
+          fail_neg piggyback-trunc '       [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] && : > "$SPEC" || {'
+          fail_neg braced-spec $'\t: > "${SPEC}"'
+          fail_neg braced-dir-prompt $'\t: > "${SPEC_DIR}/prompt"'
+          fail_neg tab-append $'\t> "$OUT" 2>&1 || RC=$?; : > "$SPEC"'
+          fail_neg python-spec-dir '       python3 -c "from pathlib import Path; Path(\"$SPEC_DIR/prompt\").write_text(\"x\")"'
           # Remove only fixture-owned paths (array — safe with spaces/glob in paths).
           rm -rf -- "${owned_dirs[@]}" 2>/dev/null || true
           # Live Write receipt (Claude Code) for the project-local not-yet-existing path.
