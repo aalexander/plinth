@@ -3593,35 +3593,57 @@ jobs:
             grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
               || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
             grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
-            # Behavioral lifecycle in a temp project CWD (mutation-sensitive):
-            WL="$(mktemp -d)"; (
+            # Behavioral lifecycle: EXTRACT allocation+cleanup from the shipped agent and
+            # RUN them with a stub CLI that only succeeds if it path-consumes $SPEC.
+            WL="$(mktemp -d)"; STUBS="$(mktemp -d)"
+            (
               set -euo pipefail
               cd "$WL"
-              # Ship the same allocation the agent documents:
-              SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")"
-              SPEC="$SPEC_DIR/prompt"
+              # Extract the allocation fragment the agent documents (must stay exact):
+              eval "$(grep -E '^\s+SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              eval "$(grep -E '^\s+SPEC="\$SPEC_DIR/prompt"' "$A" | head -1 | sed 's/^[[:space:]]*//')"
               OUT="$(mktemp -t canary-out.XXXXXX)"
+              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC from agent"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
-              # Simulate Write tool creating the file (Claude Write refuses overwrite):
+              # Simulate the Write tool (creates not-yet-existing project-local path):
               printf 'objective: test\nMODEL: canary\n' > "$SPEC"
               [ -s "$SPEC" ] || { echo "Write simulation failed"; exit 1; }
-              # CLI consumption: path-based read (not stdin heredoc of the agent body):
-              cat "$SPEC" > "$OUT"
-              [ -s "$OUT" ] || { echo "CLI did not consume SPEC"; exit 1; }
-              # Cleanup contract from the agent (path-guarded rmdir of empty dir after prompt removed):
+              # Stub the delegate CLI: must be invoked with --prompt-file $SPEC (grok) or
+              # stdin-from-file $SPEC (codex), and must read that path.
+              export PATH="$STUBS:$PATH"
+              if [ "$a" = grok ]; then
+                printf '#!/usr/bin/env bash\nset -e\npf=""; while [ $# -gt 0 ]; do case "$1" in --prompt-file) pf="$2"; shift 2;; *) shift;; esac; done\n[ -n "$pf" ] && [ -s "$pf" ] || { echo "stub grok: missing nonempty --prompt-file"; exit 9; }\ncat "$pf"\n' > "$STUBS/grok"
+                chmod +x "$STUBS/grok"
+                # Same command shape the agent ships (cap identity; PATH has stub first):
+                LANE_RULES=x
+                cap() { shift; "$@"; }
+                RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \
+                  --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
+                  --output-format plain --cwd "$(pwd)" \
+                  > "$OUT" 2>&1 || RC=$?
+              else
+                printf '#!/usr/bin/env bash\nset -e\n# codex is fed SPEC on stdin via: - < "$SPEC"\n[ -t 0 ] && { echo "stub codex: stdin is a TTY — SPEC was not redirected"; exit 9; }\ncat\n' > "$STUBS/codex"
+                chmod +x "$STUBS/codex"
+                cap() { shift; "$@"; }
+                RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
+                  --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
+                  > "$OUT" 2>&1 || RC=$?
+              fi
+              [ "$RC" = 0 ] || { echo "stub CLI failed rc=$RC out=$(cat "$OUT")"; exit 1; }
+              grep -q 'objective: test' "$OUT" || { echo "CLI did not consume SPEC contents"; exit 1; }
+              # Shipped cleanup fragment from the agent (must remove prompt then rmdir SPEC_DIR):
               rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"
               case "$SPEC_DIR" in
                 "${PWD}/.plinth-lane."*)
-                  case "$rest" in ''|*/*|*..*) echo "SPEC_DIR not direct plinth-lane"; exit 1 ;; esac
+                  case "$rest" in ''|*/*|*..*) echo "SPEC_DIR not direct"; exit 1 ;; esac
                   [ "$SPEC" = "$SPEC_DIR/prompt" ] || { echo "SPEC_DIR handoff mismatch"; exit 1; }
                   rm -f -- "$SPEC"
                   rmdir -- "$SPEC_DIR" || { echo "rmdir SPEC_DIR failed"; exit 1; }
                   ;;
                 *) echo "SPEC_DIR not under plinth-lane"; exit 1 ;;
               esac
-              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR still exists after cleanup"; exit 1; }
-              [ ! -e "$SPEC" ] || { echo "SPEC still exists after cleanup"; exit 1; }
-            ) || { echo "::error::${a} Write-tool SPEC lifecycle behavioral canary failed"; exit 1; }
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after cleanup"; exit 1; }
+            ) || { echo "::error::${a} shipped Write-tool/CLI SPEC lifecycle canary failed"; exit 1; }
           done
           echo "lane-guard delegation + Write-tool lifecycle canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
