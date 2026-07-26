@@ -459,7 +459,11 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
+if [ "${HAVE_SHA256:-0}" = "1" ]; then
+  export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
+fi
+export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -475,7 +479,9 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 34' "$OUT" >/dev/null
+EXPECTED_N=34
+[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=35
+jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -626,16 +632,20 @@ jq -e '
   .projects[] | select(.name == "mu-multiv")
   | .error == "snapshot_render_failed"
 ' "$OUT" >/dev/null
-jq -e '
-  .projects[] | select(.name == "mu-falsev")
-  | .error == "snapshot_render_failed"
-  and .feedless == true
-' "$OUT" >/dev/null
-for badn in mu-objnull mu-objfalse mu-falseobj mu-noevent mu-numevent mu-emptyobj mu-nullverdict mu-multiv; do
+# Invalid verdict files (no events) preserve feedless:true
+for badn in mu-falsev mu-objnull mu-objfalse mu-falseobj mu-nullverdict mu-multiv mu-badenum mu-missingv; do
   jq -e --arg n "$badn" '
     .projects[] | select(.name == $n)
     | .error == "snapshot_render_failed"
     and .feedless == true
+  ' "$OUT" >/dev/null
+done
+# Malformed events files have a feed → feedless:false + error
+for badn in mu-noevent mu-numevent mu-emptyobj mu-badevent mu-baddetail mu-badevname; do
+  jq -e --arg n "$badn" '
+    .projects[] | select(.name == $n)
+    | .error == "snapshot_render_failed"
+    and .feedless == false
   ' "$OUT" >/dev/null
 done
 # Healthy real hook event names
@@ -644,6 +654,16 @@ jq -e '
   | (.error == null or .error == "")
   and .sid == "sid-h"
 ' "$OUT" >/dev/null
+
+# SHA-256 object format APPROVED-at-HEAD
+if [ "${HAVE_SHA256:-0}" = "1" ]; then
+  jq -e '
+    .projects[] | select(.name == "mu-sha256")
+    | (.error == null or .error == "")
+    and .review.verdict == "APPROVED"
+    and .review.stale == false
+  ' "$OUT" >/dev/null
+fi
 
 # Interleaved SIDs: active A keeps original task + ~500s session
 jq -e '
