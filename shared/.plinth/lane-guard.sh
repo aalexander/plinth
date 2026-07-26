@@ -390,27 +390,38 @@ case "$sub" in
         _gt0=$(date +%s); _go="$(_cap 30 grok models 2>&1)"; _grc=$?; _gel=$(( $(date +%s) - _gt0 ))
         # DISAMBIGUATE the failure. One lumped reason ("not signed in (or failed/hung)") cost a
         # driver a session: a first-call unavailable followed by clean re-runs was unattributable.
-        # HONEST BOUND on the timeout claim:
-        #   - GNU `timeout` / gtimeout and the python3 fallback BOTH exit 124 when the wall-clock
-        #     cap fires. _cap also returns 124 IMMEDIATELY when no cap tool exists. A child may
-        #     itself exit 124. So 124 alone is not a timeout; 124 + elapsed ≈ cap is the timeout
-        #     signature (residual: a CLI that itself exits 124 after ~30s is not distinguishable).
-        #   - 137 (SIGKILL) / 142 (SIGALRM) are NOT the timeout wrappers' exit — those return 124
-        #     even after -k TERM→KILL. Non-124 must never be labeled timeout-only, even when slow.
+        # HONEST BOUND on the timeout claim (GNU coreutils `timeout` + our python fallback):
+        #   - Elapsed time first: an INSTANT 124 is not a timeout (_cap returns 124 immediately
+        #     when no cap tool exists; a child may exit 124/137/142 itself).
+        #   - rc=124 + elapsed≈cap: wall-clock TIMEOUT. GNU timeout exits 124 when the child dies
+        #     on the initial TERM; the python fallback always exits 124 on cap fire. Residual: a
+        #     CLI that itself exits 124 after ~30s is not distinguishable.
+        #   - rc=137 + elapsed≈cap: CONSISTENT WITH timeout after -k KILL escalation (GNU timeout
+        #     returns 137 when it sends SIGKILL — see coreutils timeout-invocation), OR external
+        #     SIGKILL / CLI self-exit 137. Never label 137 as timeout-ONLY; never label it as
+        #     "NOT a timeout" either (Ubuntu's genuine hang path is 137).
+        #   - rc=142 + elapsed≈cap: SIGALRM — not the standard GNU timeout/python cap signature.
         # DIAGNOSTIC only — no retry, no change to what counts as authenticated.
         case "$_grc" in
           124)
             if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock timeout (GNU timeout/python exit 124, elapsed ${_gel}s) — a COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
+              echo "unavailable: the grok auth check ('grok models') hit the 30s wall-clock timeout (exit 124, elapsed ${_gel}s) — GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire. A COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
             else
-              echo "unavailable: the grok auth check terminated with rc=124 after only ${_gel}s — too fast to be the 30s wall-clock timeout (cap wrappers exit 124 only after the full cap). Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'grok models' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'grok models' directly."
+              echo "unavailable: the grok auth check terminated with rc=124 after only ${_gel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'grok models' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'grok models' directly."
             fi
             exit 3 ;;
-          137|142)
+          137)
             if [ "$_gel" -ge 28 ]; then
-              echo "unavailable: the grok auth check ('grok models') died with rc=$_grc after ${_gel}s — NOT a wall-clock timeout: the cap wrappers (GNU timeout / python) exit 124 when they fire; rc=$_grc is signal death (137=SIGKILL, 142=SIGALRM) or the CLI's own exit after a long wait. Investigate OOM/external kill/CLI self-exit, not only a cold start."
+              echo "unavailable: the grok auth check ('grok models') ended rc=137 after ${_gel}s — consistent with the 30s wall-clock cap after -k KILL escalation (GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis. A COLD first call can be slow; re-run preflight ONCE before concluding grok is unavailable"
             else
-              echo "unavailable: the grok auth check terminated with rc=$_grc after only ${_gel}s — too fast to be the 30s wall-clock timeout, and NOT a timeout code (wrappers exit 124). rc=$_grc is signal death (137=SIGKILL, 142=SIGALRM) or the CLI's own exit."
+              echo "unavailable: the grok auth check terminated with rc=137 after only ${_gel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
+            fi
+            exit 3 ;;
+          142)
+            if [ "$_gel" -ge 28 ]; then
+              echo "unavailable: the grok auth check ('grok models') ended rc=142 after ${_gel}s — SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Investigate the process, not only a cold start."
+            else
+              echo "unavailable: the grok auth check terminated with rc=142 after only ${_gel}s — too fast to be the 30s wall-clock cap; rc=142 is SIGALRM (128+14), not a timeout wrapper exit."
             fi
             exit 3 ;;
         esac
@@ -422,18 +433,25 @@ case "$sub" in
         case "$_crc" in
           0) : ;;
           124)
-            # Same honest bound as grok: only rc=124 + elapsed ≈ cap is a timeout claim.
+            # Same honest bound as grok (see above): 124+elapsed = timeout; 137+elapsed = -k-or-signal.
             if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock timeout (GNU timeout/python exit 124, elapsed ${_cel}s) — a COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
+              echo "unavailable: the codex auth check ('codex login status') hit the 30s wall-clock timeout (exit 124, elapsed ${_cel}s) — GNU timeout returns 124 when the child dies on TERM; the python fallback always exits 124 on cap fire. A COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
             else
-              echo "unavailable: the codex auth check terminated with rc=124 after only ${_cel}s — too fast to be the 30s wall-clock timeout (cap wrappers exit 124 only after the full cap). Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'codex login status' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'codex login status' directly."
+              echo "unavailable: the codex auth check terminated with rc=124 after only ${_cel}s — too fast to be the 30s wall-clock timeout. Either no wall-clock cap tool is installed (_cap refuses to run uncapped and returns 124 immediately) or 'codex login status' itself exited 124. Check 'command -v timeout gtimeout python3' and run 'codex login status' directly."
             fi
             exit 3 ;;
-          137|142)
+          137)
             if [ "$_cel" -ge 28 ]; then
-              echo "unavailable: the codex auth check ('codex login status') died with rc=$_crc after ${_cel}s — NOT a wall-clock timeout: the cap wrappers (GNU timeout / python) exit 124 when they fire; rc=$_crc is signal death (137=SIGKILL, 142=SIGALRM) or the CLI's own exit after a long wait. Investigate OOM/external kill/CLI self-exit, not only a cold start."
+              echo "unavailable: the codex auth check ('codex login status') ended rc=137 after ${_cel}s — consistent with the 30s wall-clock cap after -k KILL escalation (GNU timeout returns 137 when it sends SIGKILL), OR with an external SIGKILL / CLI self-exit 137; not a timeout-only diagnosis. A COLD first call can be slow; re-run preflight ONCE before concluding codex is unavailable"
             else
-              echo "unavailable: the codex auth check terminated with rc=$_crc after only ${_cel}s — too fast to be the 30s wall-clock timeout, and NOT a timeout code (wrappers exit 124). rc=$_crc is signal death (137=SIGKILL, 142=SIGALRM) or the CLI's own exit."
+              echo "unavailable: the codex auth check terminated with rc=137 after only ${_cel}s — too fast to be the 30s wall-clock cap (KILL-escalation path needs the full cap + -k window). rc=137 is SIGKILL (128+9) from the CLI or an external kill, not a completed timeout."
+            fi
+            exit 3 ;;
+          142)
+            if [ "$_cel" -ge 28 ]; then
+              echo "unavailable: the codex auth check ('codex login status') ended rc=142 after ${_cel}s — SIGALRM (128+14), not the standard wall-clock-cap signature (GNU timeout exits 124 on TERM-death or 137 after -k KILL; python exits 124). Investigate the process, not only a cold start."
+            else
+              echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is SIGALRM (128+14), not a timeout wrapper exit."
             fi
             exit 3 ;;
           *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;

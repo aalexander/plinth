@@ -731,12 +731,14 @@ installed copies.
   signed in` on the first call and `ready: grok` on three consecutive re-runs, with grok
   demonstrably authenticated. NOT reproducible here (four probes against grok 0.2.112,
   all `ready` in ~0.6s). v4.8.0 disambiguates the preflight diagnostic (no retry, no
-  change to what counts as authenticated) with an HONEST BOUND: only **rc=124 + elapsed
-  ≈ 30s** is reported as the wall-clock **timeout** (GNU `timeout` / the python fallback
-  both exit 124 when the cap fires); **non-124** (e.g. 137=SIGKILL, 142=SIGALRM) is
-  **never** labeled timeout-only, even when slow; an instant 124 is "too fast" (no-tool
-  refuse or child self-exit). Residual: a CLI that itself exits 124 after ~30s is not
-  distinguishable from the wrapper's timeout. A blind retry was declined deliberately —
+  change to what counts as authenticated) with an HONEST BOUND aligned to GNU coreutils
+  `timeout`: **elapsed first** (instant 124/137/142 is "too fast" — no-tool refuse or
+  child self-exit); **rc=124 + elapsed ≈ cap** is the wall-clock **timeout** (child died
+  on TERM, or the python fallback); **rc=137 + elapsed ≈ cap** is *consistent with*
+  timeout after `-k` KILL escalation (GNU timeout returns 137 when it sends SIGKILL) **or**
+  external/CLI SIGKILL — never timeout-only, never "NOT a timeout"; **rc=142** is SIGALRM,
+  not the standard cap signature. Residual: a CLI that itself exits 124 (or 137) after
+  ~30s is not distinguishable from the wrapper. A blind retry was declined deliberately —
   it doubles the worst-case bound on a genuinely hanging CLI and would weaken the
   fixtures that prove the auth check is capped.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
