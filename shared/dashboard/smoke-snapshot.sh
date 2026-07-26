@@ -750,6 +750,101 @@ jq -e '
   and .session_secs <= 600
 ' "$OUT" >/dev/null
 
+# Same-SID SessionStart resume keeps the first t0 (not the resume time)
+RES="$FIX/mu-resume"
+mk_git "$RES"
+{
+  jq -nc --argjson epoch "$((NOW - 1000))" \
+    '{event:"SessionStart",sid:"sid-r",epoch:$epoch,transcript:null}'
+  jq -nc --argjson epoch "$((NOW - 10))" \
+    '{event:"SessionStart",sid:"sid-r",epoch:$epoch,transcript:null}'
+} > "$RES/.plinth/session/events.jsonl"
+export PLINTH_DASH_ROOTS="$RES"
+RES_OUT="$FIX/resume.json"
+"$PLINTH" dash --snapshot > "$RES_OUT"
+# session_secs ≈ 1000; allow drift equal to smoke wall-clock since NOW was set.
+jq -e --argjson now "$NOW" '
+  .projects[] | select(.name == "mu-resume")
+  | .session_secs != null
+  and .session_secs >= 990
+  and .session_secs <= 1000 + 600
+' "$RES_OUT" >/dev/null
+
+# Missing round on verdict → error
+MR="$FIX/mu-noround"
+mk_git "$MR"
+git -C "$MR" checkout -qb feat/noround
+echo n > "$MR/n"; git -C "$MR" add -A; git -C "$MR" commit -qm w
+mkdir -p "$MR/.plinth/session/review/feat-noround"
+printf '{"verdict":"APPROVED","sha":"abcdef0123456789"}\n' \
+  > "$MR/.plinth/session/review/feat-noround/verdict.json"
+export PLINTH_DASH_ROOTS="$MR"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "mu-noround") | .error == "snapshot_render_failed"
+' >/dev/null
+
+# --snapshot works without python3 (only bash+jq); serve fails without python3
+PATH_SAVE="$PATH"
+# Prefer a PATH that still has git/jq/bash but not python3
+TMP_PATH="$FIX/bin"
+mkdir -p "$TMP_PATH"
+ln -sf "$(command -v bash)" "$TMP_PATH/bash"
+ln -sf "$(command -v jq)" "$TMP_PATH/jq"
+ln -sf "$(command -v git)" "$TMP_PATH/git"
+ln -sf "$(command -v tail)" "$TMP_PATH/tail"
+ln -sf "$(command -v mktemp)" "$TMP_PATH/mktemp"
+ln -sf "$(command -v rm)" "$TMP_PATH/rm"
+ln -sf "$(command -v cat)" "$TMP_PATH/cat"
+ln -sf "$(command -v wc)" "$TMP_PATH/wc"
+ln -sf "$(command -v tr)" "$TMP_PATH/tr"
+ln -sf "$(command -v basename)" "$TMP_PATH/basename"
+ln -sf "$(command -v dirname)" "$TMP_PATH/dirname"
+ln -sf "$(command -v mkdir)" "$TMP_PATH/mkdir"
+ln -sf "$(command -v printf)" "$TMP_PATH/printf"
+ln -sf "$(command -v date)" "$TMP_PATH/date"
+ln -sf "$(command -v sort)" "$TMP_PATH/sort"
+ln -sf "$(command -v cut)" "$TMP_PATH/cut"
+ln -sf "$(command -v grep)" "$TMP_PATH/grep"
+ln -sf "$(command -v sed)" "$TMP_PATH/sed"
+ln -sf "$(command -v head)" "$TMP_PATH/head"
+ln -sf "$(command -v realpath)" "$TMP_PATH/realpath" 2>/dev/null || true
+ln -sf "$(command -v stat)" "$TMP_PATH/stat"
+ln -sf "$(command -v awk)" "$TMP_PATH/awk"
+ln -sf "$(command -v shasum)" "$TMP_PATH/shasum" 2>/dev/null || true
+export PLINTH_DASH_ROOTS="$B"
+# Same-second last-error without python3 stays infra-error (whole-second -nt)
+NP="$FIX/mu-nopy"
+mk_git "$NP"
+git -C "$NP" checkout -qb feat/nopy
+echo n > "$NP/n"; git -C "$NP" add -A; git -C "$NP" commit -qm w
+NFULL="$(git -C "$NP" rev-parse HEAD)"
+mkdir -p "$NP/.plinth/session/review/feat-nopy"
+jq -nc --arg sha "$NFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["t"]},ts:"t"}' \
+  > "$NP/.plinth/session/review/feat-nopy/verdict.json"
+printf 'err\n' > "$NP/.plinth/session/review/feat-nopy/last-error"
+jq -nc '{round:2,mode:"resume"}' > "$NP/.plinth/session/review/feat-nopy/request-2.json"
+# equal second mtimes
+touch -r "$NP/.plinth/session/review/feat-nopy/last-error" \
+  "$NP/.plinth/session/review/feat-nopy/request-2.json"
+export PLINTH_DASH_ROOTS="$NP"
+# Force _dash_file_newer to use bash -nt by hiding python3 (restore PATH after).
+PATH="$TMP_PATH" "$PLINTH" dash --snapshot > "$FIX/nopy.json"
+jq -e '
+  .projects[] | select(.name == "mu-nopy")
+  | .review.running == false
+  and .review.last_error == true
+' "$FIX/nopy.json" >/dev/null
+# serve mode requires python3
+rc=0
+PATH="$TMP_PATH" "$PLINTH" dash --port 18799 >/dev/null 2>"$FIX/nopy-serve.err" || rc=$?
+[ "$rc" -ne 0 ] || { echo "smoke-snapshot: serve without python3 should fail" >&2; exit 1; }
+grep -qi python "$FIX/nopy-serve.err" \
+  || { echo "smoke-snapshot: serve without python3 should mention python3" >&2; cat "$FIX/nopy-serve.err" >&2; exit 1; }
+# Restore full PATH for the rest of the smoke (node/curl/python3/etc.).
+export PATH="${PATH_SAVE:-$PATH}"
+
 # Malformed events → error card with NH preserved
 jq -e '
   .projects[] | select(.name == "xi-badev")

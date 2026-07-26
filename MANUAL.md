@@ -484,10 +484,13 @@ The server binds **127.0.0.1 only**, is read-only, and serves a single static
 page plus `GET /api/snapshot`. The server keeps a **single-flight snapshot body
 with a 2.5s TTL** (≥ the 2s UI poll) so steady-state polling reuses one builder
 result instead of re-shelling every tick; concurrent callers share that flight.
-Observed burn/tokens come from a **recent transcript tail**. Session task /
+Observed burn/tokens come from the last **300 lines** of the Claude transcript
+when reachable; burn_per_min is the sum of all token categories in that tail
+with timestamps in the last **5 minutes**, divided by 5. Session task /
 session age use a **`tail -n 10k`** of `events.jsonl` then a stream (no full-file
-`wc`); `session_secs` is set only from a `SessionStart` still inside that window
-(otherwise null — never a fabricated age). A review round is
+`wc`); `session_secs` is set only from the **first** `SessionStart` still inside
+that window for the active SID (resume re-emits are ignored; otherwise null).
+A review round is
 RUNNING when a `request-N` outruns the verdict **and** either there is no
 `last-error`, or the request file is **strictly newer** than `last-error`.
 Subsecond newer requires **python3** (nanosecond mtime); without it, bash

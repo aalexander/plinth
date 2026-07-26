@@ -2028,7 +2028,9 @@ snapshot_one_project() {
                .by[$e.sid] = {t0: null, task: null, tr: null}
              else . end)
             | .cur = $e.sid
+            # Keep the first SessionStart in the window (resume re-emits SessionStart).
             | if ($e.event == "SessionStart") and ($e.epoch != null)
+                 and (.by[$e.sid].t0 == null)
               then .by[$e.sid].t0 = $e.epoch else . end
             | if ($e.event == "UserPromptSubmit")
                 and (($e.detail // "") | length > 0)
@@ -2105,15 +2107,22 @@ snapshot_one_project() {
     def sha_ok($s):
       # 7–40 hex (sha1) or up to 64 hex (sha256 object format).
       ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));
+    def round_ok($r):
+      ($r | type == "number") and ($r == ($r | floor)) and ($r >= 0);
     ($vd[0] // null) as $V0
-    # Protocol-shape guard: a present verdict.json must carry enum + hex sha.
+    # Protocol-shape guard: present verdict.json needs enum + hex sha + round.
     | (if $V0 == null then null
        elif ($V0 | type) != "object" then error("bad_verdict_shape")
        elif ($V0.verdict == null) or ($V0.verdict | type != "string")
             or (verdict_ok($V0.verdict) | not) then error("bad_verdict_enum")
        elif ($V0.sha == null) or (sha_ok($V0.sha) | not) then error("bad_verdict_sha")
+       elif ($V0.round == null) or (round_ok($V0.round) | not) then error("bad_verdict_round")
        else $V0 end) as $V
-    | ($rq[0] // null) as $RQ
+    | ($rq[0] // null) as $RQ0
+    | (if $RQ0 == null then null
+       elif ($RQ0 | type) != "object" then error("bad_request_shape")
+       elif ($RQ0.round == null) or (round_ok($RQ0.round) | not) then error("bad_request_round")
+       else $RQ0 end) as $RQ
     # RUNNING only when a newer request exists AND no last-error (infra failure
     # leaves request-N behind without a live reviewer).
     | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) and ($has_last_error | not)
