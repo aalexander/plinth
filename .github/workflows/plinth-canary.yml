@@ -164,6 +164,12 @@ jobs:
           # Single-token unquoted value flags stay allowed when fully bound
           [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body ship-ok --squash")" = 0 ] || { echo "::error::unquoted single-token --body blocked"; exit 1; }
           [ "$(gcmd "gh pr merge 42 -R acme/repo --match-head-commit $HEAD_OK --body=ship-ok --squash")" = 0 ] || { echo "::error::--body= single-token blocked"; exit 1; }
+          # Dynamic expansion: shell can invent a PR target after inspection — fail closed
+          [ "$(gcmd "BODY=Release_42; gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::\$BODY expansion was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \$BODY -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::unexpanded \$BODY body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body \$(echo 42) -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::command-substitution body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body Release{42} -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::brace expansion body was not fail-closed"; exit 1; }
+          [ "$(gcmd "gh pr merge --body-file ./x*42 -R acme/repo --match-head-commit $HEAD_OK")" = 2 ] || { echo "::error::glob body-file was not fail-closed"; exit 1; }
           # outside git: bare → 0; targeted → 2
           NG="$(mktemp -d)"
           ngcmd() {

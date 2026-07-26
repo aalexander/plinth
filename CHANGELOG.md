@@ -6,11 +6,11 @@
   via `-R`/`--repo` or a same-repo PR URL (unqualified `gh pr merge 42` is rejected —
   it would follow `GH_REPO`/default-repo); (2) `--match-head-commit` equals the
   origin-resolved head (`gh pr view … -R <origin>`); (3) APPROVED at that SHA for
-  the PR branch slug. Quotes/backslashes in the merge segment fail closed (unquote
-  is not a shell parser); fail-closed is segment-local so a quoted create sibling
-  does not poison a bound merge. Multi-segment Bash gates each create/merge
-  independently. Bare current-branch create/merge and outside-git bare fail-open
-  are unchanged.
+  the PR branch slug. Quotes/backslashes/expansion metacharacters (`$`, globs,
+  braces) in the merge segment fail closed (not a shell parser); fail-closed is
+  segment-local so a quoted create sibling does not poison a bound merge.
+  Multi-segment Bash gates each create/merge independently. Bare current-branch
+  create/merge and outside-git bare fail-open are unchanged.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

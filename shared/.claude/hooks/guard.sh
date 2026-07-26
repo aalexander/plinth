@@ -74,9 +74,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # and a racing new push cannot desync authorize-from-vs-merge-into). Multi-segment:
 # each real create/merge segment is gated on its own — an APPROVED targeted merge
 # must not authorize an unreviewed create. Quote-stripped argv is not a shell
-# parser: any quote/apostrophe/backslash in the *merge* original segment
-# fail-closes that segment (multi-word --body values would otherwise invent a
-# false PR target). Sibling create segments may still use quotes.
+# parser: any quote/apostrophe/backslash OR expansion metacharacter
+# ($ ` * ? { }) in the *merge* original segment fail-closes that segment
+# (multi-word --body values and `$BODY` expansions would otherwise invent a
+# false PR target). Sibling create segments may still use quotes/expansions.
 ship_gate() {  # <what> <unquoted-command> [original-command]
   local what="$1" command="${2:-}" orig="${3:-$2}"
   local segments segments_o segment oseg tok state need_value
@@ -210,7 +211,9 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
   segments_o="$(printf '%s' "$orig" | tr ';&|`()' '\n')" \
     || block "$what blocked — could not parse gh arguments."
   # FD 3 carries original segments parallel to stripped (bash-3.2 portable).
-  exec 3<<ORIGSEGS
+  # Route exec failure through block (exit 2): set -e on a bare failed exec would
+  # exit 1 and fail-open the ship inspection.
+  exec 3<<ORIGSEGS || block "$what blocked — could not open merge-segment parse state (TMPDIR/heredoc failure)."
 $segments_o
 ORIGSEGS
   while IFS= read -r segment; do
@@ -236,10 +239,10 @@ ORIGSEGS
     match_head=""
     parse_error=0
     merge_seen=0
-    # Unquote deletes " ' \ — multi-word values and escaped spaces lose boundaries
-    # and can invent a positional PR target. Fail closed on those chars in THIS
-    # merge's original segment only (not the whole Bash command).
-    if printf '%s' "$oseg" | grep -q '["'\''\\]'; then
+    # Unquote deletes " ' \ — multi-word values and escaped spaces lose boundaries.
+    # Unexpanded $BODY / globs / braces change argv after this inspection. Fail
+    # closed on quote/escape/expansion metacharacters in THIS merge segment only.
+    if printf '%s' "$oseg" | grep -q '["'\''\\$`*?{}]'; then
       parse_error=1
     fi
     for tok in "$@"; do
@@ -292,7 +295,7 @@ ORIGSEGS
     [ -z "$need_value" ] || parse_error=1
     [ "$merge_seen" = 1 ] || parse_error=1
     [ "$parse_error" = 0 ] \
-      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes/backslashes in the merge segment are not supported by this tripwire; use unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
+      || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes, backslashes, or expansion metacharacters (\$, \`, globs, braces) in the merge segment are not supported by this tripwire; use literal unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
 
     if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
       _ship_targeted
