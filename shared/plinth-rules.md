@@ -72,9 +72,9 @@ delegate, the binding layer is your own discipline
 (run the review loop) plus branch protection's required checks (floor + checks — CI
 and tooling integrity; they do NOT verify the review verdict). The Codex cloud
 review is ADVISORY: it posts PR comments and exposes no status-check context that
-branch protection could require. The server-verifiable APPROVED-at-HEAD receipt
-check (auto mode, v4.7+) is the adversarial gate for delegated and non-Claude
-work: on every binding APPROVED the loop mints (or refreshes) a receipt note
+branch protection could require. The APPROVED-at-HEAD receipt check (auto mode, v4.7+; required as `receipt / verify`
+with a base pin and `strict:true`) is the merge-time gate for delegated and non-Claude
+work (see MANUAL for the caller-workflow control bound): on every binding APPROVED the loop mints (or refreshes) a receipt note
 — best-effort: a repo with no resolvable `origin` mints none and SAYS so, and
 re-running the review at that same approved SHA mints it once the remote exists —
 (refs/notes/plinth-receipts) and the reusable `plinth-receipt.yml` verifies it
