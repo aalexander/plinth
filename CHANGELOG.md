@@ -1,5 +1,14 @@
 # Plinth changelog
 
+## v4.7.2 — guard quoted-heredoc inert-body scan (strict simple form) — July 26, 2026
+- **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
+  destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
+  *strict simple form* for the **whole command** (see MANUAL Hard blocks): optional `VAR=val`
+  and bare wrappers (`sudo`/`env`/… with **no option flags**), exact `cat`/`tee`, one simple
+  quoted delimiter (`'D'` / pure `"D"` / pure `$'D'` / `<<''`), optional args/redirects after
+  the delimiter, optional trailing `#`/`;#` comment. Multi-statement/compound/pipeline
+  wrappers, option-bearing prefixes (`env -P …`), multi-heredoc headers, locale `$"D"`,
+  unquoted delims, and executable consumers stay fully scanned (fail closed).
 ## v4.7.2 — ship-gate-target — July 26, 2026
 - **Targeted `gh pr merge` binds end-to-end to origin + resolved PR head (upstream #16).**
   Authorization requires: (1) the actionable command names the checkout's `origin`

@@ -2757,6 +2757,106 @@ jobs:
           [ "$(gcmd 'nice -n 10 rm -rf x')" = 2 ] || { echo "::error::guard: nice -n 10 rm -rf not blocked"; exit 1; }
           [ "$(gcmd 'time -p git reset --hard origin/main')" = 2 ] || { echo "::error::guard: time -p prefixed hard-reset not blocked"; exit 1; }
           [ "$(gcmd 'sudo -u root ls /root')" = 0 ] || { echo "::error::guard: benign sudo -u root wrongly blocked"; exit 1; }
+          # ── quoted-heredoc + inert consumer (cat/tee): body excluded from both scans ──
+          # Executable consumers, unquoted bodies, pipes/process-subs, and header redirects stay fully scanned.
+          [ "$(gcmd 'rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: plain rm -rf not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\nrm -rf\nDROP TABLE\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body with rm/DROP wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\n.plinth/session/x\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' body mentioning protected path wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat > .plinth/session/x <<\'S\'\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: header redirect to protected path allowed"; exit 1; }
+          [ "$(gcmd $'cat <<S\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: unquoted heredoc body escaped scan"; exit 1; }
+          [ "$(gcmd $'bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash <<'S' body escaped destructive scan"; exit 1; }
+          [ "$(gcmd $'sqlite3 db <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 <<'S' DROP escaped scan"; exit 1; }
+          [ "$(gcmd $'bash <<\'S\'\nprintf x > .plinth/session/x\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash heredoc protected write escaped scan"; exit 1; }
+          [ "$(gcmd $'tee f.txt <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee <<'S' body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat /dev/null | bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pipeline peer cat misclassified bash heredoc as inert"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cat heredoc piped to bash escaped scan"; exit 1; }
+          [ "$(gcmd $'sqlite3 cat <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 with arg named cat misclassified as inert"; exit 1; }
+          # Fail-closed bounds: continued headers, complex delimiters, cross-line quotes, secret-path body,
+          # <<- / empty delim / prefixed inert consumer (distinct branches the simple matrix missed).
+          [ "$(gcmd $'cat <<\'S\' \\\n| bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: backslash-continued cat|bash not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' \\\n> .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: continued header redirect to protected path allowed"; exit 1; }
+          [ "$(gcmd $'cat <<$\'\\x53\'\nsafe\nS\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C delim mis-decode left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\"S\\\\q\"\nsafe\nS\\q\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: double-quoted delim with backslash left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'echo \"start\ncat <<\'S\'\nbody\nS\"; rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside multiline quote suppressed real post-quote rm"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\n.env\nsecrets/key\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' secret-path body text wrongly blocked"; exit 1; }
+          [ "$(gcmd $'sudo cat <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: sudo cat <<'S' body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<-\'S\'\n\trm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<-'S' tab-stripped body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'\'\nrm -rf\n\n')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'' empty delim body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\"S\"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure double-quoted delim body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<$\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure \$'S' delim body wrongly blocked"; exit 1; }
+          # Continued-before-<<, incomplete header (open quote then pipe), concat delims, queued heredocs.
+          [ "$(gcmd $'bash -s \\\ncat <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: bash -s continued into cat <<'S' body not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' \"x\ny\" | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open-quote header then | bash not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'X\'$\'Y\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat 'X'\$'Y' delim left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<X$\'\\x59\'\nsafe\nXY\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: concat X\$'\\x59' delim left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'bash <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: queued bash heredocs first-body rm not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'A\' <<\'B\'\nrm -rf\nA\nok\nB')" = 2 ] || { echo "::error::heredoc-matrix: multi-heredoc is not simple-form (should full-scan)"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' $(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open \$(...) header then | bash not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' `\necho x\n` | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open backtick header then | bash not blocked"; exit 1; }
+          # Outer expansion opened before << (cross-line depth), process-sub, and comment-not-incomplete.
+          [ "$(gcmd $'echo $(\necho x\ncat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: outer \$( before << left body unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' <(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open process-sub <( header not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with quote wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # $(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with \$( wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # `\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with backtick wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer \$( before << not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<X\'Y\'\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X'Y' delim left body unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: metachar-prefixed comment wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $':;# cat <<\'S\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside ;# comment suppressed real rm"; exit 1; }
+          # Unreliable first delimiter must not let a later inert heredoc hide an earlier body.
+          [ "$(gcmd $'bash <<X\'Y\'; cat <<\'B\'\nrm -rf build\nXY\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: unreliable bash delim + queued cat hid rm"; exit 1; }
+          [ "$(gcmd $'bash <<$\'\\x41\'; cat <<\'B\'\nrm -rf build\nA\nsafe\nB')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C first delim + queued cat hid rm"; exit 1; }
+          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer \$( duplicate check"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' >(\necho x\n) | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: open process-sub >( header not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<X\"Y\"\nrm -rf build\nXY')" = 2 ] || { echo "::error::heredoc-matrix: mixed X\"Y\" delim left body unscanned"; exit 1; }
+          # $"D" is locale-translated — never suppress. Same-line outer backtick / <( / >( covered.
+          [ "$(gcmd $'cat <<$\"S\"\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: locale \$\"S\" delim wrongly suppressed"; exit 1; }
+          [ "$(gcmd $'echo `echo x; cat <<\'S\'`\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line outer backtick before << not blocked"; exit 1; }
+          [ "$(gcmd $'cat <(echo x) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line <( before << not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<$\'S\nX\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$' delim left body unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # \\\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment-contained trailing backslash wrongly blocked"; exit 1; }
+          [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) > .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: outer \$( with protected redirect not blocked"; exit 1; }
+          [ "$(gcmd $'cat >(\necho x\n) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cross-line >( then << not blocked"; exit 1; }
+          [ "$(gcmd $'cat >(echo x) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line >(echo x) << not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<$\"S\nX\"\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$\" delim left body unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # | note\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with | wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # <(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with <( wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' # >(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with >( wrongly blocked inert body"; exit 1; }
+          [ "$(gcmd $'cat ${x:-<<\'S\';}\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: \${…} nested << left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'{\ncat <<\'S\'\nrm -rf build\nS\n} | bash')" = 2 ] || { echo "::error::heredoc-matrix: brace-group | bash hid body"; exit 1; }
+          [ "$(gcmd $'(\ncat <<\'S\'\nrm -rf build\nS\n) | bash')" = 2 ] || { echo "::error::heredoc-matrix: subshell | bash hid body"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' $(printf /dev/null)#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: )#suffix not a comment; pipe to bash missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\ #suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-space #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\;#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-semi #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\&#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-amp #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /dev/null\\|#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: escaped-pipe #suffix pipe missed"; exit 1; }
+          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: if/fi | bash hid body"; exit 1; }
+          [ "$(gcmd $'while false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: while/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'true; if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi | bash')" = 2 ] || { echo "::error::heredoc-matrix: mid-line if after ; | bash hid body"; exit 1; }
+          [ "$(gcmd $'until false; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: until/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'for x in 1; do\ncat <<\'S\'\nrm -rf build\nS\ndone | bash')" = 2 ] || { echo "::error::heredoc-matrix: for/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'case x in x)\ncat <<\'S\'\nrm -rf build\nS\n;; esac | bash')" = 2 ] || { echo "::error::heredoc-matrix: case/esac | bash hid body"; exit 1; }
+          [ "$(gcmd $'select x in a; do\ncat <<\'S\'\nrm -rf build\nS\nbreak; done | bash')" = 2 ] || { echo "::error::heredoc-matrix: select/done | bash hid body"; exit 1; }
+          [ "$(gcmd $'if true; then\ncat <<\'S\'\nrm -rf build\nS\nfi > >(cat)')" = 2 ] || { echo "::error::heredoc-matrix: if/fi > >(cat) hid body"; exit 1; }
+          # Independent pipeline must not force full-scan false positives on inert cat.
+          # Multi-statement commands are not the simple form — full scan (fail closed).
+          [ "$(gcmd $'echo a | cat\ncat <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: multi-statement should full-scan inert body (fail closed)"; exit 1; }
+          [ "$(gcmd $'echo ok; cat <<\'S\' # ;\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pre-header statement should full-scan"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\nrm -rf\nS\necho ok')" = 2 ] || { echo "::error::heredoc-matrix: post-terminator command should full-scan"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: ;# comment on simple header wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' > /tmp/plinth-heredoc-out\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: redirect after delimiter wrongly blocked"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /tmp/plinth-heredoc-tee\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee arg after delimiter wrongly blocked"; exit 1; }
+          # Operand-taking wrappers with cat/tee as the option operand (not the consumer).
+          [ "$(gcmd $'env -P cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env -P cat bash should full-scan (executable)"; exit 1; }
+          [ "$(gcmd $'env --chdir=/tmp cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --chdir cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'env --unset=PATH cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env --unset cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'time --output=/tmp/t cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: time --output cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -u root cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -u cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -D cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -D cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'sudo -h cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: sudo -h cat bash should full-scan"; exit 1; }
+          [ "$(gcmd $'cat > /tmp/plinth-pre-redir <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pre-delimiter redirect wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' < /dev/null\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: input redirect after delimiter wrongly blocked"; exit 1; }
+          echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
             cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh

@@ -570,10 +570,34 @@ it has run green with a real smoke_cmd.
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
-  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
+  those text scans only for a *strict simple form* — the **entire** command must match:
+  optional blank lines; one header line of
+  `[VAR=val …] [bare sudo|command|env|nice|nohup|time …] (cat|tee) TOKEN*
+  <<[-]?('D'|"D"|$'D'|''|"") TOKEN* [[:space:]#…| ;#…]`,
+  where: wrappers are bare names only (**any option flag fails closed** — including
+  `env -P` / `--chdir` / `--unset`, `sudo -u` / `-D` / `-h`, `time -o` / `--output`);
+  each TOKEN is a non-empty run of characters excluding `|;&(){}` and whitespace (so ordinary
+  args and redirect operators/targets such as `>`, `>>`, `<`, `<>`, `N>`, `N<` are accepted
+  as opaque tokens — the gate is not a redirect parser); the delimiter is one simple quoted
+  form (not `$"D"`, no backslash inside `"…"` / `$'…'`); trailing comment is
+  `[[:space:]]#…` or `;#…`; optional blank lines after the terminator; no other statements.
+  Multi-statement commands, compounds, pipelines, multi-heredoc headers, option-bearing
+  wrappers, unquoted delimiters, executable consumers, and other ambiguous forms stay fully
+  scanned (fail closed). The header line itself (including redirect targets) is always part
+  of the scan. The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
+  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
+  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
+  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
+  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
+  driver this hook does NOT fire — their merge gate is branch protection's required
+  checks (floor + checks — CI and tooling integrity; the review verdict has no
+  server-side verifier until `receipt / verify` is required, and the cloud review is
+  advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
+  the merge gate proper is branch protection's required status checks.
   refused unless the branch has an APPROVED review at HEAD. A *targeted* `gh pr merge`
   (positional PR number/URL and/or `-R`/`--repo`) is authorized only when **all** of:
   (1) the actionable command itself binds the repository — either a same-repo GitHub
@@ -738,6 +762,11 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **guard.sh heredoc inert-consumer: shell function/alias named `cat`/`tee`**
+  (`shared/.claude/hooks/guard.sh`). The simple-form gate requires an exact
+  `cat`/`tee` token (path-qualified `/bin/cat` / `./cat` are full-scanned). A
+  shell function or alias of that name could still receive a suppressed body.
+  Trusted-worker threat model. Opened by fix/guard-quoted-heredoc review.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
