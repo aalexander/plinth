@@ -1933,11 +1933,30 @@ snapshot_one_project() {
   local rqfile
   rqfile="$(_dash_latest_request "$dir" "$slug")"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
-  # Infra failure leaves last-error; request-N may outrun the verdict without a
-  # live reviewer — do not show RUNNING forever over a failed round.
-  # JSON boolean (not 0/1): jq's `not` is boolean-only; numeric 0 is truthy to `not`.
+  # Infra failure leaves last-error. A NEWER request means a retry is in flight
+  # (review.sh writes request before invoking the reviewer and only clears
+  # last-error after a successful round) — treat that as RUNNING, not stuck error.
   local has_last_error=false
-  [ -f "$dir/.plinth/session/review/$slug/last-error" ] && has_last_error=true
+  local errfile="$dir/.plinth/session/review/$slug/last-error"
+  if [ -f "$errfile" ]; then
+    if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
+      local rq_m err_m
+      rq_m="$(_dash_mtime "$rqfile")"
+      err_m="$(_dash_mtime "$errfile")"
+      case "$rq_m:$err_m" in
+        *[!0-9:]*|'') has_last_error=true ;;
+        *)
+          if [ "$rq_m" -gt "$err_m" ] 2>/dev/null; then
+            has_last_error=false
+          else
+            has_last_error=true
+          fi
+          ;;
+      esac
+    else
+      has_last_error=true
+    fi
+  fi
 
   local activity_ago=null events_mtime=0
   if [ "$feedless" -eq 0 ]; then
@@ -1963,24 +1982,62 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Streaming reduce over the FULL events file (O(1) memory): last sid, its first
-  # epoch (session start), latest human task, and latest transcript path.
+  # Session identity from events.jsonl. Prefer an mtime/size-keyed cache so the
+  # 2s poll does not re-scan unbounded logs every tick. On cache miss: streaming
+  # reduce keeps per-SID metadata (interleaved SIDs must not reset the final one).
   local sid="" session_t0="" task="" transcript_path=""
+  local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
-    eval "$(jq -nr '
-      reduce inputs as $e ({sid:null, t0:null, task:null, tr:null};
-        if ($e.sid != null) and ($e.sid != .sid) then
-          .sid = $e.sid | .t0 = ($e.epoch // null) | .task = null
-        else . end
-        | if ($e.sid == .sid) and (.t0 == null) and ($e.epoch != null) then .t0 = $e.epoch else . end
-        | if ($e.event == "UserPromptSubmit") and ($e.sid == .sid)
-            and (($e.detail // "") | length > 0)
-            and ((($e.detail // "") | test("^\\s*<")) | not)
-          then .task = $e.detail else . end
-        | if ($e.transcript != null) and ($e.sid == .sid) then .tr = $e.transcript else . end
-      )
-      | "sid=\(.sid // "" | @sh)\nsession_t0=\(.t0 // "" | @sh)\ntask=\(.task // "" | @sh)\ntranscript_path=\(.tr // "" | @sh)"
-    ' "$EV_RAW" 2>/dev/null || true)"
+    local cache_dir="${TMPDIR:-/tmp}/plinth-dash-meta" cache_key meta_out meta_rc=0
+    mkdir -p "$cache_dir" 2>/dev/null || true
+    cache_key="$(printf '%s' "$EV_RAW:$events_mtime:$(wc -c < "$EV_RAW" 2>/dev/null | tr -d ' ')" \
+      | { shasum 2>/dev/null || sha256sum 2>/dev/null || cksum; } | awk '{print $1}')"
+    if [ -n "$cache_key" ] && [ -f "$cache_dir/$cache_key" ]; then
+      meta_out="$(cat "$cache_dir/$cache_key")"
+    else
+      meta_out="$(jq -nr '
+        reduce inputs as $e ({cur:null, by:{}};
+          if ($e.sid == null) then .
+          else
+            (if .by[$e.sid] == null then
+               .by[$e.sid] = {t0: ($e.epoch // null), task: null, tr: null}
+             else . end)
+            | .cur = $e.sid
+            | if (.by[$e.sid].t0 == null) and ($e.epoch != null)
+              then .by[$e.sid].t0 = $e.epoch else . end
+            | if ($e.event == "UserPromptSubmit")
+                and (($e.detail // "") | length > 0)
+                and ((($e.detail // "") | test("^\\s*<")) | not)
+              then .by[$e.sid].task = $e.detail else . end
+            | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+          end
+        )
+        | .cur as $sid
+        | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
+        | "sid=\(.sid // "" | @sh)\nsession_t0=\(.t0 // "" | @sh)\ntask=\(.task // "" | @sh)\ntranscript_path=\(.tr // "" | @sh)"
+      ' "$EV_RAW" 2>/dev/null)" || meta_rc=$?
+      if [ "$meta_rc" -ne 0 ]; then
+        events_parse_failed=true
+        meta_out=""
+      elif [ -n "$cache_key" ] && [ -n "$meta_out" ]; then
+        printf '%s\n' "$meta_out" > "$cache_dir/$cache_key" 2>/dev/null || true
+      fi
+    fi
+    if [ -n "$meta_out" ]; then
+      eval "$meta_out"
+    fi
+  fi
+
+  # Malformed events → error card (do not look idle-while-broken).
+  if [ "$events_parse_failed" = true ]; then
+    jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
+      --arg head "$head" --arg branch "$branch" \
+      --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      '{path:$path,name:$name,branch:$branch,head:$head,feedless:false,
+        error:"snapshot_render_failed",
+        needs_human:{open:$nhn,blocking:$nhb},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+    return 0
   fi
 
   # Burn/tokens: tail the transcript only (recent window; UI labels it as such).

@@ -217,7 +217,62 @@ jq -nc \
     risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
   > "$L/.plinth/session/review/feat-stale/verdict.json"
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L"
+# ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
+M="$FIX/nu-interleave"
+mk_git "$M"
+{
+  jq -nc --argjson epoch "$((NOW - 500))" \
+    '{epoch:$epoch,event:"SessionStart",sid:"A",transcript:null,tool:null,detail:null,rc:null}'
+  jq -nc --argjson epoch "$((NOW - 499))" \
+    '{epoch:$epoch,event:"UserPromptSubmit",sid:"A",transcript:null,tool:null,detail:"task from A",rc:null}'
+  jq -nc --argjson epoch "$((NOW - 100))" \
+    '{epoch:$epoch,event:"SessionStart",sid:"B",transcript:null,tool:null,detail:null,rc:null}'
+  # Interleaved late event for A after B started — last sid is still A if we append A last
+  jq -nc --argjson epoch "$((NOW - 50))" \
+    '{epoch:$epoch,event:"PostToolUse",sid:"A",transcript:null,tool:"Bash",detail:"late-A",rc:0}'
+} > "$M/.plinth/session/events.jsonl"
+# Active sid is A (last event); task and ~500s session must survive the B interleave.
+
+# ── Fixture N: malformed events.jsonl → snapshot_render_failed ───────────────
+N="$FIX/xi-badev"
+mk_git "$N"
+printf 'not-json{\n' > "$N/.plinth/session/events.jsonl"
+printf '%s\n' '- [ ] [BLOCKING] open through bad events' > "$N/.plinth/NEEDS-HUMAN.md"
+
+# ── Fixture O: first-round last-error (no verdict yet) ───────────────────────
+O="$FIX/omicron-firsterr"
+mk_git "$O"
+git -C "$O" checkout -qb feat/firsterr
+echo o > "$O/o.txt"
+git -C "$O" add -A
+git -C "$O" commit -qm "work"
+mkdir -p "$O/.plinth/session/review/feat-firsterr"
+jq -nc '{round:1,mode:"fresh",model:"gpt-test"}' \
+  > "$O/.plinth/session/review/feat-firsterr/request-1.json"
+# last-error newer than request → stuck error, not running
+sleep 1
+printf '2026-01-01T00:00:00Z reviewer missing\n' \
+  > "$O/.plinth/session/review/feat-firsterr/last-error"
+
+# ── Fixture P: last-error then NEWER request → RUNNING (retry in flight) ─────
+P="$FIX/pi-retry"
+mk_git "$P"
+git -C "$P" checkout -qb feat/retry
+echo p > "$P/p.txt"
+git -C "$P" add -A
+git -C "$P" commit -qm "work"
+PFULL="$(git -C "$P" rev-parse HEAD)"
+mkdir -p "$P/.plinth/session/review/feat-retry"
+jq -nc --arg sha "$PFULL" \
+  '{verdict:"CHANGES_NEEDED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
+    risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$P/.plinth/session/review/feat-retry/verdict.json"
+printf 'old infra error\n' > "$P/.plinth/session/review/feat-retry/last-error"
+sleep 1
+jq -nc '{round:2,mode:"resume",model:"gpt-test"}' \
+  > "$P/.plinth/session/review/feat-retry/request-2.json"
+
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L:$M:$N:$O:$P"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -233,7 +288,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 12' "$OUT" >/dev/null
+jq -e '(.projects | length) == 16' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -344,6 +399,41 @@ jq -e '
   .projects[] | select(.name == "mu-stale")
   | .review.stale == true
   and .review.verdict == "APPROVED"
+' "$OUT" >/dev/null
+
+# Interleaved SIDs: active A keeps original task + ~500s session
+jq -e '
+  .projects[] | select(.name == "nu-interleave")
+  | .task == "task from A"
+  and .sid == "A"
+  and .session_secs != null
+  and .session_secs >= 400
+  and .session_secs <= 600
+' "$OUT" >/dev/null
+
+# Malformed events → error card with NH preserved
+jq -e '
+  .projects[] | select(.name == "xi-badev")
+  | .error == "snapshot_render_failed"
+  and .needs_human.open == 1
+  and .needs_human.blocking == 1
+' "$OUT" >/dev/null
+
+# First-round last-error (no prior verdict)
+jq -e '
+  .projects[] | select(.name == "omicron-firsterr")
+  | .review != null
+  and .review.running == false
+  and .review.last_error == true
+  and .review.verdict == null
+' "$OUT" >/dev/null
+
+# Retry: request newer than last-error → RUNNING
+jq -e '
+  .projects[] | select(.name == "pi-retry")
+  | .review.running == true
+  and .review.round == 2
+  and .review.last_error == false
 ' "$OUT" >/dev/null
 
 # ── Pure UI card render (node + __plinthDash seam) ───────────────────────────
@@ -521,6 +611,21 @@ setTimeout(() => {
     const idleHtml = api.cardHTML(idle);
     if (!idleHtml.includes("no review")) {
       console.error("idle card should show no review");
+      process.exit(1);
+    }
+    // last_error chip (infra failure presentation)
+    const errRev = {
+      name: "x", path: "/x", branch: "b", head: "abc",
+      needs_human: { open: 0, blocking: 0 },
+      review: { last_error: true, running: false, round: 1, verdict: null },
+    };
+    const errHtml = api.cardHTML(errRev);
+    if (!errHtml.includes("review infra error")) {
+      console.error("last_error card missing infra-error chip");
+      process.exit(1);
+    }
+    if (errHtml.includes("RUNNING")) {
+      console.error("last_error card must not show RUNNING");
       process.exit(1);
     }
     // XSS escape
