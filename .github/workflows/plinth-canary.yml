@@ -3666,17 +3666,23 @@ PY
               RC=0; eval "$CMD" || RC=$?
               [ "$RC" = 0 ] || { echo "extracted CLI failed rc=$RC out=$(cat "$OUT" 2>/dev/null)"; exit 1; }
               grep -q 'objective: test' "$OUT" || { echo "extracted CLI did not consume SPEC"; exit 1; }
-              # Extract cleanup: rest=... through rmdir -- "$SPEC_DIR"
+              # Extract COMPLETE cleanup case (rest= through outer esac), including
+              # shipped `rm -f -- "$SPEC"` — do not hand-remove the prompt.
               CLEAN="$(awk '
                 /rest="\$\{SPEC_DIR#/ {p=1}
                 p { sub(/^[[:space:]]+/, ""); print }
-                p && /rmdir -- "\$SPEC_DIR"/ { exit }
+                p && /^esac$/ { exit }
               ' "$A")"
               [ -n "$CLEAN" ] || { echo "failed to extract cleanup from $a agent"; exit 1; }
-              # Agent removes the prompt before rmdir (prompt is not empty):
-              rm -f -- "$SPEC"
+              printf '%s\n' "$CLEAN" | grep -q 'rm -f -- "\$SPEC"' \
+                || { echo "extracted cleanup missing shipped rm -f -- \"\$SPEC\""; exit 1; }
+              printf '%s\n' "$CLEAN" | grep -q 'rmdir -- "\$SPEC_DIR"' \
+                || { echo "extracted cleanup missing shipped rmdir"; exit 1; }
+              printf '%s\n' "$CLEAN" | grep -q '^esac$' \
+                || { echo "extracted cleanup incomplete (no closing esac)"; exit 1; }
               eval "$CLEAN"
               [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after extracted cleanup"; exit 1; }
+              [ ! -e "$SPEC" ] || { echo "SPEC remained after extracted cleanup"; exit 1; }
             ) || { echo "::error::${a} extracted shipped CLI/cleanup lifecycle canary failed"; exit 1; }
           done
           echo "lane-guard delegation + Write-tool lifecycle canary OK"
