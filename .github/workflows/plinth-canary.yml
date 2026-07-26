@@ -109,8 +109,11 @@ jobs:
               case "$norm" in
                 'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
                 'SPEC="$SPEC_DIR/prompt"') continue ;;
-                'OUT="$(mktemp -t grok-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }') continue ;;
-                'OUT="$(mktemp -t codex-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }') continue ;;
+                'OUT="$(mktemp -t grok-out.XXXXXX)" || {') continue ;;
+                'OUT="$(mktemp -t codex-out.XXXXXX)" || {') continue ;;
+                '_orc=$?') continue ;;
+                'rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup after OUT mktemp failed rc=$?"; exit 1; }') continue ;;
+                'echo "OUT mktemp failed rc=$_orc"; exit 1') continue ;;
                 '[ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }') continue ;;
                 "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' \"\$BEFORE\" \"\$SNAP\" \"\$SPEC_DIR\" \"\$SPEC\" \"\$OUT\"") continue ;;
                 'RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \') continue ;;
@@ -458,9 +461,9 @@ jobs:
             out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" != 0 ] || { echo "::error::${lane} SNAP mktemp failure not fail-loud"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SNAP mktemp failed' || {
-              echo "::error::${lane} SNAP mktemp missing diagnostic (got: $out)"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} SNAP mktemp want exit 1 got $rc"; exit 1; }
+            printf '%s\n' "$out" | grep -q 'SNAP mktemp failed rc=41' || {
+              echo "::error::${lane} SNAP mktemp missing rc=41 diagnostic (got: $out)"; exit 1; }
           done
           # SPEC_DIR mktemp failure via extracted alloc.
           for lane in grok codex; do
@@ -474,9 +477,9 @@ jobs:
             out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" != 0 ] || { echo "::error::${lane} SPEC_DIR mktemp failure not fail-loud"; exit 1; }
-            printf '%s\n' "$out" | grep -q 'SPEC_DIR mktemp failed' || {
-              echo "::error::${lane} SPEC_DIR mktemp missing diagnostic (got: $out)"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} SPEC_DIR mktemp want exit 1 got $rc"; exit 1; }
+            printf '%s\n' "$out" | grep -q 'SPEC_DIR mktemp failed rc=42' || {
+              echo "::error::${lane} SPEC_DIR mktemp missing rc=42 diagnostic (got: $out)"; exit 1; }
           done
           # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
           for lane in grok codex; do
@@ -491,12 +494,39 @@ jobs:
             out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
             rc=$?
             set -e
-            [ "$rc" != 0 ] || { echo "::error::${lane} OUT mktemp failure not fail-loud"; exit 1; }
+            [ "$rc" = 1 ] || { echo "::error::${lane} OUT mktemp failure want exit 1 got $rc"; exit 1; }
             printf '%s\n' "$out" | grep -q 'OUT mktemp failed rc=43' || {
               echo "::error::${lane} OUT mktemp did not report rc=43 (got: $out)"; exit 1; }
             leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null || true)"
             [ -z "$leftovers" ] || {
               echo "::error::${lane} OUT mktemp left SPEC_DIR residue: $leftovers"; exit 1; }
+          done
+          # OUT path with forced rm -rf failure: must fail loud on cleanup (not silent residue).
+          for lane in grok codex; do
+            cat > "$inj/bin/mktemp" <<'INJ'
+          #!/usr/bin/env bash
+          if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then exec /usr/bin/mktemp "$@"; fi
+          if [[ " $* " == *" -t "* ]]; then echo "mktemp: forced OUT failure" >&2; exit 43; fi
+          exec /usr/bin/mktemp "$@"
+          INJ
+            cat > "$inj/bin/rm" <<'INJ'
+          #!/usr/bin/env bash
+          if [[ "$*" == *"-rf"* ]] || [[ "$*" == *"-r"* && "$*" == *"-f"* ]]; then
+            echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45
+          fi
+          # also match `rm -rf "$SPEC_DIR"` as separate args
+          if [[ "$#" -ge 2 && "$1" == -rf ]]; then echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45; fi
+          if [[ "$#" -ge 1 && "$1" == -rf ]]; then echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45; fi
+          exec /bin/rm "$@"
+          INJ
+            chmod +x "$inj/bin/mktemp" "$inj/bin/rm"
+            set +e
+            out="$(PATH="$inj/bin:$PATH" bash -c 'set -euo pipefail; source "$1"' _ "$inj/alloc-$lane.sh" 2>&1)"
+            rc=$?
+            set -e
+            [ "$rc" = 1 ] || { echo "::error::${lane} OUT+rm-rf failure want exit 1 got $rc (out: $out)"; exit 1; }
+            printf '%s\n' "$out" | grep -q 'SPEC_DIR cleanup after OUT mktemp failed' || {
+              echo "::error::${lane} OUT+rm-rf missing diagnostic (got: $out)"; exit 1; }
           done
           # rmdir failure via EXTRACTED command block (nonempty dir): loud fail, keep extra file.
           for lane in grok codex; do
@@ -579,6 +609,8 @@ jobs:
               echo "::error::${lane} rm -f missing diagnostic (got: $out)"; exit 1; }
             [ -d "$rm_victim" ] || {
               echo "::error::${lane} rm -f failure removed the whole SPEC_DIR unexpectedly"; exit 1; }
+            [ -f "$rm_victim/prompt" ] || {
+              echo "::error::${lane} rm -f failure removed the prompt unexpectedly"; exit 1; }
           done
           echo "canary: extracted-block allocation/cleanup failure injection OK"
           # Negative fixtures: known bypass forms MUST fail the full-line allowlist.

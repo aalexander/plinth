@@ -59,7 +59,11 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
        # Write refuses to overwrite an unread existing file.
        SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
        SPEC="$SPEC_DIR/prompt"
-       OUT="$(mktemp -t codex-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }
+       OUT="$(mktemp -t codex-out.XXXXXX)" || {
+         _orc=$?
+         rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup after OUT mktemp failed rc=$?"; exit 1; }
+         echo "OUT mktemp failed rc=$_orc"; exit 1
+       }
        [ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }
        printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
