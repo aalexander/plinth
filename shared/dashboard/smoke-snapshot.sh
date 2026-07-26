@@ -326,6 +326,43 @@ git -C "$L9" commit -qm "work"
 mkdir -p "$L9/.plinth/session/review/feat-falsev"
 printf 'false\n' > "$L9/.plinth/session/review/feat-falsev/verdict.json"
 
+# Multi-doc matrix: object then null/false; false then object
+L10="$FIX/mu-objnull"; mk_git "$L10"
+git -C "$L10" checkout -qb feat/objnull; echo x > "$L10/x"; git -C "$L10" add -A; git -C "$L10" commit -qm w
+mkdir -p "$L10/.plinth/session/review/feat-objnull"
+printf '{"verdict":"APPROVED","sha":"abcdef0123456789","round":1}\nnull\n' \
+  > "$L10/.plinth/session/review/feat-objnull/verdict.json"
+L11="$FIX/mu-objfalse"; mk_git "$L11"
+git -C "$L11" checkout -qb feat/objfalse; echo x > "$L11/x"; git -C "$L11" add -A; git -C "$L11" commit -qm w
+mkdir -p "$L11/.plinth/session/review/feat-objfalse"
+printf '{"verdict":"APPROVED","sha":"abcdef0123456789","round":1}\nfalse\n' \
+  > "$L11/.plinth/session/review/feat-objfalse/verdict.json"
+L12="$FIX/mu-falseobj"; mk_git "$L12"
+git -C "$L12" checkout -qb feat/falseobj; echo x > "$L12/x"; git -C "$L12" add -A; git -C "$L12" commit -qm w
+mkdir -p "$L12/.plinth/session/review/feat-falseobj"
+printf 'false\n{"verdict":"APPROVED","sha":"abcdef0123456789","round":1}\n' \
+  > "$L12/.plinth/session/review/feat-falseobj/verdict.json"
+
+# Missing event name / non-string event name / empty object
+L13="$FIX/mu-noevent"; mk_git "$L13"
+printf '%s\n' '{"sid":"s","epoch":1}' > "$L13/.plinth/session/events.jsonl"
+L14="$FIX/mu-numevent"; mk_git "$L14"
+printf '%s\n' '{"event":1,"sid":"s","epoch":1}' > "$L14/.plinth/session/events.jsonl"
+L15="$FIX/mu-emptyobj"; mk_git "$L15"
+printf '%s\n' '{}' > "$L15/.plinth/session/events.jsonl"
+
+# Healthy guard_block + PreCompact must NOT fail the card
+L16="$FIX/mu-healthyhooks"; mk_git "$L16"
+NOW_H=$NOW
+{
+  jq -nc --argjson epoch "$NOW_H" \
+    '{event:"SessionStart",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
+  jq -nc --argjson epoch "$((NOW_H+1))" \
+    '{event:"guard_block",sid:null,epoch:$epoch,tool:"Bash",detail:"blocked"}'
+  jq -nc --argjson epoch "$((NOW_H+2))" \
+    '{event:"PreCompact",sid:"sid-h",epoch:$epoch,transcript:null,tool:null,detail:null}'
+} > "$L16/.plinth/session/events.jsonl"
+
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
 mk_git "$M"
@@ -422,7 +459,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -438,7 +475,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 27' "$OUT" >/dev/null
+jq -e '(.projects | length) == 35' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -592,6 +629,17 @@ jq -e '
 jq -e '
   .projects[] | select(.name == "mu-falsev")
   | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+for badn in mu-objnull mu-objfalse mu-falseobj mu-noevent mu-numevent mu-emptyobj; do
+  jq -e --arg n "$badn" '
+    .projects[] | select(.name == $n) | .error == "snapshot_render_failed"
+  ' "$OUT" >/dev/null
+done
+# Healthy real hook event names
+jq -e '
+  .projects[] | select(.name == "mu-healthyhooks")
+  | (.error == null or .error == "")
+  and .sid == "sid-h"
 ' "$OUT" >/dev/null
 
 # Interleaved SIDs: active A keeps original task + ~500s session

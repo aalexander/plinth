@@ -2007,19 +2007,15 @@ snapshot_one_project() {
     else
       tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
       meta_out="$(jq -nr '
+        # Event names actually produced by Plinth hooks + pulse passthrough.
         def known_event:
           . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
-          or . == "PreToolUse" or . == "Stop" or . == "Notification"
-          or . == "SubagentStart" or . == "SubagentStop" or . == "SessionEnd"
-          or . == "Compact" or . == "Error" or . == "gate_release"
-          or . == "UserPromptSubmit";
+          or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
+          or . == "PreCompact" or . == "guard_block" or . == "gate_release"
+          or . == "unknown";
         reduce inputs as $e ({cur:null, by:{}};
-          # Empty file / blank lines never reach here as objects.
           if ($e | type) != "object" then error("bad_event_type")
-          # Completely empty object: ignore (should not appear).
-          elif ($e | keys | length) == 0 then .
-          # Protocol: every non-empty event object needs a known string event name
-          # before we consider sid (sid-less rows still must name the event).
+          # Every object needs a known string event name (incl. sid-less / empty {}).
           elif ($e.event == null) or (($e.event | type) != "string")
                or (($e.event | known_event) | not) then error("bad_event_name")
           elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
