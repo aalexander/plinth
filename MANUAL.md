@@ -573,15 +573,15 @@ it has run green with a real smoke_cmd.
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
   those text scans only for a *narrow simple form*: inert consumer (`cat`/`tee`), a single
   simple quoted delimiter (`'D'`, pure `"D"` / `$'D'` with no backslash, or `<<''`), a
-  *complete* physical header line (no trailing unquoted `\`, no unclosed quote / `$(…)` /
-  backtick after `<<`, and not a continuation of a prior incomplete line), and no
-  pipe/process-sub on that header segment. Word-concat or mixed delimiters (`'X'$'Y'`,
-  `X$'\x59'`, backslash-bearing `"…"`), incomplete/continued headers (including
-  continuation *before* `<<` and open command substitutions), executable
-  consumers, unquoted bodies, and other ambiguous parses stay fully scanned (fail closed).
-  Cross-line shell quote state is tracked so a heredoc-looking token inside an unclosed
-  quote is not treated as a real header. The header line itself (including redirect
-  targets) is always part of the scan. The guard is a
+  *complete* simple header: no trailing unquoted `\`, no unclosed quote / `$(…)` / `<(…)` /
+  `>(…)` / backtick after `<<` (tokens after unquoted `#` are comments and ignored), and
+  not nested inside a still-open outer quote/expansion from a prior physical line. No
+  pipe/process-sub on that header segment. Word-concat or mixed delimiters, incomplete or
+  outer-nested headers, executable consumers, unquoted bodies, and other ambiguous parses
+  stay fully scanned (fail closed). Cross-line quote and expansion depth are tracked so a
+  heredoc-looking token inside an unclosed construct is not treated as a simple inert
+  header. The header line itself (including redirect targets) is always part of the scan.
+  The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is

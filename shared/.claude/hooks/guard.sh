@@ -147,44 +147,9 @@ case "$tool" in
         }
         return 0
       }
-      # Unquoted trailing \ => physical line continues (header may resume next line).
-      function unquoted_line_continues(s,    i,n,c,st) {
+      # Unquoted trailing \ => physical line continues. Stops at unquoted # (comment).
+      function unquoted_line_continues(s,    i,n,c,st,prev) {
         n=length(s); st=""
-        for (i=1;i<=n;i++) {
-          c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
-          if (st=="dq") {
-            if (c=="\\") { i++; continue }
-            if (c=="\"") st=""
-            continue
-          }
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="\\" && i==n) return 1
-          if (c=="\\") { i++; continue }
-        }
-        return 0
-      }
-      # Unclosed single/double quote in s (rest of header after <<).
-      function has_unclosed_quote(s,    i,n,c,st) {
-        n=length(s); st=""
-        for (i=1;i<=n;i++) {
-          c=substr(s,i,1)
-          if (st=="sq") { if (c=="\047") st=""; continue }
-          if (st=="dq") {
-            if (c=="\\") { i++; continue }
-            if (c=="\"") st=""
-            continue
-          }
-          if (c=="\047") { st="sq"; continue }
-          if (c=="\"") { st="dq"; continue }
-          if (c=="\\") { i++; continue }
-        }
-        return (st!="")
-      }
-      # Unclosed $(...) depth or backtick on s — header may continue on later lines.
-      function has_unclosed_expansion(s,    i,n,c,st,depth) {
-        n=length(s); st=""; depth=0
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -198,15 +163,79 @@ case "$tool" in
             if (c=="`") st=""
             continue
           }
+          prev=(i==1 ? "" : substr(s,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { st="bt"; continue }
+          if (c=="\\" && i==n) return 1
+          if (c=="\\") { i++; continue }
+        }
+        return 0
+      }
+      # Advance global qst / exp_depth / bt_open over s (comment-aware). Used for cross-line state.
+      # depth tracks $(...) / <(...) / >(...) nesting outside quotes/backticks.
+      function advance_globals(s,    i,n,c,st,depth,bt,prev) {
+        n=length(s); st=qst; depth=exp_depth; bt=bt_open
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (bt) {
+            if (c=="\\") { i++; continue }
+            if (c=="`") bt=0
+            continue
+          }
+          prev=(i==1 ? "" : substr(s,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="`") { bt=1; continue }
           if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          # << is a heredoc op, not process-sub; skip the extra <
+          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
           if (depth>0 && c=="(") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
           if (c=="\\") { i++; continue }
         }
-        return (st=="bt" || depth>0)
+        qst=st; exp_depth=depth; bt_open=bt
+      }
+      # Incomplete open quote/expansion/backtick in s alone (fresh state; comment-aware).
+      function has_incomplete_local(s,    i,n,c,st,depth,bt,prev) {
+        n=length(s); st=""; depth=0; bt=0
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (bt) {
+            if (c=="\\") { i++; continue }
+            if (c=="`") bt=0
+            continue
+          }
+          prev=(i==1 ? "" : substr(s,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:]]/)) break
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="`") { bt=1; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
+          if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c==")") { depth--; continue }
+          if (c=="\\") { i++; continue }
+        }
+        return (st!="" || bt || depth>0)
       }
       # First command word of the simple command owning <<. "" = fail closed.
       function first_consumer(prefix,    s,n,a,i,w,sep) {
@@ -248,11 +277,14 @@ case "$tool" in
         }
         return ""
       }
-      # qst: cross-line shell quote state so << inside an unclosed quote is ignored.
-      # cont: previous physical line ended with unquoted \ (logical header may span lines).
+      # qst / exp_depth / bt_open: cross-line shell state (quotes, $(/<(/>(), backticks).
+      # cont: previous physical line ended with unquoted \.
       # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
       function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest) {
         n=length(line); st=qst
+        # Already inside an incomplete outer construct — any << here is not a simple header.
+        if (cont || exp_depth>0 || bt_open || qst!="") force_no_suppress=1
+        else force_no_suppress=0
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -271,8 +303,7 @@ case "$tool" in
           if (substr(line,j,1)=="-") { t=1; j++ }
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
           d=""; q=0; dst=""; ok=1; reliable=1
-          # Prior physical line continued with \ — real consumer/pipe may be off-line; fail closed.
-          if (cont) ok=0
+          if (force_no_suppress) ok=0
           # dollar-quoted delim — suppress only pure literals (any backslash => fail closed; no hex olympics)
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
             q=1; qch=substr(line,j+1,1); j+=2
@@ -302,7 +333,7 @@ case "$tool" in
                 if (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
                 continue
               }
-              # any backslash inside "…" delimiter: do not decode; fail closed
+              # any backslash inside double-quoted delimiter: do not decode; fail closed
               if (c=="\\") {
                 reliable=0; ok=0; d=""
                 j++
@@ -328,11 +359,9 @@ case "$tool" in
           if (dst!="") ok=0
           # backslash-continued header: pipe/redir may sit on the next physical line
           if (unquoted_line_continues(line)) ok=0
-          # rest of physical line still open-quoted / open $(...) / open backtick => header incomplete
+          # rest of physical line still incomplete (quote / $( / <( / >( / backtick); # ends rest
           rest=substr(line,j)
-          if (has_unclosed_quote(rest) || has_unclosed_expansion(rest)) ok=0
-          # whole line incomplete expansions (e.g. consumer from $( on prior fragment)
-          if (has_unclosed_expansion(line)) ok=0
+          if (has_incomplete_local(rest)) ok=0
           pref=substr(line,1,i-1)
           sep=last_unquoted_sep(pref)
           simple=(sep>0)?substr(pref,sep+1):pref
@@ -348,9 +377,9 @@ case "$tool" in
           # unreliable delim decode: no enqueue — every following line stays fully scanned
           i=j-1
         }
-        qst=st
+        # Note: qst is updated via advance_globals on the full line after scan returns
       }
-      BEGIN { head=1; tail=0; qst=""; cont=0 }
+      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0 }
       {
         if (head<=tail) {
           body=$0; cmp=body
@@ -361,8 +390,8 @@ case "$tool" in
         }
         print
         scan($0)
-        # carry physical-line continuation into the next record (logical header span)
-        cont=(unquoted_line_continues($0) || has_unclosed_quote($0) || has_unclosed_expansion($0))
+        cont=unquoted_line_continues($0)
+        advance_globals($0)
       }
     ')"
     # rm/git patterns are anchored to command position. Upstream issue #1
