@@ -90,9 +90,15 @@ git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || infra "PR head object ${HE
 # would fail closed. review.sh lowercases the minted field identically; the two
 # MUST stay in lockstep, since $REPO is folded into the digest at step 6.
 REPO="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
-[ "$(r repo | tr '[:upper:]' '[:lower:]')" = "$REPO" ] || fail "receipt repo '$(r repo)' != '${REPO}' — receipt minted for a different repository"
-rbase="$(r base_ref)"; nbase="${BASE_REF#refs/heads/}"
-[ "${rbase#origin/}" = "${nbase#origin/}" ] || fail "receipt base_ref '${rbase}' != PR base '${nbase}'"
+# Do NOT interpolate the recorded or expected repo values into the failure text:
+# owner/repo is repository identity (and may embed a secret-looking path segment
+# from an unsupported origin form). Name the field and how to inspect it locally.
+[ "$(r repo | tr '[:upper:]' '[:lower:]')" = "$REPO" ] \
+  || fail "receipt repo field does not match the PR repository — inspect the receipt note locally (git notes --ref=plinth-receipts show <head>) and re-run the loop if origin names a different repository"
+# Match review.sh canon_base: refs/heads/, refs/remotes/, origin/ in that order.
+canon_base() { local b="${1:-}"; b="${b#refs/heads/}"; b="${b#refs/remotes/}"; b="${b#origin/}"; printf '%s' "$b"; }
+rbase="$(canon_base "$(r base_ref)")"; nbase="$(canon_base "$BASE_REF")"
+[ "$rbase" = "$nbase" ] || fail "receipt base_ref '$(r base_ref)' != PR base '${BASE_REF}' (canonical: '${rbase}' vs '${nbase}')"
 
 # ── 4. Tree binding ──────────────────────────────────────────────────────────
 htree=$(git rev-parse "${HEAD_SHA}^{tree}" 2>/dev/null) || infra "cannot resolve head tree"
@@ -105,7 +111,7 @@ mb=$(git merge-base "$BASE_TIP" "$HEAD_SHA" 2>/dev/null) || fail "no merge base 
 
 # ── 6. Canonical subject digest (object identities, not patch bytes) ────────
 subj=$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
-  "$REPO" "${nbase#origin/}" "$mb" "$HEAD_SHA" "$htree" | sha256) || infra "digest computation failed"
+  "$REPO" "$nbase" "$mb" "$HEAD_SHA" "$htree" | sha256) || infra "digest computation failed"
 [ "$(r subject_digest)" = "sha256:${subj}" ] || fail "subject digest mismatch — receipt was not minted for this exact subject"
 
 # ── 7. Verdict ───────────────────────────────────────────────────────────────

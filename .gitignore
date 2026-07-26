@@ -19,3 +19,10 @@ Thumbs.db
 # Editor droppings
 *.swp
 *~
+
+# Ephemeral agent worktrees. The Claude Code harness creates isolated subagent
+# worktrees UNDER the repo here, so without this the tree reads as dirty and
+# ./.plinth/review.sh refuses to run ("working tree is dirty") for as long as any
+# subagent is alive — which is exactly when you want the reviewer running in
+# parallel with the workers. Never committable; always local and transient.
+.claude/worktrees/

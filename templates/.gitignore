@@ -28,6 +28,14 @@ credentials/
 .DS_Store
 Thumbs.db
 
+# Ephemeral subagent worktrees. Agent harnesses may create isolated git worktrees
+# UNDER the repo. They cannot affect a reviewed diff (a worktree's own changes are
+# invisible to the superproject's `git status`), but the untracked DIRECTORY makes the
+# tree read as dirty — and ./.plinth/review.sh refuses a dirty tree, so the review loop
+# is blocked for exactly as long as a subagent is alive. That is precisely when you want
+# the reviewer running in parallel with the workers.
+.claude/worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
