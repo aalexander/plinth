@@ -53,12 +53,16 @@ jobs:
           #   - non-semver instrument label → fail
           check_instrument_identity() {  # <tree-root>  → exit 0 ok, 1 bad (messages on stdout)
             local root="$1" prod inst mism=0
-            prod="$(tr -d '[:space:]' < "$root/VERSION" 2>/dev/null || true)"
-            inst="$(tr -d '[:space:]' < "$root/.plinth-version" 2>/dev/null || true)"
+            # Newline-only strip: tr -d '[:space:]' would turn '4 . 7 . 1' into an
+            # accepted '4.7.1'. Labels must already be exact X.Y.Z.
+            prod="$(tr -d '\n\r' < "$root/VERSION" 2>/dev/null || true)"
+            inst="$(tr -d '\n\r' < "$root/.plinth-version" 2>/dev/null || true)"
             [ -n "$prod" ] && [ -n "$inst" ] || { echo "VERSION or .plinth-version is empty under $root"; return 1; }
-            # Reject non-semver labels (a typo must not pass as "expected lag").
-            case "$prod" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "VERSION='$prod' is not X.Y.Z"; return 1 ;; esac
-            case "$inst" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo ".plinth-version='$inst' is not X.Y.Z"; return 1 ;; esac
+            # Strict X.Y.Z only — bash globs like [0-9]*.[0-9]*.[0-9]* accept 4.7.1oops
+            # and 4.7.1.9. A typo must not pass as "expected lag".
+            is_xyz() { printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; }
+            is_xyz "$prod" || { echo "VERSION='$prod' is not strict X.Y.Z"; return 1; }
+            is_xyz "$inst" || { echo ".plinth-version='$inst' is not strict X.Y.Z"; return 1; }
             # Instrument may lag product, never lead it (sort -V: last line is the highest).
             highest="$(printf '%s\n%s\n' "$prod" "$inst" | sort -V | tail -1)"
             if [ "$highest" != "$prod" ]; then
@@ -96,15 +100,22 @@ jobs:
             check_pair shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
             check_pair shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
             check_pair shared/driver-shell.md             AGENTS.md
-            # CLAUDE.md is managed when it is the shell (marker present); custom bodies
-            # are project-owned and not required to match (materialize_driver_shell
-            # leaves them alone).
-            # Same marker bin/plinth's materialize_driver_shell uses to recognize a managed shell.
-            if [ -f "$root/CLAUDE.md" ] && grep -qF 'Plinth driver shell (version-pinned)' "$root/CLAUDE.md" 2>/dev/null; then
-              check_pair shared/driver-shell.md CLAUDE.md
-            elif [ ! -f "$root/CLAUDE.md" ]; then
+            # materialize_driver_shell overwrites CLAUDE.md when it has the current
+            # marker OR is the pre-v4.4 stock shell (is_stock_old_claude). Both are
+            # managed twins and must match shared/driver-shell.md under equal versions.
+            # A true custom CLAUDE.md (neither) is project-owned and not required to match.
+            claude_managed=0
+            if [ ! -f "$root/CLAUDE.md" ]; then
               echo "missing CLAUDE.md while claiming instrument==VERSION"
               mism=1
+            elif grep -qF 'Plinth driver shell (version-pinned)' "$root/CLAUDE.md" 2>/dev/null; then
+              claude_managed=1
+            elif grep -qF 'You are the implementer for this repository' "$root/CLAUDE.md" 2>/dev/null \
+              && grep -qF '@.plinth/plinth-rules.md' "$root/CLAUDE.md" 2>/dev/null; then
+              claude_managed=1
+            fi
+            if [ "$claude_managed" = 1 ]; then
+              check_pair shared/driver-shell.md CLAUDE.md
             fi
             [ "$mism" = 0 ] || return 1
             echo "OK equal: .plinth-version=$inst equals VERSION and managed twins match shared/"
@@ -198,14 +209,37 @@ jobs:
           printf '%s' "$out" | grep -qi 'AHEAD' \
             || { echo "::error::ahead-instrument failure did not name the condition: $out"; exit 1; }
           echo "OK mutant: instrument-ahead refused"
-          # Fourth mutant: non-semver instrument label.
-          printf '1.0.0\n' > "$FX/VERSION"
-          printf 'not-a-version\n' > "$FX/.plinth-version"
+          # Fourth mutant family: non-strict version labels that the old glob accepted.
+          for bad in 'not-a-version' '4.7.1oops' '4.7.1.9' '4 . 7 . 1' 'v4.7.1'; do
+            printf '1.0.0\n' > "$FX/VERSION"
+            printf '%s\n' "$bad" > "$FX/.plinth-version"
+            if out="$(check_instrument_identity "$FX" 2>&1)"; then
+              echo "::error::malformed .plinth-version='$bad' was ACCEPTED as lag: $out"
+              exit 1
+            fi
+          done
+          echo "OK mutant: malformed instrument labels refused (oops/extra-component/spaced/v-prefix/garbage)"
+          # Fifth mutant: pre-v4.4 stock CLAUDE.md is managed (is_stock_old_claude) and
+          # must match shared/driver-shell under equal versions — not pass as custom.
+          printf '9.9.9\n' > "$FX/VERSION"; printf '9.9.9\n' > "$FX/.plinth-version"
+          echo 'shared-review' > "$FX/shared/.plinth/review.sh"; cp "$FX/shared/.plinth/review.sh" "$FX/.plinth/review.sh"
+          cp "$FX/shared/driver-shell.md" "$FX/AGENTS.md"
+          printf '%s\n' \
+            '# CLAUDE.md' \
+            '' \
+            'You are the implementer for this repository. The canonical spec (see `spec_path` in `.plinth/config`; default `SPEC.md`) is the source of truth —' \
+            'read it before implementing. Model and orchestration guidance: `.plinth/MODELS.md`.' \
+            '' \
+            '@.plinth/plinth-rules.md' \
+            '' \
+            '## Project-specific notes' > "$FX/CLAUDE.md"
           if out="$(check_instrument_identity "$FX" 2>&1)"; then
-            echo "::error::non-semver .plinth-version was ACCEPTED as lag: $out"
+            echo "::error::equal-version with stock pre-v4.4 CLAUDE.md was ACCEPTED as custom — materialize_driver_shell would regenerate it: $out"
             exit 1
           fi
-          echo "OK mutant: non-semver instrument refused"
+          printf '%s' "$out" | grep -q 'CLAUDE.md differs\|differs from' \
+            || { echo "::error::stock-CLAUDE failure did not name the shell: $out"; exit 1; }
+          echo "OK mutant: equal-version + stock pre-v4.4 CLAUDE.md refused"
           # Positive equal: heal everything and assert pass.
           printf '9.9.9\n' > "$FX/VERSION"; printf '9.9.9\n' > "$FX/.plinth-version"
           echo 'shared-review' > "$FX/shared/.plinth/review.sh"; cp "$FX/shared/.plinth/review.sh" "$FX/.plinth/review.sh"
