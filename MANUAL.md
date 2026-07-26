@@ -750,6 +750,10 @@ installed copies.
   refusal branches (non-git cwd, non-dir session, mkdir failures) lack fixtures.
   Preflight diagnostic sleeps add ~3 minutes serial wall-clock to the canary — injectable
   cap would be cheaper. Tracked for a later pass.
+- **`round_cap = 0` on main is operator config, not this PR** (`.plinth/config`, commit
+  `372ee25` already on `origin/main`). This v4.8.0 branch does not touch `.plinth/config`
+  (`git diff origin/main...HEAD -- .plinth/config` is empty). Reviewer findings that treat
+  that main commit as PR-scope tooling tampering are out of scope for the branch diff.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
