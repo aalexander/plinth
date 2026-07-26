@@ -43,21 +43,41 @@ jobs:
           # Advancing it while managed installed twins still differ from shared/ claims a
           # refresh that never happened — this repo's own loop then "runs 4.x.y" while
           # retaining the fail-open behaviour the product claims to have fixed.
-          # Mutant: bump .plinth-version to VERSION without copy_shared — this fails.
-          # Normal development (VERSION ahead of .plinth-version) is fine; a labeled
-          # release commit that refreshes every twin may set them equal.
-          prod="$(tr -d '[:space:]' < VERSION)"
-          inst="$(tr -d '[:space:]' < .plinth-version)"
-          [ -n "$prod" ] && [ -n "$inst" ] || { echo "::error::VERSION or .plinth-version is empty"; exit 1; }
-          if [ "$prod" = "$inst" ]; then
-            mism=0
-            # Managed twins from bin/plinth copy_shared (+ driver shells).
+          #
+          # The check is a PURE function over a tree root so a fixture can exercise the
+          # equal-version branch (the committed tree intentionally lags mid-release and
+          # would never hit twin comparison otherwise). Mutants caught:
+          #   - bump .plinth-version to VERSION without copy_shared → fail
+          #   - equal versions with stale AGENTS.md/CLAUDE.md → fail
+          #   - instrument AHEAD of product VERSION → fail
+          #   - non-semver instrument label → fail
+          check_instrument_identity() {  # <tree-root>  → exit 0 ok, 1 bad (messages on stdout)
+            local root="$1" prod inst mism=0
+            prod="$(tr -d '[:space:]' < "$root/VERSION" 2>/dev/null || true)"
+            inst="$(tr -d '[:space:]' < "$root/.plinth-version" 2>/dev/null || true)"
+            [ -n "$prod" ] && [ -n "$inst" ] || { echo "VERSION or .plinth-version is empty under $root"; return 1; }
+            # Reject non-semver labels (a typo must not pass as "expected lag").
+            case "$prod" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "VERSION='$prod' is not X.Y.Z"; return 1 ;; esac
+            case "$inst" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo ".plinth-version='$inst' is not X.Y.Z"; return 1 ;; esac
+            # Instrument may lag product, never lead it (sort -V: last line is the highest).
+            highest="$(printf '%s\n%s\n' "$prod" "$inst" | sort -V | tail -1)"
+            if [ "$highest" != "$prod" ]; then
+              echo ".plinth-version=$inst is AHEAD of product VERSION=$prod — instrument cannot lead the product it is installed into"
+              return 1
+            fi
+            if [ "$prod" != "$inst" ]; then
+              echo "OK lag: product VERSION=$prod, instrument=.plinth-version=$inst"
+              return 0
+            fi
+            # Equal: every managed twin from copy_shared must match shared/, including
+            # driver shells (materialize_driver_shell copies shared/driver-shell.md into
+            # AGENTS.md always and CLAUDE.md when it is the managed shell).
             check_pair() {
-              local src="$1" dst="$2"
-              [ -f "$src" ] || { echo "::error::missing shared source $src"; mism=1; return; }
-              [ -f "$dst" ] || { echo "::error::missing installed twin $dst while .plinth-version=$inst equals VERSION=$prod"; mism=1; return; }
+              local src="$root/$1" dst="$root/$2"
+              [ -f "$src" ] || { echo "missing shared source $1"; mism=1; return; }
+              [ -f "$dst" ] || { echo "missing installed twin $2 while .plinth-version=$inst equals VERSION=$prod"; mism=1; return; }
               if ! cmp -s "$src" "$dst"; then
-                echo "::error::$dst differs from $src while .plinth-version equals VERSION ($prod) — refresh every managed twin in a labeled release commit, or leave .plinth-version at the prior instrument"
+                echo "$2 differs from $1 while .plinth-version equals VERSION ($prod)"
                 mism=1
               fi
             }
@@ -75,17 +95,124 @@ jobs:
             check_pair shared/.claude/hooks/pulse.sh       .claude/hooks/pulse.sh
             check_pair shared/.claude/agents/grok-implementer.md  .claude/agents/grok-implementer.md
             check_pair shared/.claude/agents/codex-implementer.md .claude/agents/codex-implementer.md
-            # Driver shells are materialized byte-identical from shared/driver-shell.md.
-            for shell in AGENTS.md CLAUDE.md; do
-              [ -f "$shell" ] || { echo "::error::missing driver shell $shell"; mism=1; continue; }
-              # materialize embeds version; compare against the shared source is not
-              # byte-identical — skip shell body equality and only require presence.
-            done
-            [ "$mism" = 0 ] || exit 1
-            echo "instrument identity OK: .plinth-version=$inst equals VERSION and managed twins match shared/"
-          else
-            echo "instrument identity OK: product VERSION=$prod, installed instrument=.plinth-version=$inst (lag is expected mid-release)"
+            check_pair shared/driver-shell.md             AGENTS.md
+            # CLAUDE.md is managed when it is the shell (marker present); custom bodies
+            # are project-owned and not required to match (materialize_driver_shell
+            # leaves them alone).
+            # Same marker bin/plinth's materialize_driver_shell uses to recognize a managed shell.
+            if [ -f "$root/CLAUDE.md" ] && grep -qF 'Plinth driver shell (version-pinned)' "$root/CLAUDE.md" 2>/dev/null; then
+              check_pair shared/driver-shell.md CLAUDE.md
+            elif [ ! -f "$root/CLAUDE.md" ]; then
+              echo "missing CLAUDE.md while claiming instrument==VERSION"
+              mism=1
+            fi
+            [ "$mism" = 0 ] || return 1
+            echo "OK equal: .plinth-version=$inst equals VERSION and managed twins match shared/"
+            return 0
+          }
+
+          # 1) Committed tree — must pass (lag is the mid-release shape today).
+          out="$(check_instrument_identity "$GITHUB_WORKSPACE" 2>&1)" || { echo "::error::committed tree failed instrument identity: $out"; exit 1; }
+          printf '%s\n' "$out"
+
+          # 2) BEHAVIOURAL mutant: equal version label without refreshing twins must FAIL.
+          #    A comment claiming this mutant is not a test — drive it.
+          FX="$(mktemp -d)"
+          # Minimal tree: VERSION equals a fake instrument label; one managed twin is stale.
+          mkdir -p "$FX/shared/.plinth" "$FX/.plinth" "$FX/shared/.claude/hooks" "$FX/.claude/hooks" \
+                   "$FX/shared/.claude/agents" "$FX/.claude/agents"
+          printf '9.9.9\n' > "$FX/VERSION"
+          printf '9.9.9\n' > "$FX/.plinth-version"
+          # Shared sources (current enough to exist); installed twins intentionally STALE.
+          echo 'shared-review' > "$FX/shared/.plinth/review.sh"
+          echo 'STALE-review'  > "$FX/.plinth/review.sh"
+          for pair in \
+            'shared/plinth-rules.md|.plinth/plinth-rules.md' \
+            'shared/MODELS.md|.plinth/MODELS.md' \
+            'shared/.plinth/risk-classify.sh|.plinth/risk-classify.sh' \
+            'shared/.plinth/lane-guard.sh|.plinth/lane-guard.sh' \
+            'shared/.plinth/receipt-verify.sh|.plinth/receipt-verify.sh' \
+            'shared/.plinth/review-schema.json|.plinth/review-schema.json' \
+            'shared/reviewer.md|.plinth/reviewer.md' \
+            'shared/.claude/hooks/guard.sh|.claude/hooks/guard.sh' \
+            'shared/.claude/hooks/session-start.sh|.claude/hooks/session-start.sh' \
+            'shared/.claude/hooks/review-gate.sh|.claude/hooks/review-gate.sh' \
+            'shared/.claude/hooks/pulse.sh|.claude/hooks/pulse.sh' \
+            'shared/.claude/agents/grok-implementer.md|.claude/agents/grok-implementer.md' \
+            'shared/.claude/agents/codex-implementer.md|.claude/agents/codex-implementer.md' \
+            'shared/driver-shell.md|AGENTS.md' \
+            'shared/driver-shell.md|CLAUDE.md'; do
+            src="${pair%%|*}"; dst="${pair##*|}"
+            mkdir -p "$FX/$(dirname "$src")" "$FX/$(dirname "$dst")"
+            # For non-review pairs, make them match so ONLY review.sh (and shells below) differ
+            # when we want a single failure; for the shell-stale case we re-run separately.
+            if [ "$src" = "shared/.plinth/review.sh" ]; then
+              : # already set stale
+            elif [ "$src" = "shared/driver-shell.md" ]; then
+              echo 'shell-src' > "$FX/$src"
+              echo 'shell-src' > "$FX/$dst"   # matched for first run; shell-stale run corrupts them
+            else
+              echo "ok-$src" > "$FX/$src"
+              cp "$FX/$src" "$FX/$dst"
+            fi
+          done
+          # Marker so CLAUDE.md is treated as managed shell (matches materialize_driver_shell).
+          printf 'Plinth driver shell (version-pinned)\nshell-src\n' > "$FX/shared/driver-shell.md"
+          cp "$FX/shared/driver-shell.md" "$FX/AGENTS.md"
+          cp "$FX/shared/driver-shell.md" "$FX/CLAUDE.md"
+          # First mutant: stale review.sh twin.
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::equal-version with stale .plinth/review.sh was ACCEPTED — twin comparison is not enforced: $out"
+            exit 1
           fi
+          printf '%s' "$out" | grep -q 'review.sh differs\|differs from' \
+            || { echo "::error::equal-version stale-review failure did not name the twin: $out"; exit 1; }
+          echo "OK mutant: equal-version + stale review.sh refused"
+          # Second mutant: twins all match EXCEPT stale AGENTS.md (driver shell).
+          echo 'shared-review' > "$FX/.plinth/review.sh"   # heal review twin
+          printf 'STALE-SHELL\n' > "$FX/AGENTS.md"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::equal-version with stale AGENTS.md was ACCEPTED — driver shell is not enforced: $out"
+            exit 1
+          fi
+          printf '%s' "$out" | grep -q 'AGENTS.md differs\|differs from' \
+            || { echo "::error::equal-version stale-AGENTS failure did not name the shell: $out"; exit 1; }
+          echo "OK mutant: equal-version + stale AGENTS.md refused"
+          # Heal AGENTS, corrupt CLAUDE (managed shell marker present, body stale).
+          cp "$FX/shared/driver-shell.md" "$FX/AGENTS.md"
+          printf 'Plinth driver shell (version-pinned)\nSTALE-CLAUDE\n' > "$FX/CLAUDE.md"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::equal-version with stale CLAUDE.md was ACCEPTED: $out"
+            exit 1
+          fi
+          printf '%s' "$out" | grep -q 'CLAUDE.md differs\|differs from' \
+            || { echo "::error::equal-version stale-CLAUDE failure did not name the shell: $out"; exit 1; }
+          echo "OK mutant: equal-version + stale CLAUDE.md refused"
+          # Third mutant: instrument AHEAD of product.
+          printf '1.0.0\n' > "$FX/VERSION"
+          printf '2.0.0\n' > "$FX/.plinth-version"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::instrument ahead of product was ACCEPTED: $out"
+            exit 1
+          fi
+          printf '%s' "$out" | grep -qi 'AHEAD' \
+            || { echo "::error::ahead-instrument failure did not name the condition: $out"; exit 1; }
+          echo "OK mutant: instrument-ahead refused"
+          # Fourth mutant: non-semver instrument label.
+          printf '1.0.0\n' > "$FX/VERSION"
+          printf 'not-a-version\n' > "$FX/.plinth-version"
+          if out="$(check_instrument_identity "$FX" 2>&1)"; then
+            echo "::error::non-semver .plinth-version was ACCEPTED as lag: $out"
+            exit 1
+          fi
+          echo "OK mutant: non-semver instrument refused"
+          # Positive equal: heal everything and assert pass.
+          printf '9.9.9\n' > "$FX/VERSION"; printf '9.9.9\n' > "$FX/.plinth-version"
+          echo 'shared-review' > "$FX/shared/.plinth/review.sh"; cp "$FX/shared/.plinth/review.sh" "$FX/.plinth/review.sh"
+          cp "$FX/shared/driver-shell.md" "$FX/AGENTS.md"; cp "$FX/shared/driver-shell.md" "$FX/CLAUDE.md"
+          out="$(check_instrument_identity "$FX" 2>&1)" || { echo "::error::healed equal-version tree was REFUSED: $out"; exit 1; }
+          printf '%s' "$out" | grep -q 'OK equal' || { echo "::error::healed equal tree did not report OK equal: $out"; exit 1; }
+          echo "OK positive: equal-version with matching twins accepted"
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail
