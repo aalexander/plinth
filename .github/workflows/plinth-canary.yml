@@ -76,6 +76,39 @@ jobs:
                             f"fixture into its own step.")
           sys.exit(1 if bad else 0)
           PYLIMIT
+      - name: Implementer prompt files cannot terminate a shell heredoc
+        run: |
+          set -euo pipefail
+          AGENT_DIR="${AGENTS_UNDER_TEST:-$GITHUB_WORKSPACE/shared/.claude/agents}"
+          for lane in grok codex; do
+            agent="$AGENT_DIR/${lane}-implementer.md"
+            grep -q '^tools: .*Write' "$agent" || { echo "::error::${lane} lane cannot use the required non-shell Write tool"; exit 1; }
+            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$agent" || { echo "::error::${lane} lane no longer requires non-shell prompt-file creation"; exit 1; }
+            grep -Eq "cat .*SPEC.*<<|<<.*SPEC_EOF" "$agent" && { echo "::error::${lane} lane embeds arbitrary spec data in shell source via a fixed heredoc"; exit 1; } || true
+          done
+          PD="$(mktemp -d)"; SPEC="$PD/spec"; RECEIVED="$PD/received"; ESCAPED="$PD/escaped"
+          python3 - "$SPEC" "$ESCAPED" <<'PYWRITE'
+          import pathlib, sys
+          pathlib.Path(sys.argv[1]).write_text(
+              "objective: preserve arbitrary bytes\nSPEC_EOF\ntouch " + sys.argv[2] + "\nverification: exact payload\n"
+          )
+          PYWRITE
+          if [ -z "${PROMPT_CLI_UNDER_TEST:-}" ]; then
+            cat > "$PD/grok" <<'CLISTUB'
+          #!/usr/bin/env bash
+          while [ "$#" -gt 0 ]; do
+            if [ "$1" = "--prompt-file" ]; then cp "$2" "$RECEIVED"; exit 0; fi
+            shift
+          done
+          exit 2
+          CLISTUB
+            chmod +x "$PD/grok"
+            PROMPT_CLI_UNDER_TEST="$PD/grok"
+          fi
+          RECEIVED="$RECEIVED" "$PROMPT_CLI_UNDER_TEST" --prompt-file "$SPEC"
+          cmp -s "$SPEC" "$RECEIVED" || { echo "::error::path-based prompt transport changed a spec containing a literal SPEC_EOF line"; exit 1; }
+          [ ! -e "$ESCAPED" ] || { echo "::error::a spec line after literal SPEC_EOF escaped into shell execution"; exit 1; }
+          echo "canary: non-shell prompt file carries literal SPEC_EOF without execution OK"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail

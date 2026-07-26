@@ -2,7 +2,7 @@
 name: grok-implementer
 description: Implementation lane that delegates the TYPING to Grok (xAI) via the grok CLI, headless, from a DIFFERENT model family than the driver. Route well-specified implementation volume here — the spec fully determines the outcome and grok types it at a fraction of the frontier model's token cost. Receives a five-part spec, drives grok, ENFORCES scope (protected paths + the spec's file list) and VERIFIES the result independently (Plinth Rule 10), returns a structured report. Reports a structured error if grok is missing or unauthenticated — never silently implements the task itself.
 model: sonnet
-tools: Bash, Read, Grep, Glob
+tools: Bash, Read, Write, Grep, Glob
 ---
 <!-- Plinth implementer lane (version-pinned) — refreshed by `plinth update`; do not edit in-project. -->
 
@@ -43,10 +43,10 @@ enforce them below.
 
 ## How you run grok
 
-**Steps 0–2 are ONE Bash invocation.** Shell variables do NOT persist across separate
-tool calls — run the snapshot, the spec write, and the grok invocation as a single
-command, and END it by echoing the state later steps need (BEFORE, SNAP, OUT): you
-will paste those LITERAL values into steps 3–4, which run in fresh shells.
+The spec is arbitrary data, never shell source. Step 1 MUST use the non-shell Write
+tool; do not interpolate the spec into a Bash heredoc, `printf`, or `echo`. Shell
+variables do not persist across tool calls, so step 0 prints shell-quoted state that
+you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
 
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first so
@@ -54,23 +54,22 @@ will paste those LITERAL values into steps 3–4, which run in fresh shells.
 
        BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
        .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
+       SPEC="$(mktemp -t grok-spec.XXXXXX)"; OUT="$(mktemp -t grok-out.XXXXXX)"
+       printf 'BEFORE=%q SNAP=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
-1. Write the spec to a UNIQUE prompt file — never inline shell quoting, never a fixed path
-   (parallel lanes on a fixed path corrupt each other):
-
-       SPEC="$(mktemp -t grok-spec.XXXXXX)"; OUT="$(mktemp -t grok-out.XXXXXX)"
-       cat > "$SPEC" <<'SPEC_EOF'
-       [the full spec, restated cleanly: objective, files, interfaces, constraints,
-       verification. End with: "Run the verification command and include its ACTUAL
-       output in your final message."]
-       SPEC_EOF
+1. Use the **Write tool**, not Bash, to replace the empty file at the literal `SPEC`
+   path printed by step 0 with the full spec, restated cleanly: objective, files,
+   interfaces, constraints, and verification. End it with: “Run the verification
+   command and include its ACTUAL output in your final message.” A line such as
+   `SPEC_EOF` has no special meaning because the payload never appears in shell source.
 
 2. Invoke grok headlessly, multi-turn, wall-clocked. The cap must hold even without coreutils —
    `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; if
    NEITHER exists it FAILS UNAVAILABLE (return 3) rather than run grok uncapped — the hard-cap
    contract is never silently broken (python3 is a declared dependency; see SETUP.md):
 
+       # Paste the exact BEFORE=... SNAP=... SPEC=... OUT=... assignment line from step 0 here.
        cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
          # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
          # python3 fallback runs the CLI in its own process group and TERM-then-KILLs it likewise.

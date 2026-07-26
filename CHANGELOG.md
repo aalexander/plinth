@@ -1,6 +1,14 @@
 # Plinth changelog
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
+- **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
+  lane contracts require the non-shell Write tool for their unique prompt file and pass
+  only the path to the CLI, so a literal `SPEC_EOF` line cannot terminate a fixed-delimiter
+  heredoc and execute. The review harness documents that project-owned `.plinth` files
+  (DRIVER-project.md, AGENTS-project.md, config, protected-paths, NEEDS-HUMAN.md) remain
+  outside the pinned-tooling set used for tamper arithmetic. Canary: implementer agents
+  declare Write, ban fixed-heredoc shell embedding, and prove path-based prompt transport
+  preserves a payload that contains a literal `SPEC_EOF` line.
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream
   #19): ~6 minutes over ~28,000 ignored files, and repos with ~205,000 exist. The snapshot is
   taken before and after every delegated lane run, so the lane paid it twice.
