@@ -574,12 +574,13 @@ it has run green with a real smoke_cmd.
   those text scans only for a *narrow simple form*: inert consumer (`cat`/`tee`), a single
   simple quoted delimiter (`'D'`, pure `"D"`, pure `$'D'` with no backslash, or `<<''` —
   not `$"D"`, which Bash locale-translates), a
-  *complete* simple header: no trailing unquoted `\`, no unclosed quote / `$(…)` / `<(…)` /
-  `>(…)` / backtick after `<<` (tokens after unquoted `#` are comments and ignored), and
-  not nested inside a still-open outer quote/expansion from a prior physical line. No
-  pipe/process-sub on that header segment. Word-concat or mixed delimiters, incomplete or
-  outer-nested headers, executable consumers, unquoted bodies, and other ambiguous parses
-  stay fully scanned (fail closed). Cross-line quote and expansion depth are tracked so a
+  *complete* simple header: no trailing unquoted `\`, no unclosed quote / `$(…)` / `${…}` /
+  `<(…)` / `>(…)` / backtick after `<<` (tokens after unquoted `#` are comments and
+  ignored — including `# |` / `# <(`), and not nested inside a still-open outer
+  quote/expansion from a prior physical line. No pipe/process-sub on that header segment
+  outside comments. Word-concat or mixed delimiters, incomplete or outer-nested headers
+  (incl. `${…}`), executable consumers, unquoted bodies, and other ambiguous parses stay
+  fully scanned (fail closed). Cross-line quote and expansion depth are tracked so a
   heredoc-looking token inside an unclosed construct is not treated as a simple inert
   header. The header line itself (including redirect targets) is always part of the scan.
   The guard is a

@@ -92,8 +92,8 @@ case "$tool" in
     # `sqlite3 <<'E'` still runs SQL). Suppress body lines from BOTH pattern scans
     # (destructive + protected/secret-path) ONLY when ALL of:
     #   (1) delimiter is a simple quoted form we decode confidently:
-    #       'D', pure "D" (no backslash), pure $'D'/$"D" (no backslash), or
-    #       quoted-empty <<'' / <<"" — no ANSI-C / \x olympics,
+    #       'D', pure "D" (no backslash), pure $'D' (no backslash), or
+    #       quoted-empty <<'' / <<"" — not $"D" (locale), no ANSI-C / \x olympics,
     #   (2) FIRST command word of the simple command owning << (after the last
     #       unquoted |;&, skipping sudo/env/nice/nohup/time and VAR=) is exactly
     #       cat or tee (basename),
@@ -128,7 +128,7 @@ case "$tool" in
         }
         return last
       }
-      function has_unquoted_pipe_or_procsub(s,    i,n,c,st) {
+      function has_unquoted_pipe_or_procsub(s,    i,n,c,st,prev) {
         n=length(s); st=""
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
@@ -138,6 +138,8 @@ case "$tool" in
             if (c=="\"") st=""
             continue
           }
+          prev=(i==1 ? "" : substr(s,i-1,1))
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="\\") { i++; continue }
@@ -197,12 +199,15 @@ case "$tool" in
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
           if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; continue }
           if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
           if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
           # << is a heredoc op, not process-sub; skip the extra <
           if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
           if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c=="{") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
+          if (depth>0 && c=="}") { depth--; continue }
           if (c=="\\") { i++; continue }
         }
         qst=st; exp_depth=depth; bt_open=bt
@@ -229,11 +234,14 @@ case "$tool" in
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
           if (c=="$" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="$" && i<n && substr(s,i+1,1)=="{") { depth++; i++; continue }
           if (c=="<" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
           if (c==">" && i<n && substr(s,i+1,1)=="(") { depth++; i++; continue }
           if (c=="<" && i<n && substr(s,i+1,1)=="<") { i++; continue }
           if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c=="{") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
+          if (depth>0 && c=="}") { depth--; continue }
           if (c=="\\") { i++; continue }
         }
         return (st!="" || bt || depth>0)
@@ -303,10 +311,13 @@ case "$tool" in
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
           if (c=="$" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
+          if (c=="$" && i<n && substr(line,i+1,1)=="{") { depth++; i++; continue }
           if (c=="<" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
           if (c==">" && i<n && substr(line,i+1,1)=="(") { depth++; i++; continue }
           if (depth>0 && c=="(") { depth++; continue }
+          if (depth>0 && c=="{") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
+          if (depth>0 && c=="}") { depth--; continue }
           if (c=="\\") { i++; continue }
           # heredoc << (not <<<)
           if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") continue
