@@ -1984,52 +1984,48 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
-  # Session identity: stream at most the last _DASH_EV_MAX_LINES lines (bounded
-  # cost per poll). Per-SID map keeps interleaved SIDs' task/t0 for the active
-  # sid. Serve mode also single-flights the whole snapshot (TTL ≥ UI poll).
+  # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
+  # pre-scan of the full file). t0 is set only from SessionStart — if that event
+  # fell off the window, session_secs is null rather than a fabricated age.
   local sid="" session_t0="" task="" transcript_path=""
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
-    local meta_out meta_rc=0 ev_src="$EV_RAW" ev_tmp=""
-    local lines
-    lines="$(wc -l < "$EV_RAW" 2>/dev/null | tr -d ' ')"
-    case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
-    if [ "$lines" -gt "$_DASH_EV_MAX_LINES" ]; then
-      ev_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-ev.XXXXXX")" || ev_tmp=""
-      if [ -n "$ev_tmp" ]; then
-        tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
-        ev_src="$ev_tmp"
-      fi
-    fi
-    meta_out="$(jq -nr '
-      reduce inputs as $e ({cur:null, by:{}};
-        if ($e.sid == null) then .
-        else
-          (if .by[$e.sid] == null then
-             .by[$e.sid] = {t0: ($e.epoch // null), task: null, tr: null}
-           else . end)
-          | .cur = $e.sid
-          | if (.by[$e.sid].t0 == null) and ($e.epoch != null)
-            then .by[$e.sid].t0 = $e.epoch else . end
-          | if ($e.event == "UserPromptSubmit")
-              and (($e.detail // "") | length > 0)
-              and ((($e.detail // "") | test("^\\s*<")) | not)
-            then .by[$e.sid].task = $e.detail else . end
-          | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
-        end
-      )
-      | .cur as $sid
-      | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
-      | @json
-    ' "$ev_src" 2>/dev/null)" || meta_rc=$?
-    [ -n "$ev_tmp" ] && rm -f "$ev_tmp"
-    if [ "$meta_rc" -ne 0 ] || [ -z "$meta_out" ]; then
+    local meta_out meta_rc=0 ev_tmp=""
+    ev_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-dash-ev.XXXXXX")" || ev_tmp=""
+    if [ -z "$ev_tmp" ]; then
       events_parse_failed=true
     else
-      sid="$(printf '%s' "$meta_out" | jq -r '.sid // empty')"
-      session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
-      task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
-      transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
+      tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
+      meta_out="$(jq -nr '
+        reduce inputs as $e ({cur:null, by:{}};
+          if ($e.sid == null) then .
+          else
+            (if .by[$e.sid] == null then
+               .by[$e.sid] = {t0: null, task: null, tr: null}
+             else . end)
+            | .cur = $e.sid
+            | if ($e.event == "SessionStart") and ($e.epoch != null)
+              then .by[$e.sid].t0 = $e.epoch else . end
+            | if ($e.event == "UserPromptSubmit")
+                and (($e.detail // "") | length > 0)
+                and ((($e.detail // "") | test("^\\s*<")) | not)
+              then .by[$e.sid].task = $e.detail else . end
+            | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+          end
+        )
+        | .cur as $sid
+        | ((.by[$sid] // {t0:null, task:null, tr:null}) + {sid: $sid})
+        | @json
+      ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
+      rm -f "$ev_tmp"
+      if [ "$meta_rc" -ne 0 ] || [ -z "$meta_out" ]; then
+        events_parse_failed=true
+      else
+        sid="$(printf '%s' "$meta_out" | jq -r '.sid // empty')"
+        session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
+        task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
+        transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
+      fi
     fi
   fi
 

@@ -164,7 +164,7 @@ printf 'not-json{\n' > "$I/.plinth/session/review/feat-badv/verdict.json"
 printf '%s\n' '- [ ] [BLOCKING] keep me through render failure' \
   > "$I/.plinth/NEEDS-HUMAN.md"
 
-# ── Fixture J: long session — task + session start before a flood of tools ───
+# ── Fixture J: long session within the 10k window (task + ~10000s age) ───────
 J="$FIX/kappa-long"
 mk_git "$J"
 git -C "$J" checkout -qb feat/long
@@ -177,7 +177,7 @@ J_T0=$((NOW - 10000))
     '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-long",transcript:null,tool:null,detail:null,rc:null}'
   jq -nc --argjson epoch "$((J_T0 + 1))" \
     '{ts:"2026-01-01T00:00:01Z",epoch:$epoch,event:"UserPromptSubmit",sid:"sid-long",transcript:null,tool:null,detail:"long session task",rc:null}'
-  # 600 tool events after the prompt — a naive tail would drop SessionStart + task.
+  # 600 tool events after the prompt — still inside the 10k window.
   n=0
   while [ "$n" -lt 600 ]; do
     jq -nc --argjson epoch "$((J_T0 + 2 + n))" --argjson n "$n" \
@@ -185,6 +185,28 @@ J_T0=$((NOW - 10000))
     n=$((n + 1))
   done
 } > "$J/.plinth/session/events.jsonl"
+
+# ── Fixture J2: SessionStart older than 10k-line window → session_secs null ──
+# (task may still appear if a later prompt is in the window; here only tools)
+J2="$FIX/kappa-cap"
+mk_git "$J2"
+{
+  jq -nc --argjson epoch "$((NOW - 50000))" \
+    '{epoch:$epoch,event:"SessionStart",sid:"sid-cap",transcript:null,tool:null,detail:null,rc:null}'
+  jq -nc --argjson epoch "$((NOW - 49999))" \
+    '{epoch:$epoch,event:"UserPromptSubmit",sid:"sid-cap",transcript:null,tool:null,detail:"ancient task",rc:null}'
+  # 10001 tool-only lines so SessionStart + prompt fall outside the tail window.
+  # Use a compact python writer (shell jq loop would be too slow).
+  python3 - "$((NOW - 49998))" <<'PY'
+import json, sys
+base = int(sys.argv[1])
+for n in range(10001):
+    print(json.dumps({
+        "epoch": base + n, "event": "PostToolUse", "sid": "sid-cap",
+        "transcript": None, "tool": "Bash", "detail": "t%d" % n, "rc": 0,
+    }))
+PY
+} > "$J2/.plinth/session/events.jsonl"
 
 # ── Fixture K: last-error means NOT running despite newer request ────────────
 K="$FIX/lambda-err"
@@ -308,7 +330,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$K:$L:$M:$N:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$M:$N:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -324,7 +346,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 17' "$OUT" >/dev/null
+jq -e '(.projects | length) == 18' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -414,12 +436,20 @@ jq -e '
   and .review == null
 ' "$OUT" >/dev/null
 
-# Long session: task + ~10000s session survive 600 trailing tool events
+# Long session within window: task + ~10000s session
 jq -e --argjson now "$NOW" --argjson t0 "$J_T0" '
   .projects[] | select(.name == "kappa-long")
   | .task == "long session task"
   and .session_secs != null
   and (((.session_secs - ($now - $t0)) | if . < 0 then -. else . end) <= 5)
+' "$OUT" >/dev/null
+
+# Cap boundary: SessionStart outside 10k window → session_secs null (not fabricated)
+jq -e '
+  .projects[] | select(.name == "kappa-cap")
+  | .session_secs == null
+  and (.task == null or .task == "")
+  and .sid == "sid-cap"
 ' "$OUT" >/dev/null
 
 # last-error: request outruns verdict but NOT running
@@ -807,9 +837,11 @@ export HOME="$CFG_HOME"
 COUNT_FILE="$FIX/snap.count"
 : > "$COUNT_FILE"
 WRAP="$FIX/count-plinth"
+# Slow builder so concurrent GETs overlap on the single-flight lock.
 cat > "$WRAP" <<WRAP
 #!/usr/bin/env bash
 printf '1\n' >> "$COUNT_FILE"
+sleep 0.4
 exec "$PLINTH" "\$@"
 WRAP
 chmod +x "$WRAP"
@@ -872,12 +904,20 @@ sleep 3
 : > "$COUNT_FILE"
 # Concurrent requests after expiry → exactly one builder invocation.
 # Wait only on the curl PIDs — bare `wait` would also wait for the server job.
-curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c1=$!
-curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c2=$!
-curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null & c3=$!
-wait "$c1" "$c2" "$c3" || true
+# Require each curl to succeed (no || true on failures).
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" -o "$FIX/c1.json" & c1=$!
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" -o "$FIX/c2.json" & c2=$!
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" -o "$FIX/c3.json" & c3=$!
+wait "$c1" || { echo "smoke-snapshot: concurrent curl 1 failed" >&2; exit 1; }
+wait "$c2" || { echo "smoke-snapshot: concurrent curl 2 failed" >&2; exit 1; }
+wait "$c3" || { echo "smoke-snapshot: concurrent curl 3 failed" >&2; exit 1; }
+for f in "$FIX/c1.json" "$FIX/c2.json" "$FIX/c3.json"; do
+  jq -e 'has("projects")' "$f" >/dev/null \
+    || { echo "smoke-snapshot: concurrent response not JSON: $f" >&2; exit 1; }
+done
 # One more within TTL should still hit cache (no second builder call)
-curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" > "$FIX/api.json"
+curl -sf --max-time 60 "http://127.0.0.1:${SRV_PORT}/api/snapshot" > "$FIX/api.json" \
+  || { echo "smoke-snapshot: follow-up curl failed" >&2; exit 1; }
 hits="$(wc -l < "$COUNT_FILE" | tr -d ' ')"
 [ "$hits" = "1" ] || { echo "smoke-snapshot: expected 1 builder call within TTL, got $hits" >&2; exit 1; }
 jq -e '
