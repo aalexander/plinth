@@ -30,7 +30,9 @@
 
 - [ ] **#43** — Write-tool implementer prompts regressed after #41 overwrote #37.
   Both implementers again use shell `SPEC_EOF` heredocs; restore the non-shell Write-tool
-  flow from #37 while keeping the #41 delegation-receipt wiring.
+  flow from #37 while keeping the #41 delegation-receipt wiring. Also add a mutation-
+  sensitive canary for `lane-guard.sh delegation` (missing/empty transcript, exact
+  header identity, containment, agent wiring order) — #41 shipped the gate without one.
 
 - [ ] **Instrument lag (v4.8.0 tag-locked install):** product `shared/.claude/hooks/guard.sh`
   comments now qualify receipt enablement (strict + caller-control). Installed

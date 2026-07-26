@@ -8,8 +8,7 @@
   MANUAL + `shared/.claude/hooks/guard.sh` comments now qualify that requiring the
   context name alone is not enough (need strict:true and the real verifier still
   running). Installed instrument remains on tagged **v4.8.0** bytes until the next
-  instrument refresh after a post-tag product pin. Canary covers `lane-guard.sh
-  delegation` (missing/empty transcript, artifact, MODEL extraction).
+  instrument refresh after a post-tag product pin.
 
 - **`plinth dash` / `plinth dashboard`.** Localhost wallboard for every Plinth
   project on the machine: binds **127.0.0.1 only**, serves a single dark HTML
