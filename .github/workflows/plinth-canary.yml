@@ -349,13 +349,17 @@ jobs:
               printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
             } > "$PD/run-victim-$lane.sh"
             set +e
-            bash "$PD/run-victim-$lane.sh" >/dev/null 2>&1
+            vic_out="$(bash "$PD/run-victim-$lane.sh" 2>&1)"
             vic_rc=$?
             set -e
             [ "$vic_rc" != 0 ] || {
               echo "::error::${lane}: cleanup accepted nested .plinth-lane.*/src SPEC_DIR"; exit 1; }
+            printf '%s\n' "$vic_out" | grep -q 'not a direct' || {
+              echo "::error::${lane}: nested SPEC_DIR missing direct-path guard diagnostic (got: $vic_out)"; exit 1; }
             [ -f "$nest/src/important" ] || {
               echo "::error::${lane}: cleanup deleted a nested project directory (data-loss path)"; exit 1; }
+            [ -f "$nest/src/prompt" ] || {
+              echo "::error::${lane}: cleanup deleted nested prompt before refusing (guard regressed)"; exit 1; }
             # Failure-path cleanup: CLI exits nonzero; SPEC_DIR must still be removed and RUN_RC preserved.
             cat > "$PD/bin/grok" <<'FAILSTUB'
           #!/usr/bin/env bash
@@ -487,9 +491,9 @@ jobs:
           done
           # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
           for lane in grok codex; do
-            # Clear any prior .plinth-lane.* residue so the assertion is meaningful.
-            find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' \
-              -exec /bin/rm -rf {} + 2>/dev/null || true
+          # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
+          for lane in grok codex; do
+            before_dirs="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null | sort || true)"
             cat > "$inj/bin/mktemp" <<'INJ'
           #!/usr/bin/env bash
           if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then exec /usr/bin/mktemp "$@"; fi
@@ -504,26 +508,28 @@ jobs:
             [ "$rc" = 1 ] || { echo "::error::${lane} OUT mktemp failure want exit 1 got $rc (out: $out)"; exit 1; }
             printf '%s\n' "$out" | grep -q 'OUT mktemp failed rc=43' || {
               echo "::error::${lane} OUT mktemp did not report rc=43 (got: $out)"; exit 1; }
-            leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null || true)"
-            [ -z "$leftovers" ] || {
-              echo "::error::${lane} OUT mktemp left SPEC_DIR residue: $leftovers"; exit 1; }
+            after_dirs="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null | sort || true)"
+            [ "$before_dirs" = "$after_dirs" ] || {
+              echo "::error::${lane} OUT mktemp left new SPEC_DIR residue (before=$before_dirs after=$after_dirs)"; exit 1; }
           done
           # OUT path with forced rm -rf failure: must fail loud on cleanup (not silent residue).
           for lane in grok codex; do
-            cat > "$inj/bin/mktemp" <<'INJ'
+            cat > "$inj/bin/mktemp" <<INJ
           #!/usr/bin/env bash
-          if [[ " $* " == *" -d "* ]] && [[ " $* " == *"plinth-lane"* ]]; then exec /usr/bin/mktemp "$@"; fi
-          if [[ " $* " == *" -t "* ]]; then echo "mktemp: forced OUT failure" >&2; exit 43; fi
-          exec /usr/bin/mktemp "$@"
+          if [[ " \$* " == *" -d "* ]] && [[ " \$* " == *"plinth-lane"* ]]; then
+            d="\$(/usr/bin/mktemp "\$@")"
+            printf '%s' "\$d" > "$inj/last-spec-dir"
+            printf '%s\\n' "\$d"
+            exit 0
+          fi
+          if [[ " \$* " == *" -t "* ]]; then echo "mktemp: forced OUT failure" >&2; exit 43; fi
+          exec /usr/bin/mktemp "\$@"
           INJ
             cat > "$inj/bin/rm" <<'INJ'
           #!/usr/bin/env bash
-          if [[ "$*" == *"-rf"* ]] || [[ "$*" == *"-r"* && "$*" == *"-f"* ]]; then
+          if [[ "$*" == *"-rf"* ]] || [[ "$1" == -rf ]]; then
             echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45
           fi
-          # also match `rm -rf "$SPEC_DIR"` as separate args
-          if [[ "$#" -ge 2 && "$1" == -rf ]]; then echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45; fi
-          if [[ "$#" -ge 1 && "$1" == -rf ]]; then echo "rm: forced SPEC_DIR cleanup failure" >&2; exit 45; fi
           exec /bin/rm "$@"
           INJ
             chmod +x "$inj/bin/mktemp" "$inj/bin/rm"
@@ -534,13 +540,11 @@ jobs:
             [ "$rc" = 1 ] || { echo "::error::${lane} OUT+rm-rf failure want exit 1 got $rc (out: $out)"; exit 1; }
             printf '%s\n' "$out" | grep -q 'SPEC_DIR cleanup after OUT mktemp failed rc=45' || {
               echo "::error::${lane} OUT+rm-rf missing rc=45 diagnostic (got: $out)"; exit 1; }
-            leftovers="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null || true)"
-            # residue is expected when rm -rf fails — ensure at least the dir still exists
-            [ -n "$leftovers" ] || {
-              echo "::error::${lane} OUT+rm-rf should leave SPEC_DIR residue when rm fails"; exit 1; }
-            # clear residual dirs so later assertions stay clean
-            # shellcheck disable=SC2086
-            /bin/rm -rf -- $leftovers
+            leftover="$(cat "$inj/last-spec-dir" 2>/dev/null || true)"
+            [ -n "$leftover" ] && [ -d "$leftover" ] || {
+              echo "::error::${lane} OUT+rm-rf should leave the exact SPEC_DIR residue"; exit 1; }
+            owned_dirs+=("$leftover")
+            /bin/rm -f "$inj/bin/rm"
           done
           # rmdir failure via EXTRACTED command block (nonempty dir): loud fail, keep extra file.
           for lane in grok codex; do
