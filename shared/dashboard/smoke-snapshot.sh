@@ -299,6 +299,33 @@ mk_git "$L6"
 printf '%s\n' '{"event":"UserPromptSubmit","sid":"s","epoch":1,"detail":123}' \
   > "$L6/.plinth/session/events.jsonl"
 
+# ── Fixture L7: unknown event name → error ───────────────────────────────────
+L7="$FIX/mu-badevname"
+mk_git "$L7"
+printf '%s\n' '{"event":"TotallyUnknown","sid":"s","epoch":1}' \
+  > "$L7/.plinth/session/events.jsonl"
+
+# ── Fixture L8: multi-doc verdict (null then object) → error ──────────────────
+L8="$FIX/mu-multiv"
+mk_git "$L8"
+git -C "$L8" checkout -qb feat/multiv
+echo l8 > "$L8/l8.txt"
+git -C "$L8" add -A
+git -C "$L8" commit -qm "work"
+mkdir -p "$L8/.plinth/session/review/feat-multiv"
+printf 'null\n{"verdict":"APPROVED","sha":"abcdef0123456789","round":1}\n' \
+  > "$L8/.plinth/session/review/feat-multiv/verdict.json"
+
+# ── Fixture L9: present JSON false verdict → error ───────────────────────────
+L9="$FIX/mu-falsev"
+mk_git "$L9"
+git -C "$L9" checkout -qb feat/falsev
+echo l9 > "$L9/l9.txt"
+git -C "$L9" add -A
+git -C "$L9" commit -qm "work"
+mkdir -p "$L9/.plinth/session/review/feat-falsev"
+printf 'false\n' > "$L9/.plinth/session/review/feat-falsev/verdict.json"
+
 # ── Fixture M: interleaved SIDs — later A event must not reset A's task/t0 ───
 M="$FIX/nu-interleave"
 mk_git "$M"
@@ -395,7 +422,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$M:$N:$N2:$O:$P:$Q"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -411,7 +438,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-jq -e '(.projects | length) == 24' "$OUT" >/dev/null
+jq -e '(.projects | length) == 27' "$OUT" >/dev/null
 
 # Alpha assertions
 jq -e --arg head "$HEAD" '
@@ -552,6 +579,18 @@ jq -e '
 ' "$OUT" >/dev/null
 jq -e '
   .projects[] | select(.name == "mu-baddetail")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-badevname")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-multiv")
+  | .error == "snapshot_render_failed"
+' "$OUT" >/dev/null
+jq -e '
+  .projects[] | select(.name == "mu-falsev")
   | .error == "snapshot_render_failed"
 ' "$OUT" >/dev/null
 

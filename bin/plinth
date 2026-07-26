@@ -1943,8 +1943,9 @@ snapshot_one_project() {
   local vfile="$dir/.plinth/session/review/$slug/verdict.json"
   local verdict_file_bad=false
   if [ -f "$vfile" ]; then
-    # Present file must be a JSON object (not null/false/array/empty).
-    if ! jq -e 'type == "object"' "$vfile" >/dev/null 2>&1; then
+    # Exactly one JSON document and it must be an object (rejects null/false,
+    # multi-doc files where the last doc is an object, empty files, etc.).
+    if ! jq -se 'length == 1 and (.[0] | type) == "object"' "$vfile" >/dev/null 2>&1; then
       verdict_file_bad=true
     fi
   else
@@ -2006,15 +2007,26 @@ snapshot_one_project() {
     else
       tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
       meta_out="$(jq -nr '
+        def known_event:
+          . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
+          or . == "PreToolUse" or . == "Stop" or . == "Notification"
+          or . == "SubagentStart" or . == "SubagentStop" or . == "SessionEnd"
+          or . == "Compact" or . == "Error" or . == "gate_release"
+          or . == "UserPromptSubmit";
         reduce inputs as $e ({cur:null, by:{}};
+          # Empty file / blank lines never reach here as objects.
           if ($e | type) != "object" then error("bad_event_type")
+          # Completely empty object: ignore (should not appear).
+          elif ($e | keys | length) == 0 then .
+          # Protocol: every non-empty event object needs a known string event name
+          # before we consider sid (sid-less rows still must name the event).
+          elif ($e.event == null) or (($e.event | type) != "string")
+               or (($e.event | known_event) | not) then error("bad_event_name")
           elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
           elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
-          elif ($e.event != null) and (($e.event | type) != "string") then error("bad_event_name")
           elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
           elif ($e.sid == null) then .
-          elif ($e.event == null) or ($e.event == "") then error("bad_event_missing_name")
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0: null, task: null, tr: null}
