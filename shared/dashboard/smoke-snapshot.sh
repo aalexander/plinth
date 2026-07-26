@@ -574,7 +574,13 @@ if (!m) { console.error("no script block"); process.exit(2); }
 const elsById = Object.create(null);
 const el = (id) => {
   const o = { textContent: "", className: "", innerHTML: "", style: { display: "", cssText: "" } };
-  o.querySelector = () => null;
+  // Honor real selectors used by the UI: .card after successful render.
+  o.querySelector = (sel) => {
+    if (sel === ".card" && typeof o.innerHTML === "string" && o.innerHTML.includes("class=\"card")) {
+      return el(); // non-null sentinel: cards present
+    }
+    return null;
+  };
   let _id = id || "";
   Object.defineProperty(o, "id", {
     get() { return _id; },
@@ -802,13 +808,24 @@ setTimeout(() => {
     }
     api.poll();
     setTimeout(() => {
+      const grid = sandbox.document.getElementById("grid");
+      if (!grid || !grid.querySelector(".card")) {
+        console.error("expected cards after successful poll before failure path");
+        process.exit(1);
+      }
+      const cardsHtml = grid.innerHTML;
       failPhase = 1;
       api.poll();
       setTimeout(() => {
         const banner = sandbox.document.getElementById("poll-error");
-        const text = banner && (banner.textContent || banner._t || "");
+        const text = banner && (banner.textContent || "");
         if (!String(text).includes("builder boom detail")) {
           console.error("steady-state failure must show detail in banner, got:", text);
+          process.exit(1);
+        }
+        // Stale cards must remain (not replaced by empty error-only grid).
+        if (grid.innerHTML !== cardsHtml || !grid.querySelector(".card")) {
+          console.error("steady-state failure must keep existing cards");
           process.exit(1);
         }
         // XSS escape
