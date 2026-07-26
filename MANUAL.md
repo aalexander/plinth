@@ -741,7 +741,6 @@ summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
 
 ## Noticed
-- canary-digest-base.sh uses fixed /tmp/dfr-out.txt (concurrent collision risk); use mktemp path (v4.7.2 minor).
 - github_preflight strict diagnostic is behind an elif after missing contexts, so missing floor+missing-strict only reports missing contexts first (v4.7.2 audit minor).
 - Lag instrument OK message is honest only for files the pin shipped; installed-only managed files absent at the tag are skipped (v4.7.2 audit minor).
 - Live `base.sha` binding in plinth-receipt.yml assumes GitHub recomputes base.sha on API read; if it is a creation/synchronize snapshot, base-advanced PRs can stick red until head is pushed (v4.7.2 audit; confirm against real PR API before treating as blocking forever).
