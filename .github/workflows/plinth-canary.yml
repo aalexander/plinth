@@ -2517,6 +2517,19 @@ jobs:
           [ "$(gcmd $'cat /dev/null | bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pipeline peer cat misclassified bash heredoc as inert"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' | bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cat heredoc piped to bash escaped scan"; exit 1; }
           [ "$(gcmd $'sqlite3 cat <<\'S\'\nDROP TABLE t;\nS')" = 2 ] || { echo "::error::heredoc-matrix: sqlite3 with arg named cat misclassified as inert"; exit 1; }
+          # Fail-closed bounds: continued headers, complex delimiters, cross-line quotes, secret-path body,
+          # <<- / empty delim / prefixed inert consumer (distinct branches the simple matrix missed).
+          [ "$(gcmd $'cat <<\'S\' \\\n| bash\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: backslash-continued cat|bash not blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' \\\n> .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: continued header redirect to protected path allowed"; exit 1; }
+          [ "$(gcmd $'cat <<$\'\\x53\'\nsafe\nS\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: ANSI-C delim mis-decode left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'cat <<\"S\\\\q\"\nsafe\nS\\q\nrm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: double-quoted delim with backslash left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'echo \"start\ncat <<\'S\'\nbody\nS\"; rm -rf build')" = 2 ] || { echo "::error::heredoc-matrix: fake heredoc inside multiline quote suppressed real post-quote rm"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\'\n.env\nsecrets/key\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'S' secret-path body text wrongly blocked"; exit 1; }
+          [ "$(gcmd $'sudo cat <<\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: sudo cat <<'S' body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<-\'S\'\n\trm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: cat <<-'S' tab-stripped body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'\'\nrm -rf\n\n')" = 0 ] || { echo "::error::heredoc-matrix: cat <<'' empty delim body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\"S\"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure double-quoted delim body wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<$\'S\'\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: pure \$'S' delim body wrongly blocked"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

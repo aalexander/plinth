@@ -571,10 +571,15 @@ it has run green with a real smoke_cmd.
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
-  those text scans only when the consumer is an inert data sink (`cat`/`tee`) and the
-  delimiter is quoted; executable consumers (`bash`, `sqlite3`, …), unquoted bodies, and
-  piped/process-substituted forms stay fully scanned, and the header (including redirect
-  targets) is always scanned. The guard is a
+  those text scans only when the consumer is an inert data sink (`cat`/`tee`), the
+  delimiter is a *simple* quoted form the hook decodes confidently (`'D'`, pure `"D"` /
+  `$'D'` with no backslash, or quoted-empty `<<''`), the header sits on one physical line
+  without a trailing unquoted `\`, and that simple command has no pipe/process-sub on the
+  scanned header segment. Executable consumers (`bash`, `sqlite3`, …), unquoted bodies,
+  backslash-continued headers, ANSI-C / backslash-bearing delimiters, and other ambiguous
+  parses stay fully scanned (fail closed). Cross-line shell quote state is tracked so a
+  heredoc-looking token inside an unclosed quote is not treated as a real header. The
+  header line itself (including redirect targets) is always part of the scan. The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
@@ -723,6 +728,12 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **guard.sh heredoc inert-consumer: basename `cat`/`tee` only**
+  (`shared/.claude/hooks/guard.sh` first_consumer). A path whose basename is
+  `cat`/`tee` (e.g. `./cat`, a shadowed function/alias) is treated as an inert
+  sink, so a custom executable could receive a suppressed body. Trusted-worker
+  threat model; requiring an exact path-free token would false-positive
+  `/bin/cat`. Opened by fix/guard-quoted-heredoc review round 1 (minor).
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever

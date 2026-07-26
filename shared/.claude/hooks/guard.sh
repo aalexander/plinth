@@ -90,17 +90,21 @@ case "$tool" in
     # Heredoc body handling. Quoting a delimiter only disables shell expansion —
     # it does NOT make the body non-executable (`bash <<'E'` still runs the body;
     # `sqlite3 <<'E'` still runs SQL). Suppress body lines from BOTH pattern scans
-    # (destructive + protected/secret-path) ONLY when:
-    #   (1) the delimiter is quoted ('D'/"D"/basic $'D'), AND
-    #   (2) the FIRST command word of the simple command owning << (after the last
+    # (destructive + protected/secret-path) ONLY when ALL of:
+    #   (1) delimiter is a simple quoted form we decode confidently:
+    #       'D', pure "D" (no backslash), pure $'D'/$"D" (no backslash), or
+    #       quoted-empty <<'' / <<"" — no ANSI-C / \x olympics,
+    #   (2) FIRST command word of the simple command owning << (after the last
     #       unquoted |;&, skipping sudo/env/nice/nohup/time and VAR=) is exactly
-    #       cat or tee, AND
-    #   (3) that simple command has no unquoted | or process-sub >( / <( before
-    #       or after << (body is not piped elsewhere).
-    # The header (including redirect targets) is always scanned — so
-    # `cat > .plinth/session/x <<'E'` still blocks. Unquoted bodies, executable
-    # consumers, and ambiguous parses stay fully in scope (fail closed). Fixes the
-    # upstream #22 false-positive without the "any quoted heredoc" over-suppress.
+    #       cat or tee (basename),
+    #   (3) that simple command has no unquoted | or process-sub >( / <( on the
+    #       same physical header segment before/after <<,
+    #   (4) the physical header line does not end in an unquoted \ continuation.
+    # Cross-line shell quote state is tracked so a heredoc-looking token inside an
+    # unclosed quote is not treated as a real header. Unquoted bodies, executable
+    # consumers, continued headers, complex delimiters, and ambiguous parses stay
+    # fully scanned (fail closed). Header text is always printed into the scan.
+    # Fixes upstream #22 without the over-broad “any quoted heredoc” suppress.
     inert_stripped="$(printf '%s\n' "$cmd" | awk '
       function enqueue(d, suppress, t) { tail++; delim[tail]=d; suppress_body[tail]=suppress; tabs[tail]=t }
       function is_inert_consumer(c) { return (c=="cat" || c=="tee") }
@@ -137,6 +141,24 @@ case "$tool" in
           if (c=="|") return 1
           if (c==">" && i<n && substr(s,i+1,1)=="(") return 1
           if (c=="<" && i<n && substr(s,i+1,1)=="(") return 1
+        }
+        return 0
+      }
+      # Unquoted trailing \ => physical line continues (header may resume next line).
+      function unquoted_line_continues(s,    i,n,c,st) {
+        n=length(s); st=""
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="\\" && i==n) return 1
+          if (c=="\\") { i++; continue }
         }
         return 0
       }
@@ -180,8 +202,10 @@ case "$tool" in
         }
         return ""
       }
-      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple) {
-        n=length(line); st=""
+      # qst: cross-line shell quote state so << inside an unclosed quote is ignored.
+      # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable) {
+        n=length(line); st=qst
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -199,48 +223,64 @@ case "$tool" in
           j=i+2; t=0
           if (substr(line,j,1)=="-") { t=1; j++ }
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
-          d=""; q=0; st=""; ok=1
-          # basic $'\''...'\'' / $"..." — literal body + simple \\ escapes (no \x olympics)
+          d=""; q=0; dst=""; ok=1; reliable=1
+          # $'\''...'\'' / $"..." — suppress only pure literals (any backslash => fail closed; no \x olympics)
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
             q=1; qch=substr(line,j+1,1); j+=2
             while (j<=n) {
               c=substr(line,j,1)
               if (c==qch) { j++; break }
-              if (c=="\\") { j++; if (j<=n) d=d substr(line,j,1); j++; continue }
+              if (c=="\\") { reliable=0; ok=0; j++; if (j<=n) j++; continue }
               d=d c; j++
             }
+            if (!reliable) d=""
           } else while (j<=n) {
             c=substr(line,j,1)
-            if (st=="sq") { if (c=="\047") st=""; else d=d c; j++; continue }
-            if (st=="dq") {
-              if (c=="\"") { st=""; j++; continue }
-              if (c=="\\") { j++; if (j<=n) d=d substr(line,j,1); j++; continue }
+            if (dst=="sq") { if (c=="\047") dst=""; else d=d c; j++; continue }
+            if (dst=="dq") {
+              if (c=="\"") { dst=""; j++; continue }
+              # any backslash inside "…" delimiter: do not decode (bash rules ≠ strip-all); fail closed
+              if (c=="\\") {
+                reliable=0; ok=0; d=""
+                j++
+                while (j<=n) {
+                  c=substr(line,j,1)
+                  if (c=="\"") { dst=""; j++; break }
+                  if (c=="\\") j++
+                  j++
+                }
+                break
+              }
               d=d c; j++; continue
             }
             if (c ~ /[[:space:];&|()<>]/) break
-            if (c=="\047") { q=1; st="sq"; j++; continue }
-            if (c=="\"") { q=1; st="dq"; j++; continue }
-            if (c=="\\") { ok=0; j++; if (j<=n) j++; break }
+            if (c=="\047") { q=1; dst="sq"; j++; continue }
+            if (c=="\"") { q=1; dst="dq"; j++; continue }
+            if (c=="\\") { ok=0; reliable=0; j++; if (j<=n) j++; break }
             d=d c; j++
           }
-          # word concat after quoted form, or unterminated quote → fail closed
-          if (st!="" || (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/ && substr(line,j,1)!="")) ok=0
+          # unterminated delim quotes or word-concat after quoted form → fail closed
+          if (dst!="" || (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/ && substr(line,j,1)!="")) ok=0
+          # backslash-continued header: pipe/redir may sit on the next physical line
+          if (unquoted_line_continues(line)) ok=0
           pref=substr(line,1,i-1)
           sep=last_unquoted_sep(pref)
           simple=(sep>0)?substr(pref,sep+1):pref
           if (has_unquoted_pipe_or_procsub(simple) || has_unquoted_pipe_or_procsub(substr(line,j))) ok=0
-          if (st=="" && d!="" && ok) {
+          # quoted empty <<'' / <<"" is a valid delimiter (terminator = empty line)
+          if (dst=="" && reliable && ok && (d!="" || q)) {
             cons=first_consumer(pref)
             enqueue(d, (q && is_inert_consumer(cons)), t)
-          } else if (st=="" && d!="") {
-            # still track the heredoc so a following terminator does not leave us
-            # "inside" a suppressed body for a later real command — but do not suppress
+          } else if (dst=="" && reliable && d!="") {
+            # track without suppress so a later terminator does not leave us inside a body
             enqueue(d, 0, t)
           }
+          # unreliable delim decode: no enqueue — every following line stays fully scanned
           i=j-1
         }
+        qst=st
       }
-      BEGIN { head=1; tail=0 }
+      BEGIN { head=1; tail=0; qst="" }
       {
         if (head<=tail) {
           body=$0; cmp=body
