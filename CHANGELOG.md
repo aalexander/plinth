@@ -3,7 +3,8 @@
 ## Unreleased
 - **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
   destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
-  *narrow simple form*: delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''`; consumer
+  *narrow simple form*: delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''` (not locale
+  `$"D"`); consumer
   basename `cat`/`tee`; complete single physical header (no trailing `\`, no open quote
   after `<<`, not a `\`-continuation of a prior line); no pipe/process-sub on that segment.
   Word-concat/mixed delims, ANSI-C, continued/incomplete/outer-nested headers (open

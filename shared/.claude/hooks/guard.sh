@@ -316,9 +316,18 @@ case "$tool" in
           d=""; q=0; dst=""; ok=1; reliable=1
           # incomplete outer state (prior lines or same-line so far) => never suppress
           if (cont || depth>0 || bt || st!="") ok=0
-          # dollar-quoted delim — suppress only pure literals; require closed quote on this line
-          if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
-            q=1; qch=substr(line,j+1,1); j+=2; closed=0
+          # dollar-quoted delim: $'D' pure literal only (closed, no backslash).
+          # $"D" is locale-translated by Bash — never suppress (cannot know the real terminator).
+          if (j<=n && substr(line,j,1)=="$" && j+1<=n && substr(line,j+1,1)=="\"") {
+            reliable=0; ok=0; d=""; q=1; j+=2
+            while (j<=n) {
+              c=substr(line,j,1)
+              if (c=="\"") { j++; break }
+              if (c=="\\") { j++; if (j<=n) j++; continue }
+              j++
+            }
+          } else if (j<=n && substr(line,j,1)=="$" && j+1<=n && substr(line,j+1,1)=="\047") {
+            q=1; qch="\047"; j+=2; closed=0
             while (j<=n) {
               c=substr(line,j,1)
               if (c==qch) { j++; closed=1; break }

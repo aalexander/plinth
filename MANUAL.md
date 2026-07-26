@@ -572,7 +572,8 @@ it has run green with a real smoke_cmd.
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
   those text scans only for a *narrow simple form*: inert consumer (`cat`/`tee`), a single
-  simple quoted delimiter (`'D'`, pure `"D"` / `$'D'` with no backslash, or `<<''`), a
+  simple quoted delimiter (`'D'`, pure `"D"`, pure `$'D'` with no backslash, or `<<''` —
+  not `$"D"`, which Bash locale-translates), a
   *complete* simple header: no trailing unquoted `\`, no unclosed quote / `$(…)` / `<(…)` /
   `>(…)` / backtick after `<<` (tokens after unquoted `#` are comments and ignored), and
   not nested inside a still-open outer quote/expansion from a prior physical line. No
