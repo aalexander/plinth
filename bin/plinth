@@ -71,6 +71,27 @@ edit_file() {  # edit_file <file> <sed-expr>...
   sed "$@" "$f" > "$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; echo "edit_file: failed to rewrite $f" >&2; exit 1; }
 }
 
+# Install a managed file by writing a same-directory temp and renaming it over
+# the destination. Bash reads scripts incrementally, so truncating an existing
+# review.sh during `plinth update` can crash a round already running from that
+# inode. rename(2) leaves the running inode intact. Preserve the destination's
+# exact mode on refresh; for a new file, preserve the source's exact mode.
+copy_managed_file() {  # <src> <dst>
+  local src="$1" dst="$2" mode tmp
+  if [ -e "$dst" ]; then
+    mode="$(stat -c '%a' "$dst" 2>/dev/null || stat -f '%Lp' "$dst" 2>/dev/null)"
+  else
+    mode="$(stat -c '%a' "$src" 2>/dev/null || stat -f '%Lp' "$src" 2>/dev/null)"
+  fi
+  case "$mode" in ''|*[!0-7]*) echo "copy_managed_file: cannot determine mode for $dst — refusing to replace it" >&2; exit 1 ;; esac
+  tmp="$(mktemp "$(dirname "$dst")/.plinth-tmp.XXXXXX")" \
+    || { echo "copy_managed_file: mktemp failed for $dst" >&2; exit 1; }
+  cp "$src" "$tmp" \
+    && chmod "$mode" "$tmp" \
+    && mv -f "$tmp" "$dst" \
+    || { rm -f "$tmp"; echo "copy_managed_file: failed to install $dst" >&2; exit 1; }
+}
+
 # NEEDS-HUMAN queue path — canonical is .plinth/NEEDS-HUMAN.md; tolerate a legacy
 # root copy (some projects kept it there) so the queue and dashboard still find it.
 # `plinth update` migrates a root copy into .plinth/ (see migrate_needs_human).
@@ -160,10 +181,10 @@ OLDSTOCK
   [ -n "$norm" ] && [ "$norm" = "$ref" ]
 }
 materialize_driver_shell() {
-  cp "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
+  copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
   local c="$target/CLAUDE.md"
   if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null || is_stock_old_claude "$c"; then
-    cp "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
+    copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
   else
     echo "  NOTE: $c has CUSTOM content — NOT overwritten. The v4.4.0 driver contract"
     echo "        is a pinned shell (CLAUDE.md + AGENTS.md, regenerated) plus"
@@ -186,7 +207,7 @@ cp_lane_agent() {  # <src> <dst> — belt: preflight_reserved_lanes should have 
     echo "       refusing to overwrite it or leave it half-managed (protected/frozen but project-owned)." >&2
     exit 1
   fi
-  cp "$src" "$dst"
+  copy_managed_file "$src" "$dst"
 }
 # Preflight the reserved lane-agent paths BEFORE any file is written, so a collision aborts with the
 # repo UNTOUCHED — never a partial scaffold (protected-paths / settings.json / a new review.sh already
@@ -268,30 +289,54 @@ preflight_reserved_lanes() {
 # SHARED (version-pinned, overwritten on update):
 copy_shared() {
   mkdir -p "$target/.plinth" "$target/.claude/hooks" "$target/.claude/agents"
-  cp "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
-  cp "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
-  cp "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
-  cp "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
-  cp "$PLINTH_ROOT/shared/.plinth/lane-guard.sh"  "$target/.plinth/lane-guard.sh"
-  cp "$PLINTH_ROOT/shared/.plinth/receipt-verify.sh" "$target/.plinth/receipt-verify.sh"
-  cp "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
-  cp "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
-  cp "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
-  cp "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
-  cp "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/plinth-rules.md"        "$target/.plinth/plinth-rules.md"
+  copy_managed_file "$PLINTH_ROOT/shared/MODELS.md"              "$target/.plinth/MODELS.md"
+  copy_managed_file "$PLINTH_ROOT/shared/.plinth/review.sh"      "$target/.plinth/review.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.plinth/risk-classify.sh" "$target/.plinth/risk-classify.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.plinth/lane-guard.sh"  "$target/.plinth/lane-guard.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.plinth/receipt-verify.sh" "$target/.plinth/receipt-verify.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.plinth/review-schema.json" "$target/.plinth/review-schema.json"
+  copy_managed_file "$PLINTH_ROOT/shared/.claude/hooks/guard.sh" "$target/.claude/hooks/guard.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.claude/hooks/session-start.sh" "$target/.claude/hooks/session-start.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.claude/hooks/review-gate.sh"   "$target/.claude/hooks/review-gate.sh"
+  copy_managed_file "$PLINTH_ROOT/shared/.claude/hooks/pulse.sh"         "$target/.claude/hooks/pulse.sh"
   # Lane agents live in .claude/agents/ — a namespace a project may ALSO use. The two lane filenames
   # are RESERVED: preflight_reserved_lanes() already aborted (repo untouched) if a non-Plinth file
   # occupied either path, so here we just refresh the pinned copy (cp_lane_agent re-checks as a belt).
   cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/grok-implementer.md"  "$target/.claude/agents/grok-implementer.md"
   cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
-  cp "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
+  copy_managed_file "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
   materialize_driver_shell
-  chmod +x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" "$target/.plinth/lane-guard.sh" \
-           "$target/.plinth/receipt-verify.sh" \
-           "$target/.claude/hooks/guard.sh" \
-           "$target/.claude/hooks/session-start.sh" "$target/.claude/hooks/review-gate.sh" \
-           "$target/.claude/hooks/pulse.sh"
+  # Exec-bit floor for managed scripts: heal a lost +x (archive restore, non-exec
+  # FS, stripped checkout) without resetting other mode bits. copy_managed_file
+  # preserves destination mode exactly; u+x only adds the missing execute bit.
+  chmod u+x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
+            "$target/.plinth/lane-guard.sh" "$target/.plinth/receipt-verify.sh" \
+            "$target/.claude/hooks/guard.sh" "$target/.claude/hooks/session-start.sh" \
+            "$target/.claude/hooks/review-gate.sh" "$target/.claude/hooks/pulse.sh"
+  # Stamp from $PLINTH_VERSION (single source of truth). Not a managed script —
+  # no rename atomicity needed; echo cannot fail mid-update the way a missing
+  # $PLINTH_ROOT/VERSION would under copy_managed_file.
   echo "$PLINTH_VERSION" > "$target/.plinth-version"
+}
+
+warn_live_review() {
+  local req dir verdict rqround vround
+  for req in "$target"/.plinth/session/review/*/request-*.json; do
+    [ -f "$req" ] || continue
+    rqround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$req" 2>/dev/null || true)"
+    [ -n "$rqround" ] || continue
+    dir="$(dirname "$req")"
+    verdict="$dir/verdict.json"
+    vround="$(jq -r 'if (.round | type) == "number" then .round else 0 end' "$verdict" 2>/dev/null || echo 0)"
+    case "$vround" in ''|*[!0-9]*) vround=0 ;; esac
+    if [ "$rqround" -gt "$vround" ] 2>/dev/null; then
+      echo "WARNING: review round $rqround appears to be in flight in ${dir#"$target/"}."
+      echo "         Updating managed files mid-round can change helpers/contracts the running review loads later by path."
+      echo "         Continuing: the already-running review.sh keeps its open inode (rename does not truncate it)."
+      return 0
+    fi
+  done
 }
 
 # GitHub preflight: verify the layers underneath the gates actually exist.
@@ -1860,6 +1905,7 @@ case "$cmd" in
     [ -f "$target/.plinth-version" ] || { echo "Not a Plinth project (no .plinth-version). Run 'plinth init' first."; exit 1; }
     old="$(cat "$target/.plinth-version")"
     preflight_reserved_lanes
+    warn_live_review
     copy_templates_if_absent
     copy_shared
     ensure_protected_paths
