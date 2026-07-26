@@ -76,6 +76,12 @@ parts that were wrong on the way:
 - **Receipt gate honest bound.** Required `receipt / verify` + `strict:true` blocks
   merge on a green context name and up-to-date base; it does not cryptographically
   bind the job body. MANUAL states the caller-workflow control limit.
+- **`job.workflow_ref`, not `github.job_workflow_ref`.** The receipt workflow bound
+  `JOB_WF_REF` to `${{ github.job_workflow_ref }}`, which is not an Actions context
+  property (`job_workflow_ref` is an OIDC token claim). Every real `receipt / verify`
+  run would see an empty pin and fail closed. Correct expression is
+  `${{ job.workflow_ref }}` (reusable workflow identity). Canary now static-checks the
+  envelope so shell-only fixture (9d) cannot mask a wrong expression again.
 - **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
   abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
   exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's
@@ -409,7 +415,7 @@ own fixtures — the receipt was simply built wrong before verification ever saw
 - **`receipt / verify` — the new reusable check.** `shared/.plinth/receipt-verify.sh`
   re-derives every field from the PR's own subject and fails closed on any mismatch;
   `.github/workflows/plinth-receipt.yml` runs it as the requirable context. Hardening:
-  the verifier is fetched at the workflow's OWN pinned ref — `github.job_workflow_ref`, i.e.
+  the verifier is fetched at the workflow's OWN pinned ref — `job.workflow_ref`, i.e.
   the exact SHA the caller's `uses:` line pins, never a version string read from the PR's
   checkout (that would let the PR pick its own verifier), the notes
   ref is fetched from the BASE repo only, the PR body comes from the event payload and is

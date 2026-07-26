@@ -657,6 +657,30 @@ jobs:
                             f"fixture into its own step.")
           sys.exit(1 if bad else 0)
           PYLIMIT
+      - name: Receipt workflow pins JOB_WF_REF from job.workflow_ref (not OIDC claim)
+        run: |
+          set -euo pipefail
+          # Regression for the v4.7.2 ship bug: github.job_workflow_ref is NOT a supported
+          # Actions context property (job_workflow_ref is an OIDC token claim). The reusable
+          # workflow identity is job.workflow_ref. Fixture (9d) drives the extracted run:
+          # shell with JOB_WF_REF injected, so it cannot catch a wrong expression at the
+          # workflow envelope — this static check does.
+          # Split the expression markers so this run: block is never a GitHub template.
+          L='${'; O="${L}{"; C='}}'
+          bad=0
+          # Forbidden: expression that reads the OIDC claim name from the github context.
+          if grep -nF "${O} github.job_workflow_ref ${C}" .github/workflows/*.yml \
+            || grep -nF "${O}github.job_workflow_ref${C}" .github/workflows/*.yml; then
+            echo "::error::github.job_workflow_ref is an OIDC claim name, not an Actions context property — use job.workflow_ref"
+            bad=1
+          fi
+          # Required: plinth-receipt binds JOB_WF_REF from job.workflow_ref.
+          if ! grep -qF "JOB_WF_REF: ${O} job.workflow_ref ${C}" .github/workflows/plinth-receipt.yml \
+            && ! grep -qF "JOB_WF_REF: ${O}job.workflow_ref${C}" .github/workflows/plinth-receipt.yml; then
+            echo "::error::plinth-receipt.yml must set JOB_WF_REF from job.workflow_ref (reusable workflow identity)"
+            bad=1
+          fi
+          exit "$bad"
       - name: Scaffold a fixture project and exercise the free paths
         run: |
           set -euo pipefail
@@ -2076,7 +2100,7 @@ jobs:
             )
           # (9d) the plinth-receipt.yml "Verify the APPROVED-at-HEAD receipt" step's own
           # bash has never run anywhere — new trust-boundary-crossing code (parses
-          # job_workflow_ref, fetches the verifier binary over the network, reads
+          # job.workflow_ref, fetches the verifier binary over the network, reads
           # PR-supplied body text, TOCTOU re-checks a live API call) that shipped
           # unexercised. EXTRACT the real script from the workflow YAML at fixture
           # runtime (never reimplement it — a copy rots) and drive it against a local
@@ -2266,15 +2290,15 @@ jobs:
           r9d_notes_probe 2 'no refs/notes/plinth-receipts' 'could not probe' 'absent'
           # other nonzero → infrastructure path (must NOT look like "driver forgot to push")
           r9d_notes_probe 128 'could not probe' 'no refs/notes/plinth-receipts on this repository' 'infra'
-          # 2: EMPTY job_workflow_ref.
+          # 2: EMPTY job.workflow_ref.
           rc=0
           out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
-          [ "$rc" != 0 ] || { echo "::error::(9d) empty job_workflow_ref did not fail"; exit 1; }
-          printf '%s' "$out" | grep -q 'job_workflow_ref' || { echo "::error::(9d) empty job_workflow_ref failure did not name job_workflow_ref"; exit 1; }
-          # 3: job_workflow_ref with NO @ref.
+          [ "$rc" != 0 ] || { echo "::error::(9d) empty job.workflow_ref did not fail"; exit 1; }
+          printf '%s' "$out" | grep -q 'job.workflow_ref' || { echo "::error::(9d) empty job.workflow_ref failure did not name job.workflow_ref"; exit 1; }
+          # 3: job.workflow_ref with NO @ref.
           rc=0
           out="$(JOB_WF_REF="norefhere" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
-          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no @ did not fail"; exit 1; }
+          [ "$rc" != 0 ] || { echo "::error::(9d) job.workflow_ref with no @ did not fail"; exit 1; }
           # 4: pinned ref PREDATES receipt-verify.sh — must fail closed and say so.
           # The base pin is moved to match, so this exercises the "predates" branch and
           # not the base-anchor check that now precedes it.
@@ -2293,12 +2317,12 @@ jobs:
           out="$(bash "$R9D_WD/guard.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) event guard did not reject a non-pull_request event"; exit 1; }
           printf '%s' "$out" | grep -q 'got workflow_dispatch' || { echo "::error::(9d) event guard failure did not name the actual event"; exit 1; }
-          # 6: the verifier REPOSITORY must come from job_workflow_ref too, not from any
+          # 6: the verifier REPOSITORY must come from job.workflow_ref too, not from any
           # other context value. Point JOB_WF_REF at a DIFFERENT owner/repo than the one
-          # the url.insteadOf rewrite maps: the fetch must follow job_workflow_ref (and
+          # the url.insteadOf rewrite maps: the fetch must follow job.workflow_ref (and
           # therefore fail, since nothing maps that name) rather than silently resolving
           # the "right" repo from elsewhere. The earlier revision took only the @REF from
-          # job_workflow_ref and built the URL from github.repository_owner, so a consumer
+          # job.workflow_ref and built the URL from github.repository_owner, so a consumer
           # whose owner differed from the plinth source's owner fetched the wrong repo —
           # and the fixture could not see it, because it set both to the same value.
           rm -rf /tmp/plinth
@@ -2307,15 +2331,15 @@ jobs:
             JOB_WF_REF="someone-else/other-plinth/.github/workflows/plinth-receipt.yml@${R9D_GOOD_SHA}" \
             GITHUB_EVENT_PATH="$R9D_PROJ/event.json" \
             PATH="$R9D_GHDIR:$PATH" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
-          [ "$rc" != 0 ] || { echo "::error::(9d) a job_workflow_ref naming a DIFFERENT owner/repo still resolved a verifier — the repository half is not anchored to the pin"; exit 1; }
-          printf '%s' "$out" | grep -q 'someone-else/other-plinth' || { echo "::error::(9d) the fetch did not follow job_workflow_ref's owner/repo (error did not name it): $out"; exit 1; }
-          # 7: malformed job_workflow_ref with no /.github/ path segment must fail closed.
+          [ "$rc" != 0 ] || { echo "::error::(9d) a job.workflow_ref naming a DIFFERENT owner/repo still resolved a verifier — the repository half is not anchored to the pin"; exit 1; }
+          printf '%s' "$out" | grep -q 'someone-else/other-plinth' || { echo "::error::(9d) the fetch did not follow job.workflow_ref's owner/repo (error did not name it): $out"; exit 1; }
+          # 7: malformed job.workflow_ref with no /.github/ path segment must fail closed.
           rc=0
           out="$(JOB_WF_REF="owner/repo@abc123" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
-          [ "$rc" != 0 ] || { echo "::error::(9d) job_workflow_ref with no /.github/ segment did not fail"; exit 1; }
+          [ "$rc" != 0 ] || { echo "::error::(9d) job.workflow_ref with no /.github/ segment did not fail"; exit 1; }
           # 8: THE BYPASS. On a pull_request event GitHub runs workflow files from the PR
           # HEAD, and ci.yml is operator-owned project code a PR may edit — so
-          # job_workflow_ref carries whatever pin the PR chose. A PR that repoints its own
+          # job.workflow_ref carries whatever pin the PR chose. A PR that repoints its own
           # receipt job at an attacker-controlled fork whose receipt-verify.sh exits 0
           # would turn the REQUIRED context green with no review and no receipt at all.
           # The step must refuse any pin differing from the one on the BASE branch, which
