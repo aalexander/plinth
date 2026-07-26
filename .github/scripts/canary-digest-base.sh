@@ -10,7 +10,7 @@ grep -q 'b#refs/remotes/' "$ROOT/shared/.plinth/receipt-verify.sh"
 BIN="$(mktemp -d)"
 printf '%s\n' '#!/bin/sh' 'echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$BIN/sha256sum"
 chmod +x "$BIN/sha256sum"
-for b in bash sh cat cut git jq sed awk tr mkdir date env rm ls cp mv chmod ln head printf; do
+for b in bash sh cat cut git jq sed awk tr mkdir date env rm ls cp mv chmod ln head printf tail grep mktemp basename dirname uname; do
   s="$(command -v "$b" 2>/dev/null || true)"
   [ -n "$s" ] && ln -sf "$s" "$BIN/" 2>/dev/null || true
 done
