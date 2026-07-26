@@ -475,7 +475,16 @@ case "$tool" in
           sub(/;#.*$/, "", h)
           # reject multi-statement / pipeline / groups on the header (after comment strip)
           if (h ~ /[|;&(){}]/) { bad=1; exit }
-          if (h !~ /(^|[[:space:]])(cat|tee)([[:space:]]|$)/) { bad=1; exit }
+          # optional VAR=val and bare wrappers (no option flags — fail closed on env -P etc.)
+          while (match(h, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/)) h=substr(h, RLENGTH+1)
+          while (match(h, /^[[:space:]]*(sudo|command|env|nice|nohup|time)[[:space:]]+/)) {
+            # next token must not be an option (operand-taking flags are not modeled)
+            nxt=substr(h, RLENGTH+1, 1)
+            if (nxt=="-" || nxt=="") { bad=1; exit }
+            h=substr(h, RLENGTH+1)
+          }
+          sub(/^[[:space:]]+/, "", h)
+          if (h !~ /^(cat|tee)([[:space:]]|$)/) { bad=1; exit }
           if (h !~ /<</) { bad=1; exit }
           # only one << on the header
           t=h; nlt=0; while (match(t, /<</)) { nlt++; t=substr(t, RSTART+2) }
@@ -503,8 +512,24 @@ case "$tool" in
             if (delim ~ /\\/) { bad=1; exit }
             rest=substr(rest,p+1)
           } else { bad=1; exit }
-          sub(/^[[:space:]]+/, "", rest)
-          if (rest!="") { bad=1; exit }
+          # after delimiter: allow plain args and redirects ( > file, >>file, 2>file ), nothing else
+          while (rest!="") {
+            sub(/^[[:space:]]+/, "", rest)
+            if (rest=="") break
+            if (match(rest, /^[0-9]*>>?/)) {
+              rest=substr(rest, RLENGTH+1)
+              sub(/^[[:space:]]+/, "", rest)
+              if (rest=="" || rest ~ /^[|;&(){}]/) { bad=1; exit }
+              if (!match(rest, /^[^[:space:]|;&(){}]+/)) { bad=1; exit }
+              rest=substr(rest, RLENGTH+1)
+              continue
+            }
+            if (match(rest, /^[^[:space:]|;&(){}]+/)) {
+              rest=substr(rest, RLENGTH+1)
+              continue
+            }
+            bad=1; exit
+          }
           state=1
           next
         }

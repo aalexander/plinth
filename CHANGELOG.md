@@ -1,13 +1,14 @@
 # Plinth changelog
 
-## Unreleased
+## v4.7.2 — guard quoted-heredoc inert-body scan (strict simple form) — July 26, 2026
 - **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
   destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
-  *strict simple form* for the **whole command**: one standalone `cat`/`tee` heredoc with a
-  simple quoted delimiter (`'D'` / pure `"D"` / pure `$'D'` / `<<''`), optional prefixes and
-  trailing `#` comment on the header. Multi-statement/compound/pipeline wrappers,
-  multi-heredoc headers, locale `$"D"`, unquoted delims, and executable consumers stay fully
-  scanned (fail closed). Not the over-broad “any quoted heredoc” suppress.
+  *strict simple form* for the **whole command** (see MANUAL Hard blocks): optional `VAR=val`
+  and bare wrappers (`sudo`/`env`/… with **no option flags**), exact `cat`/`tee`, one simple
+  quoted delimiter (`'D'` / pure `"D"` / pure `$'D'` / `<<''`), optional args/redirects after
+  the delimiter, optional trailing `#`/`;#` comment. Multi-statement/compound/pipeline
+  wrappers, option-bearing prefixes (`env -P …`), multi-heredoc headers, locale `$"D"`,
+  unquoted delims, and executable consumers stay fully scanned (fail closed).
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

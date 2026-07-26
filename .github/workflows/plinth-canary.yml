@@ -2590,6 +2590,9 @@ jobs:
           [ "$(gcmd $'echo ok; cat <<\'S\' # ;\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: pre-header statement should full-scan"; exit 1; }
           [ "$(gcmd $'cat <<\'S\'\nrm -rf\nS\necho ok')" = 2 ] || { echo "::error::heredoc-matrix: post-terminator command should full-scan"; exit 1; }
           [ "$(gcmd $'cat <<\'S\';# \"\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: ;# comment on simple header wrongly blocked"; exit 1; }
+          [ "$(gcmd $'cat <<\'S\' > /tmp/plinth-heredoc-out\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: redirect after delimiter wrongly blocked"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' /tmp/plinth-heredoc-tee\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: tee arg after delimiter wrongly blocked"; exit 1; }
+          [ "$(gcmd $'env -P cat bash <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: env -P cat bash should full-scan (executable)"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1
