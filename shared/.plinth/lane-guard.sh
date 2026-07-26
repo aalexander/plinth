@@ -429,8 +429,16 @@ case "$sub" in
             fi
             exit 3 ;;
         esac
-        { [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; } \
-          || { echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"; exit 3; } ;;
+        if [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; then :; else
+          # Only claim "not signed in" when the CLI said so or exited nonzero without a known
+          # cap code — GNU timeout uses 125 for its own failures; do not send the user to login.
+          if [ "$_grc" = 0 ] || printf '%s' "$_go" | grep -qi 'not authenticated'; then
+            echo "unavailable: grok not signed in (auth check rc=$_grc, elapsed ${_gel}s) — run 'grok login'"
+          else
+            echo "unavailable: the grok auth check ('grok models') failed (rc=$_grc, elapsed ${_gel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'grok login' only if auth is the issue."
+          fi
+          exit 3
+        fi ;;
       codex)
         command -v codex >/dev/null 2>&1   || { echo "unavailable: codex not on PATH — install the codex CLI"; exit 3; }
         _ct0=$(date +%s); _cap 30 codex login status >/dev/null 2>&1; _crc=$?; _cel=$(( $(date +%s) - _ct0 ))
@@ -460,7 +468,9 @@ case "$sub" in
               echo "unavailable: the codex auth check terminated with rc=142 after only ${_cel}s — too fast to be the 30s wall-clock cap; rc=142 is often SIGALRM (128+14), not a timeout wrapper exit (residual: CLI self-exit 142)."
             fi
             exit 3 ;;
-          *) echo "unavailable: codex not signed in (auth check rc=$_crc, elapsed ${_cel}s) — run 'codex login'"; exit 3 ;;
+          *)
+            echo "unavailable: the codex auth check ('codex login status') failed (rc=$_crc, elapsed ${_cel}s) — not necessarily unsigned-in (e.g. GNU timeout uses 125 for wrapper failure). Inspect CLI output; run 'codex login' only if auth is the issue."
+            exit 3 ;;
         esac ;;
       *) echo "usage: lane-guard.sh preflight <grok|codex>"; exit 2 ;;
     esac
@@ -512,19 +522,15 @@ case "$sub" in
       "$droot"|"$droot"/*) : ;;
       *) echo "unavailable: session directory resolves outside the repository ('$_sreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
     esac
-    # Session state SELF-IGNORES with an EXACT `*` file (same contract as bin/plinth / review.sh /
-    # session hooks). Merely finding a `*` line is not enough: `*`, `!lanes/`, `!lanes/**` leaves
-    # lanes tracked and dirties the tree. Always rewrite to exactly one `*` line. Refuse a
-    # symlinked .gitignore so we never follow an external target.
     dig="$dsess/.gitignore"
     if [ -L "$dig" ]; then
       echo "unavailable: '$dig' is a symlink — refusing to follow an external session .gitignore"; exit 3
     fi
-    printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
     ddir="$dsess/lanes"
     # A SYMLINKED `lanes` (or anything that is not a real directory) redirects the artifact outside
     # the repository — an escape. Refuse before write; after mkdir, re-check and require the
-    # resolved path stays under the repo root.
+    # resolved path stays under the repo root. Do NOT rewrite .gitignore until these checks pass
+    # (a later refusal must not leave a truncated gitignore behind).
     if [ -L "$ddir" ]; then
       echo "unavailable: '$ddir' is a symlink — refusing to write the delegation artifact outside the repository"; exit 3
     fi
@@ -540,6 +546,25 @@ case "$sub" in
       "$droot"|"$droot"/*) : ;;
       *) echo "unavailable: lanes directory resolves outside the repository ('$dreal' not under '$droot') — refusing to write the delegation artifact"; exit 3 ;;
     esac
+    # Session state SELF-IGNORES with an EXACT `*` file (same contract as bin/plinth / review.sh /
+    # session hooks). Merely finding a `*` line is not enough: `*`, `!lanes/`, `!lanes/**` leaves
+    # lanes tracked and dirties the tree. Rewrite untracked content to exactly one `*` line.
+    # TRACKED .gitignore: never clobber — `*` does not ignore already-tracked files, so a rewrite
+    # would dirty the tree (and destroy committed content). Refuse unless it is already exact `*`.
+    _exact_star_gi() {
+      local f="$1"
+      [ -f "$f" ] || return 1
+      [ "$(wc -l < "$f" | tr -d '[:space:]')" = "1" ] || return 1
+      [ "$(wc -c < "$f" | tr -d '[:space:]')" = "2" ] || return 1
+      grep -qxF '*' "$f"
+    }
+    if git -C "$droot" ls-files --error-unmatch -- .plinth/session/.gitignore >/dev/null 2>&1; then
+      if ! _exact_star_gi "$dig"; then
+        echo "unavailable: tracked .plinth/session/.gitignore is not the exact self-ignore '*' — refusing to clobber a tracked file (would dirty the tree and lose committed content)"; exit 3
+      fi
+    else
+      printf '*\n' > "$dig" || { echo "unavailable: cannot write self-ignoring .plinth/session/.gitignore"; exit 3; }
+    fi
     dhash="$(hashof "$dtr")"; dbytes="$(wc -c < "$dtr" | tr -d '[:space:]')"
     { [ -n "$dhash" ] && [ -n "$dbytes" ]; } || { echo "unavailable: cannot hash/size the transcript '$dtr'"; exit 3; }
     # The delegate's SELF-REPORTED model: the lane's spec asks the CLI to END with `MODEL: <id>`.

@@ -57,7 +57,10 @@
   un-ignores) that `bin/plinth`, `review.sh`, and the session hooks already write —
   otherwise a lane run would leave an untracked file and `review.sh`, which refuses a
   dirty tree, would block the review of the lane's own work. Containment checks run
-  **before** any write so a symlinked session/gitignore cannot redirect them.
+  **before** any write so a symlinked session/gitignore cannot redirect them. A
+  **tracked** session `.gitignore` is never clobbered (refuse unless already exact `*`);
+  the rewrite is deferred until `lanes` containment succeeds so a later refusal cannot
+  leave a truncated file behind.
 - **Driver contract names the fourth lane-guard step.** `shared/plinth-rules.md` and
   `shared/MODELS.md` now require `delegation` alongside preflight/snapshot/scope and tell
   the driver to treat a complete report without a `DELEGATION:` receipt as incomplete.
