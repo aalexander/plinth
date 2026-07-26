@@ -2562,12 +2562,16 @@ jobs:
           [ "$(gcmd $'cat <<$\'S\nX\'\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$' delim left body unscanned"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' # \\\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment-contained trailing backslash wrongly blocked"; exit 1; }
           [ "$(gcmd $'echo $(echo x; cat <<\'S\'\n) > .plinth/session/x\nok\nS')" = 2 ] || { echo "::error::heredoc-matrix: outer \$( with protected redirect not blocked"; exit 1; }
-          [ "$(gcmd $'cat >(\necho x\n) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line >( before << not blocked"; exit 1; }
+          [ "$(gcmd $'cat >(\necho x\n) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: cross-line >( then << not blocked"; exit 1; }
+          [ "$(gcmd $'cat >(echo x) <<\'S\'\nrm -rf\nS')" = 2 ] || { echo "::error::heredoc-matrix: same-line >(echo x) << not blocked"; exit 1; }
           [ "$(gcmd $'cat <<$\"S\nX\"\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: unterminated \$\" delim left body unscanned"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' # | note\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with | wrongly blocked inert body"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' # <(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with <( wrongly blocked inert body"; exit 1; }
           [ "$(gcmd $'cat <<\'S\' # >(\nrm -rf\nS')" = 0 ] || { echo "::error::heredoc-matrix: comment with >( wrongly blocked inert body"; exit 1; }
           [ "$(gcmd $'cat ${x:-<<\'S\';}\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: \${…} nested << left post-body rm unscanned"; exit 1; }
+          [ "$(gcmd $'{\ncat <<\'S\'\nrm -rf build\nS\n} | bash')" = 2 ] || { echo "::error::heredoc-matrix: brace-group | bash hid body"; exit 1; }
+          [ "$(gcmd $'(\ncat <<\'S\'\nrm -rf build\nS\n) | bash')" = 2 ] || { echo "::error::heredoc-matrix: subshell | bash hid body"; exit 1; }
+          [ "$(gcmd $'tee <<\'S\' $(printf /dev/null)#suffix | bash\nrm -rf build\nS')" = 2 ] || { echo "::error::heredoc-matrix: )#suffix not a comment; pipe to bash missed"; exit 1; }
           echo "canary: quoted-heredoc inert-consumer scan boundary OK"
           # ── v4.4.0: review.sh dirty-tree exemption is EXACT (root/.plinth only) ──
           DE="$(mktemp -d)"; ( cd "$DE"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$DE" >/dev/null 2>&1

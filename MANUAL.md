@@ -579,11 +579,12 @@ it has run green with a real smoke_cmd.
   ignored — including `# |` / `# <(`), and not nested inside a still-open outer
   quote/expansion from a prior physical line. No pipe/process-sub on that header segment
   outside comments. Word-concat or mixed delimiters, incomplete or outer-nested headers
-  (incl. `${…}`), executable consumers, unquoted bodies, and other ambiguous parses stay
-  fully scanned (fail closed). Cross-line quote and expansion depth are tracked so a
-  heredoc-looking token inside an unclosed construct is not treated as a simple inert
-  header. The header line itself (including redirect targets) is always part of the scan.
-  The guard is a
+  (incl. `${…}`, `{ … }` / `( … )` groups that may later be piped), executable consumers,
+  unquoted bodies, and other ambiguous parses stay fully scanned (fail closed). Cross-line
+  quote, expansion, and compound-group depth are tracked so a heredoc-looking token inside
+  an unclosed construct is not treated as a simple inert header. `#` starts a comment only
+  after whitespace or `;`/`&`/`|` (not glued `)#suffix`). The header line itself
+  (including redirect targets) is always part of the scan. The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is

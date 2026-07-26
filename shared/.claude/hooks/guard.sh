@@ -139,7 +139,7 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="\\") { i++; continue }
@@ -167,7 +167,7 @@ case "$tool" in
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
           # Bash: # starts a comment at BOL, after IFS whitespace, or after a metachar.
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { st="bt"; continue }
@@ -176,10 +176,10 @@ case "$tool" in
         }
         return 0
       }
-      # Advance global qst / exp_depth / bt_open over s (comment-aware). Used for cross-line state.
-      # depth tracks $(...) / <(...) / >(...) nesting outside quotes/backticks.
-      function advance_globals(s,    i,n,c,st,depth,bt,prev) {
-        n=length(s); st=qst; depth=exp_depth; bt=bt_open
+      # Advance global qst / exp_depth / bt_open / brace_depth / paren_depth over s.
+      # depth: $(...) / ${...} / <(...) / >(...). brace/paren: {…} / (… ) compound groups.
+      function advance_globals(s,    i,n,c,st,depth,bt,br,pa,prev) {
+        n=length(s); st=qst; depth=exp_depth; bt=bt_open; br=brace_depth; pa=paren_depth
         for (i=1;i<=n;i++) {
           c=substr(s,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -194,7 +194,7 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
@@ -208,9 +208,13 @@ case "$tool" in
           if (depth>0 && c=="{") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
           if (depth>0 && c=="}") { depth--; continue }
+          if (c=="{") { br++; continue }
+          if (c=="}" && br>0) { br--; continue }
+          if (c=="(") { pa++; continue }
+          if (c==")" && pa>0) { pa--; continue }
           if (c=="\\") { i++; continue }
         }
-        qst=st; exp_depth=depth; bt_open=bt
+        qst=st; exp_depth=depth; bt_open=bt; brace_depth=br; paren_depth=pa
       }
       # Incomplete open quote/expansion/backtick in s alone (fresh state; comment-aware).
       function has_incomplete_local(s,    i,n,c,st,depth,bt,prev) {
@@ -229,7 +233,7 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(s,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
@@ -289,8 +293,8 @@ case "$tool" in
       # qst / exp_depth / bt_open: cross-line shell state (quotes, $(/<(/>(), backticks).
       # cont: previous physical line ended with unquoted \.
       # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
-      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest,depth,bt,closed) {
-        n=length(line); st=qst; depth=exp_depth; bt=bt_open
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest,depth,bt,br,pa,closed) {
+        n=length(line); st=qst; depth=exp_depth; bt=bt_open; br=brace_depth; pa=paren_depth
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
           if (st=="sq") { if (c=="\047") st=""; continue }
@@ -305,8 +309,8 @@ case "$tool" in
             continue
           }
           prev=(i==1 ? "" : substr(line,i-1,1))
-          if (c=="#" && (i==1 || prev ~ /[[:space:];&|()<>]/)) break
-          # track same-line expansions/quotes before we consider <<
+          if (c=="#" && (i==1 || prev ~ /[[:space:];&|]/)) break
+          # track same-line expansions/quotes/groups before we consider <<
           if (c=="\047") { st="sq"; continue }
           if (c=="\"") { st="dq"; continue }
           if (c=="`") { bt=1; continue }
@@ -318,6 +322,10 @@ case "$tool" in
           if (depth>0 && c=="{") { depth++; continue }
           if (depth>0 && c==")") { depth--; continue }
           if (depth>0 && c=="}") { depth--; continue }
+          if (c=="{") { br++; continue }
+          if (c=="}" && br>0) { br--; continue }
+          if (c=="(") { pa++; continue }
+          if (c==")" && pa>0) { pa--; continue }
           if (c=="\\") { i++; continue }
           # heredoc << (not <<<)
           if (c!="<" || substr(line,i+1,1)!="<" || substr(line,i+2,1)=="<") continue
@@ -326,7 +334,7 @@ case "$tool" in
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
           d=""; q=0; dst=""; ok=1; reliable=1
           # incomplete outer state (prior lines or same-line so far) => never suppress
-          if (cont || depth>0 || bt || st!="") ok=0
+          if (cont || depth>0 || bt || st!="" || br>0 || pa>0) ok=0
           # dollar-quoted delim: $'D' pure literal only (closed, no backslash).
           # $"D" is locale-translated by Bash — never suppress (cannot know the real terminator).
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && substr(line,j+1,1)=="\"") {
@@ -417,7 +425,7 @@ case "$tool" in
           i=j-1
         }
       }
-      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0; no_suppress_rest=0 }
+      BEGIN { head=1; tail=0; qst=""; cont=0; exp_depth=0; bt_open=0; brace_depth=0; paren_depth=0; no_suppress_rest=0 }
       {
         if (head<=tail) {
           body=$0; cmp=body
