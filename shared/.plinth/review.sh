@@ -187,9 +187,9 @@ ROUND_BUDGET="$(bcfg round_budget)";  case "$ROUND_BUDGET" in ''|*[!0-9]*) ROUND
 # Round CIRCUIT BREAKER (hard, unlike the advisory token budget): a loop that has
 # not converged by round_cap is a design problem — more paid rounds will not fix
 # it. 0 disables. Checked before EVERY round launch, including the
-# post-approval clean-slate confirmation (a capped confirmation dies with the
-# non-binding APPROVED persisted; the unconfirmed-approval recovery runs it on
-# the next invocation once the operator unbricks with PLINTH_ROUND_CAP).
+# post-approval clean-slate confirmation (a capped confirmation demotes the
+# persisted verdict to UNBOUND; recovery admits that unbound reason and runs the
+# confirmation once the operator unbricks with PLINTH_ROUND_CAP).
 # UNSET MEANS NO CAP (v4.7.1). It used to mean 8, which made removing the knob from
 # .plinth/config look like disabling the breaker while silently restoring the default —
 # a loop would run to 8 and stop, with the config offering no evidence why. Opt IN to a
@@ -478,12 +478,20 @@ mkdir -p "$SDIR"
 # the driver cannot edit or de-escalate. It routes review DEPTH: Tier 0 (inert
 # docs/text) is granted by the deterministic floor without a model round; Tier
 # 1/2 get adversarial review. diff_digest is a fingerprint of the REVIEWED DIFF.
-# It is still not a merge-time enforcement point (the server check owns that), but it
-# IS now load-bearing for loop continuation: see the base-binding block below, where
+# It is not a merge-time enforcement point by itself (the receipt context is, when
+# the real verifier runs — see MANUAL caller-control bound), but it IS load-bearing
+# for loop continuation: see the base-binding block below, where
 # reusing an approval or a coverage anchor keyed on a base ref's SPELLING was found to
 # be unsound because a ref is mutable. Real use showed the need, which is the bar.
-diff_digest="$(printf '%s' "$diff" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
-[ -n "$diff_digest" ] || diff_digest="$(printf '%s' "$diff" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+# Probe availability first: under set -e a missing shasum makes the pipeline fail
+# before the sha256sum fallback runs (review loop unusable on sha256sum-only hosts).
+if command -v shasum >/dev/null 2>&1; then
+  diff_digest="$(printf '%s' "$diff" | shasum -a 256 | cut -d' ' -f1)"
+elif command -v sha256sum >/dev/null 2>&1; then
+  diff_digest="$(printf '%s' "$diff" | sha256sum | cut -d' ' -f1)"
+else
+  diff_digest=""
+fi
 # The IMMUTABLE identity of "where the base was" for this run. A ref name is a moving
 # label — `main` today is not `main` tomorrow — so continuation decisions that must
 # survive base movement key on this SHA, never on the spelling. Empty (no merge base,
