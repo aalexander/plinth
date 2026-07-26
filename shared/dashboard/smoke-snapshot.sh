@@ -799,7 +799,7 @@ export PLINTH_DASH_ROOTS="$MM"
 "$PLINTH" dash --snapshot | jq -e '
   .projects[] | select(.name == "mu-rqmismatch") | .error == "snapshot_render_failed"
 ' >/dev/null
-# Negative/fractional request round
+# Negative request round
 MN="$FIX/mu-rqneg"
 mk_git "$MN"
 git -C "$MN" checkout -qb feat/rqneg
@@ -809,6 +809,28 @@ jq -nc '{round:-1}' > "$MN/.plinth/session/review/feat-rqneg/request-1.json"
 export PLINTH_DASH_ROOTS="$MN"
 "$PLINTH" dash --snapshot | jq -e '
   .projects[] | select(.name == "mu-rqneg") | .error == "snapshot_render_failed"
+' >/dev/null
+# Absent request round
+MA="$FIX/mu-rqabsent"
+mk_git "$MA"
+git -C "$MA" checkout -qb feat/rqabs
+echo m > "$MA/m"; git -C "$MA" add -A; git -C "$MA" commit -qm w
+mkdir -p "$MA/.plinth/session/review/feat-rqabs"
+jq -nc '{mode:"resume"}' > "$MA/.plinth/session/review/feat-rqabs/request-1.json"
+export PLINTH_DASH_ROOTS="$MA"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "mu-rqabsent") | .error == "snapshot_render_failed"
+' >/dev/null
+# Fractional request round
+MF="$FIX/mu-rqfrac"
+mk_git "$MF"
+git -C "$MF" checkout -qb feat/rqfrac
+echo m > "$MF/m"; git -C "$MF" add -A; git -C "$MF" commit -qm w
+mkdir -p "$MF/.plinth/session/review/feat-rqfrac"
+jq -nc '{round:1.5}' > "$MF/.plinth/session/review/feat-rqfrac/request-1.json"
+export PLINTH_DASH_ROOTS="$MF"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "mu-rqfrac") | .error == "snapshot_render_failed"
 ' >/dev/null
 
 # --snapshot works without python3 (only bash+jq); serve fails without python3
