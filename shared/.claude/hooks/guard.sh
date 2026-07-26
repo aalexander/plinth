@@ -512,11 +512,11 @@ case "$tool" in
             if (delim ~ /\\/) { bad=1; exit }
             rest=substr(rest,p+1)
           } else { bad=1; exit }
-          # after delimiter: allow plain args and redirects ( > file, >>file, 2>file ), nothing else
+          # after delimiter: allow plain args and redirects (>/>>/</N>/N>> targets), nothing else
           while (rest!="") {
             sub(/^[[:space:]]+/, "", rest)
             if (rest=="") break
-            if (match(rest, /^[0-9]*>>?/)) {
+            if (match(rest, /^[0-9]*>>?/) || match(rest, /^[0-9]*</)) {
               rest=substr(rest, RLENGTH+1)
               sub(/^[[:space:]]+/, "", rest)
               if (rest=="" || rest ~ /^[|;&(){}]/) { bad=1; exit }
