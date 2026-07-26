@@ -3424,11 +3424,21 @@ jobs:
             grep -q 'RUN_RC=\$RC' "$A" || { echo "::error::${a}-implementer run block does not propagate the CLI rc (RUN_RC)"; exit 1; }
             grep -q 'NEVER "complete"' "$A" || { echo "::error::${a}-implementer lost the nonzero-RUN_RC-is-never-complete rule"; exit 1; }
             grep -qi 'forbidden as evidence' "$A" || { echo "::error::${a}-implementer lacks the Rule-10 rule"; exit 1; }
-            # v4.8.0 delegation receipt is a PRECONDITION of STATUS: complete (not optional prose):
-            grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer does not call lane-guard delegation $a"; exit 1; }
+            # v4.8.0 delegation receipt: order + args + complete-precondition (mutation-sensitive).
+            # Whole-file greps alone are hollow; require scope BEFORE delegation, and the call
+            # line to pass RUN_RC + OUT (not hard-coded rc/path), and complete to require receipt.
+            sc_ln="$(grep -n 'lane-guard.sh scope' "$A" | head -1 | cut -d: -f1)"
+            dg_ln="$(grep -n "lane-guard.sh delegation $a" "$A" | head -1 | cut -d: -f1)"
+            [ -n "$sc_ln" ] && [ -n "$dg_ln" ] || { echo "::error::${a}-implementer missing scope or delegation $a call"; exit 1; }
+            [ "$dg_ln" -gt "$sc_ln" ] || { echo "::error::${a}-implementer calls delegation BEFORE scope (line $dg_ln <= $sc_ln) — receipt must follow scope"; exit 1; }
+            dline="$(sed -n "${dg_ln}p" "$A")"
+            printf '%s\n' "$dline" | grep -q 'RUN_RC' || { echo "::error::${a}-implementer delegation line does not pass RUN_RC (hard-coded rc would lie): $dline"; exit 1; }
+            printf '%s\n' "$dline" | grep -q 'OUT' || { echo "::error::${a}-implementer delegation line does not pass OUT path: $dline"; exit 1; }
             grep -q 'DELEGATION:' "$A" || { echo "::error::${a}-implementer report template lacks DELEGATION:"; exit 1; }
-            grep -qi 'no receipt, no STATUS: complete\|without a receipt\|Required for STATUS: complete\|PRECONDITION of `STATUS: complete`' "$A" \
-              || { echo "::error::${a}-implementer does not make the delegation receipt a complete precondition"; exit 1; }
+            grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
+              || { echo "::error::${a}-implementer lost the three-way complete rule (receipt+scope+verify)"; exit 1; }
+            grep -q 'Required for STATUS: complete' "$A" \
+              || { echo "::error::${a}-implementer DELEGATION field not Required for STATUS: complete"; exit 1; }
           done
           # The exact CLI invocation is live-verified (see round 8); assert the flags that actually APPLY edits
           # headlessly are on the COMMAND itself, not merely in prose. grok under acceptEdits announces an edit
@@ -3547,33 +3557,59 @@ jobs:
           want_bytes="$(wc -c < "$LDR/out.txt" | tr -d '[:space:]')"
           want_hash="$( (shasum -a 256 "$LDR/out.txt" 2>/dev/null || sha256sum "$LDR/out.txt") | cut -d' ' -f1 )"
           dout="$(cd "$LDR" && bash "$LG" delegation grok 7 "$LDR/out.txt")" || { echo "::error::lane-guard delegation rejected a nonempty transcript"; exit 1; }
-          printf '%s\n' "$dout" | grep -q 'delegation recorded:' || { echo "::error::lane-guard delegation did not print 'delegation recorded:' line"; exit 1; }
-          printf '%s\n' "$dout" | grep -q 'model=canary-model-9' || { echo "::error::lane-guard delegation did not take LAST MODEL: (got: $dout)"; exit 1; }
+          printf '%s\n' "$dout" | grep -qE "^delegation recorded: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 artifact=" \
+            || { echo "::error::delegation recorded line not exact identity (got: $dout)"; exit 1; }
           printf '%s\n' "$dout" | grep -q 'model=decoy-first' && { echo "::error::lane-guard delegation took FIRST MODEL: decoy instead of last"; exit 1; } || true
-          printf '%s\n' "$dout" | grep -q 'rc=7' || { echo "::error::lane-guard delegation did not record cli rc (got: $dout)"; exit 1; }
-          printf '%s\n' "$dout" | grep -q "bytes=$want_bytes" || { echo "::error::lane-guard delegation bytes mismatch (got: $dout want bytes=$want_bytes)"; exit 1; }
-          printf '%s\n' "$dout" | grep -q "sha256=$want_hash" || { echo "::error::lane-guard delegation sha256 mismatch (got: $dout)"; exit 1; }
           dart="$(printf '%s\n' "$dout" | sed -n 's/.*artifact=//p')"
           [ -n "$dart" ] && [ -s "$dart" ] || { echo "::error::lane-guard delegation did not create a nonempty artifact file"; exit 1; }
           case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::delegation artifact not under .plinth/session/lanes/ ($dart)"; exit 1 ;; esac
-          head -n1 "$dart" | grep -qE '^# plinth lane delegation v1: vendor=grok rc=7 bytes=' || { echo "::error::delegation artifact missing identity header"; exit 1; }
-          grep -q 'delegate did work' "$dart" || { echo "::error::delegation artifact missing transcript body"; exit 1; }
+          # Exact header fields + byte-identical transcript body after the header line:
+          hdr="$(head -n1 "$dart")"
+          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 recorded=" \
+            || { echo "::error::delegation artifact header not exact identity (got: $hdr)"; exit 1; }
+          tail -n +2 "$dart" > "$LDR/body.got"
+          cmp -s "$LDR/out.txt" "$LDR/body.got" || { echo "::error::delegation artifact body not byte-identical to transcript"; exit 1; }
           dig="$LDR/.plinth/session/.gitignore"
           [ -f "$dig" ] || { echo "::error::delegation did not write session .gitignore"; exit 1; }
           [ "$(wc -l < "$dig" | tr -d '[:space:]')" = "1" ] && [ "$(wc -c < "$dig" | tr -d '[:space:]')" = "2" ] && grep -qxF '*' "$dig" \
             || { echo "::error::session .gitignore is not exact single-line '*' (would leave lanes tracked)"; exit 1; }
+          # post-write tree: session must be ignored (status clean of lanes artifacts)
+          ( cd "$LDR" && git status --porcelain ) | grep -q 'session/lanes' \
+            && { echo "::error::delegation left session/lanes visible to git status (self-ignore failed)"; exit 1; } || true
           # no MODEL: -> model=unreported
           printf 'no model line here\n' > "$LDR/nomodel.txt"
           dout2="$(cd "$LDR" && bash "$LG" delegation codex 0 "$LDR/nomodel.txt")" || { echo "::error::delegation rejected transcript without MODEL:"; exit 1; }
           printf '%s\n' "$dout2" | grep -q 'model=unreported' || { echo "::error::delegation without MODEL: did not report model=unreported (got: $dout2)"; exit 1; }
-          # symlink lanes/ must refuse (containment)
-          LDR2="$(mktemp -d)"; git -C "$LDR2" init -q
-          git -C "$LDR2" config user.email "canary@plinth.ci"; git -C "$LDR2" config user.name "plinth canary"
-          ( cd "$LDR2" && git commit --allow-empty -qm "delegation symlink base" )
-          mkdir -p "$LDR2/.plinth/session"; OUTSIDE="$(mktemp -d)"; ln -s "$OUTSIDE" "$LDR2/.plinth/session/lanes"
-          printf 'body\n' > "$LDR2/out.txt"
-          r=0; ( cd "$LDR2" && bash "$LG" delegation grok 0 "$LDR2/out.txt" ) >/dev/null 2>&1 || r=$?
-          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not refuse symlinked lanes/ (rc=$r, want 3)"; exit 1; }
+          # tracked non-exact session .gitignore must refuse (never clobber tracked content)
+          LDRT="$(mktemp -d)"; git -C "$LDRT" init -q
+          git -C "$LDRT" config user.email "canary@plinth.ci"; git -C "$LDRT" config user.name "plinth canary"
+          mkdir -p "$LDRT/.plinth/session"; printf 'not-star\n' > "$LDRT/.plinth/session/.gitignore"
+          ( cd "$LDRT" && git add -A && git commit -qm "tracked bad gitignore" )
+          printf 'body\n' > "$LDRT/out.txt"
+          r=0; ( cd "$LDRT" && bash "$LG" delegation grok 0 "$LDRT/out.txt" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::delegation did not refuse tracked non-exact session .gitignore (rc=$r, want 3)"; exit 1; }
+          grep -qxF 'not-star' "$LDRT/.plinth/session/.gitignore" || { echo "::error::delegation clobbered tracked session .gitignore"; exit 1; }
+          # containment: symlink .plinth, symlink session, symlink lanes, non-directory lanes
+          for kind in plinth session lanes nondir; do
+            LDRX="$(mktemp -d)"; git -C "$LDRX" init -q
+            git -C "$LDRX" config user.email "canary@plinth.ci"; git -C "$LDRX" config user.name "plinth canary"
+            ( cd "$LDRX" && git commit --allow-empty -qm "containment $kind" )
+            OUTSIDE="$(mktemp -d)"; printf 'body\n' > "$LDRX/out.txt"
+            case "$kind" in
+              plinth) ln -s "$OUTSIDE" "$LDRX/.plinth" ;;
+              session) mkdir -p "$LDRX/.plinth"; ln -s "$OUTSIDE" "$LDRX/.plinth/session" ;;
+              lanes) mkdir -p "$LDRX/.plinth/session"; ln -s "$OUTSIDE" "$LDRX/.plinth/session/lanes" ;;
+              nondir) mkdir -p "$LDRX/.plinth/session"; printf 'x' > "$LDRX/.plinth/session/lanes" ;;
+            esac
+            r=0; ( cd "$LDRX" && bash "$LG" delegation grok 0 "$LDRX/out.txt" ) >/dev/null 2>&1 || r=$?
+            [ "$r" = 3 ] || { echo "::error::delegation did not refuse containment case $kind (rc=$r, want 3)"; exit 1; }
+          done
+          # HONEST BOUND preserved in both agent contracts (must not grow into proof-of-authorship):
+          for a in grok codex; do
+            A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            grep -qi 'HONEST BOUND' "$A" || { echo "::error::${a}-implementer lost HONEST BOUND on the delegation receipt"; exit 1; }
+            grep -qi 'does NOT prove which model wrote' "$A" || { echo "::error::${a}-implementer lost 'does NOT prove which model wrote' bound"; exit 1; }
+          done
           echo "lane-guard delegation canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
           # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
