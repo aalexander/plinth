@@ -109,15 +109,19 @@ jobs:
               case "$norm" in
                 'SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }') continue ;;
                 'SPEC="$SPEC_DIR/prompt"') continue ;;
-                'OUT="$(mktemp -t grok-out.XXXXXX)" || { rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$?"; exit 1; }') continue ;;
-                'OUT="$(mktemp -t codex-out.XXXXXX)" || { rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$?"; exit 1; }') continue ;;
+                'OUT="$(mktemp -t grok-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }') continue ;;
+                'OUT="$(mktemp -t codex-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }') continue ;;
                 '[ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }') continue ;;
                 "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' \"\$BEFORE\" \"\$SNAP\" \"\$SPEC_DIR\" \"\$SPEC\" \"\$OUT\"") continue ;;
                 'RC=0; cap 600 grok --prompt-file "$SPEC" --rules "$LANE_RULES" \') continue ;;
                 '--sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \') continue ;;
+                'case "$SPEC_DIR" in') continue ;;
+                '"${PWD}/.plinth-lane."*)') continue ;;
                 '[ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {') continue ;;
                 'echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }') continue ;;
-                'rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup failed rc=$?"; exit 1; }') continue ;;
+                'rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }') continue ;;
+                'rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }') continue ;;
+                'echo "SPEC_DIR not under \${PWD}/.plinth-lane.* — refusing cleanup (got: $SPEC_DIR)"; exit 1') continue ;;
               esac
               echo "::error::${lane} has non-allowlisted shell SPEC line (shell must not write the prompt): $norm"
               return 1
@@ -151,10 +155,12 @@ jobs:
               echo "::error::${lane} uses file-mktemp for SPEC"; exit 1; } || true
             printf '%s\n' "$code" | grep -q 'SPEC_DIR mktemp failed' || {
               echo "::error::${lane} code block does not fail loud on SPEC_DIR mktemp failure"; exit 1; }
-            printf '%s\n' "$code" | grep -q 'rm -rf "$SPEC_DIR"' || {
-              echo "::error::${lane} code block does not rm -rf \"\$SPEC_DIR\" after CLI consumes the prompt"; exit 1; }
-            printf '%s\n' "$code" | grep -q 'SPEC_DIR cleanup failed' || {
-              echo "::error::${lane} code block does not fail loud when SPEC_DIR cleanup fails"; exit 1; }
+            printf '%s\n' "$code" | grep -q 'rmdir -- "$SPEC_DIR"' || {
+              echo "::error::${lane} code block does not rmdir \"\$SPEC_DIR\" after CLI consumes the prompt"; exit 1; }
+            printf '%s\n' "$code" | grep -q 'rm -f -- "$SPEC"' || {
+              echo "::error::${lane} code block does not rm -f the prompt file before rmdir"; exit 1; }
+            printf '%s\n' "$code" | grep -qF '.plinth-lane.' || {
+              echo "::error::${lane} cleanup does not restrict SPEC_DIR to project-local .plinth-lane.*"; exit 1; }
             printf '%s\n' "$code" | grep -q 'SPEC_DIR handoff missing or mismatched' || {
               echo "::error::${lane} code block does not validate SPEC_DIR handoff before cleanup"; exit 1; }
             grep -q 'does not exist yet' "$agent" || {
@@ -168,15 +174,15 @@ jobs:
           [ -n "$GCMD" ] || { echo "::error::could not locate the grok cap-600 command block"; exit 1; }
           printf '%s\n' "$GCMD" | grep -qE -- '--prompt-file[[:space:]]+"\$SPEC"' || {
             echo "::error::grok COMMAND does not pass --prompt-file \"\$SPEC\""; exit 1; }
-          printf '%s\n' "$GCMD" | grep -q 'rm -rf "$SPEC_DIR"' || {
-            echo "::error::grok COMMAND block lacks rm -rf \"\$SPEC_DIR\" cleanup"; exit 1; }
+          printf '%s\n' "$GCMD" | grep -q 'rmdir -- "$SPEC_DIR"' || {
+            echo "::error::grok COMMAND block lacks rmdir \"\$SPEC_DIR\" cleanup"; exit 1; }
           CA="$AGENT_DIR/codex-implementer.md"
           CCMD="$(awk '/cap 600 codex /{f=1} f&&/^[[:space:]]*$/{exit} f{print}' "$CA")"
           [ -n "$CCMD" ] || { echo "::error::could not locate the codex cap-600 command block"; exit 1; }
           printf '%s\n' "$CCMD" | grep -qE -- '<[[:space:]]*"\$SPEC"' || {
             echo "::error::codex COMMAND does not redirect stdin from \"\$SPEC\""; exit 1; }
-          printf '%s\n' "$CCMD" | grep -q 'rm -rf "$SPEC_DIR"' || {
-            echo "::error::codex COMMAND block lacks rm -rf \"\$SPEC_DIR\" cleanup"; exit 1; }
+          printf '%s\n' "$CCMD" | grep -q 'rmdir -- "$SPEC_DIR"' || {
+            echo "::error::codex COMMAND block lacks rmdir \"\$SPEC_DIR\" cleanup"; exit 1; }
           # Behavioral: extract+run each lane's step-0 allocation (code block), Write-analog
           # create on the resulting not-yet-existing path, run extracted GCMD/CCMD against
           # stubs using ONLY the step-0 handoff variables (including SPEC_DIR — not injected),
@@ -318,6 +324,31 @@ jobs:
             set -e
             [ "$mut_rc" != 0 ] || {
               echo "::error::${lane}: command block accepted missing SPEC_DIR handoff (cleanup unguarded)"; exit 1; }
+            # Mutation: mistaken SPEC_DIR=$PWD/src must NOT delete project trees.
+            victim="$(mktemp -d "$PWD/.plinth-lane-canary-victim.XXXXXX")"
+            mkdir -p "$victim/src"; echo keep > "$victim/src/important"
+            owned_dirs+=("$victim")
+            {
+              echo 'set -euo pipefail'
+              echo 'cap() { shift; "$@"; }'
+              echo "LANE_RULES=x; BEFORE=x; SNAP=x"
+              echo "SPEC_DIR=$(printf %q "$victim/src")"
+              echo "SPEC=$(printf %q "$victim/src/prompt")"
+              echo "OUT=$(printf %q "$PD/out-victim-$lane")"
+              echo "RECEIVED=$(printf %q "$PD/recv-victim-$lane"); export RECEIVED"
+              echo "PATH=$(printf %q "$PD/bin"):\"\$PATH\"; export PATH"
+              # create the prompt path so equality check could pass
+              : > "$victim/src/prompt"
+              printf '%s\n' "$block" | sed 's/^[[:space:]]*//'
+            } > "$PD/run-victim-$lane.sh"
+            set +e
+            bash "$PD/run-victim-$lane.sh" >/dev/null 2>&1
+            vic_rc=$?
+            set -e
+            [ "$vic_rc" != 0 ] || {
+              echo "::error::${lane}: cleanup accepted non-.plinth-lane SPEC_DIR"; exit 1; }
+            [ -f "$victim/src/important" ] || {
+              echo "::error::${lane}: cleanup deleted a project directory (data-loss path)"; exit 1; }
             # Failure-path cleanup: CLI exits nonzero; SPEC_DIR must still be removed and RUN_RC preserved.
             cat > "$PD/bin/grok" <<'FAILSTUB'
           #!/usr/bin/env bash

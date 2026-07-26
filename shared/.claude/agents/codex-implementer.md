@@ -59,7 +59,7 @@ you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
        # Write refuses to overwrite an unread existing file.
        SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
        SPEC="$SPEC_DIR/prompt"
-       OUT="$(mktemp -t codex-out.XXXXXX)" || { rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$?"; exit 1; }
+       OUT="$(mktemp -t codex-out.XXXXXX)" || { _orc=$?; rm -rf "$SPEC_DIR"; echo "OUT mktemp failed rc=$_orc"; exit 1; }
        [ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }
        printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
@@ -100,9 +100,18 @@ except subprocess.TimeoutExpired:
        # do not accumulate as hidden residue under the repo. SPEC_DIR comes from the
        # pasted step-0 handoff (not re-derived), so cleanup uses the same directory
        # Write created.
-       [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
-         echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
-       rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup failed rc=$?"; exit 1; }
+       # Only delete the project-local mktemp dir from step 0 — never a mistaken path.
+       case "$SPEC_DIR" in
+         "${PWD}/.plinth-lane."*)
+           [ -n "$SPEC_DIR" ] && [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
+             echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
+           rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }
+           rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }
+           ;;
+         *)
+           echo "SPEC_DIR not under \${PWD}/.plinth-lane.* — refusing cleanup (got: $SPEC_DIR)"; exit 1
+           ;;
+       esac
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`
