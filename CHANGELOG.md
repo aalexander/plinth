@@ -10,8 +10,9 @@
   gates fail closed if confirmation is interrupted. Recovery re-runs confirmation for
   that UNBOUND reason (and round-cap).
 - **Canary:** behavioral `lane-guard.sh delegation` (missing/empty, exact identity,
-  unreported model, symlink containment) + agent wiring (Write-tool, no SPEC_EOF
-  heredoc, scope-before-delegation, RUN_RC/OUT).
+  unreported model, symlink containment) + extracted implementer CLI/cleanup with
+  stub CLIs + process-window pre-confirm UNBOUND hook.
+- **Dashboard:** `UNBOUND` is a valid snapshot/watch verdict (pending confirmation).
 
 ## v4.8.0 — multi-instance HTML dashboard (`plinth dash`) — July 26, 2026
 - **Release close-out:** required floor/checks pins advanced to tag **v4.7.2**

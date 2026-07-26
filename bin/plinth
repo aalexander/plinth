@@ -1242,7 +1242,7 @@ render_frame() {
          else null end) as $running
     | (if $running != null then $running
        elif $V == null then D + "no review round yet — ./.plinth/review.sh" + R
-       else ((if $V.verdict == "APPROVED" then GR else YE end) + $V.verdict + R
+       else ((if $V.verdict == "APPROVED" then GR elif $V.verdict == "UNBOUND" then YE else YE end) + $V.verdict + R
          + D + " · round " + ($V.round | tostring) + " @ " + ($V.sha[0:7]) + R
          + (if ($V.sha[0:7]) == $head then GR + " = HEAD ✓" + R else RD + " ≠ HEAD " + $head + " — stale, re-run review" + R end)
          + (if $V.usage then D + " · reviewer " + ($V.usage.input_tokens | hum_k) + " in / " + ($V.usage.output_tokens | hum_k) + " out" + R else "" end)
@@ -1379,6 +1379,7 @@ statusline_render() {
       | (if $V == null then "no review"
          elif $V.verdict == "APPROVED" and ($V.sha[0:7]) == $head then "APPROVED ✓"
          elif $V.verdict == "APPROVED" then "APPROVED (stale)"
+         elif $V.verdict == "UNBOUND" then "UNBOUND r\($V.round)"
          else "CHANGES r\($V.round)" end) as $rv
       | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
       | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
@@ -2171,7 +2172,7 @@ snapshot_one_project() {
       and (($a | startswith($b)) or ($b | startswith($a)));
     def toksum: .i + .cc + .cr + .o;
     def verdict_ok($v):
-      $v == "APPROVED" or $v == "CHANGES_NEEDED";
+      $v == "APPROVED" or $v == "CHANGES_NEEDED" or $v == "UNBOUND";
     def sha_ok($s):
       # 7–40 hex (sha1) or up to 64 hex (sha256 object format).
       ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));

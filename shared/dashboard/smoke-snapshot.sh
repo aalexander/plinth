@@ -77,6 +77,18 @@ jq -nc --arg sha "$CFULL" \
   '{verdict:"APPROVED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
     risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
   > "$C/.plinth/session/review/detached/verdict.json"
+# ── Fixture C2: UNBOUND (pending Tier-2 confirmation) must NOT error the card ─
+C2="$FIX/gamma-unbound"
+mk_git "$C2"
+git -C "$C2" checkout -qb feat/unbound
+echo ub > "$C2/u.txt"
+git -C "$C2" add -A
+git -C "$C2" commit -qm "work"
+UBSHA="$(git -C "$C2" rev-parse HEAD)"
+mkdir -p "$C2/.plinth/session/review/feat-unbound"
+jq -nc --arg sha "$UBSHA" \
+  '{verdict:"UNBOUND",unbound_reason:"Tier-2 clean-slate confirmation not yet complete",sha:$sha,round:2,mode:"verify",model:"gpt-test"}' \
+  > "$C2/.plinth/session/review/feat-unbound/verdict.json"
 
 # ── Fixture D: core.abbrev=12 must not false-stale a matching full SHA ───────
 D="$FIX/delta-abbrev"
@@ -524,7 +536,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
 fi
@@ -545,8 +557,8 @@ jq -e . "$OUT" >/dev/null
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
 # Base 34 + 8 extra protocol fixtures (L18–L25) + optional sha256
-EXPECTED_N=42
-[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=43
+EXPECTED_N=43
+[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
 # Alpha assertions
@@ -587,6 +599,14 @@ jq -e '
   and .review != null
   and .review.verdict == "APPROVED"
   and .review.stale == false
+' "$OUT" >/dev/null
+
+# UNBOUND (pending confirmation) is a valid enum — not snapshot_render_failed
+jq -e '
+  .projects[] | select(.name == "gamma-unbound")
+  | (.error == null or .error == "")
+  and .review != null
+  and .review.verdict == "UNBOUND"
 ' "$OUT" >/dev/null
 
 # core.abbrev=12: matching full SHA is not stale
