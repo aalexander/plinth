@@ -117,8 +117,9 @@ The exact lines to append to .plinth/protected-paths.
 ### 5. .plinth/config values to set (report them for me to paste)
 From the spec's Execution-gated and High-consequence sections, give the exact
 `.plinth/config` lines: `exec_gated`, `smoke_cmd`, `tier2_extra` (omit any that
-are "none"), plus `round_cap` only if this project warrants a non-default review
-circuit breaker (default 8). Seat knobs (reviewer/audit/advisor vendors and
+are "none"), plus `round_cap` ONLY if this project wants a review circuit breaker
+at all — it is opt-in and there is no default cap, so omit it unless you can say
+what round count should stop the loop and why. Seat knobs (reviewer/audit/advisor vendors and
 models) are chosen per `.plinth/MODELS.md`, not here. These are agent-immutable;
 they are mine to set.
 
