@@ -40,7 +40,16 @@ jobs:
         run: |
           set -euo pipefail
           PLINTH_SOURCE="${PLINTH_UNDER_TEST:-$GITHUB_WORKSPACE/bin/plinth}"
-          AR="$(mktemp -d)"; AT="$(mktemp -d)"; AB="$(mktemp -d)"
+          # Contract: warn_live_review keys off the same request-*.json / verdict.json
+          # fields review.sh actually writes (not invented fixture names).
+          grep -qF 'request-$r.json' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::review.sh no longer writes request-\$r.json — warn_live_review contract broken"; exit 1; }
+          grep -qF 'verdict.json' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::review.sh no longer writes verdict.json — warn_live_review contract broken"; exit 1; }
+          grep -qF 'round:$round' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::review.sh no longer records round:\$round — warn_live_review contract broken"; exit 1; }
+          AR="$(mktemp -d)"; AT="$(mktemp -d)"; AB="$(mktemp -d)"; GATE="$(mktemp -u)"
+          mkfifo "$GATE"
           cp -R "$GITHUB_WORKSPACE/bin" "$GITHUB_WORKSPACE/shared" "$GITHUB_WORKSPACE/templates" "$AR/"
           cp "$PLINTH_SOURCE" "$AR/bin/plinth"
           cp "$GITHUB_WORKSPACE/VERSION" "$AR/VERSION"
@@ -49,15 +58,28 @@ jobs:
           exit 1
           GHSTUB
           chmod +x "$AB/gh"
+          # FIFO gate (deterministic hold) + large unread padding after the gate so
+          # bash still has script bytes left on the fd when update runs. A short
+          # script can be fully buffered before `read`, which would make a plain
+          # truncate-in-place negative control false-PASS.
           {
-            printf '%s\n' '#!/usr/bin/env bash' 'echo STARTED' 'sleep 2'
+            printf '%s\n' '#!/usr/bin/env bash' 'echo STARTED'
+            printf 'read -r _ < %q || true\n' "$GATE"
             for i in $(seq 1 20000); do printf 'true # unread padding %05d\n' "$i"; done
             printf '%s\n' 'echo ATOMIC_DONE'
           } > "$AR/shared/.plinth/review.sh"
           chmod 755 "$AR/shared/.plinth/review.sh"
           git -C "$AT" init -qb main .
           PATH="$AB:$PATH" "$AR/bin/plinth" init "$AT" >/dev/null 2>&1
+          for ex in .plinth/review.sh .plinth/risk-classify.sh .plinth/lane-guard.sh \
+                    .plinth/receipt-verify.sh .claude/hooks/guard.sh \
+                    .claude/hooks/session-start.sh .claude/hooks/review-gate.sh \
+                    .claude/hooks/pulse.sh; do
+            [ -x "$AT/$ex" ] || { echo "::error::init left $ex non-executable"; exit 1; }
+          done
           chmod 744 "$AT/.plinth/review.sh"
+          # Strip +x from a second script so the exec-bit floor is exercised on update.
+          chmod 644 "$AT/.plinth/risk-classify.sh"
           "$AT/.plinth/review.sh" > "$AT/running.out" 2> "$AT/running.err" &
           running_pid=$!
           ready=0
@@ -75,13 +97,45 @@ jobs:
           printf '{"round":2,"mode":"FULL"}\n' > "$AT/.plinth/session/review/feat/request-2.json"
           printf '{"round":1,"verdict":"CHANGES_NEEDED"}\n' > "$AT/.plinth/session/review/feat/verdict.json"
           update_out="$(PATH="$AB:$PATH" "$AR/bin/plinth" update "$AT" 2>&1)"
+          # Release the old process only after update finished installing the new path.
+          : > "$GATE" &
+          gate_pid=$!
           run_rc=0; wait "$running_pid" || run_rc=$?
+          wait "$gate_pid" 2>/dev/null || true
           [ "$run_rc" = 0 ] && grep -q ATOMIC_DONE "$AT/running.out" || { echo "::error::atomic refresh replaced review.sh in place and crashed the already-running interpreter (rc=$run_rc)"; exit 1; }
           printf '%s' "$update_out" | grep -q 'WARNING: review round 2 appears to be in flight' || { echo "::error::update did not warn when request state outran the last verdict"; exit 1; }
           mode="$(stat -c '%a' "$AT/.plinth/review.sh" 2>/dev/null || stat -f '%Lp' "$AT/.plinth/review.sh")"
           [ "$mode" = 744 ] || { echo "::error::atomic managed refresh changed review.sh mode (got $mode, want exact preserved mode 744)"; exit 1; }
+          [ -x "$AT/.plinth/risk-classify.sh" ] || { echo "::error::update did not restore exec bit on risk-classify.sh (exec-bit floor missing)"; exit 1; }
           grep -q 'intentionally invalid' "$AT/.plinth/review.sh" || { echo "::error::atomic refresh did not install the new managed review.sh after the old inode completed"; exit 1; }
-          echo "canary: atomic managed refresh + exact mode + live-review warning OK"
+          # Negative control: truncate-in-place MUST break a mid-script reader that
+          # still has unread padding on the fd (proves the positive path is sensitive).
+          NEG="$(mktemp -d)"; NGATE="$(mktemp -u)"; mkfifo "$NGATE"
+          {
+            printf '%s\n' '#!/usr/bin/env bash' 'echo NSTARTED'
+            printf 'read -r _ < %q || true\n' "$NGATE"
+            for i in $(seq 1 20000); do printf 'true # unread padding %05d\n' "$i"; done
+            printf '%s\n' 'echo NATOMIC_DONE'
+          } > "$NEG/live.sh"
+          chmod 755 "$NEG/live.sh"
+          "$NEG/live.sh" > "$NEG/out" 2> "$NEG/err" &
+          npid=$!
+          ready=0
+          for _ in $(seq 1 50); do
+            if grep -q NSTARTED "$NEG/out" 2>/dev/null; then ready=1; break; fi
+            sleep 0.1
+          done
+          [ "$ready" = 1 ] || { echo "::error::negative-control fixture never started"; exit 1; }
+          # Same-inode rewrite (not rename): classic non-atomic install.
+          printf '%s\n' '#!/usr/bin/env bash' 'this is truncate in place garbage {' > "$NEG/live.sh"
+          : > "$NGATE" &
+          nrc=0; wait "$npid" || nrc=$?
+          if [ "$nrc" = 0 ] && grep -q NATOMIC_DONE "$NEG/out" 2>/dev/null; then
+            echo "::error::negative control: in-place rewrite did not break the running script — atomicity fixture cannot discriminate"
+            exit 1
+          fi
+          rm -rf "$NEG" "$AR" "$AT" "$AB"; rm -f "$GATE"
+          echo "canary: atomic managed refresh + exact mode + exec floor + live-review warning + negative control OK"
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

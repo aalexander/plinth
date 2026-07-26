@@ -307,7 +307,17 @@ copy_shared() {
   cp_lane_agent "$PLINTH_ROOT/shared/.claude/agents/codex-implementer.md" "$target/.claude/agents/codex-implementer.md"
   copy_managed_file "$PLINTH_ROOT/shared/reviewer.md"           "$target/.plinth/reviewer.md"
   materialize_driver_shell
-  copy_managed_file "$PLINTH_ROOT/VERSION" "$target/.plinth-version"
+  # Exec-bit floor for managed scripts: heal a lost +x (archive restore, non-exec
+  # FS, stripped checkout) without resetting other mode bits. copy_managed_file
+  # preserves destination mode exactly; u+x only adds the missing execute bit.
+  chmod u+x "$target/.plinth/review.sh" "$target/.plinth/risk-classify.sh" \
+            "$target/.plinth/lane-guard.sh" "$target/.plinth/receipt-verify.sh" \
+            "$target/.claude/hooks/guard.sh" "$target/.claude/hooks/session-start.sh" \
+            "$target/.claude/hooks/review-gate.sh" "$target/.claude/hooks/pulse.sh"
+  # Stamp from $PLINTH_VERSION (single source of truth). Not a managed script —
+  # no rename atomicity needed; echo cannot fail mid-update the way a missing
+  # $PLINTH_ROOT/VERSION would under copy_managed_file.
+  echo "$PLINTH_VERSION" > "$target/.plinth-version"
 }
 
 warn_live_review() {
@@ -322,8 +332,8 @@ warn_live_review() {
     case "$vround" in ''|*[!0-9]*) vround=0 ;; esac
     if [ "$rqround" -gt "$vround" ] 2>/dev/null; then
       echo "WARNING: review round $rqround appears to be in flight in ${dir#"$target/"}."
-      echo "         Updating managed files during a live review can change what later rounds run."
-      echo "         Continuing: managed files are replaced atomically, so the running script keeps its inode."
+      echo "         Updating managed files mid-round can change helpers/contracts the running review loads later by path."
+      echo "         Continuing: the already-running review.sh keeps its open inode (rename does not truncate it)."
       return 0
     fi
   done
