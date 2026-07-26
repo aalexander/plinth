@@ -574,7 +574,13 @@ it has run green with a real smoke_cmd.
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
-  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
+  refused unless the branch has an APPROVED review at HEAD. A *targeted* `gh pr merge`
+  (positional PR number/URL and/or `-R`/`--repo`, including `github.com/owner/repo`) is
+  authorized only by APPROVED at the *resolved PR head* for that PR's branch slug, bound
+  to the checkout's `origin` — resolution always uses `gh pr view … -R <origin-owner/repo>`,
+  never gh's default repo alone. Outside a git checkout, bare ships fail open; targeted
+  merges fail closed. Multi-segment Bash gates each real create/merge segment independently
+  (an APPROVED merge does not authorize an unreviewed create). Like every `.claude/` hook it
   fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
   a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
   reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
