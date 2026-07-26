@@ -82,6 +82,12 @@ parts that were wrong on the way:
   run would see an empty pin and fail closed. Correct expression is
   `${{ job.workflow_ref }}` (reusable workflow identity). Canary now static-checks the
   envelope so shell-only fixture (9d) cannot mask a wrong expression again.
+- **Required floor/checks gates repinned to v4.7.1**
+  (`0d0d657e7a1c199516d76dc59d9fc41665404800`). The independent required jobs trail by
+  one tagged release; after v4.7.1 landed they must not still claim v4.7.0.
+- **`receipt-verify.sh` sha256sum-only PATH is exercised.** `canary-digest-base.sh`
+  runs the verifier with a curated PATH that exposes real `sha256sum` and not `shasum`,
+  so the server-side digest fallback cannot regress only on sha256sum-only hosts.
 - **`unbind_verdict()` — a refused approval must stop reading as APPROVED.** Mint-time
   abort (base moved or disappeared mid-round) and a capped Tier-2 confirmation both
   exit 2 AFTER `verdict.json` is written. Leaving it `APPROVED@HEAD` meant guard.sh's

@@ -67,5 +67,23 @@ VDIR="$(mktemp -d)"
     [ "$rc" = 0 ] || { echo "::error::receipt-verify failed for $form: $out"; exit 1; }
   done
   echo "OK receipt-verify entry-point for four base spellings"
+  # 3b) receipt-verify on a sha256sum-only PATH (no shasum). Section 2 already forces
+  # review.sh onto that class of host; the server verifier's fallback must not be the
+  # only unexercised sibling — ambient PATH often has shasum and would hide a regression.
+  RBIN="$(mktemp -d)"
+  for b in bash sh cat cut git jq sed awk tr mkdir date env rm ls cp mv chmod ln head \
+           printf tail grep mktemp basename dirname uname wc sha256sum; do
+    s="$(command -v "$b" 2>/dev/null || true)"
+    [ -n "$s" ] && ln -sf "$s" "$RBIN/" 2>/dev/null || true
+  done
+  command -v sha256sum >/dev/null 2>&1 || { echo "::error::host has no sha256sum — cannot force receipt-verify fallback"; exit 1; }
+  [ -x "$RBIN/sha256sum" ] || { echo "::error::curated PATH missing sha256sum"; exit 1; }
+  [ ! -e "$RBIN/shasum" ] || { echo "::error::curated PATH must not expose shasum"; exit 1; }
+  set +e
+  out="$(PATH="$RBIN" ./rv.sh --receipt rec.json --head-sha "$H" --base-ref main --base-tip "$H" --pr-body body.txt --repo owner/repo 2>&1)"
+  rc=$?
+  set -e
+  [ "$rc" = 0 ] || { echo "::error::receipt-verify failed on sha256sum-only PATH (rc=$rc): $out"; exit 1; }
+  echo "OK receipt-verify entry-point without shasum (sha256sum fallback)"
 )
 echo "OK canary-digest-base.sh"
