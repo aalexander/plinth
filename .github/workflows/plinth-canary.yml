@@ -491,8 +491,6 @@ jobs:
           done
           # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
           for lane in grok codex; do
-          # OUT mktemp failure via extracted alloc: SPEC_DIR cleaned, real rc reported.
-          for lane in grok codex; do
             before_dirs="$(find "$PWD" -maxdepth 1 -type d -name '.plinth-lane.*' ! -name '.plinth-lane-canary*' 2>/dev/null | sort || true)"
             cat > "$inj/bin/mktemp" <<'INJ'
           #!/usr/bin/env bash
