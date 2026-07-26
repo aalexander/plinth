@@ -264,6 +264,75 @@
     return "idle";
   }
 
+  // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
+  function cardHTML(p) {
+    const tone = cardTone(p);
+    const chips = [];
+    if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
+    if (p.feedless) chips.push('<span class="chip">feedless</span>');
+    if (p.needs_human && p.needs_human.open > 0) {
+      const blk = p.needs_human.blocking > 0
+        ? " · " + p.needs_human.blocking + " blocking" : "";
+      chips.push('<span class="chip orange">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</span>");
+    }
+    const r = p.review;
+    if (r) {
+      if (r.running) {
+        chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
+      } else if (r.verdict === "APPROVED") {
+        chips.push('<span class="chip green">APPROVED</span>');
+      } else if (r.verdict === "CHANGES_NEEDED") {
+        chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
+      } else if (r.verdict) {
+        chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
+      }
+      if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
+      if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
+    } else if (!p.error) {
+      chips.push('<span class="chip">no review</span>');
+    }
+    if (p.burn_per_min != null) {
+      chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
+    }
+
+    const activity = p.activity_secs_ago == null
+      ? (p.feedless ? "no pulse feed" : "—")
+      : hum(p.activity_secs_ago) + " ago";
+    const session = p.session_secs == null ? "—" : hum(p.session_secs);
+    const task = p.task ? esc(p.task) : '<span class="muted">—</span>';
+    const revDetail = r
+      ? (r.verdict || (r.running ? "running" : "—")) +
+        (r.sha7 ? " @" + esc(r.sha7) : "") +
+        (r.mode ? " · " + esc(r.mode) : "") +
+        (r.tier != null ? " · tier " + r.tier : "")
+      : "none on this branch";
+    const models = [
+      p.model_driver ? "drv " + p.model_driver : null,
+      p.model_reviewer ? "rev " + p.model_reviewer : null,
+    ].filter(Boolean).join(" · ") || "—";
+    const tokens = p.tokens_total != null ? humK(p.tokens_total) + " observed" : "unknown";
+
+    return (
+      '<article class="card ' + tone + '">' +
+        '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
+        '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
+        '<div class="chips">' + chips.join("") + "</div>" +
+        '<dl class="kv">' +
+          "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
+          "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
+          "<dt>session</dt><dd>" + esc(session) + "</dd>" +
+          "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
+          "<dt>models</dt><dd class=\"muted\">" + esc(models) + "</dd>" +
+          "<dt>burn</dt><dd class=\"muted\">" +
+            (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
+            tokens + " · quota unknown</dd>" +
+          "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
+        "</dl>" +
+        '<div class="footer-note">quota/reset: unavailable without vendor APIs</div>' +
+      "</article>"
+    );
+  }
+
   function render(data) {
     lastGen = data.generated_at;
     discoveryEl.textContent = data.discovery || "—";
@@ -290,74 +359,11 @@
       return (a.name || "").localeCompare(b.name || "");
     });
 
-    grid.innerHTML = projects.map((p) => {
-      const tone = cardTone(p);
-      const chips = [];
-      if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
-      if (p.feedless) chips.push('<span class="chip">feedless</span>');
-      if (p.needs_human && p.needs_human.open > 0) {
-        const blk = p.needs_human.blocking > 0
-          ? " · " + p.needs_human.blocking + " blocking" : "";
-        chips.push('<span class="chip orange">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</span>");
-      }
-      const r = p.review;
-      if (r) {
-        if (r.running) {
-          chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
-        } else if (r.verdict === "APPROVED") {
-          chips.push('<span class="chip green">APPROVED</span>');
-        } else if (r.verdict === "CHANGES_NEEDED") {
-          chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
-        } else if (r.verdict) {
-          chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
-        }
-        if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
-        if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
-      } else if (!p.error) {
-        chips.push('<span class="chip">no review</span>');
-      }
-      if (p.burn_per_min != null) {
-        chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
-      }
-
-      const activity = p.activity_secs_ago == null
-        ? (p.feedless ? "no pulse feed" : "—")
-        : hum(p.activity_secs_ago) + " ago";
-      const session = p.session_secs == null ? "—" : hum(p.session_secs);
-      const task = p.task ? esc(p.task) : '<span class="muted">—</span>';
-      const revDetail = r
-        ? (r.verdict || (r.running ? "running" : "—")) +
-          (r.sha7 ? " @" + esc(r.sha7) : "") +
-          (r.mode ? " · " + esc(r.mode) : "") +
-          (r.tier != null ? " · tier " + r.tier : "")
-        : "none on this branch";
-      const models = [
-        p.model_driver ? "drv " + p.model_driver : null,
-        p.model_reviewer ? "rev " + p.model_reviewer : null,
-      ].filter(Boolean).join(" · ") || "—";
-      const tokens = p.tokens_total != null ? humK(p.tokens_total) + " observed" : "unknown";
-
-      return (
-        '<article class="card ' + tone + '">' +
-          '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
-          '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
-          '<div class="chips">' + chips.join("") + "</div>" +
-          '<dl class="kv">' +
-            "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
-            "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
-            "<dt>session</dt><dd>" + esc(session) + "</dd>" +
-            "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
-            "<dt>models</dt><dd class=\"muted\">" + esc(models) + "</dd>" +
-            "<dt>burn</dt><dd class=\"muted\">" +
-              (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
-              tokens + " · quota unknown</dd>" +
-            "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
-          "</dl>" +
-          '<div class="footer-note">quota/reset: unavailable without vendor APIs</div>' +
-        "</article>"
-      );
-    }).join("");
+    grid.innerHTML = projects.map(cardHTML).join("");
   }
+
+  // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
+  globalThis.__plinthDash = { cardTone: cardTone, cardHTML: cardHTML, esc: esc };
 
   function tickClocks() {
     if (lastGen == null) return;

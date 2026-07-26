@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Offline smoke for `plinth dash --snapshot`. Fixture matrix covers the cases
-# that previously passed an under-specified smoke while failing in targeted
-# repros (tilde expansion, detached HEAD, core.abbrev, multi-digit request
-# rounds, completed NEEDS-HUMAN, malformed side-files, discovery modes).
-# Server/UI is out of scope here (loopback bind is structural + unit-checked
-# via --snapshot parity); CI runs this script from the canary scaffold job.
+# Dashboard smoke for `plinth dash` (canary CI). Covers:
+#   1. Offline --snapshot fixture matrix (tilde, detached, core.abbrev,
+#      multi-digit request rounds, completed NEEDS-HUMAN, render failure,
+#      discovery modes, burn, port validation).
+#   2. Pure UI card render via node + globalThis.__plinthDash (error tone,
+#      no-review suppression).
+#   3. Short-lived loopback HTTP server (/, /api/snapshot, POST 405, 404),
+#      with process-group cleanup so the python child cannot leak.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PLINTH="${ROOT}/bin/plinth"
 [ -x "$PLINTH" ] || { echo "smoke-snapshot: missing $PLINTH" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "smoke-snapshot: jq required" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "smoke-snapshot: node required for UI card unit test" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "smoke-snapshot: curl required for server check" >&2; exit 1; }
 
 FIX="$(mktemp -d "${TMPDIR:-/tmp}/plinth-dash-smoke.XXXXXX")"
 cleanup() { rm -rf "$FIX"; }
@@ -255,11 +259,87 @@ jq -e '
   and .review == null
 ' "$OUT" >/dev/null
 
-# UI error-card code present (static JS — server serves this file as-is)
-grep -q 'p.error' "$ROOT/shared/dashboard/index.html" \
-  || { echo "smoke-snapshot: index.html missing error-card branch" >&2; exit 1; }
-grep -q 'error:' "$ROOT/shared/dashboard/index.html" \
-  || { echo "smoke-snapshot: index.html missing error chip" >&2; exit 1; }
+# ── Pure UI card render (node + __plinthDash seam) ───────────────────────────
+# Fails if error tone or no-review suppression is broken — not just source greps.
+PLINTH_DASH_HTML="$ROOT/shared/dashboard/index.html" node <<'NODE'
+const fs = require("fs");
+const vm = require("vm");
+const path = process.env.PLINTH_DASH_HTML;
+const html = fs.readFileSync(path, "utf8");
+const m = html.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/i);
+if (!m) { console.error("no script block"); process.exit(2); }
+const el = () => {
+  const o = { textContent: "", className: "", innerHTML: "" };
+  o.querySelector = () => null;
+  return o;
+};
+const sandbox = {
+  console,
+  Date, Math, String, Number, JSON, Array, Object, parseInt, isNaN,
+  setInterval: () => 0,
+  clearInterval: () => {},
+  // Hang forever so poll never mutates state under test.
+  fetch: () => new Promise(() => {}),
+  document: { getElementById: () => el() },
+};
+sandbox.globalThis = sandbox;
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(m[1], sandbox);
+const api = sandbox.__plinthDash;
+if (!api || typeof api.cardHTML !== "function" || typeof api.cardTone !== "function") {
+  console.error("missing __plinthDash.cardHTML/cardTone");
+  process.exit(2);
+}
+const errProj = {
+  error: "snapshot_render_failed",
+  name: "iota", path: "/tmp/iota", branch: "feat/badv", head: "abc1234",
+  needs_human: { open: 1, blocking: 1 },
+  feedless: false, review: null,
+};
+if (api.cardTone(errProj) !== "bad") {
+  console.error("cardTone(error) expected bad, got", api.cardTone(errProj));
+  process.exit(1);
+}
+const htmlCard = api.cardHTML(errProj);
+if (!htmlCard.includes('class="card bad"')) {
+  console.error("error card missing tone class bad");
+  process.exit(1);
+}
+if (!htmlCard.includes("error: snapshot_render_failed")) {
+  console.error("error chip missing from cardHTML");
+  process.exit(1);
+}
+if (htmlCard.includes("no review")) {
+  console.error("error card must not show 'no review'");
+  process.exit(1);
+}
+if (!htmlCard.includes("NEEDS-HUMAN ×1")) {
+  console.error("error card must still show NEEDS-HUMAN");
+  process.exit(1);
+}
+// Healthy idle: no review chip present, tone idle
+const idle = {
+  name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
+  feedless: true, review: null, needs_human: { open: 0, blocking: 0 },
+};
+if (api.cardTone(idle) !== "idle") {
+  console.error("cardTone(idle) expected idle");
+  process.exit(1);
+}
+const idleHtml = api.cardHTML(idle);
+if (!idleHtml.includes("no review")) {
+  console.error("idle card should show no review");
+  process.exit(1);
+}
+// XSS escape
+const xss = api.esc('<script>"x"');
+if (xss.includes("<") || xss.includes('"')) {
+  console.error("esc failed:", xss);
+  process.exit(1);
+}
+console.log("ui-card-unit: OK");
+NODE
 
 # Empty roots still valid JSON
 export PLINTH_DASH_ROOTS="/nonexistent/path/nope"
@@ -299,36 +379,66 @@ rc=0
 "$PLINTH" dash --port 70000 >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || { echo "smoke-snapshot: --port 70000 should fail" >&2; exit 1; }
 rc=0
+"$PLINTH" dash --port 99999999999999999999999 >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "smoke-snapshot: oversized --port should fail cleanly" >&2; exit 1; }
+rc=0
 PLINTH_DASH_PORT=0 "$PLINTH" dash >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=0 should fail" >&2; exit 1; }
 rc=0
 PLINTH_DASH_PORT=notaport "$PLINTH" dash >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || { echo "smoke-snapshot: PLINTH_DASH_PORT=notaport should fail" >&2; exit 1; }
+rc=0
+PLINTH_DASH_PORT=99999999999999999999999 "$PLINTH" dash >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "smoke-snapshot: oversized PLINTH_DASH_PORT should fail" >&2; exit 1; }
 
 # ── Short-lived server: loopback HTTP surface ────────────────────────────────
-# Uses a free high port; killed on exit. Asserts static page, snapshot API,
-# read-only POST, and that a render-failed project surfaces over /api/snapshot.
-command -v curl >/dev/null 2>&1 || { echo "smoke-snapshot: curl required for server check" >&2; exit 1; }
+# Process group + child kill so the python ThreadingHTTPServer cannot leak.
 export PLINTH_DASH_ROOTS="$A:$I"
 export HOME="$CFG_HOME"
 SRV_PORT=18734
-# If busy, walk up a few ports.
-for try in 18734 18735 18736 18737 18738; do
+for try in 18734 18735 18736 18737 18738 18739 18740; do
   SRV_PORT="$try"
-  if ! (echo >/dev/tcp/127.0.0.1/"$SRV_PORT") 2>/dev/null; then
-    break
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -nP -iTCP:"$SRV_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+      continue
+    fi
   fi
+  break
 done
-"$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
-SRV_PID=$!
-srv_cleanup() { kill "$SRV_PID" 2>/dev/null || true; wait "$SRV_PID" 2>/dev/null || true; }
+# setsid when available → kill the whole group; else pkill children + lsof port.
+if command -v setsid >/dev/null 2>&1; then
+  setsid "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
+  SRV_PID=$!
+  srv_cleanup() {
+    kill -TERM -"$SRV_PID" 2>/dev/null || true
+    kill -TERM "$SRV_PID" 2>/dev/null || true
+    wait "$SRV_PID" 2>/dev/null || true
+    if command -v lsof >/dev/null 2>&1; then
+      local p; p="$(lsof -tiTCP:"$SRV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+      [ -n "$p" ] && kill -TERM $p 2>/dev/null || true
+    fi
+  }
+else
+  "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
+  SRV_PID=$!
+  srv_cleanup() {
+    local kids
+    kids="$(pgrep -P "$SRV_PID" 2>/dev/null || true)"
+    [ -n "$kids" ] && kill -TERM $kids 2>/dev/null || true
+    kill -TERM "$SRV_PID" 2>/dev/null || true
+    wait "$SRV_PID" 2>/dev/null || true
+    if command -v lsof >/dev/null 2>&1; then
+      local p; p="$(lsof -tiTCP:"$SRV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+      [ -n "$p" ] && kill -TERM $p 2>/dev/null || true
+    fi
+  }
+fi
 trap 'srv_cleanup; cleanup' EXIT
 ready=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null 2>&1; then
     ready=1; break
   fi
-  # Bail early if the server already died.
   if ! kill -0 "$SRV_PID" 2>/dev/null; then
     echo "smoke-snapshot: server exited early:" >&2
     cat "$FIX/srv.err" >&2 || true
@@ -358,6 +468,13 @@ nf_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SRV_PORT}/
 grep -q '127.0.0.1' "$FIX/srv.out" \
   || { echo "smoke-snapshot: server banner missing 127.0.0.1" >&2; exit 1; }
 srv_cleanup
+# Assert nothing is still listening on the port
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -nP -iTCP:"$SRV_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "smoke-snapshot: server still listening on :$SRV_PORT after cleanup" >&2
+    exit 1
+  fi
+fi
 trap cleanup EXIT
 
 echo "smoke-snapshot: OK"

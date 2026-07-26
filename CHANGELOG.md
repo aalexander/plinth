@@ -16,9 +16,9 @@
   Vendor plan remaining quota and reset times are explicitly **unavailable**
   (honest empty — no scrapers). Port must be 1–65535.
 - **`--snapshot`.** Offline JSON builder used by the server and by
-  `shared/dashboard/smoke-snapshot.sh` (expanded fixture matrix; canary CI
-  step). UI auto-refreshes every 2s. Does not replace `plinth watch` (TTY stays
-  the per-session deep view).
+  `shared/dashboard/smoke-snapshot.sh` (fixture matrix + node card unit test +
+  short-lived loopback HTTP; canary CI). UI auto-refreshes every 2s. Does not
+  replace `plinth watch` (TTY stays the per-session deep view).
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

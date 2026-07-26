@@ -496,7 +496,10 @@ for non-Claude drivers), and **observed** driver burn when a Claude transcript i
 reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
 no scrapers, no fake %.
 
-Smoke (offline, no server): `shared/dashboard/smoke-snapshot.sh`.
+Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
+fixture matrix, a node unit test of pure card HTML (error tone / no-review
+suppression), and a short-lived loopback HTTP check (`/`, `/api/snapshot`,
+POST 405) with process cleanup.
 
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
