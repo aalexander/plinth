@@ -2,13 +2,13 @@
 
 ## Unreleased
 - **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
-  destructive-command and protected-path text scans** (upstream #22 false-positive). Only
-  when the delimiter is a simple quoted form (`'D'`, pure `"D"` / `$'D'` with no backslash,
-  or `<<''`), the first command word of the simple command owning `<<` is `cat` or `tee`,
-  the physical header is not backslash-continued, and the body is not piped/process-subbed
-  on that header segment. Cross-line quote state is tracked; ANSI-C / backslash-bearing
-  delimiters, continued headers, executable consumers, unquoted bodies, and ambiguous parses
-  stay fully scanned (fail closed). Not the over-broad “any quoted heredoc” suppress.
+  destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
+  *narrow simple form*: delimiter `'D'` / pure `"D"` / pure `$'D'` / `<<''`; consumer
+  basename `cat`/`tee`; complete single physical header (no trailing `\`, no open quote
+  after `<<`, not a `\`-continuation of a prior line); no pipe/process-sub on that segment.
+  Word-concat/mixed delims, ANSI-C, continued/incomplete headers, executable consumers,
+  unquoted bodies, and other ambiguous parses stay fully scanned (fail closed). Not the
+  over-broad “any quoted heredoc” suppress.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

@@ -99,12 +99,15 @@ case "$tool" in
     #       cat or tee (basename),
     #   (3) that simple command has no unquoted | or process-sub >( / <( on the
     #       same physical header segment before/after <<,
-    #   (4) the physical header line does not end in an unquoted \ continuation.
+    #   (4) the physical header line is complete: no trailing unquoted \, no
+    #       unclosed quote after <<, and the line is not itself a \-continuation
+    #       of a previous physical line (consumer/pipe may live off-line).
     # Cross-line shell quote state is tracked so a heredoc-looking token inside an
-    # unclosed quote is not treated as a real header. Unquoted bodies, executable
-    # consumers, continued headers, complex delimiters, and ambiguous parses stay
-    # fully scanned (fail closed). Header text is always printed into the scan.
-    # Fixes upstream #22 without the over-broad “any quoted heredoc” suppress.
+    # unclosed quote is not treated as a real header. Word-concat / ANSI-C / mixed
+    # delimiters ('X'$'Y', X$'\x59', backslash-bearing "…") are never suppressed.
+    # Unquoted bodies, executable consumers, continued/incomplete headers, and
+    # ambiguous parses stay fully scanned (fail closed). Header text is always
+    # printed into the scan. Fixes upstream #22 without over-broad suppress.
     inert_stripped="$(printf '%s\n' "$cmd" | awk '
       function enqueue(d, suppress, t) { tail++; delim[tail]=d; suppress_body[tail]=suppress; tabs[tail]=t }
       function is_inert_consumer(c) { return (c=="cat" || c=="tee") }
@@ -162,6 +165,23 @@ case "$tool" in
         }
         return 0
       }
+      # Unclosed single/double quote in s (rest of header after <<).
+      function has_unclosed_quote(s,    i,n,c,st) {
+        n=length(s); st=""
+        for (i=1;i<=n;i++) {
+          c=substr(s,i,1)
+          if (st=="sq") { if (c=="\047") st=""; continue }
+          if (st=="dq") {
+            if (c=="\\") { i++; continue }
+            if (c=="\"") st=""
+            continue
+          }
+          if (c=="\047") { st="sq"; continue }
+          if (c=="\"") { st="dq"; continue }
+          if (c=="\\") { i++; continue }
+        }
+        return (st!="")
+      }
       # First command word of the simple command owning <<. "" = fail closed.
       function first_consumer(prefix,    s,n,a,i,w,sep) {
         s=prefix
@@ -203,8 +223,9 @@ case "$tool" in
         return ""
       }
       # qst: cross-line shell quote state so << inside an unclosed quote is ignored.
+      # cont: previous physical line ended with unquoted \ (logical header may span lines).
       # Delimiter parse uses dst (separate) so it never clobbers shell quote state.
-      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable) {
+      function scan(line,    i,j,n,c,d,q,t,st,prev,cons,qch,ok,pref,sep,simple,dst,reliable,rest) {
         n=length(line); st=qst
         for (i=1;i<=n;i++) {
           c=substr(line,i,1)
@@ -224,7 +245,9 @@ case "$tool" in
           if (substr(line,j,1)=="-") { t=1; j++ }
           while (j<=n && substr(line,j,1) ~ /[[:space:]]/) j++
           d=""; q=0; dst=""; ok=1; reliable=1
-          # $'\''...'\'' / $"..." — suppress only pure literals (any backslash => fail closed; no \x olympics)
+          # Prior physical line continued with \ — real consumer/pipe may be off-line; fail closed.
+          if (cont) ok=0
+          # dollar-quoted delim — suppress only pure literals (any backslash => fail closed; no hex olympics)
           if (j<=n && substr(line,j,1)=="$" && j+1<=n && (substr(line,j+1,1)=="\047" || substr(line,j+1,1)=="\"")) {
             q=1; qch=substr(line,j+1,1); j+=2
             while (j<=n) {
@@ -234,12 +257,26 @@ case "$tool" in
               d=d c; j++
             }
             if (!reliable) d=""
+            # concatenated segments after a dollar-quoted piece → fail closed
+            if (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
           } else while (j<=n) {
             c=substr(line,j,1)
-            if (dst=="sq") { if (c=="\047") dst=""; else d=d c; j++; continue }
+            if (dst=="sq") {
+              if (c=="\047") {
+                dst=""; j++
+                # word-concat after a closed quoted segment → fail closed
+                if (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
+                continue
+              }
+              d=d c; j++; continue
+            }
             if (dst=="dq") {
-              if (c=="\"") { dst=""; j++; continue }
-              # any backslash inside "…" delimiter: do not decode (bash rules ≠ strip-all); fail closed
+              if (c=="\"") {
+                dst=""; j++
+                if (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/) { reliable=0; ok=0; d="" }
+                continue
+              }
+              # any backslash inside "…" delimiter: do not decode; fail closed
               if (c=="\\") {
                 reliable=0; ok=0; d=""
                 j++
@@ -254,20 +291,25 @@ case "$tool" in
               d=d c; j++; continue
             }
             if (c ~ /[[:space:];&|()<>]/) break
+            # mid-word $ starts a concat / ANSI-C segment we do not fully decode
+            if (c=="$") { reliable=0; ok=0; d=""; break }
             if (c=="\047") { q=1; dst="sq"; j++; continue }
             if (c=="\"") { q=1; dst="dq"; j++; continue }
             if (c=="\\") { ok=0; reliable=0; j++; if (j<=n) j++; break }
             d=d c; j++
           }
-          # unterminated delim quotes or word-concat after quoted form → fail closed
-          if (dst!="" || (j<=n && substr(line,j,1) !~ /[[:space:];&|()<>]/ && substr(line,j,1)!="")) ok=0
+          # unterminated delim quotes → fail closed
+          if (dst!="") ok=0
           # backslash-continued header: pipe/redir may sit on the next physical line
           if (unquoted_line_continues(line)) ok=0
+          # rest of physical line still open-quoted => header not complete (pipe may follow)
+          rest=substr(line,j)
+          if (has_unclosed_quote(rest)) ok=0
           pref=substr(line,1,i-1)
           sep=last_unquoted_sep(pref)
           simple=(sep>0)?substr(pref,sep+1):pref
           if (has_unquoted_pipe_or_procsub(simple) || has_unquoted_pipe_or_procsub(substr(line,j))) ok=0
-          # quoted empty <<'' / <<"" is a valid delimiter (terminator = empty line)
+          # quoted-empty delimiter is valid (terminator = empty line)
           if (dst=="" && reliable && ok && (d!="" || q)) {
             cons=first_consumer(pref)
             enqueue(d, (q && is_inert_consumer(cons)), t)
@@ -280,7 +322,7 @@ case "$tool" in
         }
         qst=st
       }
-      BEGIN { head=1; tail=0; qst="" }
+      BEGIN { head=1; tail=0; qst=""; cont=0 }
       {
         if (head<=tail) {
           body=$0; cmp=body
@@ -291,6 +333,8 @@ case "$tool" in
         }
         print
         scan($0)
+        # carry physical-line continuation into the next record (logical header span)
+        cont=unquoted_line_continues($0)
       }
     ')"
     # rm/git patterns are anchored to command position. Upstream issue #1
