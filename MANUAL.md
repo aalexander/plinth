@@ -780,7 +780,8 @@ installed copies.
   discovery; `sha_match` min-length; smoke port cleanup via lsof (not only the
   spawn group); failing-builder stderr is buffered fully before 2k truncation;
   `PLINTH_DASH_SNAPSHOT_BIN` / `PLINTH_DASH_PORT` / `PLINTH_DASH_DEV_ROOT` env
-  knobs are lightly documented; fail-server smoke port is SRV+1 without probe.
+  knobs are lightly documented; fail-server smoke port is SRV+1 without probe;
+  serve-mode `json.loads` accepts any JSON (not only a snapshot object) before cache.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
