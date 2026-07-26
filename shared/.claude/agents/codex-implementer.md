@@ -95,6 +95,10 @@ except subprocess.TimeoutExpired:
        RC=0; cap 600 codex exec -c model_reasoning_effort=high -c project_doc_max_bytes=0 \
          --sandbox workspace-write --skip-git-repo-check --cd "$(pwd)" - < "$SPEC" \
          > "$OUT" 2>&1 || RC=$?
+       # Prompt was consumed path-based; remove the project-local SPEC_DIR (and the
+       # prompt file) on every path — success, timeout, or CLI failure — so specs
+       # do not accumulate as hidden residue under the repo.
+       rm -rf "$SPEC_DIR"
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    `-c project_doc_max_bytes=0` ISOLATES the lane: without it codex auto-loads the repo's `AGENTS.md`

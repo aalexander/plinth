@@ -12,7 +12,10 @@
   Write tool token, project-local `$SPEC_DIR/prompt`, ban shell redirects/heredocs into
   the spec, pin extracted `cap 600` command blocks to `"$SPEC"`, run those blocks against
   stubs with a SPEC_EOF payload, and prove a fixed-heredoc negative control still executes.
-  Project and template `.gitignore` ignore `.plinth-lane.*`.
+  Project and template `.gitignore` ignore `.plinth-lane.*`. Canary extracts and
+  runs each lane's step-0 allocation, applies a Write-tool analog (create-only,
+  project-CWD scope), runs the extracted command block against CLI stubs, and
+  asserts `rm -rf "$SPEC_DIR"` leaves no residue.
 
 ## v4.7.1 — lane-guard snapshot: minutes to under a second, with the same set of files seen — July 25, 2026
 - **`sens_snapshot()` stalled for minutes on any repo with a large gitignored tree** (upstream

@@ -752,15 +752,6 @@ installed copies.
   file would make the invariant local instead of global. Not fixed: it would add a
   parse format for a property nothing currently violates.
 
-- **No end-to-end receipt of a real implementer Write under project CWD**
-  (lane Write-tool fix, #22 / v4.7.2). Canary models Write with a python analog
-  and pins the project-local `${PWD}/.plinth-lane.*/prompt` contract; nothing
-  yet proves Claude Code Write accepts that path in a live grok-implementer or
-  codex-implementer run (guard.sh, sandbox). Wants a runtime receipt. Related:
-  granting Write while upstream #32 (lane self-implements) is open makes a
-  self-implementing lane slightly less distinguishable (Bash already conferred
-  the capability).
-
 - **guard.sh: protected-path loops fail open on heredoc temp failure**
   (`shared/.claude/hooks/guard.sh`, both pattern loops). If Bash cannot create
   the heredoc temp file, the loop is skipped and the hook still exits 0 —

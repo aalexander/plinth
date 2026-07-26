@@ -101,6 +101,10 @@ except subprocess.TimeoutExpired:
          --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
          --output-format plain --cwd "$(pwd)" \
          > "$OUT" 2>&1 || RC=$?
+       # Prompt was consumed path-based; remove the project-local SPEC_DIR (and the
+       # prompt file) on every path — success, timeout, or CLI failure — so specs
+       # do not accumulate as hidden residue under the repo.
+       rm -rf "$SPEC_DIR"
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
 
    Three axes, all required:
