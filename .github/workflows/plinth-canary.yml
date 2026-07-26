@@ -398,19 +398,22 @@ jobs:
             fi
             echo "OK mutant: lag missing CLAUDE.md refused"
             # Mutant: lag stock pre-v4.4 CLAUDE.md (managed, must match driver-shell).
+            # Same extraction as the equal-version stock fixture (indent matches YAML strip).
             python3 - "$GITHUB_WORKSPACE/bin/plinth" "$HYC/CLAUDE.md" <<'PYSTOCK'
-import sys
-lines = open(sys.argv[1]).read().splitlines()
-out = []; capture = False
-for l in lines:
-    if "OLDSTOCK" in l and "<<" in l:
-        capture = True; continue
-    if capture and l.strip() == "OLDSTOCK":
-        break
-    if capture:
-        out.append(l)
-open(sys.argv[2], "w").write("\n".join(out) + "\n")
-PYSTOCK
+            import sys
+            lines = open(sys.argv[1]).read().splitlines()
+            out = []
+            capture = False
+            for l in lines:
+                if "OLDSTOCK" in l and "<<" in l:
+                    capture = True
+                    continue
+                if capture and l.strip() == "OLDSTOCK":
+                    break
+                if capture:
+                    out.append(l)
+            open(sys.argv[2], "w").write("\n".join(out) + "\n")
+            PYSTOCK
             is_stock_old_claude "$HYC/CLAUDE.md" || { echo "::error::stock CLAUDE fixture not recognized"; exit 1; }
             if out="$(check_instrument_identity "$HYC" 2>&1)"; then
               echo "::error::lag stock CLAUDE.md was ACCEPTED as matching instrument: $out"; exit 1
@@ -3221,6 +3224,33 @@ PYSTOCK
             printf '%s' "$out2" | grep -q 'NON-BINDING and unconfirmed' && { echo "::error::(9k4-gone) disappeared-base UNBOUND took confirmation recovery after restore — only round-cap demotion is recoverable"; exit 1; } || true
             printf '%s' "$out2" | grep -q 'Nothing new to review' && { echo "::error::(9k4-gone) disappeared-base UNBOUND reminted after restore — must re-review"; exit 1; } || true
             [ "$(cat "$R9K4G/state")" -gt "$b_before" ] || { echo "::error::(9k4-gone) re-run after restoring the disappeared base did not invoke a fresh reviewer round (state stayed $(cat "$R9K4G/state")) — refuse-every-UNBOUND would strand the operator"; exit 1; } )
+          # (9k4-no-origin) base moves mid-round with NO origin — integrity still unbinds.
+          R9K4N="$(mktemp -d)"; mkstate "$R9K4N"
+          cat > "$R9K4N/codex" <<R9K4NCX
+          #!/usr/bin/env bash
+          n=\$(( \$(cat "$R9K4N/state") + 1 )); echo \$n > "$R9K4N/state"
+          out=""; prev=""; for a in "\$@"; do [ "\$prev" = -o ] && out="\$a"; prev="\$a"; done
+          cat >/dev/null
+          if [ -f "$R9K4N/move-to" ]; then tip="\$(cat "$R9K4N/move-to")"; git branch -f main "\$tip" 2>/dev/null || true; fi
+          b='{"verdict":"APPROVED","summary":"s","findings":[]}'
+          [ -n "\$out" ] && printf '%s' "\$b" > "\$out"
+          echo '{"type":"thread.started","thread_id":"k4n"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1}}'
+          R9K4NCX
+          chmod +x "$R9K4N/codex"
+          r9k4nd="$(mktemp -d)"
+          ( cd "$r9k4nd"; git init -q -b main . >/dev/null; git config user.email t@x; git config user.name t
+            "$GITHUB_WORKSPACE/bin/plinth" init "$r9k4nd" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh; cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo one > part1.py; git add -A; git commit -qm c1 >/dev/null; C1="$(git rev-parse HEAD)"
+            echo two > part2.py; git add -A; git commit -qm c2 >/dev/null
+            printf '%s' "$C1" > "$R9K4N/move-to"
+            rc=0; out="$(PATH="$R9K4N:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 2 ] || { echo "::error::(9k4-no-origin) no-origin mid-round move did not abort (rc=$rc): $(printf '%s' "$out" | tail -c 300)"; exit 1; }
+            [ "$(jq -r .verdict .plinth/session/review/feat/verdict.json)" = "UNBOUND" ] || { echo "::error::(9k4-no-origin) not UNBOUND"; exit 1; }
+            printf '%s' "$out" | grep -qi 'moved during this review' || { echo "::error::(9k4-no-origin) did not name movement"; exit 1; } )
+
           # (9k4-diff) DIFF is pinned. After the pin is captured, advance origin/main so a
           # re-resolve would drop part1.py from the subject. The reviewer prompt must still
           # contain part1.py (computed from base_tip). Reverting `git diff "${base_tip}...`

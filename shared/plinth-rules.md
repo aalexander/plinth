@@ -78,7 +78,7 @@ and non-Claude work (see MANUAL caller-control bound — the context name is not
 — best-effort: a repo with no resolvable `origin` mints none and SAYS so, and
 re-running the review at that same approved SHA mints it once the remote exists —
 (refs/notes/plinth-receipts) and the reusable `plinth-receipt.yml` verifies it
-server-side as the requirable `receipt / verify` context. It ENFORCES only where
+as the requirable `receipt / verify` context when that job runs. It applies only where
 that context is wired in ci.yml, required by branch protection, AND
 `required_status_checks.strict=true` (the check verifies as of job execution;
 without strict a green status can describe a base that has since moved); elsewhere
