@@ -3666,20 +3666,27 @@ PY
               RC=0; eval "$CMD" || RC=$?
               [ "$RC" = 0 ] || { echo "extracted CLI failed rc=$RC out=$(cat "$OUT" 2>/dev/null)"; exit 1; }
               grep -q 'objective: test' "$OUT" || { echo "extracted CLI did not consume SPEC"; exit 1; }
-              # Extract COMPLETE cleanup case (rest= through outer esac), including
-              # shipped `rm -f -- "$SPEC"` — do not hand-remove the prompt.
+              # Extract COMPLETE cleanup (rest= through OUTER case/esac), tracking depth
+              # so nested `case "$rest"` does not stop early. Includes shipped rm -f.
               CLEAN="$(awk '
-                /rest="\$\{SPEC_DIR#/ {p=1}
-                p { sub(/^[[:space:]]+/, ""); print }
-                p && /^esac$/ { exit }
+                /rest="\$\{SPEC_DIR#/ {p=1; depth=0}
+                p {
+                  line=$0; sub(/^[[:space:]]+/, "", line); print line
+                  if (line ~ /^case /) depth++
+                  if (line ~ /^esac$/) {
+                    depth--
+                    if (depth <= 0) exit
+                  }
+                }
               ' "$A")"
               [ -n "$CLEAN" ] || { echo "failed to extract cleanup from $a agent"; exit 1; }
               printf '%s\n' "$CLEAN" | grep -q 'rm -f -- "\$SPEC"' \
                 || { echo "extracted cleanup missing shipped rm -f -- \"\$SPEC\""; exit 1; }
               printf '%s\n' "$CLEAN" | grep -q 'rmdir -- "\$SPEC_DIR"' \
                 || { echo "extracted cleanup missing shipped rmdir"; exit 1; }
-              printf '%s\n' "$CLEAN" | grep -q '^esac$' \
-                || { echo "extracted cleanup incomplete (no closing esac)"; exit 1; }
+              # Must contain nested rest case + outer SPEC_DIR case terminators
+              [ "$(printf '%s\n' "$CLEAN" | grep -c '^esac$')" -ge 2 ] \
+                || { echo "extracted cleanup incomplete (need outer+inner esac)"; exit 1; }
               eval "$CLEAN"
               [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after extracted cleanup"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC remained after extracted cleanup"; exit 1; }
