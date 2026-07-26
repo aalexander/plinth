@@ -1,47 +1,69 @@
 # Plinth changelog
 
-## v4.7.2 — guard quoted-heredoc inert-body scan (strict simple form) — July 26, 2026
-- **guard.sh: quoted-heredoc bodies for inert sinks (`cat`/`tee`) are excluded from both
-  destructive-command and protected-path text scans** (upstream #22 false-positive). Only a
-  *strict simple form* for the **whole command** (see MANUAL Hard blocks): optional `VAR=val`
-  and bare wrappers (`sudo`/`env`/… with **no option flags**), exact `cat`/`tee`, one simple
-  quoted delimiter (`'D'` / pure `"D"` / pure `$'D'` / `<<''`), optional args/redirects after
-  the delimiter, optional trailing `#`/`;#` comment. Multi-statement/compound/pipeline
-  wrappers, option-bearing prefixes (`env -P …`), multi-heredoc headers, locale `$"D"`,
-  unquoted delims, and executable consumers stay fully scanned (fail closed).
-## v4.7.2 — ship-gate-target — July 26, 2026
-- **Targeted `gh pr merge` binds end-to-end to origin + resolved PR head (upstream #16).**
-  Authorization requires: (1) the actionable command names the checkout's `origin`
-  via `-R`/`--repo` or a same-repo PR URL (unqualified `gh pr merge 42` is rejected —
-  it would follow `GH_REPO`/default-repo); (2) `--match-head-commit` equals the
-  origin-resolved head (`gh pr view … -R <origin>`); (3) APPROVED at that SHA for
-  the PR branch slug. Quotes/backslashes/expansion metacharacters (`$`,
-  backticks, `()`, globs, braces) in the merge segment fail closed (not a shell
-  parser; segment only on `;|&`); fail-closed is segment-local so a quoted create
-  sibling does not poison a bound merge. Inherited-option placement
-  (`gh pr -R o/r merge`) is gated. Multi-segment Bash gates each create/merge
-  independently. Bare current-branch create/merge and outside-git bare fail-open
-  are unchanged.
-## v4.7.2 — implementer specs stay data, never shell source — July 26, 2026
-- **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
-  lane contracts require the non-shell Write tool for their unique prompt file and pass
-  only the path to the CLI, so a literal `SPEC_EOF` line cannot terminate a fixed-delimiter
-  heredoc and execute. The prompt path is a not-yet-created file under
-  `${PWD}/.plinth-lane.*` (project CWD so Claude Code Write is authorized without
-  `--add-dir`; not a pre-created system `mktemp` file Write would refuse to overwrite
-  unread). Fail-loud on mktemp. Review harness comment clarifies project-owned `.plinth`
-  files (including GOAL.md) stay outside the pinned-tooling allowlist. Canary: exact
-  Write tool token, project-local `$SPEC_DIR/prompt`, allowlist-only `$SPEC` uses in code
-  blocks (shell must not create the prompt), pin extracted `cap 600` command blocks to
-  `"$SPEC"`, run those blocks against stubs with a SPEC_EOF payload, and prove a
-  fixed-heredoc negative control still executes.
-  Project and template `.gitignore` ignore `.plinth-lane.*`. Step-0 handoff prints
-  `SPEC_DIR` so cleanup across tool calls is real, not re-derived. Canary extracts
-  and runs each lane's step-0 allocation, applies a Write-tool analog (create-only,
-  project-CWD scope), runs the extracted command block using only the handoff
-  variables, asserts cleanup, and fails if `SPEC_DIR` is omitted from the handoff.
-  Receipt: `docs/receipts/claude-write-project-local-plinth-lane.txt` shows Claude
-  Code Write creating a not-yet-existing `${PWD}/.plinth-lane.*/prompt`.
+## v4.8.0 — the lane delegation receipt: "grok typed it" becomes checkable — July 25, 2026
+- **Upstream #32 — a lane implemented a task ITSELF and still emitted a well-formed
+  report.** The whole point of the implementer seat is that a DIFFERENT model family
+  types the volume; a lane that quietly becomes "same family, in a subagent" removes
+  that diversity while the driver believes delegation happened. The lane contract
+  forbade it in prose, and prose was all there was: nothing sat between "preflight
+  passed" and "the delegate produced the diff". The observed self-implemented output
+  then carried two real defects its own "verified, passes" claim missed.
+- **`lane-guard.sh delegation <vendor> <cli-rc> <transcript>` — a precondition, not a
+  reminder.** Both lanes (`grok-implementer`, `codex-implementer` — one class, same
+  gate) must now run it after the scope check: it copies the delegate CLI's OWN
+  transcript and exit code to an artifact under `.plinth/session/lanes/` and prints one
+  `delegation recorded: ...` line carrying the artifact path, the transcript's sha256,
+  and the delegate's self-reported model (the lane's spec asks the CLI to end with
+  `MODEL: <id>`; absent → `unreported`, which is not a failure). A missing or EMPTY
+  transcript exits 3 with an `unavailable:` reason — no receipt, no `STATUS: complete`.
+  The report gained a `DELEGATION:` line so the driver can open the artifact instead of
+  trusting the narrative.
+- **HONEST BOUND, in the contract text itself.** The receipt proves a non-empty
+  transcript EXISTS and preserves it for the driver to read. It does NOT prove which
+  model wrote the diff (`model=` is the delegate's self-report; a self-implementing
+  agent could write a file), and it does NOT bind the transcript to THIS run (no
+  BEFORE/SNAP/recency — a fallible stale-OUT paste still records). Same shape as the
+  receipt check's residual — a skipped delegation becomes DETECTABLE (no artifact, no
+  receipt, nothing to open), not impossible. A subagent's compliance with prose cannot
+  be enforced by more prose; what changed is that the omission now leaves a hole.
+  Lanes must also disclose a dirty tree on `unavailable` after the CLI may already
+  have written (lost transcript / wrong OUT).
+- **Preflight failure reasons are disambiguated (diagnostic only), with an honest
+  timeout bound aligned to GNU `timeout -k 5`.** A driver reported `unavailable: grok not
+  signed in` on a first call and `ready` on three re-runs, with grok authenticated —
+  unattributable, because a fast auth failure and a 30s wall-clock timeout printed the
+  same reason. Both vendors now split by **elapsed then exit code**: instant 124/137/142
+  is "too fast"; **rc=124 + elapsed ≈ cap** is *consistent with* the wall-clock timeout
+  (TERM-death or python fallback), residual CLI self-exit 124; **rc=137**: `-k` KILL
+  lands ~cap+5 (~35s) — elapsed≥33 *consistent with* that path or external/CLI SIGKILL;
+  28–32s prefers self-exit wording (at/near TERM, early for completed `-k`); never
+  timeout-only, never absolute "NOT a timeout"; **rc=142** is *often* SIGALRM, not the
+  standard 124/137 signature, residual self-exit. Diagnostics never instruct a re-run
+  (a blind retry doubles the hang bound). Explicitly NOT a fix for that flake. Logged
+  under `## Noticed`.
+- **Canary coverage in both directions** (`plinth-canary.yml`): artifact present and
+  non-empty → receipt permitted; artifact missing or empty → exit 3; a nonzero CLI rc
+  still records (timeout/partial keeps its evidence); a non-numeric rc is a usage error;
+  an absent `MODEL:` line reads as `unreported` rather than a fabricated model; the
+  **terminal** `MODEL:` line wins over an earlier decoy; symlinked `session` /
+  `.gitignore` / `lanes` refuse before any external write; a `*`+`!lanes/` gitignore is
+  rewritten to exact `*`. Plus contract fixtures that keep both lanes wired to the
+  receipt with **positional** `RUN_RC` then `OUT` after the vendor, carrying the
+  `DELEGATION:` line, asking for the model — and keeping the honest bound in the text
+  (a fixture goes red if the doc starts claiming it proves authorship).
+- **The artifact never dirties the tree.** `delegation` may be the first thing to create
+  `.plinth/session/` in a fresh clone, so it writes an **exact** self-ignoring
+  `.plinth/session/.gitignore` (`*\n` only — not merely a `*` line among later
+  un-ignores) that `bin/plinth`, `review.sh`, and the session hooks already write —
+  otherwise a lane run would leave an untracked file and `review.sh`, which refuses a
+  dirty tree, would block the review of the lane's own work. Containment checks run
+  **before** any write so a symlinked session/gitignore cannot redirect them. A
+  **tracked** session `.gitignore` is never clobbered (refuse unless already exact `*`);
+  the rewrite is deferred until `lanes` containment succeeds so a later refusal cannot
+  leave a truncated file behind.
+- **Driver contract names the fourth lane-guard step.** `shared/plinth-rules.md` and
+  `shared/MODELS.md` now require `delegation` alongside preflight/snapshot/scope and tell
+  the driver to treat a complete report without a `DELEGATION:` receipt as incomplete.
 ## v4.7.2 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
 Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
 instance the reviewer named rather than the class it belonged to, so the next round found

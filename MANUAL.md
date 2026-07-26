@@ -570,22 +570,7 @@ it has run green with a real smoke_cmd.
   text matching by design), secret paths, and anything matching `.plinth/protected-paths`
   are blocked at the tool level — for every Claude subagent too (the guard is a `.claude/`
   hook, so it binds Claude drivers/subagents; whether another driver executes it is
-  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Quoted heredoc bodies are excluded from
-  those text scans only for a *strict simple form* — the **entire** command must match:
-  optional blank lines; one header line of
-  `[VAR=val …] [bare sudo|command|env|nice|nohup|time …] (cat|tee) TOKEN*
-  <<[-]?('D'|"D"|$'D'|''|"") TOKEN* [[:space:]#…| ;#…]`,
-  where: wrappers are bare names only (**any option flag fails closed** — including
-  `env -P` / `--chdir` / `--unset`, `sudo -u` / `-D` / `-h`, `time -o` / `--output`);
-  each TOKEN is a non-empty run of characters excluding `|;&(){}` and whitespace (so ordinary
-  args and redirect operators/targets such as `>`, `>>`, `<`, `<>`, `N>`, `N<` are accepted
-  as opaque tokens — the gate is not a redirect parser); the delimiter is one simple quoted
-  form (not `$"D"`, no backslash inside `"…"` / `$'…'`); trailing comment is
-  `[[:space:]]#…` or `;#…`; optional blank lines after the terminator; no other statements.
-  Multi-statement commands, compounds, pipelines, multi-heredoc headers, option-bearing
-  wrappers, unquoted delimiters, executable consumers, and other ambiguous forms stay fully
-  scanned (fail closed). The header line itself (including redirect targets) is always part
-  of the scan. The guard is a
+  probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
@@ -598,34 +583,6 @@ it has run green with a real smoke_cmd.
   server-side verifier until `receipt / verify` is required, and the cloud review is
   advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
   the merge gate proper is branch protection's required status checks.
-  refused unless the branch has an APPROVED review at HEAD. A *targeted* `gh pr merge`
-  (positional PR number/URL and/or `-R`/`--repo`) is authorized only when **all** of:
-  (1) the actionable command itself binds the repository — either a same-repo GitHub
-  PR URL or an explicit `-R`/`--repo` naming the checkout's `origin` (unqualified
-  `gh pr merge 42` is rejected: it would follow `GH_REPO`/default-repo, not origin);
-  (2) the command pins `--match-head-commit` to the origin-resolved PR head SHA
-  (lookup uses `gh pr view … -R <origin-owner/repo>`, never default-repo alone);
-  (3) that worktree has APPROVED at that SHA for the PR's branch slug. Quotes,
-  backslashes, or expansion metacharacters (`$`, `` ` ``, `()`, globs, braces) in
-  the *merge* segment fail closed (the tripwire is not a shell parser — multi-word
-  `--body "…"`, `--body Release\ 42`, `--body $BODY`, backticks, or process
-  substitution would otherwise invent a false PR target; use literal unquoted
-  single-token values, `--body=…`, or `--body-file`). Ship-gate segmentation is
-  only on `;|&` so those chars stay visible for the check. Fail-closed is
-  merge-segment local: a quoted sibling `gh pr create` does not poison an
-  independent bound merge. Inherited-option placement (`gh pr -R o/r merge`,
-  `gh pr --repo=… create`) is gated the same way. Outside a git checkout, bare
-  ships fail open; targeted merges fail closed. Multi-segment Bash gates each
-  real create/merge segment independently (an APPROVED merge does not authorize
-  an unreviewed create). Like every `.claude/` hook it fires only under a Claude driver,
-  or a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe` alone
-  shows invocation, not enforcement (grok 0.2.112 reported no execution
-  [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing driver
-  this hook does NOT fire — their merge gate is branch protection's required checks
-  (floor + checks — CI and tooling integrity; the review verdict has no server-side
-  verifier until `receipt / verify` is required, and the cloud review is advisory
-  comments). Deliberately-quoted obfuscation is out of scope (see above); the merge
-  gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
@@ -691,13 +648,17 @@ it has run green with a real smoke_cmd.
 - **The worker seat is not a config knob.** Nothing in `.plinth/config` selects it:
   the worker is the `grok-implementer` subagent plus driver discipline. Readiness is
   `.plinth/lane-guard.sh preflight grok`. Upstream #19 (the sensitive-path snapshot
-  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in this release —
+  stalling minutes on any repo with `node_modules`/`.venv`) is FIXED in v4.7.1 —
   the per-path fork storm is replaced by one bulk ERE filter, measured 232s -> 0.43s on
-  25k ignored files with byte-identical output. #32 (the lane implemented a task itself
-  instead of delegating, which its contract forbids) remains open. Until it lands, treat
-  "grok typed it" as a claim to verify, not an
-  assumption — check the report, and prefer typing it yourself over believing a lane
-  that may have silently self-implemented.
+  25k ignored files with byte-identical output. Upstream #32 (the lane implemented a
+  task itself instead of delegating) is addressed in v4.8.0 by the DELEGATION RECEIPT:
+  the lane must record the delegate's own transcript under `.plinth/session/lanes/`
+  before it may report `STATUS: complete`, and the report carries the artifact path
+  plus the delegate's self-reported model. Check the receipt — open the artifact —
+  rather than trusting the narrative. What it does NOT do is prove which model
+  produced the diff: a lane that self-implemented could write a file. It makes the
+  omission detectable, so "grok typed it" is now a claim with an artifact behind it,
+  not an assumption.
 - **Fable 5 back on plans**: Anthropic says "when capacity allows" — recheck before
   buying credit bundles.
 - Verify on first run: the hooks schema; scanner action tags in `plinth-floor.yml`.
@@ -723,12 +684,15 @@ a lane that stalls or silently self-implements would defeat the exercise twice.
    pathspec-derived candidate list would be faster AND silently blind to any path that
    is sensitive only by project policy. The full ignored listing is retained: that IS
    the security property.
-2. **Upstream #32 — make delegation CHECKABLE.** The lane contract says it must never
-   implement the task itself, but nothing structurally enforces that; a lane that
-   struggles to drive the CLI can do the work and still emit a well-formed report. Fix:
-   require a grok-invocation artifact (transcript + exit) under the session dir before
-   the lane may report `STATUS: complete`, and surface the delegate model in the report
-   so "typed by grok-4.5" is verifiable rather than asserted.
+2. **Upstream #32 — make delegation CHECKABLE. SHIPPED in v4.8.0.** The lane contract
+   said it must never implement the task itself, but nothing structurally showed when it
+   did; a lane that struggles to drive the CLI could do the work and still emit a
+   well-formed report. `lane-guard.sh delegation <vendor> <rc> <transcript>` now records
+   the delegate's own transcript + exit code under `.plinth/session/lanes/` and prints a
+   receipt (artifact path, sha256, the delegate's self-reported model) that both lanes
+   must carry on a `DELEGATION:` line; no artifact -> exit 3 -> `STATUS: unavailable`.
+   Bound, stated in the contract itself: it proves a transcript EXISTS, never who typed
+   the diff — detectable, not impossible.
 3. **Per-tier reviewer VENDORS.** `reviewer_vendor` is a single knob read BEFORE the
    risk tier is known, so today tier1/tier2 can only differ by MODEL within one vendor
    — and with codex offering exactly one usable model here, they cannot meaningfully
@@ -762,11 +726,34 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
-- **guard.sh heredoc inert-consumer: shell function/alias named `cat`/`tee`**
-  (`shared/.claude/hooks/guard.sh`). The simple-form gate requires an exact
-  `cat`/`tee` token (path-qualified `/bin/cat` / `./cat` are full-scanned). A
-  shell function or alias of that name could still receive a suppressed body.
-  Trusted-worker threat model. Opened by fix/guard-quoted-heredoc review.
+- **`lane-guard preflight grok` reported a COLD-START false negative once**
+  (`shared/.plinth/lane-guard.sh` `preflight`). A driver saw `unavailable: grok not
+  signed in` on the first call and `ready: grok` on three consecutive re-runs, with grok
+  demonstrably authenticated. NOT reproducible here (four probes against grok 0.2.112,
+  all `ready` in ~0.6s). v4.8.0 disambiguates the preflight diagnostic (no automatic
+  retry, no change to what counts as authenticated) with an HONEST BOUND aligned to GNU
+  coreutils `timeout -k 5`: **elapsed first** (instant 124/137/142 is "too fast" —
+  no-tool refuse or child self-exit); **rc=124 + elapsed ≈ cap** is *consistent with*
+  the wall-clock timeout (TERM-death or python fallback), residual CLI self-exit 124;
+  **rc=137**: `-k` KILL lands ~cap+5 (~35s) — elapsed≥33 is *consistent with* that path
+  **or** external/CLI SIGKILL; 28–32s is at/near TERM but early for completed `-k`, so
+  prefers self-exit wording; never timeout-only, never absolute "NOT a timeout";
+  **rc=142** is *often* SIGALRM (128+14), not the standard 124/137 cap signature,
+  residual self-exit 142. Diagnostics do **not** instruct a re-run — a blind/automatic
+  retry was declined deliberately because it doubles the hang bound and would weaken the
+  cap fixtures; an operator may still re-run deliberately after reading the residual.
+- **Delegation receipt residuals / follow-ons (not blocking v4.8 ship)**
+  (`shared/.plinth/lane-guard.sh` `delegation`, canary). No BEFORE/SNAP binding on the
+  transcript (stale-OUT residual is disclosed in the honest bound, not enforced). Tracked
+  session `.gitignore` is refused unless already exact `*` (untracked is rewritten).
+  `model=` sanitizer deletes disallowed chars rather than marking `sanitized`. Several
+  refusal branches (non-git cwd, non-dir session, mkdir failures) lack fixtures.
+  Preflight diagnostic sleeps add ~3 minutes serial wall-clock to the canary — injectable
+  cap would be cheaper. Tracked for a later pass.
+- **`round_cap = 0` on main is operator config, not this PR** (`.plinth/config`, commit
+  `372ee25` already on `origin/main`). This v4.8.0 branch does not touch `.plinth/config`
+  (`git diff origin/main...HEAD -- .plinth/config` is empty). Reviewer findings that treat
+  that main commit as PR-scope tooling tampering are out of scope for the branch diff.
 - **The `codex exec resume -m` receipt evidences ACCEPTANCE, not BEHAVIOR**
   (`docs/receipts/codex-exec-resume-model-0.145.0.txt`). It captures `--help` listing the
   flag, unlike the hookprobe receipts which capture the behavior they claim. If codex ever
@@ -854,12 +841,11 @@ installed copies.
   prevents writes while permitting filesystem reads — cwd merely hides the
   path. Either enforce the isolation or reword the claim (overclaiming is this
   repo's worst defect class). (v4.5.0 refresh review, round 11.)
-- **Lane SNAP/OUT temps and auditor mktemps still leak** (implementer lanes clean
-  SPEC_DIR after the CLI returns as of v4.7.2, but SNAP/OUT and
-  `shared/.plinth/review.sh`'s per-audit `mktemp -d` still accumulate under the
-  system temp dir; interrupted runs may also leave SPEC_DIR). Add post-report /
-  post-audit cleanup for the remaining paths. (Round 11 minors; narrowed after
-  #22 cleanup work.)
+- **Lane + auditor temp files are never cleaned up** (both
+  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
+  `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
+  snapshot metadata accumulate under the system temp dir; add a post-report /
+  post-audit cleanup step. (Round 11, minors.)
 - **review.sh: verify/resume anchors are existence-checked, not ancestry-checked**
   (`lastfullread` and `prev_sha`: `git cat-file -e` only). After a rebase the anchor
   commit can still exist while no longer being an ancestor of HEAD, so the
