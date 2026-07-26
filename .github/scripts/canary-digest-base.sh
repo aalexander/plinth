@@ -37,8 +37,8 @@ RDIR="$(mktemp -d)"
     > "$M/codex"
   chmod +x "$M/codex"
   rc=0
-  PATH="$BIN:$M" ./.plinth/review.sh main >/tmp/dfr-out.txt 2>&1 || rc=$?
-  [ "$rc" = 0 ] || { echo "::error::review.sh rc=$rc without shasum: $(tail -c 500 /tmp/dfr-out.txt)"; exit 1; }
+  OUTF="$(mktemp)"; PATH="$BIN:$M" ./.plinth/review.sh main >"$OUTF" 2>&1 || rc=$?
+  [ "$rc" = 0 ] || { echo "::error::review.sh rc=$rc without shasum: $(tail -c 500 "$OUTF")"; exit 1; }
   dig="$(jq -r .diff_digest .plinth/session/review/feat/verdict.json)"
   [ -n "$dig" ] && [ "$dig" != "null" ] || { echo "::error::empty diff_digest"; exit 1; }
   echo "OK review.sh entry-point digest without shasum"
