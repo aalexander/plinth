@@ -598,6 +598,34 @@ it has run green with a real smoke_cmd.
   server-side verifier until `receipt / verify` is required, and the cloud review is
   advisory comments). Deliberately-quoted obfuscation is out of scope (see above);
   the merge gate proper is branch protection's required status checks.
+  refused unless the branch has an APPROVED review at HEAD. A *targeted* `gh pr merge`
+  (positional PR number/URL and/or `-R`/`--repo`) is authorized only when **all** of:
+  (1) the actionable command itself binds the repository — either a same-repo GitHub
+  PR URL or an explicit `-R`/`--repo` naming the checkout's `origin` (unqualified
+  `gh pr merge 42` is rejected: it would follow `GH_REPO`/default-repo, not origin);
+  (2) the command pins `--match-head-commit` to the origin-resolved PR head SHA
+  (lookup uses `gh pr view … -R <origin-owner/repo>`, never default-repo alone);
+  (3) that worktree has APPROVED at that SHA for the PR's branch slug. Quotes,
+  backslashes, or expansion metacharacters (`$`, `` ` ``, `()`, globs, braces) in
+  the *merge* segment fail closed (the tripwire is not a shell parser — multi-word
+  `--body "…"`, `--body Release\ 42`, `--body $BODY`, backticks, or process
+  substitution would otherwise invent a false PR target; use literal unquoted
+  single-token values, `--body=…`, or `--body-file`). Ship-gate segmentation is
+  only on `;|&` so those chars stay visible for the check. Fail-closed is
+  merge-segment local: a quoted sibling `gh pr create` does not poison an
+  independent bound merge. Inherited-option placement (`gh pr -R o/r merge`,
+  `gh pr --repo=… create`) is gated the same way. Outside a git checkout, bare
+  ships fail open; targeted merges fail closed. Multi-segment Bash gates each
+  real create/merge segment independently (an APPROVED merge does not authorize
+  an unreviewed create). Like every `.claude/` hook it fires only under a Claude driver,
+  or a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe` alone
+  shows invocation, not enforcement (grok 0.2.112 reported no execution
+  [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing driver
+  this hook does NOT fire — their merge gate is branch protection's required checks
+  (floor + checks — CI and tooling integrity; the review verdict has no server-side
+  verifier until `receipt / verify` is required, and the cloud review is advisory
+  comments). Deliberately-quoted obfuscation is out of scope (see above); the merge
+  gate proper is branch protection's required status checks.
 - Review gate (`.claude/` Stop hook, Claude driver only): a session that created
   commits cannot end its turn until review.sh records APPROVED at HEAD. Scoped to
   feature branches and commit-making sessions; releases loudly on review
@@ -826,11 +854,12 @@ installed copies.
   prevents writes while permitting filesystem reads — cwd merely hides the
   path. Either enforce the isolation or reword the claim (overclaiming is this
   repo's worst defect class). (v4.5.0 refresh review, round 11.)
-- **Lane + auditor temp files are never cleaned up** (both
-  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
-  `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
-  snapshot metadata accumulate under the system temp dir; add a post-report /
-  post-audit cleanup step. (Round 11, minors.)
+- **Lane SNAP/OUT temps and auditor mktemps still leak** (implementer lanes clean
+  SPEC_DIR after the CLI returns as of v4.7.2, but SNAP/OUT and
+  `shared/.plinth/review.sh`'s per-audit `mktemp -d` still accumulate under the
+  system temp dir; interrupted runs may also leave SPEC_DIR). Add post-report /
+  post-audit cleanup for the remaining paths. (Round 11 minors; narrowed after
+  #22 cleanup work.)
 - **review.sh: verify/resume anchors are existence-checked, not ancestry-checked**
   (`lastfullread` and `prev_sha`: `git cat-file -e` only). After a rebase the anchor
   commit can still exist while no longer being an ancestor of HEAD, so the

@@ -65,23 +65,259 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate
 #    logs+releases base commits); client-side base detection was fragile and redundant.
-# Fails OPEN (allows) outside a git repo or on the base branch. With no verdict, a
-# stale verdict, or a non-APPROVED verdict for this branch's HEAD it BLOCKS — that
-# is the tripwire: the plain ship command requires APPROVED@HEAD, everything else passes.
-ship_gate() {  # <what> — called only when the command is a ship action
-  git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
-  local branch head slug vf v vsha
-  branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
-  case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: PR-from-base is moot; not gated
-  head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
-  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
-  vf="$proj/.plinth/session/review/$slug/verdict.json"
-  if [ -f "$vf" ]; then
-    v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
-    vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
-    [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
-  fi
-  block "$1 blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
+# A BARE current-branch ship keeps the old fail-open behavior outside a git repo
+# and on the base branch. A targeted merge is different: its PR is resolved against
+# the checkout's origin (always `gh pr view … -R <origin-owner/repo>`) and every
+# error blocks. The actionable merge must ALSO be origin- and head-bound: either a
+# same-repo PR URL or an explicit -R/--repo naming origin, plus
+# --match-head-commit equal to the origin-resolved head (so GH_REPO / default-repo
+# and a racing new push cannot desync authorize-from-vs-merge-into). Multi-segment:
+# each real create/merge segment is gated on its own — an APPROVED targeted merge
+# must not authorize an unreviewed create. Quote-stripped argv is not a shell
+# parser: any quote/apostrophe/backslash OR expansion metacharacter
+# ($ ` * ? { } ( )) in the *merge* original segment fail-closes that segment
+# (multi-word --body, `$BODY`, backticks, process subs would otherwise invent a
+# false PR target). Ship-gate segmentation is only on ;&| so those chars remain
+# visible for the check (destructive-scan still treats `() as boundaries).
+# Sibling create segments may still use quotes/expansions. `gh pr -R o/r merge`
+# and `gh pr --repo=… create` are recognized (opts between pr and subcommand).
+ship_gate() {  # <what> <unquoted-command> [original-command]
+  local what="$1" command="${2:-}" orig="${3:-$2}"
+  local segments segments_o segment oseg tok state need_value
+  local target_ref target_repo match_head parse_error merge_seen
+  local local_url local_repo url_repo n_repo resolved
+  local resolved_branch resolved_sha branch head slug vf v vsha
+
+  # Bare current-branch path (create, or merge with no PR number/URL/-R).
+  _ship_bare() {
+    git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
+    case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: PR-from-base is moot; not gated
+    head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
+    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    vf="$proj/.plinth/session/review/$slug/verdict.json"
+    if [ -f "$vf" ]; then
+      v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
+      vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
+      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+    fi
+    block "$what blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
+  }
+
+  # owner/repo from origin or -R/URL forms (github.com host only; no GHE olympics).
+  _ship_norm_repo() {
+    local r="$1"
+    case "$r" in
+      git@github.com:*) r="${r#git@github.com:}" ;;
+      ssh://git@github.com/*) r="${r#ssh://git@github.com/}" ;;
+      http://github.com/*) r="${r#http://github.com/}" ;;
+      https://github.com/*) r="${r#https://github.com/}" ;;
+      github.com/*) r="${r#github.com/}" ;;
+    esac
+    r="${r%.git}"; r="${r%/}"
+    printf '%s' "$r" | tr '[:upper:]' '[:lower:]'
+  }
+
+  # Targeted merge: bind to origin, resolve PR head, require APPROVED at that SHA.
+  # The command under review must itself name origin and pin the head SHA.
+  _ship_targeted() {
+    git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 \
+      || block "$what blocked — targeted merge cannot be bound to a local repository checkout."
+    local_url="$(git -C "$proj" remote get-url origin 2>/dev/null)" \
+      || block "$what blocked — targeted merge but the local repository has no resolvable origin."
+    case "$local_url" in
+      git@github.com:*|ssh://git@github.com/*|http://github.com/*|https://github.com/*) ;;
+      *) block "$what blocked — targeted merge but origin is not a recognizable GitHub repository." ;;
+    esac
+    local_repo="$(_ship_norm_repo "$local_url")"
+    case "$local_repo" in
+      */*) case "${local_repo#*/}" in */*) block "$what blocked — targeted merge but origin repository parsing was ambiguous." ;; esac ;;
+      *) block "$what blocked — targeted merge but origin repository parsing failed." ;;
+    esac
+
+    # Actionable command must bind the repository: -R/--repo matching origin, or a
+    # same-repo PR URL. Unqualified `gh pr merge 42` follows GH_REPO/default-repo.
+    case "$target_ref" in
+      http://github.com/*/pull/*|https://github.com/*/pull/*)
+        url_repo="${target_ref#*://github.com/}"; url_repo="${url_repo%%/pull/*}"
+        url_repo="$(_ship_norm_repo "github.com/$url_repo")"
+        case "$url_repo" in
+          */*) case "${url_repo#*/}" in */*) block "$what blocked — PR URL repository is ambiguous." ;; esac ;;
+          *) block "$what blocked — PR URL repository could not be parsed." ;;
+        esac
+        [ "$url_repo" = "$local_repo" ] \
+          || block "$what blocked — PR URL names '$url_repo', not local repository '$local_repo'."
+        ;;
+      https://*|http://*) block "$what blocked — PR URL is not a recognizable GitHub pull-request URL." ;;
+      *)
+        [ -n "$target_repo" ] \
+          || block "$what blocked — targeted merge must include -R/--repo naming the local origin repository (unqualified PR numbers follow gh default-repo/GH_REPO, not origin)."
+        ;;
+    esac
+
+    if [ -n "$target_repo" ]; then
+      n_repo="$(_ship_norm_repo "$target_repo")"
+      case "$n_repo" in
+        */*) case "${n_repo#*/}" in */*) block "$what blocked — -R/--repo must name one owner/repository." ;; esac ;;
+        *) block "$what blocked — -R/--repo must name owner/repository." ;;
+      esac
+      [ "$n_repo" = "$local_repo" ] \
+        || block "$what blocked — -R/--repo names '$target_repo', not local repository '$local_repo'; a local verdict cannot authorize another repository."
+    fi
+
+    # Always bind resolve to origin — never gh's implicit default repo (upstream #16).
+    if [ -n "$target_ref" ]; then
+      resolved="$(gh pr view "$target_ref" -R "$local_repo" \
+        --json headRefName,headRefOid,headRepository 2>/dev/null)" \
+        || block "$what blocked — could not resolve targeted pull request."
+    else
+      resolved="$(gh pr view -R "$local_repo" \
+        --json headRefName,headRefOid,headRepository 2>/dev/null)" \
+        || block "$what blocked — could not resolve targeted pull request."
+    fi
+    resolved_branch="$(printf '%s' "$resolved" | jq -r '.headRefName // empty' 2>/dev/null)" \
+      || block "$what blocked — resolved pull-request branch was unreadable."
+    resolved_sha="$(printf '%s' "$resolved" | jq -r '.headRefOid // empty' 2>/dev/null)" \
+      || block "$what blocked — resolved pull-request head SHA was unreadable."
+    [ -n "$resolved_branch" ] \
+      || block "$what blocked — pull-request resolution returned incomplete head metadata."
+    printf '%s' "$resolved_sha" | grep -Eq '^[0-9a-fA-F]{40}$' \
+      || block "$what blocked — pull-request resolution returned an invalid head SHA."
+
+    # Actionable command must pin the head so the merge cannot race past the verdict.
+    [ -n "$match_head" ] \
+      || block "$what blocked — targeted merge must include --match-head-commit <origin-resolved-head-sha> so the ship is bound to the APPROVED head."
+    printf '%s' "$match_head" | grep -Eq '^[0-9a-fA-F]{40}$' \
+      || block "$what blocked — --match-head-commit is not a 40-char commit SHA."
+    [ "$match_head" = "$resolved_sha" ] \
+      || block "$what blocked — --match-head-commit does not match the origin-resolved PR head ($resolved_sha)."
+
+    branch="$resolved_branch"
+    head="$resolved_sha"
+    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    # Verdict lives in the worktree that ran the review; do not search other worktrees.
+    vf="$proj/.plinth/session/review/$slug/verdict.json"
+    if [ -f "$vf" ]; then
+      v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
+      vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
+      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+    fi
+    block "$what blocked — no APPROVED review at targeted PR head ($head) for branch '$branch'. Run the merge from the checkout/worktree that holds its verdict."
+  }
+
+  # Parse only ordinary, directly-invoked gh forms. Unknown merge argv blocks
+  # instead of falling back to the current checkout.
+  # Clause split is ONLY on ;&| (multi-segment independence; quoted create
+  # siblings stay local). Within a clause, also discover gh after `() so
+  # `(gh pr merge…)`, `$(gh pr merge…)`, and backtick wrappers cannot skip
+  # the gate; those openers are expansion/grouping metacharacters and force
+  # merge fail-closed via the original-clause check.
+  segments="$(printf '%s' "$command" | tr ';&|' '\n')" \
+    || block "$what blocked — could not parse gh arguments."
+  segments_o="$(printf '%s' "$orig" | tr ';&|' '\n')" \
+    || block "$what blocked — could not parse gh arguments."
+  # FD 3 carries original clauses parallel to stripped (bash-3.2 portable).
+  # Route exec failure through block (exit 2): set -e on a bare failed exec would
+  # exit 1 and fail-open the ship inspection.
+  exec 3<<ORIGSEGS || block "$what blocked — could not open merge-segment parse state (TMPDIR/heredoc failure)."
+$segments_o
+ORIGSEGS
+  while IFS= read -r segment; do
+    IFS= read -r oseg <&3 || oseg=""
+    # Discover create/merge at clause start OR after subshell/cmd-sub openers.
+    disc="$(printf '%s' "$segment" | tr '`()' '\n')" \
+      || block "$what blocked — could not parse gh arguments."
+    while IFS= read -r dseg; do
+      # Real create → bare current-branch gate (independent of sibling merges).
+      # OPT between pr and create so `gh pr -R o/r create` is still gated.
+      if printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+create([[:space:]]|$)'; then
+        _ship_bare
+        continue
+      fi
+      # Real merge only (argument-position prose in another discovery line is ignored).
+      printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+merge([[:space:]]|$)' \
+        || continue
+
+      set -f
+      # Intentional word splitting on the unquoted token approximation; globbing off.
+      # shellcheck disable=SC2086
+      set -- $dseg
+      set +f
+      state=seek
+      need_value=""
+      target_ref=""
+      target_repo=""
+      match_head=""
+      parse_error=0
+      merge_seen=0
+      # Unquote deletes " ' \ — multi-word values lose boundaries. Unexpanded
+      # $BODY / globs / braces / backticks / process-subs / subshells change argv
+      # after inspection. Fail closed on those chars in the ORIGINAL clause
+      # (not the discovery fragment — openers are stripped for discovery only).
+      if printf '%s' "$oseg" | grep -q '["'\''\\$`*?{}()]'; then
+        parse_error=1
+      fi
+      for tok in "$@"; do
+        if [ -n "$need_value" ]; then
+          case "$need_value" in
+            repo) target_repo="$tok" ;;
+            match_head)
+              [ -z "$match_head" ] || parse_error=1
+              match_head="$tok"
+              ;;
+          esac
+          need_value=""
+          continue
+        fi
+        case "$state:$tok" in
+          seek:gh) state=gh ;;
+          gh:pr) state=pr ;;
+          pr:merge) state=merge; merge_seen=$((merge_seen + 1)) ;;
+          # -R/--repo may sit on gh, between pr and merge, or on merge itself.
+          gh:-R|gh:--repo|pr:-R|pr:--repo|merge:-R|merge:--repo) need_value=repo ;;
+          gh:-R=*|gh:--repo=*|pr:-R=*|pr:--repo=*|merge:-R=*|merge:--repo=*) target_repo="${tok#*=}" ;;
+          gh:-R?*|pr:-R?*|merge:-R?*) target_repo="${tok#-R}" ;;
+          gh:--hostname|pr:--hostname) need_value=ignore ;;
+          gh:--hostname=*|pr:--hostname=*) ;;
+          gh:-*|pr:-*) ;;
+          gh:*) state=seek ;;
+          pr:*) parse_error=1 ;;
+          merge:--match-head-commit)
+            [ -z "$match_head" ] || parse_error=1
+            need_value=match_head
+            ;;
+          merge:--match-head-commit=*)
+            [ -z "$match_head" ] || parse_error=1
+            match_head="${tok#*=}"
+            ;;
+          merge:-A|merge:--author-email|merge:-b|merge:--body|merge:-F|merge:--body-file|merge:-t|merge:--subject)
+            need_value=ignore
+            ;;
+          merge:-A?*|merge:-b?*|merge:-F?*|merge:-t?*|merge:--author-email=*|merge:--body=*|merge:--body-file=*|merge:--subject=*) ;;
+          merge:--admin|merge:--auto|merge:-d|merge:--delete-branch|merge:--disable-auto|merge:-m|merge:--merge|merge:-r|merge:--rebase|merge:-s|merge:--squash) ;;
+          merge:[0-9]*)
+            case "$tok" in *[!0-9]*) parse_error=1 ;; *) [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1 ;; esac
+            ;;
+          merge:http://*|merge:https://*)
+            [ -z "$target_ref" ] && target_ref="$tok" || parse_error=1
+            ;;
+          merge:--) ;;
+          merge:-*|merge:*) parse_error=1 ;;
+        esac
+      done
+      [ -z "$need_value" ] || parse_error=1
+      [ "$merge_seen" = 1 ] || parse_error=1
+      [ "$parse_error" = 0 ] \
+        || block "$what blocked — targeted gh pr merge arguments could not be parsed safely (quotes, backslashes, or expansion metacharacters (\$, \`, (), globs, braces) in the merge clause are not supported by this tripwire; use literal unquoted single-token flag values, --body=…, or --body-file, and pin -R plus --match-head-commit)."
+
+      if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
+        _ship_targeted
+      else
+        _ship_bare
+      fi
+    done <<< "$disc"
+  done <<< "$segments"
+  exec 3<&-
 }
 
 case "$tool" in
@@ -603,8 +839,10 @@ case "$tool" in
     # obfuscation (`bash -c "gh pr create"` -> `bash -c gh pr create`, gh not at command
     # position) is OUT OF SCOPE by design (see the header): a client-side hook can't win
     # that race; branch protection can.
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr[[:space:]]+(create|merge)'; then
-      ship_gate "gh pr create/merge"
+    # OPT between pr and create|merge so `gh pr -R owner/repo merge` is gated
+    # (gh accepts inherited -R/--repo before the subcommand).
+    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+(create|merge)'; then
+      ship_gate "gh pr create/merge" "$stripped" "$cmd"
     fi
     while IFS= read -r pattern; do
       # Path patterns are anchored for bare paths ((^|/)…$); in command TEXT a

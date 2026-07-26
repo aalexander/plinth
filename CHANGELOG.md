@@ -9,6 +9,39 @@
   the delimiter, optional trailing `#`/`;#` comment. Multi-statement/compound/pipeline
   wrappers, option-bearing prefixes (`env -P …`), multi-heredoc headers, locale `$"D"`,
   unquoted delims, and executable consumers stay fully scanned (fail closed).
+## v4.7.2 — ship-gate-target — July 26, 2026
+- **Targeted `gh pr merge` binds end-to-end to origin + resolved PR head (upstream #16).**
+  Authorization requires: (1) the actionable command names the checkout's `origin`
+  via `-R`/`--repo` or a same-repo PR URL (unqualified `gh pr merge 42` is rejected —
+  it would follow `GH_REPO`/default-repo); (2) `--match-head-commit` equals the
+  origin-resolved head (`gh pr view … -R <origin>`); (3) APPROVED at that SHA for
+  the PR branch slug. Quotes/backslashes/expansion metacharacters (`$`,
+  backticks, `()`, globs, braces) in the merge segment fail closed (not a shell
+  parser; segment only on `;|&`); fail-closed is segment-local so a quoted create
+  sibling does not poison a bound merge. Inherited-option placement
+  (`gh pr -R o/r merge`) is gated. Multi-segment Bash gates each create/merge
+  independently. Bare current-branch create/merge and outside-git bare fail-open
+  are unchanged.
+## v4.7.2 — implementer specs stay data, never shell source — July 26, 2026
+- **Implementer specs stay data, never shell source** (upstream #22, lanes half). Both
+  lane contracts require the non-shell Write tool for their unique prompt file and pass
+  only the path to the CLI, so a literal `SPEC_EOF` line cannot terminate a fixed-delimiter
+  heredoc and execute. The prompt path is a not-yet-created file under
+  `${PWD}/.plinth-lane.*` (project CWD so Claude Code Write is authorized without
+  `--add-dir`; not a pre-created system `mktemp` file Write would refuse to overwrite
+  unread). Fail-loud on mktemp. Review harness comment clarifies project-owned `.plinth`
+  files (including GOAL.md) stay outside the pinned-tooling allowlist. Canary: exact
+  Write tool token, project-local `$SPEC_DIR/prompt`, allowlist-only `$SPEC` uses in code
+  blocks (shell must not create the prompt), pin extracted `cap 600` command blocks to
+  `"$SPEC"`, run those blocks against stubs with a SPEC_EOF payload, and prove a
+  fixed-heredoc negative control still executes.
+  Project and template `.gitignore` ignore `.plinth-lane.*`. Step-0 handoff prints
+  `SPEC_DIR` so cleanup across tool calls is real, not re-derived. Canary extracts
+  and runs each lane's step-0 allocation, applies a Write-tool analog (create-only,
+  project-CWD scope), runs the extracted command block using only the handoff
+  variables, asserts cleanup, and fails if `SPEC_DIR` is omitted from the handoff.
+  Receipt: `docs/receipts/claude-write-project-local-plinth-lane.txt` shows Claude
+  Code Write creating a not-yet-existing `${PWD}/.plinth-lane.*/prompt`.
 ## v4.7.2 — receipt minting: repository identity, credential safety, ledger completeness — July 25, 2026
 Most of this release's review rounds went to ONE recurring mistake: each fix addressed the
 instance the reviewer named rather than the class it belonged to, so the next round found
