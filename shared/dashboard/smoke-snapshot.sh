@@ -749,6 +749,30 @@ jq -e '
   and .cwd_empty == true
 ' "$QREC" >/dev/null \
   || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
+
+# Offline/disabled modes must not create the cache parent if absent
+rm -rf "/tmp/plinth-dash-quota-$(id -u)"
+PLINTH_DASH_QUOTA=0 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
+[ ! -e "/tmp/plinth-dash-quota-$(id -u)" ] || { echo "smoke-snapshot: QUOTA=0 created cache parent" >&2; exit 1; }
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
+[ ! -e "/tmp/plinth-dash-quota-$(id -u)" ] || { echo "smoke-snapshot: offline snapshot created cache parent" >&2; exit 1; }
+mkdir -p "$(dirname "$QCACHE")"
+# Parent as regular file: persistence skips
+rm -rf "/tmp/plinth-dash-quota-$(id -u)"
+printf x > "/tmp/plinth-dash-quota-$(id -u)"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota >/dev/null || true
+[ -f "/tmp/plinth-dash-quota-$(id -u)" ] || { echo "smoke-snapshot: parent file removed" >&2; exit 1; }
+rm -f "/tmp/plinth-dash-quota-$(id -u)"
+mkdir -p "$(dirname "$QCACHE")"
+# Target is directory: no adjacent leak
+rm -rf "$QCACHE"; mkdir -p "$QCACHE"
+before=$(ls -A "$(dirname "$QCACHE")" | wc -l | tr -d " ")
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota >/dev/null || true
+after=$(ls -A "$(dirname "$QCACHE")" | wc -l | tr -d " ")
+[ "$after" = "$before" ] || { echo "smoke-snapshot: dir target leaked ($before->$after)" >&2; exit 1; }
+rm -rf "$QCACHE"; mkdir -p "$(dirname "$QCACHE")"
 # PLINTH_DASH_QUOTA_CACHE ignored
 printf '%s\n' '{"seed":true}' > "$FIX/should-not-create.json"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/should-not-create.json" \
