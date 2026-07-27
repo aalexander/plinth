@@ -16,6 +16,13 @@
   chips, lifecycle row; `build_defer` is a known event name.
 - **Driver rules + MANUAL + `docs/LIFECYCLE.md`:** plan → build → harden → ship.
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`.
+- **Auto-handoff snapshots** on harden/build/plan-deep and after review rounds;
+  SessionStart additionalContext when HANDOFF.md present; milestone guidance to
+  compact/fresh-session after handoff.
+- **Review anti-thrash:** `review_phase` (build|hardening) on requests; sticky
+  finding ids + auto-resolve reopens when file blob unchanged; compact verify
+  open-ledger; Tier-2 dual first-pass (primary + audit seat) on fresh round 1.
+- **Schema:** optional finding `id` field.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

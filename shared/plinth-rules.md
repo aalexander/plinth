@@ -147,10 +147,20 @@ to end a turn that committed (it logs `build_defer`). Ship is unchanged —
 `gh pr create|merge` still needs APPROVED@HEAD. When the product is ready:
 `plinth harden`, then run `./.plinth/review.sh` until APPROVED, then open the PR.
 `plinth build` returns to default build. `plinth phase` prints the current phase.
-`plinth handoff` writes root `HANDOFF.md`. **Restart:** read `HANDOFF.md` if
-present and continue from ## Next. Advisor (`plinth advise`) is available in
-every phase; it never replaces APPROVED. Prefer `plinth plan` (light) or `plinth plan --deep` (new product / fuzzy scope)
-before large features; human owns product tradeoffs. Runnable in-session.
+`plinth handoff` writes root `HANDOFF.md`; **auto-snapshots** also run on
+`plinth harden`, `plinth build`, `plinth plan --deep`, and after review rounds
+(CHANGES_NEEDED / APPROVED). SessionStart nudges when HANDOFF exists.
+**Restart:** read `HANDOFF.md` if present and continue from ## Next.
+**Milestone hygiene (self-handoff):** after a handoff at a phase or ship
+milestone, **prefer a fresh session or harness compaction** before the next
+milestone so chat context does not rot. Binding state lives in HANDOFF / PLAN /
+verdict / receipts — not conversation memory.
+Advisor (`plinth advise`) is available in every phase; it **annotates only** —
+never clears majors, never sets APPROVED or phase. Prefer `plinth plan` (light)
+or `plinth plan --deep` (new product / fuzzy scope) before large features; human
+owns product tradeoffs. Runnable in-session.
+Review anti-thrash: BUILD vs HARDENING phase in prompts; sticky finding ids;
+compact verify ledgers; Tier-2 dual first-pass when audit_vendor differs.
 
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.

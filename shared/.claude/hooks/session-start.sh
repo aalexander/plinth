@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Plinth session-start recorder v1 (shared, version-pinned). Records HEAD at
+# Plinth session-start recorder v2 (shared, version-pinned). Records HEAD at
 # session start so the review gate (Stop hook) enforces only on sessions that
 # create commits. Receives Claude Code SessionStart JSON on stdin.
-# Never blocks; never writes to stdout (stdout would be injected as context).
+# Never blocks. May emit additionalContext (Claude) when HANDOFF.md exists so
+# the driver is nudged to read the restart file — stdout is reserved for that
+# JSON only when context is injected; otherwise silent (no stdout pollution).
 set -euo pipefail
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty')
@@ -23,9 +25,29 @@ if [ ! -f "$SDIR/start-head-$sid" ]; then
 fi
 
 # Hygiene: session-scoped files older than 7 days; cap the event log.
-find "$SDIR" -maxdepth 1 \( -name 'start-head-*' -o -name 'gate-blocks-*' \) -mtime +7 -delete 2>/dev/null || true
+find "$SDIR" -maxdepth 1 \( -name 'start-head-*' -o -name 'gate-blocks-*' -o -name 'handoff-*.md' \) -mtime +7 -delete 2>/dev/null || true
 EV="$SDIR/events.jsonl"
 if [ -f "$EV" ] && [ "$(wc -c < "$EV" | tr -d ' ')" -gt 5000000 ]; then
   tail -n 2000 "$EV" > "$EV.tmp" && mv "$EV.tmp" "$EV"
+fi
+
+# Lifecycle + handoff nudge (v5): inject short context when HANDOFF exists.
+ctx=""
+if [ -f "$proj/HANDOFF.md" ]; then
+  branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  slug=$(printf '%s' "$branch" | tr '/ ' '--')
+  phase="build"
+  [ -f "$SDIR/phase-$slug.json" ] && phase=$(jq -r '.phase // "build"' "$SDIR/phase-$slug.json" 2>/dev/null || echo build)
+  head=$(git -C "$proj" rev-parse --short HEAD 2>/dev/null || echo "?")
+  ctx="Plinth lifecycle: phase=${phase} branch=${branch} @ ${head}. HANDOFF.md is present — READ it and continue from ## Next before new work. Prefer fresh context after milestone handoffs. Ship still needs APPROVED@HEAD (plinth harden + ./.plinth/review.sh)."
+  { jq -cn --arg sid "$sid" --arg detail "handoff present phase=$phase" \
+      '{ts:(now|todate),epoch:(now|floor),event:"SessionStart",sid:$sid,tool:null,detail:$detail,head:null}' \
+      >> "$EV"; } 2>/dev/null || true
+fi
+
+if [ -n "$ctx" ]; then
+  # Claude Code: SessionStart can return additionalContext. Other harnesses ignore JSON.
+  jq -cn --arg c "$ctx" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$c}}'
 fi
 exit 0

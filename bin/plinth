@@ -2616,34 +2616,12 @@ run_phase_status() {
   echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  handoff: $([ -f "$root/HANDOFF.md" ] && echo yes || echo no)"
 }
 
-run_harden() {
-  local root="${1:-$target}"
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth harden: not a git repo: $root" >&2; exit 1; }
-  case "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" in
-    main|master|HEAD)
-      echo "plinth harden: refuse on base/detached branch — use a feature branch" >&2
-      exit 1 ;;
-  esac
-  _lifecycle_write_phase "$root" harden
-  echo "Plinth phase → HARDEN (ship prep)."
-  echo "  Stop gate now requires APPROVED@HEAD."
-  echo "  Run:  (cd \"$root\" && ./.plinth/review.sh)"
-  echo "  When done shipping prep without ship: plinth build \"$root\""
-  echo "  Ship still blocked until APPROVED@HEAD (unchanged)."
-}
-
-run_build_phase() {
-  local root="${1:-$target}"
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth build: not a git repo: $root" >&2; exit 1; }
-  _lifecycle_write_phase "$root" build
-  echo "Plinth phase → BUILD (default)."
-  echo "  Stop gate allows end-of-turn without APPROVED (build_defer)."
-  echo "  PR/merge still requires APPROVED@HEAD — run plinth harden when ready to ship."
-}
-
-run_handoff() {
-  local root="${1:-$target}" out head branch phase slug vfile verdict vsha goal next
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth handoff: not a git repo: $root" >&2; exit 1; }
+# Write HANDOFF.md. Args: root, optional reason (milestone label), optional next_hint.
+# Auto snapshots preserve prior ## Next / ## Done when present (don't clobber agent edits).
+_write_handoff() {
+  local root="$1" reason="${2:-manual}" next_hint="${3:-}"
+  local out head branch phase slug vfile verdict vsha goal next done_block ts
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
   head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
   branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
   phase=$(_lifecycle_read_phase "$root")
@@ -2655,21 +2633,34 @@ run_handoff() {
     vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null | head -c 12)
   fi
   goal="(edit: one paragraph of what this branch ships)"
-  next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$root/PLAN.md" ]; then
     goal=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p&&NF{print; exit}' "$root/PLAN.md" 2>/dev/null || echo "$goal")
   fi
   out="$root/HANDOFF.md"
+  done_block="- (edit: bullets of what is already committed)"
+  next="1. (edit: next concrete step)"$'\n'"2. …"
+  if [ -f "$out" ]; then
+    # Preserve human/agent-edited Done/Next sections when auto-refreshing.
+    local prev_done prev_next
+    prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
+    prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
+    [ -n "$prev_done" ] && done_block="$prev_done"
+    [ -n "$prev_next" ] && next="$prev_next"
+  fi
+  if [ -n "$next_hint" ]; then
+    next="1. ${next_hint}"$'\n'"${next}"
+  fi
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   cat > "$out" <<EOF
 # Handoff — \`${branch}\` @ ${head}
 
-Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ) · Phase: **${phase}** · Verdict: ${verdict}${vsha:+ @ $vsha}
+Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** · Verdict: ${verdict}${vsha:+ @ $vsha}
 
 ## Goal
 ${goal}
 
 ## Done
-- (edit: bullets of what is already committed)
+${done_block}
 
 ## Next (ordered)
 ${next}
@@ -2678,18 +2669,67 @@ ${next}
 > Read HANDOFF.md and continue from ## Next.
 > Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD).
 > Advisor: \`plinth advise\` anytime.
+> **Milestone hygiene:** after this handoff, prefer a **fresh session** or harness compaction before the next milestone so context does not rot. Binding state is in HANDOFF / PLAN / verdict — not chat memory.
 
 ## Evidence
 - HEAD: \`${head}\` on \`${branch}\`
 - Lifecycle phase: ${phase}
+- Snapshot reason: ${reason}
 - Review verdict: ${verdict}${vsha:+ (sha $vsha)}
 - PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)
+- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)
 
 ## Risks / Noticed
 - (edit)
 EOF
-  echo "Wrote $out"
+  # Session archive copy (not agent-writable outside session via CLI only)
+  local arch="$root/.plinth/session/handoff-${slug}-$(date -u +%Y%m%dT%H%M%SZ).md"
+  mkdir -p "$root/.plinth/session"
+  cp "$out" "$arch" 2>/dev/null || true
+  echo "Wrote $out (snapshot: $reason)"
   echo "Restart: Read HANDOFF.md and continue."
+  echo "Milestone: prefer fresh session / compact after handoff before next milestone."
+}
+
+run_harden() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth harden: not a git repo: $root" >&2; exit 1; }
+  case "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" in
+    main|master|HEAD)
+      echo "plinth harden: refuse on base/detached branch — use a feature branch" >&2
+      exit 1 ;;
+  esac
+  _lifecycle_write_phase "$root" harden
+  _write_handoff "$root" "enter-harden" "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
+  echo "Plinth phase → HARDEN (ship prep)."
+  echo "  Stop gate now requires APPROVED@HEAD."
+  echo "  Run:  (cd \"$root\" && ./.plinth/review.sh)"
+  echo "  When done shipping prep without ship: plinth build \"$root\""
+  echo "  Ship still blocked until APPROVED@HEAD (unchanged)."
+}
+
+run_build_phase() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth build: not a git repo: $root" >&2; exit 1; }
+  _lifecycle_write_phase "$root" build
+  _write_handoff "$root" "enter-build" "Continue implementation; plinth harden when product is ready to ship."
+  echo "Plinth phase → BUILD (default)."
+  echo "  Stop gate allows end-of-turn without APPROVED (build_defer)."
+  echo "  PR/merge still requires APPROVED@HEAD — run plinth harden when ready to ship."
+}
+
+run_handoff() {
+  local root="${1:-$target}" reason="manual"
+  shift || true
+  # optional: plinth handoff [path] [--reason X]  — path already in target
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reason) reason="${2:-manual}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth handoff: not a git repo: $root" >&2; exit 1; }
+  _write_handoff "$root" "$reason" ""
 }
 
 # Scaffold or ensure PLAN.md (light). --deep also runs multi-agent critique → PLAN-REVIEW.md.
@@ -2860,6 +2900,7 @@ run_plan() {
   } > "$out"
 
   echo "Wrote $out"
+  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md blockers with human; update PLAN.md; then implement."
   echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
 }
 

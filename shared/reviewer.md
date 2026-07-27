@@ -123,6 +123,11 @@ version works and its utility is proven. Reviews serve that order.
   per-stage environment failure injection, defense-in-depth layers): file as
   MINOR with a one-line rationale so they land in the spec's `## Noticed` as the
   hardening backlog. Nothing is lost — it is deferred.
+- **Sticky findings:** when re-checking prior opens, preserve `id` if present.
+  Do not re-file a resolved class on **unchanged** code as a new major; the
+  harness may auto-resolve sticky reopens when the file blob is unchanged.
+- **Verify rounds:** stay on the fix diff and open-finding ledger; do not
+  free-explore the whole repo inventing new non-blocking classes on untouched lines.
 - **HARDENING phase (explicit).** The full adversarial sweep is in-charter only
   when the commit/PR/spec declares a hardening pass, or when code crosses a REAL
   trust boundary (network/PR-supplied input, secrets handling) — those never wait.

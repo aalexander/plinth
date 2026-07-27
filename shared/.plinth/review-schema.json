@@ -12,7 +12,8 @@
           "line": { "type": "integer" },
           "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
           "description": { "type": "string" },
-          "status": { "type": "string", "enum": ["open", "resolved"] }
+          "status": { "type": "string", "enum": ["open", "resolved"] },
+          "id": { "type": "string", "description": "Stable finding id for sticky resolve across rounds (optional)" }
         },
         "required": ["file", "line", "severity", "description", "status"],
         "additionalProperties": false

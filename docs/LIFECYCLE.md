@@ -8,7 +8,8 @@ plinth plan [--deep]  →  build  →  plinth harden  →  ./review.sh  →  PR
 ```
 
 **In-session:** all of these run from a driver shell in the repo (or `bin/plinth` from a Plinth checkout).  
-**Restart:** `Read HANDOFF.md and continue from ## Next.`
+**Restart:** `Read HANDOFF.md and continue from ## Next.`  
+**Self-handoff:** after auto/manual HANDOFF at a milestone → prefer **fresh session or compaction** before the next milestone (state is in files, not chat).
 
 ---
 

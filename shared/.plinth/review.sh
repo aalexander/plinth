@@ -1160,8 +1160,81 @@ validate_findings() {  # <findings-json> — full schema shape: enums, integer l
           and (.file | type == "string")
           and (.description | type == "string")
           and (.line | (type == "number") and (. == floor))
-          and (((keys) - ["file","line","severity","description","status"]) == []))
+          and ((.id == null) or (.id | type == "string"))
+          and (((keys) - ["file","line","severity","description","status","id"]) == []))
   ' "$1" >/dev/null 2>&1
+}
+
+# Sticky findings + ids (anti-thrash): assign stable ids; auto-resolve reopens of
+# prior-resolved findings when the file blob at HEAD is unchanged.
+# Ledger: $SDIR/sticky-ledger.json  { id: {status, blob, file, desc} }
+sticky_process_findings() {  # <findings-json-path>
+  local f="$1" ledger="$SDIR/sticky-ledger.json" tmp
+  [ -f "$f" ] || return 0
+  [ -f "$ledger" ] || echo '{}' > "$ledger"
+  tmp="$(mktemp)"
+  # Assign missing ids (hash of file|severity|normalized desc head).
+  jq '
+    def nid:
+      ((.file // "") + "|" + (.severity // "") + "|" + ((.description // "")
+        | ascii_downcase | gsub("[^a-z0-9]+"; " ") | .[0:80]))
+      | @base64;
+    .findings |= map(if (.id == null or .id == "") then . + {id: nid} else . end)
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+
+  # Build blob map for files mentioned
+  local blobs_json="{}"
+  while IFS= read -r fp; do
+    [ -n "$fp" ] || continue
+    local bh
+    bh=$(git rev-parse "HEAD:${fp}" 2>/dev/null || echo missing)
+    blobs_json=$(jq -cn --argjson b "$blobs_json" --arg f "$fp" --arg h "$bh" '$b + {($f): $h}')
+  done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
+
+  # Auto-close sticky reopens: open finding whose id was resolved with same blob.
+  jq --argjson blobs "$blobs_json" --slurpfile led "$ledger" '
+    ($led[0] // {}) as $L
+    | .findings |= map(
+        if .status == "open" and ($L[.id] != null) and ($L[.id].status == "resolved")
+           and ($L[.id].blob != null) and ($blobs[.file] != null)
+           and ($L[.id].blob == $blobs[.file])
+        then .status = "resolved"
+             | .description = ((.description // "") + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
+        else . end
+      )
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+
+  # Update ledger from current findings
+  jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
+    ($led[0] // {}) as $L
+    | reduce ($cur[0].findings // [])[] as $x ($L;
+        if ($x.id != null and $x.id != "") then
+          .[$x.id] = {
+            status: $x.status,
+            file: $x.file,
+            blob: ($blobs[$x.file] // null),
+            severity: $x.severity
+          }
+        else . end)
+  ' > "$tmp" && mv "$tmp" "$ledger"
+}
+
+# Review charter phase for prompts (build vs hardening). Default build; harden
+# when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
+review_phase_for_round() {
+  local p="build" slug pf
+  if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
+    case "$PLINTH_REVIEW_PHASE" in hardening|HARDENING) echo hardening; return ;; *) echo build; return ;; esac
+  fi
+  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
+  pf=".plinth/session/phase-${slug}.json"
+  if [ -f "$pf" ] && [ "$(jq -r '.phase // empty' "$pf" 2>/dev/null)" = "harden" ]; then
+    echo hardening; return
+  fi
+  if git log -1 --format=%s 2>/dev/null | grep -qiE 'HARDENING:|hardening pass'; then
+    echo hardening; return
+  fi
+  echo build
 }
 
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
@@ -1208,11 +1281,22 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
     fi
   fi
 
+  local rphase
+  rphase="$(review_phase_for_round)"
+  local phase_note
+  if [ "$rphase" = "hardening" ]; then
+    phase_note="REVIEW PHASE: HARDENING — full adversarial rigor including exotic robustness is in-charter."
+  else
+    phase_note="REVIEW PHASE: BUILD — block only on: spec miss, real bugs, data loss, fail-open in claimed guarantees, enforcement overclaims, missing real tests, security that is a real bug. File pure adversarial-hardening / exotic input theater as severity minor (Noticed backlog), not major — unless it is a true trust-boundary defect."
+  fi
+
   if [ "$m" = "fresh" ]; then
     prompt="You are an independent adversarial reviewer. Your CONTRACT is inlined below
 (the shared reviewer rules + this project's specific rules); apply every rule in it,
 including the Verdict policy (blockers/majors in project code block; minors and UPSTREAM
 tooling findings are reported but non-blocking; tooling tampering blocks).
+${phase_note}
+Optional finding field \"id\": stable short string for sticky tracking across rounds.
 
 === REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
 $(inline_contract)
@@ -1236,75 +1320,60 @@ round-trip, so within-pass exhaustiveness is far cheaper than another round.${sp
 DIFF:
 ${diff}${evidence}${commits}"
   elif [ "$m" = "verify" ]; then
-    # SCOPED verify (payload chunking): a verify round exists to check the FIXES,
-    # not to re-read the branch. It anchors at the LAST UNANCHORED FULL READ
-    # (lastfullread — round 1, or the latest clean-slate confirmation), so its
-    # payload is CUMULATIVE: open findings + every fix since a full pass. That
-    # closes the coverage story for binding verifies — full read at the anchor
-    # plus this diff = the whole branch — without re-sending the full branch
-    # diff + finding history that overflowed the CLI on long loops (upstream
-    # issue #20). The reviewer keeps read-only repo access for context.
-    # Fallback to the full diff when no usable anchor exists (anchor object
-    # missing, or legacy state). Existence-checked only: a rebase that keeps
-    # the old anchor object alive is NOT detected — ancestry guard is backlog
-    # (MANUAL ## Noticed).
+    # SCOPED + COMPACT verify: open findings as a one-line ledger; fix diff only;
+    # do not free-explore the whole repo (anti-thrash).
     local prior vanchor="" vinc="" vscope vlabel vpayload vrule
-    prior="$(jq -c '{findings: [.findings[] | select(.status == "open")]}' "$SDIR/findings-$((r - 1)).json")"
+    prior="$(jq -c '[.findings[] | select(.status == "open")
+      | {id:(.id//null),file,line,severity,description:(.description|.[0:200])}]' \
+      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
       vinc="$(git diff "${vanchor}..HEAD" 2>/dev/null || true)"
     fi
     if [ -n "$vinc" ]; then
-      vscope="SCOPED to the fixes: below is the CUMULATIVE fix diff since the last full
-review pass (${vanchor}) — together with that full pass it covers the whole branch, so
-do NOT re-read the rest of the branch."
-      vrule="evidence in the fix diff, not the driver's claim. You have read-only repo
-   access: read the touched files for surrounding context when the diff alone is
-   not enough"
+      vscope="SCOPED to the fixes: CUMULATIVE fix diff since last full read (${vanchor}).
+Do NOT re-read the whole branch. Prefer opening only files cited in open findings or present in this diff."
+      vrule="evidence in the fix diff, not the driver's claim"
       vlabel="CUMULATIVE FIX DIFF (${vanchor}..${sha})"
       vpayload="$vinc"
     else
-      vscope="no usable fix-diff anchor exists (anchor object missing or legacy state) — the FULL diff is below."
+      vscope="no usable fix-diff anchor — FULL diff below. Still: do not invent non-blocking hardening nits on untouched lines."
       vrule="evidence in the diff, not the driver's claim"
       vlabel="DIFF (${baseref}...HEAD at ${sha})"
       vpayload="$diff"
     fi
-    prompt="Fix-verification round ${r} (fresh session). Your CONTRACT is inlined below;
-apply its Verdict policy. This is a FRESH session — assume nothing from prior rounds
-beyond the open findings listed. ${vscope}
+    prompt="Fix-verification round ${r} (fresh session, COMPACT). ${phase_note}
+${vscope}
 
-=== REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
-$(inline_contract)
-=== END REVIEWER CONTRACT ===
+=== REVIEWER CONTRACT (summary — full rules still apply) ===
+$(inline_contract | head -c 12000)
+=== END (truncated if long; policy unchanged) ===
 
-Below: (1) the OPEN findings from the previous round, (2) the diff to review.
-1) For each open finding, mark status \"resolved\" or \"open\" — resolved requires
-   ${vrule}.
-2) Review the diff below with first-pass rigor for NEW defects; report them
-   status \"open\". BE EXHAUSTIVE within this pass: SWEEP the whole diff for EVERY sibling
-   of any defect class you find — each missed sibling costs a full extra round-trip.
-$(bind_note "$m" "$RISK")
-
-OPEN PRIOR FINDINGS:
+OPEN PRIOR FINDINGS (compact ledger — preserve ids when present):
 ${prior}
+
+1) For each open finding, status \"resolved\" or \"open\" — resolved requires ${vrule}.
+   Do NOT reopen a resolved finding class on unchanged code as a new major.
+2) NEW defects only on the fix diff / touched lines; siblings of a new class OK.
+   BUILD phase: hardening theater → minor. $(bind_note "$m" "$RISK")
 
 ${vlabel}:
 ${vpayload}${evidence}${commits}"
   else
-    # Incremental only: the thread already holds the prior full diff. Re-sending
-    # everything is what overflowed large threads (the anvil deadlock).
-    local inc
+    # Incremental only: the thread already holds the prior full diff.
+    local inc prior_ids
     inc="$(git diff "${prev_sha}..HEAD" 2>/dev/null || true)"
     [ -n "$inc" ] || inc="$diff"
-    prompt="Fix-verification round ${r}. The driver has committed changes since your last
-review; HEAD is now ${sha}. Below is the INCREMENTAL diff from the commit you
-last reviewed (${prev_sha}) to the new HEAD — you already hold the prior full
-diff in this conversation.
-1) Re-check each finding you previously reported and mark its status \"resolved\"
-   or \"open\" — resolved requires evidence in the changes, not the driver's claim.
-2) Review the new changes below with the same rigor as a first pass; report new
-   findings with status \"open\".
-Verdict is APPROVED only if no finding remains open. $(bind_note "$m" "$RISK")
+    prior_ids="$(jq -c '[.findings[] | select(.status=="open") | {id:(.id//null),file,line,severity,description:(.description|.[0:160])}]' \
+      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
+    prompt="Fix-verification round ${r} (resume, INCREMENTAL). ${phase_note}
+HEAD is now ${sha}. You hold prior full context; below is only ${prev_sha}..HEAD.
+1) Re-check open findings (ledger); mark resolved/open with evidence in the changes.
+   Sticky: do not reopen prior-resolved classes on unchanged files as new majors.
+2) New defects on the incremental diff only. $(bind_note "$m" "$RISK")
+
+OPEN LEDGER:
+${prior_ids}
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
@@ -1312,7 +1381,8 @@ ${inc}${evidence}${commits}"
 
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
-        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts}' \
+        --arg review_phase "$rphase" \
+        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts, review_phase:$review_phase}' \
         > "$SDIR/request-$r.json"
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
@@ -1322,8 +1392,51 @@ ${inc}${evidence}${commits}"
     || { echo "Plinth review: resume of the reviewer session failed — falling back."; return 1; }
   validate_findings "$SDIR/findings-$r.json" \
     || die_infra "reviewer output violates the verdict schema (verdict/severity/status enum or a missing required field) — a schema-invalid finding would be silently dropped by the verdict arithmetic; see $SDIR/findings-$r.json"
+  sticky_process_findings "$SDIR/findings-$r.json"
+  # Re-validate after sticky (status/description may change; ids added).
+  validate_findings "$SDIR/findings-$r.json" \
+    || die_infra "findings invalid after sticky process — see $SDIR/findings-$r.json"
   RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
+  # Sticky may have cleared all open majors while model said CHANGES_NEEDED — recompute later.
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
+
+  # Dual first-pass (Tier 2 fresh round 1): parallel cross-vendor auditor; merge open majors.
+  if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
+     && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    echo "Plinth review: dual first-pass — cross-vendor audit seat (${AUDIT_VENDOR}) on same SHA…"
+    local dual_out dual_prompt
+    dual_out="$SDIR/findings-dual-$r.json"
+    dual_prompt="You are a SECOND independent reviewer on the SAME branch SHA (dual first pass).
+${phase_note}
+Output ONLY JSON matching the review schema (verdict, summary, findings with file/line/severity/description/status).
+Focus on what a single primary might miss: security, fail-open, hollow tests, spec gaps.
+
+=== CONTRACT ===
+$(inline_contract)
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
+${diff}"
+    if run_auditor "$dual_prompt" "$dual_out" 2>/dev/null; then
+      # Union open majors/blockers from dual into primary findings (provenance in description).
+      local merged
+      merged="$(mktemp)"
+      jq -n --slurpfile p "$SDIR/findings-$r.json" --slurpfile d "$dual_out" '
+        ($p[0]) as $P | ($d[0] // {findings:[]}) as $D
+        | ($D.findings // [] | map(select(.status=="open" and (.severity=="blocker" or .severity=="major")))
+            | map(.description = ("[DUAL-PASS " + (.severity) + "] " + (.description // ""))
+                  | .status = "open")) as $extra
+        | $P
+        | .findings = ((.findings // []) + $extra)
+        | .summary = ((.summary // "") + " Dual-pass merged " + ($extra|length|tostring) + " secondary major(s).")
+      ' > "$merged" && mv "$merged" "$SDIR/findings-$r.json"
+      sticky_process_findings "$SDIR/findings-$r.json"
+      validate_findings "$SDIR/findings-$r.json" || true
+      echo "Plinth review: dual first-pass merged $(jq '[.findings[]|select(.description|startswith("[DUAL-PASS"))]|length' "$SDIR/findings-$r.json") secondary finding(s)."
+    else
+      echo "Plinth review: dual first-pass UNAVAILABLE (audit seat failed) — continuing with primary only; recorded in session."
+      echo "{\"dual_degraded\":true,\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "$SDIR/dual-degraded.json"
+    fi
+  fi
 
   # Verdict arithmetic is the instrument's job, not the reviewer's judgment
   # (anvil round 12: the reviewer labeled a tooling finding UPSTREAM per policy,
@@ -1444,6 +1557,10 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' \
     "$SDIR/findings-$round.json"
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
+  # Auto handoff snapshot (milestone within harden loop).
+  if [ -x "./bin/plinth" ]; then ./bin/plinth handoff "$PWD" 2>/dev/null || true
+  elif command -v plinth >/dev/null 2>&1; then plinth handoff "$PWD" 2>/dev/null || true
+  fi
   exit 1
 fi
 nonblocking="$(jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' "$SDIR/findings-$round.json")"
@@ -1530,4 +1647,9 @@ elif [ "$RISK" = "2" ]; then
 fi
 mint_receipt "$round"
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
+# Auto handoff at binding APPROVED (ship-ready milestone).
+if [ -x "./bin/plinth" ]; then ./bin/plinth handoff "$PWD" 2>/dev/null || true
+elif command -v plinth >/dev/null 2>&1; then plinth handoff "$PWD" 2>/dev/null || true
+fi
+echo "Handoff refreshed. Prefer a fresh session after ship if starting a new milestone."
 exit 0
