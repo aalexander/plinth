@@ -1559,11 +1559,17 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' \
     "$SDIR/findings-$round.json"
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
-  # Checkpoint handoff (keep cooking — do not wait/compact).
+  # Checkpoint handoff + seed ## Next from first open major (autonomous routing).
+  local first_open
+  first_open="$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+    | if . then "Fix [\(.severity)] \(.file):\(.line) — \(.description[0:100]); commit; re-run ./.plinth/review.sh" else empty end' \
+    "$SDIR/findings-$round.json" 2>/dev/null || true)"
   if [ -x "./bin/plinth" ]; then
-    PLINTH_HANDOFF_REASON=review-changes-needed ./bin/plinth handoff "$PWD" 2>/dev/null || true
+    PLINTH_HANDOFF_REASON=review-changes-needed PLINTH_HANDOFF_NEXT="$first_open" \
+      ./bin/plinth handoff "$PWD" 2>/dev/null || true
   elif command -v plinth >/dev/null 2>&1; then
-    PLINTH_HANDOFF_REASON=review-changes-needed plinth handoff "$PWD" 2>/dev/null || true
+    PLINTH_HANDOFF_REASON=review-changes-needed PLINTH_HANDOFF_NEXT="$first_open" \
+      plinth handoff "$PWD" 2>/dev/null || true
   fi
   exit 1
 fi

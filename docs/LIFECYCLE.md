@@ -28,6 +28,7 @@ Stop only when ## Next is done or paths are **human-blocked** (`[BLOCKING]` NEED
 | Review | `./.plinth/review.sh [base]` |
 | Advisor | `plinth advise "…"` |
 | Next action (autonomous) | `plinth next [path]` |
+| Migrate phases | `plinth lifecycle-migrate [path]` |
 | Dashboard | `plinth dash` / `plinth dash --snapshot` |
 | PR | `gh pr create` *(needs APPROVED@HEAD)* |
 

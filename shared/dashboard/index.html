@@ -320,6 +320,7 @@
     if (life.plan) chips.push('<span class="chip cyan">PLAN</span>');
     if (life.plan_review) chips.push('<span class="chip cyan">PLAN-REVIEW</span>');
     if (life.handoff) chips.push('<span class="chip">HANDOFF</span>');
+    if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL-DEGRADED</span>');
 
     const activity = p.activity_secs_ago == null
       ? (p.feedless ? "no pulse feed" : "—")
@@ -344,7 +345,11 @@
       (life.plan_review ? " · deep review" : "") +
       (life.handoff
         ? " · handoff" + (life.handoff_age_secs != null ? " (" + hum(life.handoff_age_secs) + " ago)" : "")
-        : "");
+        : "") +
+      (life.dual_degraded ? " · dual-degraded" : "");
+    const nextLine = life.next
+      ? esc(String(life.next).slice(0, 120))
+      : '<span class="muted">—</span>';
 
     return (
       '<article class="card ' + tone + '">' +
@@ -354,6 +359,7 @@
         '<dl class="kv">' +
           "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
           "<dt>lifecycle</dt><dd>" + esc(lifeDetail) + "</dd>" +
+          "<dt>next</dt><dd class=\"task\">" + nextLine + "</dd>" +
           "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
           "<dt>session</dt><dd>" + esc(session) + "</dd>" +
           "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +

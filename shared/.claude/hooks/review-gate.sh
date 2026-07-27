@@ -101,6 +101,6 @@ fi
 
 echo $((cnt + 1)) > "$SDIR/gate-blocks-$sid"
 if [ -n "$(git -C "$proj" status --porcelain 2>/dev/null)" ]; then
-  block "HARDEN phase: this session committed work, the tree is dirty, and there is no APPROVED review at HEAD. Commit (or stash), then run ./.plinth/review.sh; on exit 1 fix findings, commit, re-run until APPROVED. Or: plinth build to leave harden (ship still blocked without APPROVED)."
+  block "HARDEN phase: dirty tree + no APPROVED@HEAD. Commit/stash, then ./.plinth/review.sh until APPROVED. Or: plinth build to leave harden. Route next: plinth next (ship still needs APPROVED)."
 fi
-block "HARDEN phase: no APPROVED review at HEAD ($head). Run ./.plinth/review.sh until APPROVED, then stop. Or: plinth build to return to default build (PR/merge still requires APPROVED@HEAD)."
+block "HARDEN phase: no APPROVED@HEAD ($head). Run ./.plinth/review.sh until APPROVED. Or: plinth build to return to build. Next action: plinth next."

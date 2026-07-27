@@ -32,6 +32,11 @@
 - **Lifecycle migrate on `plinth update`:** open CHANGES_NEEDED/UNBOUND → phase
   harden; corrupt phase → harden. Stop: corrupt phase fail-closed as harden;
   open verdict without phase → harden. Dual-degraded recorded on verdict.
+- **`plinth lifecycle-migrate`:** explicit migrate without full update.
+- **Auto Next seed:** CHANGES_NEEDED handoff sets first open major as HANDOFF ## Next.
+- **Plan-review → NEEDS-HUMAN:** security/majority blockers appended for `plinth next`.
+- **Watch/dash:** phase + next line; dual-degraded chip; lifecycle.next on snapshot.
+- **Stop messages** point at `plinth next`.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

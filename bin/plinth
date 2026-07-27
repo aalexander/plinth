@@ -47,7 +47,8 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
        plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
        plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)
-       plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)"; exit 1; }
+       plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
+       plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
@@ -65,7 +66,7 @@ elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
 elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] \
-   || [ "$cmd" = "next" ]; then
+   || [ "$cmd" = "next" ] || [ "$cmd" = "lifecycle-migrate" ]; then
   # Lifecycle commands: project path optional (default CWD).
   if [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
     target="$(pwd)"
@@ -1096,6 +1097,11 @@ render_frame() {
   rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
+  local life_phase next_hint
+  life_phase=$(_lifecycle_read_phase "$target")
+  next_hint="$("$PLINTH_ROOT/bin/plinth" next "$target" 2>/dev/null | awk -F': ' '/^action:/{sub(/^action: /,""); print; exit}' || true)"
+  [ -n "$next_hint" ] || next_hint="(run: plinth next)"
+
   local nh="" nhn=0 nhb=0 nhf; nhf="$(needs_human_file "$target")"
   if [ -s "$nhf" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
@@ -1153,7 +1159,8 @@ render_frame() {
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
         --slurpfile us "$ufile" --slurpfile rc "$rfile" --slurpfile rq "$rqfile" \
         --arg nh "$nh" --argjson nhn "${nhn:-0}" --argjson nhb "${nhb:-0}" \
-        --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
+        --arg head "$head" --arg branch "$branch" --argjson ci "$ci" \
+        --arg life_phase "$life_phase" --arg next_hint "$next_hint" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
     def CY: "[36m"; def GR: "[32m"; def YE: "[33m";
@@ -1287,7 +1294,9 @@ render_frame() {
 
     | ($V.model // null) as $rmodel
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
-    + D + "   " + $branch + " @ " + $head + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
+    + D + "   " + $branch + " @ " + $head + " · session " + (($NOW - $t0) | hum_t)
+      + " · phase " + $life_phase + R + "\n"
+    + B + " next     " + R + ($next_hint[0:72]) + "\n"
     + B + " models   " + R + "driver " + CY + $model + R
       + "  ·  reviewer " + CY + ($rmodel // "—") + R
       + (if $rmodel == null then D + " (no review yet)" + R else "" end) + "\n"
@@ -2094,6 +2103,13 @@ snapshot_one_project() {
       [ "$handoff_age" -ge 0 ] 2>/dev/null || handoff_age=0
     ;; esac
   fi
+  local dual_degraded=false
+  if [ -f "$dir/.plinth/session/review/$slug/dual-degraded.json" ] \
+     || { [ -f "$vfile" ] && [ "$vfile" != /dev/null ] && jq -e '.dual_first_pass == "DEGRADED"' "$vfile" >/dev/null 2>&1; }; then
+    dual_degraded=true
+  fi
+  local next_action=""
+  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || next_action=""
 
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
@@ -2167,10 +2183,12 @@ snapshot_one_project() {
       --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
       --argjson plan_review_present "$plan_review_present" \
       --argjson handoff_age "${handoff_age:-null}" \
+      --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
         lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
-                   handoff:$handoff_present,handoff_age_secs:$handoff_age},
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age,
+                   dual_degraded:$dual_degraded,next:($next_action|if .=="" then null else . end)},
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
     return 0
@@ -2216,7 +2234,8 @@ snapshot_one_project() {
         --arg life_phase "$life_phase" \
         --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
         --argjson plan_review_present "$plan_review_present" \
-        --argjson handoff_age "${handoff_age:-null}" '
+        --argjson handoff_age "${handoff_age:-null}" \
+        --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2301,7 +2320,9 @@ snapshot_one_project() {
           plan: $plan_present,
           plan_review: $plan_review_present,
           handoff: $handoff_present,
-          handoff_age_secs: $handoff_age
+          handoff_age_secs: $handoff_age,
+          dual_degraded: $dual_degraded,
+          next: (if $next_action == "" then null else $next_action end)
         },
         quota: {
           available: false,
@@ -2315,10 +2336,12 @@ snapshot_one_project() {
       --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
       --argjson plan_review_present "$plan_review_present" \
       --argjson handoff_age "${handoff_age:-null}" \
+      --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
         lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
-                   handoff:$handoff_present,handoff_age_secs:$handoff_age},
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age,
+                   dual_degraded:$dual_degraded,next:($next_action|if .=="" then null else . end)},
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
   [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
@@ -2661,6 +2684,10 @@ _write_handoff() {
   fi
   if [ -n "$next_hint" ]; then
     next="1. ${next_hint}"$'\n'"${next}"
+  fi
+  # Optional: PLINTH_HANDOFF_NEXT forces first Next line (review.sh sets from findings).
+  if [ -n "${PLINTH_HANDOFF_NEXT:-}" ]; then
+    next="1. ${PLINTH_HANDOFF_NEXT}"$'\n'"${next}"
   fi
   kind=$(_handoff_kind "$reason")
   if [ "$kind" = "milestone" ]; then
@@ -3067,6 +3094,30 @@ PY
   } > "$out"
 
   echo "Wrote $out (merged blockers/questions; stats: $merge_stats)"
+  # Security-tagged majority blockers → NEEDS-HUMAN [BLOCKING] so plinth next stops that path.
+  local nhf
+  nhf="$(needs_human_file "$root")"
+  mkdir -p "$(dirname "$nhf")"
+  python3 - "$merge_json" "$nhf" <<'PY' 2>/dev/null || true
+import json, sys, os
+merge, nhf = sys.argv[1], sys.argv[2]
+d = json.load(open(merge))
+items = []
+for b in d.get("blockers") or []:
+    lab = b.get("label") or ""
+    if "security" in lab or (b.get("security") and "majority" in lab):
+        items.append(f"- [ ] [BLOCKING] plan-review: {b.get('text','')}")
+    elif "majority" in lab:
+        items.append(f"- [ ] plan-review: {b.get('text','')}")
+if not items:
+    sys.exit(0)
+existing = open(nhf, encoding="utf-8").read() if os.path.isfile(nhf) else "# NEEDS-HUMAN\n\n"
+for it in items:
+    if it[6:] not in existing:  # rough dedupe on text after checkbox
+        existing = existing.rstrip() + "\n" + it + "\n"
+open(nhf, "w", encoding="utf-8").write(existing)
+print(f"NEEDS-HUMAN: appended {len(items)} plan-review item(s)")
+PY
   _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
   echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
   echo "Or: plinth next \"$root\""
@@ -3231,6 +3282,10 @@ case "$cmd" in
   handoff) run_handoff "$target" ;;
   plan) run_plan "$target" "$PLAN_DEEP" ;;
   next) run_next "$target" ;;
+  lifecycle-migrate)
+    migrate_lifecycle_phases "$target"
+    echo "plinth lifecycle-migrate: done for $target"
+    ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent
