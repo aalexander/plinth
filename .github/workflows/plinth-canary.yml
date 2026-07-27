@@ -3636,40 +3636,41 @@ jobs:
             grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
               || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
             grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
-            # Behavioral lifecycle: extract and eval the SHIPPED multi-line CLI + cleanup
-            # fragments from the agent (not a hand copy). Stub CLIs require path consumption.
+            # Behavioral lifecycle: extract and run SHIPPED step-0 allocation + CLI + cleanup.
             WL="$(mktemp -d)"; STUBS="$(mktemp -d)"
             (
               set -euo pipefail
               cd "$WL"
-              eval "$(grep -E '^\s+SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" | head -1 | sed 's/^[[:space:]]*//')"
-              eval "$(grep -E '^\s+SPEC="\$SPEC_DIR/prompt"' "$A" | head -1 | sed 's/^[[:space:]]*//')"
-              OUT="$(mktemp -t canary-out.XXXXXX)"
-              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC"; exit 1; }
+              git init -qb main . >/dev/null
+              mkdir -p .plinth
+              cp "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" .plinth/lane-guard.sh
+              chmod +x .plinth/lane-guard.sh
+              echo base > f.txt; git add -A; git commit -qm base >/dev/null
+              ALLOC="$(awk '
+                /BEFORE="\$\(git rev-parse HEAD\)"/ {p=1}
+                p { sub(/^[[:space:]]+/, ""); print }
+                p && /printf '\''BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q/ { exit }
+              ' "$A")"
+              [ -n "$ALLOC" ] || { echo "failed to extract step-0 allocation from $a agent"; exit 1; }
+              eval "$ALLOC"
+              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] && [ -n "${OUT:-}" ] && [ -n "${SNAP:-}" ] && [ -n "${BEFORE:-}" ] \
+                || { echo "allocation incomplete"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
-              # Shipped handoff printf — fresh consumer shell with unset vars:
               HO="$(grep -E "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" | head -1 | sed 's/^[[:space:]]*//')"
-              [ -n "$HO" ] || { echo "missing handoff printf in $a agent"; exit 1; }
-              BEFORE=deadbeef; SNAP=/tmp/snap.canary
               HOUT="$(BEFORE="$BEFORE" SNAP="$SNAP" SPEC_DIR="$SPEC_DIR" SPEC="$SPEC" OUT="$OUT" bash -c "$HO")"
-              # Fresh shell starts with unset vars, then evals only the handoff line:
-              read -r B2 S2 SD2 SP2 O2 <<EOF
-$(env -i PATH="$PATH" HOME="$HOME" bash --noprofile --norc -c '
-  unset BEFORE SNAP SPEC_DIR SPEC OUT
-  eval "'"$HOUT"'"
-  printf "%s %s %s %s %s\n" "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
-')
-EOF
-              [ "$B2" = "deadbeef" ] || { echo "handoff lost BEFORE ($B2)"; exit 1; }
-              [ "$S2" = "/tmp/snap.canary" ] || { echo "handoff lost SNAP ($S2)"; exit 1; }
-              [ "$SD2" = "$SPEC_DIR" ] || { echo "handoff lost SPEC_DIR ($SD2)"; exit 1; }
-              [ "$SP2" = "$SPEC" ] || { echo "handoff lost SPEC ($SP2)"; exit 1; }
-              [ "$O2" = "$OUT" ] || { echo "handoff lost OUT ($O2)"; exit 1; }
-              # Continue in this shell with the handoff values:
-              BEFORE="$B2"; SNAP="$S2"; SPEC_DIR="$SD2"; SPEC="$SP2"; OUT="$O2"
-              printf 'objective: test\nMODEL: canary\n' > "$SPEC"   # Write tool creates the file
+              MAP="$(env -i PATH="$PATH" HOME="$HOME" bash --noprofile --norc -c '
+                unset BEFORE SNAP SPEC_DIR SPEC OUT
+                eval "$1"
+                printf "B=%q\nS=%q\nSD=%q\nSP=%q\nO=%q\n" "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
+              ' _ "$HOUT")"
+              eval "$MAP"
+              [ "$B" = "$BEFORE" ] && [ "$S" = "$SNAP" ] && [ "$SD" = "$SPEC_DIR" ] && [ "$SP" = "$SPEC" ] && [ "$O" = "$OUT" ] \
+                || { echo "handoff five-tuple mismatch"; exit 1; }
+              printf 'objective: test\nMODEL: canary\n' > "$SPEC"
               export PATH="$STUBS:$PATH"
-              cap() { shift; "$@"; }
+              CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{sub(/^[[:space:]]+/,"");print} c&&/^\}/{exit}' "$A" > "$CAPX"
+              # shellcheck source=/dev/null
+              . "$CAPX" 2>/dev/null || cap() { shift; "$@"; }
               LANE_RULES=x
               CMD="$(awk -v a="$a" '
                 $0 ~ "RC=0; cap 600 " a {p=1}
