@@ -740,6 +740,55 @@ jobs:
             ! grep -nE 'tool_names.*grep -Eq|grep -Eq.*HARNESS_RE.*<<<|<<<.*HARNESS' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
               || { echo "::error::#15 review.sh tooling floor still uses grep -q or here-string (fail-open)"; exit 1; }
           )
+          # #15 large-input / producer-failure siblings (mutation-sensitive): each site
+          # must use full-read grep (no -q) or status-checked producers.
+          # Product source: no grep -Eq/-Eiq/-qE on the fail-closed paths we changed.
+          ! grep -nE 'grep -Eiq|grep -Eq|grep -qE|grep -qi? ' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            | grep -vE '^\s*#' | grep -E 'tool_names|round_cap|agents_body|spec_changed|HARNESS|AGENTS|driver-shell' \
+            && { echo "::error::#15 review.sh still has quiet grep on a fail-closed path"; exit 1; } || true
+          ! grep -nE 'grep -Eiq|grep -Eq' "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" \
+            && { echo "::error::#15 guard.sh still has grep -Eq (quiet)"; exit 1; } || true
+          ! grep -nE 'grep -Eq "\^\\\+.*\$SKIPADD"' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" \
+            && { echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1; } || true
+          # round_cap: large basecfg with early match must still detect the key
+          T_RCAP="$(mktemp -d)"; ( cd "$T_RCAP"
+            basecfg="$(python3 -c 'print("round_cap = 5\n"+"x=1\n"*50000)')"
+            set -o pipefail
+            _rc_grc=0; printf '%s\n' "$basecfg" | grep -E '^[[:space:]]*round_cap[[:space:]]*=' >/dev/null || _rc_grc=$?
+            [ "$_rc_grc" = 0 ] || { echo "::error::#15 large basecfg round_cap full-read miss (rc=$_rc_grc)"; exit 1; }
+            # quiet form under pipefail can fail open on some platforms — product must not use it:
+            grep -n 'round_cap' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" | grep -q 'grep -q' \
+              && { echo "::error::#15 review.sh round_cap still uses grep -q"; exit 1; } || true
+          )
+          # AGENTS markers: large body with early marker must match
+          agents_body="$(python3 -c 'print("# Plinth — Reviewer\n"+"x\n"*50000)')"
+          set -o pipefail
+          _ag_rc=0; printf '%s\n' "$agents_body" | grep -F '# Plinth — Reviewer' >/dev/null || _ag_rc=$?
+          [ "$_ag_rc" = 0 ] || { echo "::error::#15 large AGENTS.md marker full-read miss"; exit 1; }
+          # spec-change: git diff failure must die_infra (not silent no-change)
+          T_SPEC="$(mktemp -d)"; ( cd "$T_SPEC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a > f; git add -A; git commit -qm b >/dev/null
+            base_tip="$(git rev-parse HEAD)"
+            # corrupt index so name-only fails
+            printf 'GARBAGE\n' > .git/index
+            set +e
+            _sn_rc=0; _sn="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
+            set -e
+            [ "$_sn_rc" -ne 0 ] || { echo "::error::#15 expected git diff --name-only failure on corrupt index"; exit 1; }
+            # product source must status-check this producer:
+            grep -A3 'spec_changed=""' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" | grep -q '_sn_rc' \
+              || { echo "::error::#15 review.sh spec_changed path missing status-checked git diff"; exit 1; }
+          )
+          # risk-classify SKIPADD full-read on large tdiff
+          tdiff="$(python3 -c 'print("+"+"@skip\n"+"+x\n"*50000)')"
+          set -o pipefail
+          _sk=0; printf '%s' "$tdiff" | grep -E '^\+.*@skip' >/dev/null || _sk=$?
+          [ "$_sk" = 0 ] || { echo "::error::#15 large tdiff SKIPADD full-read miss"; exit 1; }
+          # guard metacharacter full-read on long clause
+          oseg="$(python3 -c 'print("\$BODY "+"x "*50000)')"
+          set -o pipefail
+          _mc=0; printf '%s' "$oseg" | grep '["'\''\\$`*?{}()]' >/dev/null || _mc=$?
+          [ "$_mc" = 0 ] || { echo "::error::#15 long merge-clause metachar full-read miss"; exit 1; }
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
           RV3="$(mktemp -d)"; BORG3="$(mktemp -d)"; git init -q --bare "$BORG3"
