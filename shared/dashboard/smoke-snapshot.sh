@@ -624,6 +624,9 @@ jq -e --arg head "$HEAD" '
   and .models.seats.reviewer_tier2 == "gpt-t2"
   and .models.seats.audit_model == "opus"
   and .models.seats.advisor_model_max == "fable-max"
+  # Live reviewer from verdict.model only (request has no model; not seat fallback).
+  and .models.live.reviewer == "gpt-test"
+  and .model_reviewer == "gpt-test"
   and (.phases | type == "object")
   # Event-gap heuristic: Edit 30s (90→60), Read 20s (60→40); other-sid ignored;
   # return-to-active Bash advise credits the gap since last same-SID event (30s).
@@ -757,7 +760,7 @@ export PLINTH_DASH_ROOTS="$T50"
   and .needs_human.truncated == true
   and (.needs_human.items | length) == 50
 ' >/dev/null
-# CI classification + PreToolUse + large gap drop + planning
+# CI classification + PreToolUse + large gap drop + planning + reviewing
 PH2="$FIX/phi-phases"
 mk_git "$PH2"
 git -C "$PH2" checkout -qb feat/ph
@@ -770,6 +773,7 @@ mkdir -p "$PH2/.plinth/session"
   jq -nc --argjson e "$((NOWP-100))" '{epoch:$e,event:"UserPromptSubmit",sid:"s1",tool:null,detail:"plan it"}'
   jq -nc --argjson e "$((NOWP-90))" '{epoch:$e,event:"PreToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1"}'
   jq -nc --argjson e "$((NOWP-70))" '{epoch:$e,event:"PostToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1",rc:0}'
+  jq -nc --argjson e "$((NOWP-40))" '{epoch:$e,event:"PostToolUse",sid:"s1",tool:"Bash",detail:"./.plinth/review.sh",rc:0}'
 } > "$PH2/.plinth/session/events.jsonl"
 export PLINTH_DASH_ROOTS="$PH2"
 "$PLINTH" dash --snapshot | jq -e '
@@ -777,6 +781,7 @@ export PLINTH_DASH_ROOTS="$PH2"
   | ((.phases.other // 0) == 0)   # 4000s gap dropped
   and (.phases.planning == 10)    # prompt→PreToolUse
   and (.phases.ci == 20)          # Pre→Post Bash gh
+  and (.phases.reviewing == 30)   # PostToolUse review.sh gap 70→40
 ' >/dev/null
 # review_round_secs: request→findings mtime delta, not folded into phases.reviewing
 RR="$FIX/rho-review-secs"
@@ -1447,8 +1452,13 @@ setTimeout(() => {
       console.error("NEEDS-HUMAN chip missing data-nh:", nhHtml.slice(0, 300));
       process.exit(1);
     }
-    // Modal path: invoke real openNeedsHuman / closeNeedsHuman on the smoke DOM
-    if (typeof api.openNeedsHuman === "function" && typeof api.seedProjects === "function") {
+    // Modal path: require seams (no silent skip)
+    if (typeof api.openNeedsHuman !== "function" || typeof api.closeNeedsHuman !== "function"
+        || typeof api.seedProjects !== "function") {
+      console.error("missing openNeedsHuman/closeNeedsHuman/seedProjects seams");
+      process.exit(1);
+    }
+    {
       const modal = elsById["nh-modal"];
       let open = false;
       modal.classList = {
@@ -1482,8 +1492,12 @@ setTimeout(() => {
         process.exit(1);
       }
     }
-    // renderQuota available + unavailable
-    if (typeof api.renderQuota === "function") {
+    // renderQuota available + unavailable (require seam)
+    if (typeof api.renderQuota !== "function") {
+      console.error("missing renderQuota seam");
+      process.exit(1);
+    }
+    {
       api.renderQuota({
         available: true, refreshed_at: Math.floor(Date.now() / 1000),
         overall: {
@@ -1757,8 +1771,22 @@ for try in 18734 18735 18736 18737 18738 18739 18740; do
   fi
   break
 done
+# Serve-mode must auto-enable PLINTH_DASH_QUOTA_PROBE=1 for the snapshot child.
+# Observe via WRAP: when the child re-invokes dash --snapshot, PROBE must be set.
+PROBE_SEEN="$FIX/probe-seen"
+: > "$PROBE_SEEN"
+cat > "$WRAP" <<WRAP
+#!/usr/bin/env bash
+printf '1\n' >> "$COUNT_FILE"
+# Record whether serve path enabled the probe for this snapshot child.
+printf '%s\n' "\${PLINTH_DASH_QUOTA_PROBE:-unset}" >> "$PROBE_SEEN"
+sleep 0.4
+exec "$PLINTH" "\$@"
+WRAP
+chmod +x "$WRAP"
 if command -v setsid >/dev/null 2>&1; then
   setsid env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    PLINTH_DASH_QUOTA=0 \
     "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
@@ -1772,6 +1800,7 @@ if command -v setsid >/dev/null 2>&1; then
   }
 else
   env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    PLINTH_DASH_QUOTA=0 \
     "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
@@ -1833,6 +1862,10 @@ curl -sf --max-time 10 "http://127.0.0.1:${SRV_PORT}/" > "$UI_BODY" \
   || { echo "smoke-snapshot: / curl failed" >&2; exit 1; }
 grep -q 'Plinth dashboard' "$UI_BODY" \
   || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
+# Serve path auto-enables PLINTH_DASH_QUOTA_PROBE=1 on the snapshot child
+# (even when PLINTH_DASH_QUOTA=0 so no real CLI is spawned).
+grep -qx '1' "$PROBE_SEEN" \
+  || { echo "smoke-snapshot: serve did not set PLINTH_DASH_QUOTA_PROBE=1 (got: $(cat "$PROBE_SEEN"))" >&2; exit 1; }
 # Read-only
 post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
 [ "$post_code" = "405" ] || { echo "smoke-snapshot: POST should be 405, got $post_code" >&2; exit 1; }
