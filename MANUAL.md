@@ -538,13 +538,13 @@ Claude transcript is reachable.
 
 **Vendor plan quota (overall weekly):** official CLIs only (not scraped web UIs).
 `plinth dash --snapshot` is **offline** — reads
-`~/.config/plinth/dash-quota.json` if present, else `offline`/`skipped`; it does
-**not** spawn vendor CLIs (caller env cannot force a probe on `--snapshot`). The
-HTTP serve path does not write into discovered project trees; it **may** spawn a
-timeout-bounded Claude usage probe in an empty temp cwd (internal
-`dash --snapshot-with-quota`) and write a quota cache only at
-`$TMPDIR/plinth-dash-quota-$UID/dash-quota.json` (outside project trees; no env override).
-TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
+`/tmp/plinth-dash-quota-$UID/dash-quota.json` if present, else `offline`/`skipped`;
+it does **not** spawn vendor CLIs (caller env cannot force a probe on
+`--snapshot`). The HTTP serve path does not write into discovered project trees;
+it **may** spawn a timeout-bounded Claude usage probe in an empty `/tmp`
+directory (internal `dash --snapshot-with-quota`) and write the quota cache only
+at the fixed absolute path `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
+`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`). TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
 `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
 usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
 time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history

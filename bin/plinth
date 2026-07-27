@@ -2458,11 +2458,14 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Operator cache outside project trees: $TMPDIR/plinth-dash-quota-$UID/ (not
-# under $HOME, so a discovered $HOME project cannot receive the write).
-# PLINTH_DASH_QUOTA_CACHE is ignored.
+# Operator cache at a fixed absolute path under /tmp (never honors TMPDIR or
+# HOME — a discovered project that happens to own TMPDIR/HOME cannot receive
+# the write). PLINTH_DASH_QUOTA_CACHE is ignored.
 _dash_quota_cache_path() {
-  local dir="${TMPDIR:-/tmp}/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)"
+  local dir="/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)"
+  mkdir -p "$dir" 2>/dev/null || true
+  # If that path is somehow a non-directory, fall back to a private subdir.
+  [ -d "$dir" ] || dir="/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)-$$"
   mkdir -p "$dir" 2>/dev/null || true
   printf '%s\n' "$dir/dash-quota.json"
 }
@@ -2531,12 +2534,12 @@ _dash_quota_probe() {
 import os, subprocess, sys, tempfile
 to = int(sys.argv[1])
 try:
-    with tempfile.TemporaryDirectory(prefix="plinth-quota-") as d:
+    with tempfile.TemporaryDirectory(prefix="plinth-quota-", dir="/tmp") as d:
         d = os.path.realpath(d)
         p = subprocess.run(
             ["claude", "-p", "/usage", "--output-format", "json"],
             capture_output=True, text=True, timeout=to, cwd=d,
-            env={**os.environ, "CLAUDE_PROJECT_DIR": d},
+            env={**os.environ, "CLAUDE_PROJECT_DIR": d, "TMPDIR": d},
         )
         sys.stdout.write(p.stdout or "")
         sys.exit(p.returncode)

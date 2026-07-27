@@ -4,11 +4,14 @@
 - **`plinth dash` quota strip:** overall weekly plan usage from official CLIs
   (`claude -p /usage --output-format json`; codex/grok honest-unavailable until
   headless). **`--snapshot` is offline** (cache read only; env cannot force a
-  probe). HTTP serve sets internal `dash --snapshot-with-quota (serve child)` and refreshes
-  ~15 min with a hard timeout. Projects time-to-100% weekly when ≥2 same-reset
-  samples ≥10 min apart. `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
+  probe). HTTP serve uses internal `dash --snapshot-with-quota` and refreshes
+  ~15 min with a hard timeout into the fixed absolute cache
+  `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores TMPDIR/HOME overrides;
+  single-object validation; atomic write). Projects time-to-100% weekly when ≥2
+  same-reset samples ≥10 min apart. `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
 - **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +
-  truncation notice); click the orange chip. Full queue: `plinth queue`.
+  truncation notice + source path); click the orange chip. Full queue:
+  `plinth queue`.
 - **Models row:** `live` (transcript driver + verdict reviewer) and `seats`
   (config reviewer t1/t2, audit, advisor, advisor_model_max) — seats never live.
 - **Phase timing:** active-SID event-gap heuristic by PostToolUse tool class;

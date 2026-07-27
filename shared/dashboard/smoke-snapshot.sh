@@ -569,14 +569,16 @@ PY
 
 # Never hit live vendor CLIs in smoke (quota is optional / cached separately).
 export PLINTH_DASH_QUOTA=0
-# Quota cache may only live under $HOME/.config/plinth/
+# Quota cache is /tmp/plinth-dash-quota-$UID/ (product fixed path)
 QHOME="$FIX/qhome"
 mkdir -p "$QHOME/.config/plinth"
 export HOME="$QHOME"
+# Quota cache is always /tmp/plinth-dash-quota-$UID/ (product ignores TMPDIR).
+QCACHE="/tmp/plinth-dash-quota-$(id -u)/dash-quota.json"
+mkdir -p "$(dirname "$QCACHE")"
+# Keep a private TMPDIR for other mktemp use so it is not a discovered root.
 export TMPDIR="$FIX/tmp"
 mkdir -p "$TMPDIR"
-QCACHE="$TMPDIR/plinth-dash-quota-$(id -u)/dash-quota.json"
-mkdir -p "$(dirname "$QCACHE")"
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
@@ -745,6 +747,13 @@ chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 42' >/dev/null
 jq -e '.overall.used_pct == 42' "$QCACHE" >/dev/null
+# Cache must not live under any discovered project root
+case "$QCACHE" in "$B"/*|"$A"/*) echo "smoke-snapshot: cache under project" >&2; exit 1 ;; esac
+
+# object/scalar multi-doc is also a miss
+printf '%s\n' '{"available":true,"refreshed_at":1}' 'null' > "$QCACHE"
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.offline == true' >/dev/null
 # Multi-document cache is treated as miss (offline / re-probe), not crash
 printf '%s\n' '{"available":true,"refreshed_at":1}' '{"available":false}' \
   > "$QCACHE"
