@@ -18,7 +18,7 @@ judgment is imported per-decision, and every seat has a named fallback.
 | Seat | Model | Wiring |
 |------|-------|--------|
 | **Architect** — the resident session: judgment, specs, routing, final read-only audit (DEFAULT) | **Fable 5** by exception / **Opus 4.8** (Claude Code is the harness) | Guard + Stop gate ENFORCED; the coding volume goes to the Worker lane. The architect does not type routine code and does not edit the worker's diff directly — corrections go back as specs |
-| **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until the receipt check ships) and consults judgment via `plinth advise` |
+| **Worker** — most of the coding | **Grok 4.5** (`grok-implementer` lane; codex lane = cross-vendor second implementation) | Five-part spec in, scope-checked diff out; escalates open questions to the architect. ALTERNATIVE topology: grok-RESIDENT (grok CLI as harness) for wall-clock-critical sessions — carries the known limitation (review contract-bound until `receipt / verify` is required with `strict:true` *and the real verifier still runs*; see MANUAL caller-control bound) and consults judgment via `plinth advise` |
 | **Advisor** — judgment, consulted per-decision | **Fable 5** (peer tier: Opus 4.8) | `advisor_vendor = claude` (default), `advisor_model = opus`, `advisor_model_max = fable` — scaffolded by `plinth init` |
 | **Reviewer** — the adversarial gate | **GPT-5.6** | `reviewer_vendor = codex` (default) + `reviewer_model_tier1/tier2 = gpt-5.6` — scaffolded COMMENTED; uncomment once your account is eligible (GA July 9 2026, Codex CLI >= 0.144.0) |
 | **Audit** — Tier-2 second opinion | **Claude** (Opus 4.8) | `audit_vendor = claude`, `audit_model = opus` (both scaffolded) — a different FAMILY than both the WORKER (the diff's producer) and the reviewer, in either topology; pinned so a Sonnet/Fable CLI default can't drift the seat |
@@ -43,14 +43,14 @@ Under the grok-RESIDENT alternative the implementer lanes are dormant (they are 
 subagents) — and mostly moot, since the driver already is the cheap fast typist.
 Under the architect-resident DEFAULT they are the worker seat. A grok-resident driver
 that wants a second implementation shells out to `codex` directly with the same
-five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope are
-vendor-neutral shell).
+five-part spec and `.plinth/lane-guard.sh` (preflight / snapshot / scope /
+delegation are vendor-neutral shell).
 
 What a non-Claude driver does and doesn't get: grok reads the driver contract
 (both contract files); whether it EXECUTES `.claude/` hooks is probeable, not
 assumed — run `plinth hookprobe grok` (shipped; one small capped model call that
 reports EACH of the four enforcement hook events separately). At release time
-grok 0.2.93 reported NONE executed (reproduce: plinth hookprobe grok): no in-session guard hooks, no Stop gate.
+grok 0.2.112 reported NONE executed (reproduce: plinth hookprobe grok): no in-session guard hooks, no Stop gate.
 Re-run after CLI upgrades; a NOT-invoked event is certainly unenforced, an
 INVOKED one is necessary-but-not-sufficient (verify end-to-end) — this section
 is the floor unless end-to-end verification passes. The binding layer is unchanged and vendor-neutral: `review.sh` /
@@ -58,11 +58,14 @@ is the floor unless end-to-end verification passes. The binding layer is unchang
 protection's required checks gate every merge regardless of driver — but those
 required checks verify the CI floor and tooling integrity, not the review
 verdict, and the Codex cloud review cannot close that gap (it posts PR comments;
-there is no status-check context to require). The server-verifiable
-APPROVED-at-HEAD receipt check — shipping with auto mode — is the designated
-adversarial gate for the default path. (If in-session interception ever proves
-necessary, the designated fix is one CI-side protected-paths tamper check —
-vendor-neutral, covers every driver — not per-vendor hook ports.)
+there is no status-check context to require). The APPROVED-at-HEAD receipt check (auto mode, v4.7+) is the merge-time required
+context for that gap — but only where `receipt / verify` is wired into ci.yml,
+required by branch protection, AND `strict:true`, and only when the real verifier
+job still runs (PR caller replacement can forge the context name; see MANUAL);
+elsewhere the review loop stays contract-bound. (If
+in-session interception ever proves necessary, the designated fix is one CI-side
+protected-paths tamper check — vendor-neutral, covers every driver — not
+per-vendor hook ports.)
 
 ### Contingency — Fable access lapses (live risk)
 Fable has been suspended once already and runs credits-only with no metered
@@ -189,12 +192,25 @@ model the ambiguity.
 
 **Verification + scope (Rule 10).** A lane's report is a claim; the diff and your own re-run of
 the verification command are the evidence. "The lane said it works" is forbidden. A delegated CLI
-has whole-tree write and (per the hookprobe result for its CLI — grok 0.2.93: no
+has whole-tree write and (per the hookprobe result for its CLI — grok 0.2.112: no
 hook execution) typically does not run the `.claude/` guard, so each lane enforces
 `.plinth/lane-guard.sh scope` (with a pre-run `lane-guard.sh snapshot`) after the run — every tracked change +
 new file must be a spec file and must not touch a protected path, AND no sensitive path (secrets/keys,
 protected — even gitignored) may have been added/changed/repointed by the lane (else SCOPE VIOLATION,
 not accepted; it fails loud if the diff is uncomputable or a sensitive file is unhashable).
+After scope, the lane records a **delegation receipt**
+(`lane-guard.sh delegation <vendor> <cli-rc> <transcript>`) and puts the printed
+`delegation recorded: ...` line on the report's `DELEGATION:` field. That is the
+checkable hole: an *honestly skipped* delegation (no external CLI run, no transcript
+path handed to `delegation`) leaves no receipt and blocks a truthful
+`STATUS: complete`. As the driver, treat a complete report without a `DELEGATION:`
+line (or with an unreadable/missing artifact under `.plinth/session/lanes/`) as
+incomplete — open the artifact; do not trust the narrative alone. HONEST BOUND: the
+receipt proves a non-empty transcript *exists and is preserved*, not which model
+typed the diff, and not that the transcript belongs to *this* run (no BEFORE/SNAP
+binding — a fallible stale-OUT paste still records). A self-implementing lane could
+still write a file and call `delegation` on it; omission becomes DETECTABLE, not
+impossible.
 `.plinth/session/` verdict/receipt state is compared too — a delegated CLI bypasses the `.claude/`
 guard, so scope is what stops it forging a fake approval; only the hook-appended
 `.plinth/session/events.jsonl` (pulse.sh, every tool use) is excluded to avoid false-flagging every
@@ -259,8 +275,9 @@ Any of codex / claude / grok can be the PRIMARY reviewer via `reviewer_vendor`
 subscription-billed, so assign purely by fit — the fastest model that is capable
 enough for the role, with the deep model reserved for what actually needs depth
 (Tier-2 tooling, declared hardening passes, the binding confirmation). The loop's
-cost controls do the rest: scoped verify rounds, a once-per-loop clean-slate
-confirmation, and the `round_cap` circuit breaker. When a vendor becomes
+cost controls do the rest: scoped verify rounds and the `round_cap` circuit
+breaker. (v4.6 also skipped repeat Tier-2 clean-slate confirmations; v4.7 retired
+that — it traded a coverage guarantee for the saving. See CHANGELOG #27.) When a vendor becomes
 unavailable mid-loop (credits, outage), switch seats ON THE FLY with the operator
 env overrides (`PLINTH_REVIEWER_VENDOR` / `PLINTH_REVIEWER_MODEL` /
 `PLINTH_AUDIT_VENDOR` / `PLINTH_AUDIT_MODEL`) — one run, announced and recorded
