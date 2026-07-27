@@ -673,11 +673,20 @@ jq -e '
 PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
-# Live probe: fake claude + history → parse week_all_models + project rate
+# Live probe: fake claude records argv/cwd; asserts isolation contract
 QBIN="$FIX/qbin"; mkdir -p "$QBIN"
-cat > "$QBIN/claude" <<'C'
+QREC="$FIX/claude-rec.json"
+cat > "$QBIN/claude" <<C
 #!/usr/bin/env python3
-import json
+import json, os, sys
+rec = {
+  "argv": sys.argv,
+  "cwd": os.getcwd(),
+  "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR"),
+}
+open("$QREC", "w").write(json.dumps(rec))
+# cwd must be empty temp (no .plinth)
+assert not os.path.exists(os.path.join(os.getcwd(), ".plinth")), "cwd not empty"
 print(json.dumps({"result":
 "Current session: 3% used · resets Jul 27 at 11:20am (America/Puerto_Rico)\n"
 "Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
@@ -704,6 +713,14 @@ jq -e '
   and ((.quota.overall.projected_100pct_at - .quota.refreshed_at) <= 15000)
   and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
 ' "$QPROBE" >/dev/null
+# Isolation + argv contract from the recording claude
+jq -e '
+  .argv == ["'"$QBIN"'/claude", "-p", "/usage", "--output-format", "json"]
+  or (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
+  and (.cwd | length > 0)
+  and .CLAUDE_PROJECT_DIR == .cwd
+' "$QREC" >/dev/null \
+  || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
 # parse_failed: successful CLI, unmatchable text
 cat > "$QBIN/claude" <<'C'
 #!/usr/bin/env python3
@@ -1070,13 +1087,14 @@ jq -e '
   and .review == null
 ' "$OUT" >/dev/null
 
-# Long session within window: task + ~10000s session
-jq -e --argjson now "$NOW" --argjson t0 "$J_T0" '
+# Long session within window: task + ~10000s session (tolerate smoke wall-clock)
+jq -e --argjson now "$NOW" --argjson t0 "$J_T0" --argjson gen "$(jq -r .generated_at "$OUT")" '
   .projects[] | select(.name == "kappa-long")
   | .task == "long session task"
   and .session_secs != null
-  and (((.session_secs - ($now - $t0)) | if . < 0 then -. else . end) <= 5)
-' "$OUT" >/dev/null
+  and (((.session_secs - ($gen - $t0)) | if . < 0 then -. else . end) <= 30)
+' "$OUT" >/dev/null \
+  || { echo "smoke-snapshot: kappa-long session_secs mismatch (now=$NOW t0=$J_T0 out=$(jq -c '.projects[]|select(.name==\"kappa-long\")|.session_secs' "$OUT"))" >&2; exit 1; }
 
 # Cap boundary: SessionStart outside 10k window → session_secs null (not fabricated)
 jq -e '

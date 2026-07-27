@@ -540,14 +540,15 @@ Claude transcript is reachable.
 `plinth dash --snapshot` is **offline** — reads
 `~/.config/plinth/dash-quota.json` if present, else `offline`/`skipped`; it does
 **not** spawn vendor CLIs (caller env cannot force a probe on `--snapshot`). The
-HTTP serve path is **project-read-only** (never writes the discovered repos) but
-**may** spawn a timeout-bounded Claude usage probe in an empty temp cwd (internal
-`dash --snapshot-with-quota (serve child)`) and write the quota cache under `~/.config/plinth/`
-(~15 min, `PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` /
-`PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed usage text is `parse_failed`.
-Codex/grok: no headless surface yet. Projection: time-to-100% weekly from ≥2
-**same-reset-window** samples ≥10 min apart vs the reset clock (history drops
-samples from a prior week after reset_text changes).
+HTTP serve path does not write into discovered project trees; it **may** spawn a
+timeout-bounded Claude usage probe in an empty temp cwd (internal
+`dash --snapshot-with-quota`) and write a quota cache only under
+`~/.config/plinth/` or `$TMPDIR` (`PLINTH_DASH_QUOTA_CACHE` overrides outside those
+prefixes are ignored). TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
+`PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
+usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
+time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history
+drops prior-week / reset-less samples).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
 fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase

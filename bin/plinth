@@ -2454,14 +2454,37 @@ snapshot_one_project() {
 # caller-set env var). PLINTH_DASH_QUOTA=0 disables probes entirely.
 # Claude: `claude -p /usage --output-format json` with a hard timeout.
 _DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
-_DASH_QUOTA_CACHE="${PLINTH_DASH_QUOTA_CACHE:-$HOME/.config/plinth/dash-quota.json}"
 _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
+# Resolve quota cache path: only under $HOME/.config/plinth/ or $TMPDIR (never
+# inside a discovered project). Invalid overrides fall back to the default.
+_dash_quota_cache_path() {
+  local def="$HOME/.config/plinth/dash-quota.json" cand="${PLINTH_DASH_QUOTA_CACHE:-}"
+  local tmpd="${TMPDIR:-/tmp}"
+  [ -n "$cand" ] || { printf '%s\n' "$def"; return 0; }
+  case "$cand" in
+    "$HOME"/.config/plinth/*|"$tmpd"/*|/tmp/*|/var/folders/*)
+      printf '%s\n' "$cand"
+      ;;
+    *)
+      printf '%s\n' "$def"
+      ;;
+  esac
+}
+
+_dash_quota_read_cache() {
+  # Exactly one JSON object; multi-doc / non-object → empty (offline miss).
+  local cache="$1"
+  [ -f "$cache" ] || return 1
+  jq -ce 'if type == "object" then . else empty end' "$cache" 2>/dev/null
+}
+
 _dash_quota_probe() {
   # Prints one JSON object on stdout. Never fails the snapshot (always 0).
-  local now ttl=$_DASH_QUOTA_TTL cache="$_DASH_QUOTA_CACHE"
+  local now ttl=$_DASH_QUOTA_TTL cache
+  cache="$(_dash_quota_cache_path)"
   now="$(date +%s)"
   case "$ttl" in ''|*[!0-9]*) ttl=900 ;; esac
   if [ "${PLINTH_DASH_QUOTA:-1}" = "0" ]; then
@@ -2473,11 +2496,8 @@ _dash_quota_probe() {
   # Offline / public --snapshot: never spawn vendor CLIs — cache only.
   # Probes require the internal --snapshot-with-quota path (serve child).
   if [ "${_DASH_QUOTA_ALLOW_PROBE:-0}" != "1" ]; then
-    if [ -f "$cache" ]; then
-      if jq -e 'type == "object"' "$cache" >/dev/null 2>&1; then
-        cat "$cache"
-        return 0
-      fi
+    if _dash_quota_read_cache "$cache"; then
+      return 0
     fi
     jq -nc --argjson now "$now" \
       '{available:false, refreshed_at:$now, offline:true,
@@ -2487,13 +2507,16 @@ _dash_quota_probe() {
   fi
   # Serve-mode: use cache when fresh.
   if [ -f "$cache" ]; then
-    local age refreshed
-    refreshed="$(jq -r '.refreshed_at // 0' "$cache" 2>/dev/null || echo 0)"
-    case "$refreshed" in ''|*[!0-9]*) refreshed=0 ;; esac
-    age=$((now - refreshed))
-    if [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$ttl" ] 2>/dev/null; then
-      cat "$cache"
-      return 0
+    local age refreshed body
+    body="$(_dash_quota_read_cache "$cache" || true)"
+    if [ -n "$body" ]; then
+      refreshed="$(printf '%s' "$body" | jq -r '.refreshed_at // 0' 2>/dev/null || echo 0)"
+      case "$refreshed" in ''|*[!0-9]*) refreshed=0 ;; esac
+      age=$((now - refreshed))
+      if [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$ttl" ] 2>/dev/null; then
+        printf '%s\n' "$body"
+        return 0
+      fi
     fi
   fi
 
@@ -2656,9 +2679,15 @@ except Exception:
       '{available:false, refreshed_at:$now, note:"quota assemble failed", vendors:[]}'
     return 0
   fi
-  # Persist cache (best-effort).
+  # Persist cache atomically (best-effort; never under a project root).
   mkdir -p "$(dirname "$cache")" 2>/dev/null || true
-  printf '%s\n' "$assembled" > "$cache" 2>/dev/null || true
+  local tmpc
+  tmpc="$(mktemp "${cache}.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$tmpc" ]; then
+    printf '%s\n' "$assembled" > "$tmpc" 2>/dev/null \
+      && mv -f "$tmpc" "$cache" 2>/dev/null \
+      || rm -f "$tmpc" 2>/dev/null || true
+  fi
   printf '%s\n' "$assembled"
 }
 
