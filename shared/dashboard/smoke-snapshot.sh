@@ -743,12 +743,19 @@ jq -e '
 # Isolation + argv contract from the recording claude
 jq -e '
   (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
-  and (.cwd | type == "string" and test("plinth-quota-"))
+  and (.cwd | type == "string" and test("^/tmp/plinth-quota-|^/private/tmp/plinth-quota-"))
   and (.CLAUDE_PROJECT_DIR | type == "string" and test("plinth-quota-"))
   and ((.cwd | sub("^/private";"")) == (.CLAUDE_PROJECT_DIR | sub("^/private";"")))
   and .cwd_empty == true
 ' "$QREC" >/dev/null \
   || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
+# PLINTH_DASH_QUOTA_CACHE ignored
+printf '%s\n' '{"seed":true}' > "$FIX/should-not-create.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/should-not-create.json" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota >/dev/null
+jq -e '.seed == true' "$FIX/should-not-create.json" >/dev/null \
+  || { echo "smoke-snapshot: QUOTA_CACHE override was written" >&2; exit 1; }
 # Multi-document cache: offline miss + serve-mode re-probe succeeds and rewrites cache
 printf '%s\n' '{"available":true,"refreshed_at":1}' '{"available":false}' \
   > "$QCACHE"
@@ -2159,7 +2166,7 @@ else
     fi
   }
 fi
-trap 'srv_cleanup; cleanup' EXIT
+trap 'srv_cleanup; _quota_cleanup' EXIT
 ready=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null 2>&1; then
@@ -2289,6 +2296,6 @@ if command -v lsof >/dev/null 2>&1; then
     exit 1
   fi
 fi
-trap cleanup EXIT
+trap _quota_cleanup EXIT
 
 echo "smoke-snapshot: OK"
