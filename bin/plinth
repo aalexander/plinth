@@ -3049,6 +3049,7 @@ except Exception:
           used_pct: $cl.used_pct,
           remaining_pct: $cl.remaining_pct,
           reset_text: $cl.reset_text,
+          reset_at: $cl.reset_at,
           projected_100pct_at: $cl.projected_100pct_at,
           rate_pct_per_hour: $cl.rate_pct_per_hour
         } else null end) as $overall

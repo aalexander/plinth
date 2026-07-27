@@ -118,6 +118,7 @@
     border-radius: 999px;
     transition: width 0.3s ease;
   }
+  .qmeter.warn > i { background: linear-gradient(90deg, var(--cyan), var(--yellow)); }
   .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
   main {
     padding: 1.25rem 1.5rem 2.5rem;
@@ -439,14 +440,34 @@
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
       .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  function whenLocal(epoch) {
+  function whenLocal(epoch, opts) {
     if (epoch == null || Number.isNaN(epoch)) return null;
     try {
+      const o = opts || {};
       return new Date(epoch * 1000).toLocaleString(undefined, {
-        weekday: "short", month: "short", day: "numeric",
-        hour: "numeric", minute: "2-digit"
+        weekday: o.weekday || "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
       });
     } catch (_) { return null; }
+  }
+
+  /** Prefer epoch reset_at → "Thursday, Jul 30, 9:00 AM (in 2d 4h)"; else raw reset_text. */
+  function formatReset(v) {
+    if (v == null) return null;
+    const epoch = typeof v === "number" ? v : v.reset_at;
+    if (epoch != null && !Number.isNaN(Number(epoch))) {
+      const when = whenLocal(Number(epoch), { weekday: "long" });
+      if (!when) return null;
+      const left = Number(epoch) - Math.floor(Date.now() / 1000);
+      if (left > 0) return when + " (in " + hum(left) + ")";
+      if (left > -3600) return when + " (soon)";
+      return when;
+    }
+    const raw = typeof v === "object" ? v.reset_text : null;
+    return raw ? String(raw) : null;
   }
 
   function cardTone(p) {
@@ -692,7 +713,7 @@
   function quotaRowHTML(label, pct, remaining, reset, proj, rate, extra) {
     const p = pct == null ? null : Number(pct);
     const cls = p == null ? "" : p >= 90 ? "hot" : p >= 70 ? "warn" : "";
-    const meterCls = p != null && p >= 90 ? "qmeter hot" : "qmeter";
+    const meterCls = p == null ? "" : p >= 90 ? "qmeter hot" : p >= 70 ? "qmeter warn" : "qmeter";
     const pctHtml = p == null
       ? '<span class="dim">—</span>'
       : '<span class="qpct ' + cls + '">' + esc(String(p)) + "% used</span>" +
@@ -706,8 +727,8 @@
       '<div class="qrow">' +
         '<span class="qlabel">' + esc(label) + "</span>" +
         pctHtml + meter +
-        (reset ? "<span>reset " + esc(reset) + "</span>" : "") +
-        (proj ? "<span>→100% " + esc(proj) + "</span>" : "") +
+        (reset ? '<span title="quota window reset">' + "reset " + esc(reset) + "</span>" : "") +
+        (proj ? '<span title="linear from last reset → 100%">' + "→100% " + esc(proj) + "</span>" : "") +
         (rate ? "<span>rate " + esc(rate) + "</span>" : "") +
         (extra || "") +
       "</div>"
@@ -721,7 +742,7 @@
       }
       return null;
     }
-    const when = whenLocal(v.projected_100pct_at);
+    const when = whenLocal(v.projected_100pct_at, { weekday: "long" });
     const left = v.projected_100pct_at - Math.floor(Date.now() / 1000);
     return (when || ("@" + v.projected_100pct_at)) +
       (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
@@ -766,7 +787,7 @@
         lab,
         o.used_pct,
         o.remaining_pct,
-        o.reset_text,
+        formatReset(o),
         formatProjection(o),
         o.rate_pct_per_hour != null ? o.rate_pct_per_hour + "%/h" : null,
         ageSpan
@@ -784,12 +805,14 @@
       if (v.available && v.used_pct != null) {
         const extraBits = [];
         if (v.plan_type) extraBits.push(String(v.plan_type));
-        if (v.primary_window) extraBits.push(String(v.primary_window));
+        if (v.primary_window && v.primary_window !== "week_all_models") {
+          extraBits.push(String(v.primary_window));
+        }
         rows.push(quotaRowHTML(
           v.vendor.toUpperCase(),
           v.used_pct,
           v.remaining_pct,
-          v.reset_text,
+          formatReset(v),
           formatProjection(v),
           v.rate_pct_per_hour != null ? v.rate_pct_per_hour + "%/h" : null,
           extraBits.length

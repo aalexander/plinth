@@ -1903,17 +1903,22 @@ setTimeout(() => {
       process.exit(1);
     }
     {
+      const resetAt = Math.floor(Date.now() / 1000) + 86400 * 3; // ~3d out
       api.renderQuota({
         available: true, refreshed_at: Math.floor(Date.now() / 1000),
         overall: {
+          vendor: "claude",
           used_pct: 80, remaining_pct: 20, reset_text: "Jul 30 at 9am",
+          reset_at: resetAt,
           projected_100pct_at: Math.floor(Date.now() / 1000) + 3600,
           rate_pct_per_hour: 5
         }
       });
       const qb = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
-      if (!qb.includes("80%") || !qb.includes("WEEKLY") || !qb.includes("→100%")) {
-        console.error("renderQuota available missing expected text:", qb);
+      const weekday = new Date(resetAt * 1000).toLocaleString(undefined, { weekday: "long" });
+      if (!qb.includes("80%") || !qb.includes("WEEK") || !qb.includes("→100%") ||
+          !qb.includes("reset ") || !qb.includes(weekday)) {
+        console.error("renderQuota available missing expected text (weekday=" + weekday + "):", qb);
         process.exit(1);
       }
       api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });
