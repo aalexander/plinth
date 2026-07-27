@@ -289,6 +289,15 @@ sens_snapshot() {  # `<f1> <f2>\x1f<path>` per sensitive node (US before path; p
   : > "$_gvfile"
   while IFS= read -r -d '' _gline || [ -n "${_gline:-}" ]; do
     [ -n "$_gline" ] || continue
+    # Fail closed on path bytes that break newline/US/RS framing (cannot represent
+    # them losslessly after conversion to line-oriented records). plinth#17.
+    case "$_gline" in
+      *$'\n'*|*$'\037'*|*$'\036'*)
+        rm -f "$_gvzfile" "$_gvfile"
+        echo "lane-guard: path contains reserved delimiter byte (LF/US/RS) — refusing (fail closed): $_gline" >&2
+        return 5
+        ;;
+    esac
     printf '%s\n' "$_gline" >> "$_gvfile" \
       || { rm -f "$_gvzfile" "$_gvfile"; echo "lane-guard: cannot write path enumeration — refusing (fail closed)" >&2; return 5; }
   done < "$_gvzfile"

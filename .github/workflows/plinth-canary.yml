@@ -4556,6 +4556,11 @@ jobs:
             r=0; bash "$LG" scope HEAD --snapshot "$SNAP_TAB" app.py >/dev/null 2>&1 || r=$?
             [ "$r" = 4 ] || { echo "::error::scope missed leading-TAB sensitive path change (rc=$r)"; exit 1; }
             rm -f $'secrets/\tkey.env'
+            # plinth#17: path with reserved LF byte must fail closed (rc=5), not silently omit
+            printf 'x\n' > $'secrets/key\npart'
+            r=0; bash "$LG" snapshot >/dev/null 2>&1 || r=$?
+            [ "$r" = 5 ] || { echo "::error::snapshot did not fail closed on LF in path (rc=$r, want 5)"; exit 1; }
+            rm -f $'secrets/key\npart'
             # Template lookalikes are RECORDED in the snapshot (they are gitignored — the snapshot is
             # the ONLY check that sees a lane writing real secrets into them) and SPEC-GATED at scope
             # time. .envrc is a different NAME entirely and stays out:
