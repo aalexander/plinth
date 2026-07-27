@@ -542,7 +542,7 @@ Claude transcript is reachable.
 **not** spawn vendor CLIs (caller env cannot force a probe on `--snapshot`). The
 HTTP serve path is **project-read-only** (never writes the discovered repos) but
 **may** spawn a timeout-bounded Claude usage probe in an empty temp cwd (internal
-`PLINTH_DASH_SERVE_CHILD=1`) and write the quota cache under `~/.config/plinth/`
+`dash --snapshot-with-quota (serve child)`) and write the quota cache under `~/.config/plinth/`
 (~15 min, `PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` /
 `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed usage text is `parse_failed`.
 Codex/grok: no headless surface yet. Projection: time-to-100% weekly from ≥2

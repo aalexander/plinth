@@ -4,7 +4,7 @@
 - **`plinth dash` quota strip:** overall weekly plan usage from official CLIs
   (`claude -p /usage --output-format json`; codex/grok honest-unavailable until
   headless). **`--snapshot` is offline** (cache read only; env cannot force a
-  probe). HTTP serve sets internal `PLINTH_DASH_SERVE_CHILD=1` and refreshes
+  probe). HTTP serve sets internal `dash --snapshot-with-quota (serve child)` and refreshes
   ~15 min with a hard timeout. Projects time-to-100% weekly when ≥2 same-reset
   samples ≥10 min apart. `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
 - **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +

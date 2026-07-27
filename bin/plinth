@@ -2442,13 +2442,15 @@ snapshot_one_project() {
 # (15 min). PLINTH_DASH_QUOTA_TTL overrides.
 #
 # Offline by default: plain `plinth dash --snapshot` only READs the cache
-# (or returns skipped/offline). Live CLI probes run only when the HTTP serve
-# child sets PLINTH_DASH_SERVE_CHILD=1 (not a caller-set PROBE override) and
-# PLINTH_DASH_QUOTA is not 0. Claude: `claude -p /usage --output-format json`
-# with a hard timeout. Codex/grok: no headless surface yet.
+# (or returns skipped/offline). Live CLI probes run only for the internal
+# `dash --snapshot-with-quota` command used by the HTTP serve child (not a
+# caller-set env var). PLINTH_DASH_QUOTA=0 disables probes entirely.
+# Claude: `claude -p /usage --output-format json` with a hard timeout.
 _DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
 _DASH_QUOTA_CACHE="${PLINTH_DASH_QUOTA_CACHE:-$HOME/.config/plinth/dash-quota.json}"
 _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
+# Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
+_DASH_QUOTA_ALLOW_PROBE=0
 
 _dash_quota_probe() {
   # Prints one JSON object on stdout. Never fails the snapshot (always 0).
@@ -2461,9 +2463,9 @@ _dash_quota_probe() {
         note:"quota probes disabled (PLINTH_DASH_QUOTA=0)", vendors:[]}'
     return 0
   fi
-  # Offline / snapshot path: never spawn vendor CLIs — cache only.
-  # Only the HTTP serve child (PLINTH_DASH_SERVE_CHILD=1) may probe.
-  if [ "${PLINTH_DASH_SERVE_CHILD:-0}" != "1" ]; then
+  # Offline / public --snapshot: never spawn vendor CLIs — cache only.
+  # Probes require the internal --snapshot-with-quota path (serve child).
+  if [ "${_DASH_QUOTA_ALLOW_PROBE:-0}" != "1" ]; then
     if [ -f "$cache" ]; then
       if jq -e 'type == "object"' "$cache" >/dev/null 2>&1; then
         cat "$cache"
@@ -2592,22 +2594,21 @@ except Exception:
     | ($vendors | week_reset) as $reset
     | (if $wp == null then $hist
        else
-         # Drop prior-window samples when weekly reset_text changes.
+         # Keep only same-reset samples; drop legacy reset-less entries and other weeks.
          ([ $hist[]
-            | select(($reset == null) or (.reset_text == null) or (.reset_text == $reset))
+            | select(($reset != null) and (.reset_text != null) and (.reset_text == $reset))
           ] + [{t:$now, week_all_models_pct:$wp, reset_text:$reset}])
          | .[-48:]
        end) as $hist2
-    # Rate from same-reset samples only.
-    | ([$hist2[] | select(.week_all_models_pct != null)] | sort_by(.t)) as $hs
+    # Rate from same-reset samples only (both ends must carry reset_text).
+    | ([$hist2[] | select(.week_all_models_pct != null and .reset_text != null)] | sort_by(.t)) as $hs
     | (if ($hs|length) < 2 then null
        else
          ($hs[-1]) as $a
          | ([ $hs[]
              | select(($a.t - .t) >= 600
                       and .week_all_models_pct < $a.week_all_models_pct
-                      and (($a.reset_text == null) or (.reset_text == null)
-                           or (.reset_text == $a.reset_text)))
+                      and .reset_text == $a.reset_text)
            ] | .[0] // null) as $b
          | if $b != null then
              {rate_pct_per_s: (($a.week_all_models_pct - $b.week_all_models_pct) / ($a.t - $b.t)),
@@ -2615,8 +2616,7 @@ except Exception:
            else
              ($hs[0]) as $f
              | if ($a.t - $f.t) >= 600 and ($a.week_all_models_pct > $f.week_all_models_pct)
-                  and (($a.reset_text == null) or ($f.reset_text == null)
-                       or ($f.reset_text == $a.reset_text))
+                  and ($f.reset_text == $a.reset_text)
                then {rate_pct_per_s: (($a.week_all_models_pct - $f.week_all_models_pct) / ($a.t - $f.t)),
                      from_t:$f.t, to_t:$a.t}
                else null end
@@ -2702,6 +2702,8 @@ run_dashboard() {
     arg="$1"; shift
     case "$arg" in
       --snapshot) mode=snapshot ;;
+      # Internal: HTTP serve child only. Not a public operator flag.
+      --snapshot-with-quota) mode=snapshot_quota ;;
       --port)
         port="${1:-}"
         [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
@@ -2712,7 +2714,14 @@ run_dashboard() {
     esac
   done
 
-  if [ "$mode" = snapshot ]; then
+  if [ "$mode" = snapshot ] || [ "$mode" = snapshot_quota ]; then
+    # Public --snapshot is always offline. Probe only via --snapshot-with-quota
+    # (serve child). Env vars cannot enable probes on --snapshot.
+    if [ "$mode" = snapshot_quota ]; then
+      _DASH_QUOTA_ALLOW_PROBE=1
+    else
+      _DASH_QUOTA_ALLOW_PROBE=0
+    fi
     build_dashboard_snapshot
     exit 0
   fi
@@ -2737,11 +2746,9 @@ run_dashboard() {
   echo "plinth dash: http://127.0.0.1:${port}/  (loopback only · ctrl-c to quit)"
   echo "  discovery: $(if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then echo "PLINTH_DASH_ROOTS"; elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then echo "~/.config/plinth/dashboard-projects"; else echo "~/Dev/*/.plinth/config"; fi)"
   # Env passed explicitly so the child inherits roots/config the same way.
-  # PLINTH_DASH_SERVE_CHILD=1: only the serve-spawned snapshot may probe quota.
-  # Plain `dash --snapshot` stays offline regardless of caller env.
+  # Serve child re-invokes `dash --snapshot-with-quota` (not public --snapshot).
   PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
   PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
-  PLINTH_DASH_SERVE_CHILD=1 \
   python3 - "$port" <<'PY'
 import json, os, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2804,7 +2811,8 @@ def _snapshot_bytes():
             return 500, _snap_err
         try:
             proc = subprocess.run(
-                [SNAP_BIN, "dash", "--snapshot"],
+                # Internal flag: may refresh vendor quota; public --snapshot cannot.
+                [SNAP_BIN, "dash", "--snapshot-with-quota"],
                 env=CHILD_ENV,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
