@@ -3652,9 +3652,13 @@ jobs:
                 p && /printf '\''BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q/ { exit }
               ' "$A")"
               [ -n "$ALLOC" ] || { echo "failed to extract step-0 allocation from $a agent"; exit 1; }
+              HEAD_BEFORE="$(git rev-parse HEAD)"
               eval "$ALLOC"
               [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] && [ -n "${OUT:-}" ] && [ -n "${SNAP:-}" ] && [ -n "${BEFORE:-}" ] \
                 || { echo "allocation incomplete"; exit 1; }
+              [ "$BEFORE" = "$HEAD_BEFORE" ] || { echo "BEFORE != HEAD ($BEFORE vs $HEAD_BEFORE)"; exit 1; }
+              [ -f "$SNAP" ] && [ -s "$SNAP" ] || { echo "SNAP missing or empty (snapshot not run?)"; exit 1; }
+              [ -e "$OUT" ] || { echo "OUT path not created by mktemp"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
               HO="$(grep -E "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" | head -1 | sed 's/^[[:space:]]*//')"
               HOUT="$(BEFORE="$BEFORE" SNAP="$SNAP" SPEC_DIR="$SPEC_DIR" SPEC="$SPEC" OUT="$OUT" bash -c "$HO")"
@@ -3668,10 +3672,17 @@ jobs:
                 || { echo "handoff five-tuple mismatch"; exit 1; }
               printf 'objective: test\nMODEL: canary\n' > "$SPEC"
               export PATH="$STUBS:$PATH"
-              CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{sub(/^[[:space:]]+/,"");print} c&&/^\}/{exit}' "$A" > "$CAPX"
+              # Preserve internal indentation of shipped cap() (python fallback is indent-sensitive)
+              CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^ *\}/{exit}' "$A" | sed 's/^       //' > "$CAPX"
               # shellcheck source=/dev/null
               . "$CAPX" 2>/dev/null || cap() { shift; "$@"; }
-              LANE_RULES=x
+              # Shipped LANE_RULES assignment (grok); codex may omit
+              if grep -q "LANE_RULES=" "$A"; then
+                eval "$(grep -E "^\s+LANE_RULES=" "$A" | head -1 | sed 's/^[[:space:]]*//')"
+                [ -n "${LANE_RULES:-}" ] || { echo "LANE_RULES empty after extract"; exit 1; }
+              else
+                LANE_RULES=x
+              fi
               CMD="$(awk -v a="$a" '
                 $0 ~ "RC=0; cap 600 " a {p=1}
                 p { sub(/^[[:space:]]+/, ""); print }
