@@ -66,7 +66,8 @@ is_spec() {
 
 # plinth#11: never swallow git diff failures as "empty diff" / Tier 0.
 raw=""; raw_rc=0
-raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null)" || raw_rc=$?
+# core.quotePath=false so non-ASCII/spec paths are not C-quoted before is_spec.
+raw="$(git -c core.quotePath=false diff --raw -M -C "${baseref}...HEAD" 2>/dev/null)" || raw_rc=$?
 if [ "$raw_rc" -ne 0 ]; then
   printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git diff --raw failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$raw_rc"
   exit 0

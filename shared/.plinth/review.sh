@@ -1297,7 +1297,8 @@ $(cat "$RECEIPT")"
     _sn=""; _sn_rc=0
     # --no-renames so a renamed-away canonical spec still appears as a delete of $sp
     # (name-only with renames only reports the destination).
-    _sn="$(git diff --name-only --no-renames "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
+    # core.quotePath=false so non-ASCII paths are not C-quoted before fixed-string match.
+    _sn="$(git -c core.quotePath=false diff --name-only --no-renames "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
     if [ "$_sn_rc" -ne 0 ]; then
       die_infra "git diff --name-only for spec-change detection failed (rc=$_sn_rc)"
     fi
