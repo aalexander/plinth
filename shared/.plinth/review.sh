@@ -159,19 +159,19 @@ REVIEWER_MODEL="$(sed -n 's/^model[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0
 [ -n "$REVIEWER_MODEL" ] || REVIEWER_MODEL="codex"
 # spec_path from the BASE config (like risk-classify.sh): a PR must not repoint the
 # review target to a weaker/empty spec in its own diff.
-# plinth#15: distinguish ABSENCE from INFRA. Real Git returns 128 for a missing
-# path ("does not exist in …"), not 1 — treating all nonzero as infra broke first
-# adoption. Match the absence message; any other nonzero is infrastructure.
+# plinth#15: distinguish ABSENCE from INFRA without parsing Git's localized stderr.
+# `git ls-tree tip -- path`: exit 0 + nonempty = present; exit 0 + empty = absent;
+# nonzero = infrastructure (bad tip / corrupt repo). Locale-independent.
 basecfg=""
 base_has_config=0
-_cfg_err=""; _cfg_probe=0
-_cfg_err="$(git cat-file -e "${base_tip}:.plinth/config" 2>&1)" || _cfg_probe=$?
-if [ "$_cfg_probe" -eq 0 ]; then
+_cfg_probe=0
+_cfg_tree="$(git ls-tree --full-tree "$base_tip" -- .plinth/config 2>/dev/null)" || _cfg_probe=$?
+if [ "$_cfg_probe" -ne 0 ]; then
+  die_infra "git ls-tree base .plinth/config failed (rc=$_cfg_probe) — refusing to review with unverified knobs"
+elif [ -n "$_cfg_tree" ]; then
   base_has_config=1
   basecfg="$(git show "${base_tip}:.plinth/config" 2>/dev/null)" \
     || die_infra "cannot read base .plinth/config at ${base_tip} — refusing to review with unverified knobs"
-elif ! printf '%s' "$_cfg_err" | grep -qi 'does not exist'; then
-  die_infra "git cat-file -e base .plinth/config failed (rc=$_cfg_probe: $_cfg_err) — refusing to review with unverified knobs"
 fi
 # bcfg reads a knob from the BASE config. The knobs that GOVERN this review — spec
 # path, reviewer models, cross-vendor audit vendor/model, exec-gating, round budget —
@@ -386,21 +386,20 @@ inline_contract() {
   # plinth#15: a failed cat/show must not silently omit the ratified contract body.
   echo "--- reviewer contract [${RC_SRC}] ---"
   cat "$RC_FILE" || { echo "inline_contract: cannot read $RC_FILE" >&2; return 1; }
-  _ap_err=""; _ap_probe=0
-  _ap_err="$(git cat-file -e "${base_tip}:.plinth/AGENTS-project.md" 2>&1)" || _ap_probe=$?
-  if [ "$_ap_probe" -eq 0 ]; then
+  # Locale-independent presence (ls-tree), not English cat-file stderr (plinth#15).
+  _ap_probe=0
+  _ap_tree="$(git ls-tree --full-tree "$base_tip" -- .plinth/AGENTS-project.md 2>/dev/null)" || _ap_probe=$?
+  if [ "$_ap_probe" -ne 0 ]; then
+    echo "inline_contract: git ls-tree AGENTS-project.md failed (rc=$_ap_probe)" >&2
+    return 1
+  elif [ -n "$_ap_tree" ]; then
     echo "--- .plinth/AGENTS-project.md (base) ---"
     git show "${base_tip}:.plinth/AGENTS-project.md" \
       || { echo "inline_contract: cannot read base AGENTS-project.md" >&2; return 1; }
-  elif printf '%s' "$_ap_err" | grep -qi 'does not exist'; then
-    if [ -f .plinth/AGENTS-project.md ]; then
-      echo "--- .plinth/AGENTS-project.md ---"
-      cat .plinth/AGENTS-project.md \
-        || { echo "inline_contract: cannot read working-tree AGENTS-project.md" >&2; return 1; }
-    fi
-  else
-    echo "inline_contract: git cat-file -e AGENTS-project.md failed (rc=$_ap_probe: $_ap_err)" >&2
-    return 1
+  elif [ -f .plinth/AGENTS-project.md ]; then
+    echo "--- .plinth/AGENTS-project.md ---"
+    cat .plinth/AGENTS-project.md \
+      || { echo "inline_contract: cannot read working-tree AGENTS-project.md" >&2; return 1; }
   fi
 }
 
@@ -539,20 +538,21 @@ else
   # working-tree copy — a same-PR rewrite of risk-classify.sh must not classify
   # its own diff. First-adoption (no base blob) falls back to the installed copy.
   clf="" clf_cleanup=0
-  _clf_err=""; _clf_probe=0
-  _clf_err="$(git cat-file -e "${base_tip}:.plinth/risk-classify.sh" 2>&1)" || _clf_probe=$?
-  if [ "$_clf_probe" -eq 0 ]; then
+  # Locale-independent presence via ls-tree (plinth#15) — not English cat-file stderr.
+  _clf_probe=0
+  _clf_tree="$(git ls-tree --full-tree "$base_tip" -- .plinth/risk-classify.sh 2>/dev/null)" || _clf_probe=$?
+  if [ "$_clf_probe" -ne 0 ]; then
+    die_infra "git ls-tree base risk-classify.sh failed (rc=$_clf_probe)"
+  elif [ -n "$_clf_tree" ]; then
     clf="$(mktemp "${TMPDIR:-/tmp}/plinth-risk-classify.XXXXXX")" \
       || die_infra "mktemp failed for base risk-classify.sh"
     clf_cleanup=1
     git show "${base_tip}:.plinth/risk-classify.sh" > "$clf" 2>/dev/null \
       || { rm -f "$clf"; die_infra "cannot extract base .plinth/risk-classify.sh"; }
     chmod +x "$clf" 2>/dev/null || true
-  elif printf '%s' "$_clf_err" | grep -qi 'does not exist'; then
+  else
     # First adoption: no base classifier blob — use installed copy only.
     [ -x ".plinth/risk-classify.sh" ] && clf="./.plinth/risk-classify.sh"
-  else
-    die_infra "git cat-file -e base risk-classify.sh failed (rc=$_clf_probe: $_clf_err)"
   fi
   if [ -n "$clf" ]; then
     # Pass the pinned tip SHA (not the mutable base name) so classification cannot
@@ -819,20 +819,22 @@ command -v "$REVIEWER_VENDOR" >/dev/null 2>&1 || die_infra "$REVIEWER_VENDOR CLI
 RC_FILE="$SDIR/reviewer-contract.md"
 # plinth#15: status-check every base blob read — a failed git show must not leave
 # an empty RC_FILE that looks like "first adoption" / empty policy.
-# cat-file -e: 0 = present, 1 = absent, other = infrastructure (fail closed).
+# Locale-independent presence via ls-tree (not English cat-file stderr).
 RC_SRC=""
-_rc_err=""; _rc_probe=0
-_rc_err="$(git cat-file -e "${base_tip}:.plinth/reviewer.md" 2>&1)" || _rc_probe=$?
-if [ "$_rc_probe" -eq 0 ]; then
+_rc_probe=0
+_rc_tree="$(git ls-tree --full-tree "$base_tip" -- .plinth/reviewer.md 2>/dev/null)" || _rc_probe=$?
+if [ "$_rc_probe" -ne 0 ]; then
+  die_infra "git ls-tree base .plinth/reviewer.md failed (rc=$_rc_probe)"
+elif [ -n "$_rc_tree" ]; then
   git show "${base_tip}:.plinth/reviewer.md" > "$RC_FILE" 2>/dev/null \
     || die_infra "cannot read base .plinth/reviewer.md"
   RC_SRC=".plinth/reviewer.md (base)"
-elif ! printf '%s' "$_rc_err" | grep -qi 'does not exist'; then
-  die_infra "git cat-file -e base .plinth/reviewer.md failed (rc=$_rc_probe: $_rc_err)"
 else
-  _ag_err=""; _ag_probe=0
-  _ag_err="$(git cat-file -e "${base_tip}:AGENTS.md" 2>&1)" || _ag_probe=$?
-  if [ "$_ag_probe" -eq 0 ]; then
+  _ag_probe=0
+  _ag_tree="$(git ls-tree --full-tree "$base_tip" -- AGENTS.md 2>/dev/null)" || _ag_probe=$?
+  if [ "$_ag_probe" -ne 0 ]; then
+    die_infra "git ls-tree base AGENTS.md failed (rc=$_ag_probe)"
+  elif [ -n "$_ag_tree" ]; then
     agents_body="$(git show "${base_tip}:AGENTS.md" 2>/dev/null)" \
       || die_infra "cannot read base AGENTS.md while resolving the reviewer contract"
     if printf '%s' "$agents_body" | grep -qF '# Plinth — Reviewer'; then
@@ -842,8 +844,6 @@ else
     elif printf '%s' "$agents_body" | grep -qF 'Plinth driver shell (version-pinned)'; then
       die_infra "post-v4.4 base has the driver-shell AGENTS.md but no ratified .plinth/reviewer.md — the reviewer contract is missing (corruption/tampering); refusing to review."
     fi
-  elif ! printf '%s' "$_ag_err" | grep -qi 'does not exist'; then
-    die_infra "git cat-file -e base AGENTS.md failed (rc=$_ag_probe: $_ag_err)"
   fi
 fi
 if [ -z "$RC_SRC" ]; then

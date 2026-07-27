@@ -857,12 +857,13 @@ installed copies.
   proceeds as if clean. Capture and validate the producer status; add
   failure-injection coverage. (Round 1, same review.)
 - ~~**review.sh: ratified-base probes conflate producer errors with absence**~~
-  **FIXED in v4.8.2** (plinth#11/#13/#15): cat-file probes distinguish
-  "does not exist" absence from infrastructure failure (fail closed); tooling
-  floor runs before any classifier; risk-classify fails closed on raw/per-test
-  diff errors. Canary covers absence + failure-injection for cat-file probes,
+  **FIXED in v4.8.2** (plinth#11/#13/#15): base blob presence uses
+  locale-independent `git ls-tree` (not English cat-file stderr); tooling floor
+  runs before any classifier; risk-classify fails closed on raw/per-test diff
+  errors. Canary covers absence + failure-injection for ls-tree probes,
   post-probe git show, tooling-floor name-only, base-classifier extraction,
-  reviewer/AGENTS-project contract materialization, and inline_contract.
+  reviewer/AGENTS-project contract materialization, inline_contract, and a
+  fr_FR locale regression for first-adoption absence.
   (Originally: v4.5.0 refresh review, round 3 sweep.)
 - **review.sh: porcelain `-z` rename records are mis-parsed**
   (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits

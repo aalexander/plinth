@@ -42,17 +42,16 @@ fi
 # Distinguish ABSENCE (first adoption: no blob) from READ FAILURE (infrastructure):
 # conflating them with `|| true` let a same-PR config repoint when git show failed
 # mid-read (plinth#15). Fail CLOSED to Tier 2 on any real error.
+# Locale-independent: ls-tree exit 0 + nonempty = present; empty = absent; nonzero = infra.
 basecfg=""
-_cfg_err=""; _cfg_probe=0
-_cfg_err="$(git cat-file -e "${baseref}:.plinth/config" 2>&1)" || _cfg_probe=$?
-if [ "$_cfg_probe" -eq 0 ]; then
+_cfg_probe=0
+_cfg_tree="$(git ls-tree --full-tree "${baseref}" -- .plinth/config 2>/dev/null)" || _cfg_probe=$?
+if [ "$_cfg_probe" -ne 0 ]; then
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git ls-tree base .plinth/config failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$_cfg_probe"
+  exit 0
+elif [ -n "$_cfg_tree" ]; then
   basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null)" \
     || { printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["cannot read base .plinth/config — failing closed to Tier 2"]}\n' "$baseref"; exit 0; }
-elif ! printf '%s' "$_cfg_err" | grep -qi 'does not exist'; then
-  # Missing path: Git reports exit 128 + "does not exist" (not exit 1). Any other
-  # nonzero is infrastructure (bad tip, corrupt repo) — fail closed to Tier 2.
-  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git cat-file -e base .plinth/config failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$_cfg_probe"
-  exit 0
 fi
 SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
