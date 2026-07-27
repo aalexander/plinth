@@ -1,23 +1,17 @@
 # Blocked on you
 
-- [ ] **Auto mode residual (2026-07-26):** Product **v4.8.0**, tags **v4.7.2**/**v4.8.0**
-  pushed, GitHub releases published. Close-out trails floor/checks pins to **v4.7.2**.
-  Installed instrument is still **4.6.0**. **Order (do not skip):**
-  1. Land instrument-refresh PR → `.plinth-version` **≥ 4.7** (preferably 4.8.0).
-  2. Wire the `receipt` job in `ci.yml` (pin `plinth-receipt.yml` to the release you run).
-  3. Require `receipt / verify` **and** `"strict":true` in branch protection.
-  Do not require the context before step 1 (pre-v4.7 mints nothing; fails closed).
-  Caller-control bound: a PR can replace the receipt caller with a green spoof of the
-  same context name (ci.yml HONEST BOUND / MANUAL).
+- [ ] **Auto mode residual (2026-07-27):** Instrument **4.8.1** + receipt job wired
+  (floor/checks/receipt@**v4.8.0** trail pin). Tags **v4.7.2**/**v4.8.0**/**v4.8.1**.
+  **You only:** require `receipt / verify` + `"strict":true` in branch protection.
+  Caller-control bound applies (ci.yml HONEST BOUND / MANUAL).
   ```
   gh api -X PATCH repos/aalexander/plinth/branches/main/protection/required_status_checks --input -
   ```
   body like
   `{"strict":true,"contexts":["floor / secrets","floor / sast","floor / dependencies / osv-scan","floor / harness","checks / checks","receipt / verify"]}`
-  Notes: `git push origin HEAD refs/notes/plinth-receipts` (never force-push that ref).
+  Notes: `git push origin HEAD refs/notes/plinth-receipts` (never force-push).
 
-- [ ] **Instrument refresh to v4.8.0** (separate release-labeled PR): materialize tagged
-  shared payload; `.plinth-version` → 4.8.0; then wire receipt job (step 2 above).
+- ~~**Instrument refresh to v4.8.1**~~ — **DONE** in this PR.
 
 - ~~**#43 / Tier-2 confirmation window**~~ — **DONE in v4.8.1 product** (this PR): Write-tool
   recombine + UNBOUND-before-confirmation + delegation canary. Closes after merge/tag.
