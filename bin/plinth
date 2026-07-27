@@ -2262,6 +2262,20 @@ snapshot_one_project() {
         task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
         transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
         phases_json="$(printf '%s' "$meta_out" | jq -c '.phases // {}' 2>/dev/null || echo '{}')"
+        # Drop non-human / agent-system prompts (reviewer specs, READ-ONLY blocks, …)
+        if [ -n "$task" ]; then
+          case "$task" in
+            "You are "*|"# "*|READ-ONLY*|*"independent design reviewer"*|*"adversarial reviewer"*|*"Do not edit"*|*"do not implement"*|*"READ-ONLY"*)
+              task="" ;;
+          esac
+          if [ -n "$task" ] && printf '%s' "$task" | grep -q $'\n'; then
+            task="$(printf '%s' "$task" | head -1 | tr -d '\r')"
+            [ "${#task}" -gt 160 ] && task=""
+          fi
+          if [ -n "$task" ] && [ "${#task}" -gt 200 ]; then
+            task="$(printf '%s' "$task" | head -c 197)…"
+          fi
+        fi
       fi
     fi
   fi
@@ -2661,23 +2675,176 @@ except Exception:
       '{vendor:"claude",available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
   fi
 
-  # ── Other vendors: honest unavailability until a headless usage surface exists.
-  for v in codex grok gemini agy; do
-    if command -v "$v" >/dev/null 2>&1; then
-      note_v="Use interactive /status or /usage until a stable headless API exists"
-      case "$v" in
-        codex) note_v="Use interactive codex /status until headless usage exists" ;;
-        grok) note_v="Use interactive grok /usage until headless usage exists" ;;
-        gemini|agy) note_v="Use interactive agy/gemini usage until headless exists" ;;
-      esac
-      jq -nc --arg v "$v" --arg n "$note_v" --argjson now "$now" \
-        '{vendor:$v,available:false,error:"no_headless_usage_surface",note:$n,probed_at:$now}' \
+  # ── Codex: ChatGPT wham/usage via ~/.codex/auth.json (curl). Tokens never logged.
+  # Gated on `codex` on PATH so restricted-PATH smoke never hits the network.
+  if command -v codex >/dev/null 2>&1; then
+    local cx_auth="${HOME}/.codex/auth.json" cx_to="$_DASH_QUOTA_TIMEOUT" cx_out cx_rc=0
+    case "$cx_to" in ''|*[!0-9]*) cx_to=25 ;; esac
+    if [ ! -f "$cx_auth" ]; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"codex",available:false,error:"auth_missing",
+          note:"Run codex login (ChatGPT) — need ~/.codex/auth.json",probed_at:$now}' \
+        >> "$vendors_tmp"
+    elif ! command -v curl >/dev/null 2>&1; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"codex",available:false,error:"curl_missing",probed_at:$now}' \
         >> "$vendors_tmp"
     else
-      jq -nc --arg v "$v" --argjson now "$now" \
-        '{vendor:$v,available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
+      cx_out="$(python3 -c '
+import json, subprocess, sys
+from datetime import datetime, timezone
+
+auth_path, to_s = sys.argv[1], int(sys.argv[2])
+try:
+    with open(auth_path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+except Exception:
+    sys.exit(3)
+tokens = auth.get("tokens") if isinstance(auth, dict) else None
+if not isinstance(tokens, dict):
+    sys.exit(2)
+access = tokens.get("access_token")
+if not access or not isinstance(access, str):
+    sys.exit(2)
+account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else ""
+cmd = [
+    "curl", "-sS", "-f", "--max-time", str(to_s),
+    "-H", "Authorization: Bearer " + access,
+    "-H", "Accept: application/json",
+]
+if account_id:
+    cmd += ["-H", "ChatGPT-Account-Id: " + account_id]
+cmd.append("https://chatgpt.com/backend-api/wham/usage")
+try:
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=to_s + 2)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except Exception:
+    sys.exit(1)
+if p.returncode != 0:
+    # 22 = curl -f HTTP error; do not print body (may include account bits).
+    sys.exit(4 if p.returncode == 22 else 1)
+try:
+    d = json.loads(p.stdout or "")
+except Exception:
+    sys.exit(5)
+if not isinstance(d, dict):
+    sys.exit(5)
+rl = d.get("rate_limit") if isinstance(d.get("rate_limit"), dict) else {}
+pw = rl.get("primary_window") if isinstance(rl.get("primary_window"), dict) else {}
+used = pw.get("used_percent")
+if used is None:
+    sys.exit(5)
+try:
+    used_pct = int(used)
+except (TypeError, ValueError):
+    sys.exit(5)
+reset_at = pw.get("reset_at")
+reset_text = None
+if reset_at is not None:
+    try:
+        reset_text = datetime.fromtimestamp(int(reset_at), tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+    except Exception:
+        reset_text = str(reset_at)
+win = "primary"
+try:
+    if int(pw.get("limit_window_seconds") or 0) == 604800:
+        win = "week"
+except Exception:
+    pass
+windows = [{"window": win, "used_pct": used_pct, "reset_text": reset_text}]
+if reset_at is not None:
+    try:
+        windows[0]["reset_at"] = int(reset_at)
+    except Exception:
+        pass
+sw = rl.get("secondary_window")
+if isinstance(sw, dict) and sw.get("used_percent") is not None:
+    try:
+        sw_pct = int(sw["used_percent"])
+        sw_reset = sw.get("reset_at")
+        sw_text = None
+        if sw_reset is not None:
+            sw_text = datetime.fromtimestamp(int(sw_reset), tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+        windows.append({"window": "secondary", "used_pct": sw_pct, "reset_text": sw_text})
+    except Exception:
+        pass
+plan = d.get("plan_type") if isinstance(d.get("plan_type"), str) else None
+out = {"vendor": "codex", "available": True, "windows": windows}
+if plan:
+    out["plan_type"] = plan
+# Never emit tokens, email, user_id, or raw API body.
+print(json.dumps(out, separators=(",", ":")))
+' "$cx_auth" "$cx_to" 2>/dev/null)" || cx_rc=$?
+      case "$cx_rc" in
+        0)
+          if [ -n "$cx_out" ]; then
+            printf '%s' "$cx_out" | jq -c --argjson now "$now" '. + {probed_at:$now}' \
+              >> "$vendors_tmp" 2>/dev/null || \
+              jq -nc --argjson now "$now" \
+                '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+                >> "$vendors_tmp"
+          else
+            jq -nc --argjson now "$now" \
+              '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+              >> "$vendors_tmp"
+          fi
+          ;;
+        2)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"auth_missing",
+              note:"codex auth has no access_token — re-run codex login",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        3)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"auth_unreadable",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        4)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"http_failed",
+              note:"ChatGPT wham/usage rejected request (re-login if expired)",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        5)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        124)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"cli_timeout",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        *)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"probe_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+      esac
     fi
-  done
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"codex",available:false,error:"cli_missing",probed_at:$now}' \
+      >> "$vendors_tmp"
+  fi
+
+  # ── Grok: no headless plan-quota surface yet (interactive /usage is agent-local).
+  if command -v grok >/dev/null 2>&1; then
+    jq -nc --argjson now "$now" \
+      '{vendor:"grok",available:false,error:"no_headless_usage_surface",
+        note:"No plan-quota API yet — interactive grok /usage is not account quota",
+        probed_at:$now}' >> "$vendors_tmp"
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"grok",available:false,error:"cli_missing",probed_at:$now}' \
+      >> "$vendors_tmp"
+  fi
 
   # Assemble: enrich EACH available vendor with burn-rate projection; keep overall
   # as the primary weekly window (claude week_all_models when present).
@@ -2775,7 +2942,7 @@ except Exception:
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "Per-vendor plan usage when a headless probe exists (claude -p /usage today). Projection needs ≥2 same-reset samples ≥10m apart per vendor."
+        note: "claude: -p /usage; codex: ChatGPT wham/usage via ~/.codex/auth.json; grok: no headless plan quota yet. Projection needs ≥2 same-reset samples ≥10m apart per vendor."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

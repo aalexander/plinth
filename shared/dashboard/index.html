@@ -209,6 +209,7 @@
   .chip.cyan { color: var(--cyan); background: var(--cyan-bg); border-color: rgba(57,210,192,0.3); }
   .chip.orange { color: var(--orange); background: rgba(240,136,62,0.12); border-color: rgba(240,136,62,0.35); }
   .chip.purple { color: var(--purple); background: rgba(163,113,247,0.12); border-color: rgba(163,113,247,0.3); }
+  .chip.dim { color: var(--dim); border-color: var(--border); opacity: 0.85; }
   .kv {
     display: grid;
     grid-template-columns: 5.5rem 1fr;
@@ -234,6 +235,37 @@
   }
   .kv dd.muted { color: var(--muted); }
   .kv dd.task, .kv dd.wrap { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .headline {
+    font-family: var(--font);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: var(--text);
+    margin: 0.1rem 0 0.15rem;
+  }
+  .headline .lbl {
+    font-size: 0.65rem;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 0.4rem;
+  }
+  .submeta {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+  }
+  .prompt-line {
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
   .phases {
     display: flex;
     height: 8px;
@@ -504,92 +536,155 @@
     return parts.join(" | ") || "—";
   }
 
+  // Drop agent/system/reviewer prompts that leaked into UserPromptSubmit.
+  function cleanPrompt(raw) {
+    if (raw == null || raw === "") return null;
+    let t = String(raw).replace(/\r/g, "").trim();
+    if (!t) return null;
+    const first = t.split(/\n/)[0].trim();
+    // Prefer first line if multi-line dump
+    if (t.indexOf("\n") >= 0) t = first;
+    if (t.length > 160) t = t.slice(0, 157) + "…";
+    const low = t.toLowerCase();
+    if (/^you are (an |a )/.test(low)) return null;
+    if (/read-only|do not edit|do not implement|adversarial reviewer|design reviewer|independent plan reviewer/.test(low)) return null;
+    if (/^#{1,3}\s/.test(t)) return null;
+    if (/^status:\s|^action:\s/i.test(t)) return null;
+    // Tiny noise prompts
+    if (t.length < 4) return null;
+    return t;
+  }
+
+  function isGenericNext(s) {
+    if (!s) return true;
+    const t = String(s).toLowerCase();
+    return /continue build \(or plinth harden/.test(t)
+      || t === "none"
+      || t === "—"
+      || /^fill handoff/.test(t);
+  }
+
   // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
   function cardHTML(p) {
     const tone = cardTone(p);
+    const life = p.lifecycle || {};
     const chips = [];
     if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
-    if (p.feedless) chips.push('<span class="chip">feedless</span>');
+    if (p.feedless) chips.push('<span class="chip" title="No hook pulse feed">feedless</span>');
     if (p.needs_human && p.needs_human.open > 0) {
       const blk = p.needs_human.blocking > 0
         ? " · " + p.needs_human.blocking + " blocking" : "";
       chips.push(
         '<button type="button" class="chip orange btn" data-nh="' + esc(p.path) +
-        '" title="Open queue">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</button>"
+        '" title="Show open NEEDS-HUMAN items">NH ×' + p.needs_human.open + blk + "</button>"
       );
     }
     const r = p.review;
     if (r) {
       if (r.running) {
-        chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
+        chips.push('<span class="chip yellow">r' + esc(r.round) + " run</span>");
       } else if (r.last_error) {
-        chips.push('<span class="chip red">review infra error</span>');
+        chips.push('<span class="chip red">review err</span>');
       } else if (r.verdict === "APPROVED") {
         chips.push('<span class="chip green">APPROVED</span>');
       } else if (r.verdict === "CHANGES_NEEDED") {
-        chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
+        chips.push('<span class="chip yellow">CHANGES</span>');
       } else if (r.verdict === "UNBOUND") {
         chips.push('<span class="chip yellow">UNBOUND</span>');
       } else if (r.verdict) {
         chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
       }
-      if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
-      if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
-    } else if (!p.error) {
-      chips.push('<span class="chip">no review</span>');
+      if (r.stale) chips.push('<span class="chip red">stale</span>');
+      if (r.round != null && !r.running && r.verdict) {
+        chips.push('<span class="chip dim">r' + esc(r.round) + "</span>");
+      }
     }
-    if (p.burn_per_min != null) {
+    // Only non-default lifecycle signals (BUILD is default — omit)
+    if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
+    if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
+    if (p.burn_per_min != null && p.burn_per_min >= 50) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
-    const life = p.lifecycle || {};
-    if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
-    else if (life.phase === "build" || life.phase) chips.push('<span class="chip">BUILD</span>');
-    if (life.plan) chips.push('<span class="chip cyan">PLAN</span>');
-    if (life.plan_review) chips.push('<span class="chip cyan">PLAN-REVIEW</span>');
-    if (life.handoff) chips.push('<span class="chip">HANDOFF</span>');
-    if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL-DEGRADED</span>');
 
     const activity = p.activity_secs_ago == null
-      ? (p.feedless ? "no pulse feed" : "—")
+      ? (p.feedless ? "no feed" : "—")
       : hum(p.activity_secs_ago) + " ago";
-    const session = p.session_secs == null ? "—" : hum(p.session_secs);
-    const task = p.task ? esc(p.task) : '<span class="muted">—</span>';
-    const revDetail = r
-      ? (r.verdict || (r.running ? "running" : "—")) +
-        (r.sha7 ? " @" + esc(r.sha7) : "") +
-        (r.mode ? " · " + esc(r.mode) : "") +
-        (r.tier != null ? " · tier " + r.tier : "")
-      : "none on this branch";
+    const session = p.session_secs == null ? null : hum(p.session_secs);
+    const prompt = cleanPrompt(p.task);
+    let next = life.next ? String(life.next).replace(/\s+/g, " ").trim() : null;
+    if (isGenericNext(next)) next = null;
+    if (next && next.length > 140) next = next.slice(0, 137) + "…";
+
+    // Headline: prefer concrete next; else cleaned human prompt; else review state
+    let headline = next;
+    let headlineLbl = "next";
+    if (!headline && prompt) {
+      headline = prompt;
+      headlineLbl = "prompt";
+    }
+    if (!headline && r && r.running) {
+      headline = "Review round " + r.round + " running";
+      headlineLbl = "status";
+    }
+    if (!headline && r && r.stale) {
+      headline = "Review stale vs HEAD — re-run review";
+      headlineLbl = "status";
+    }
+
+    const revBits = [];
+    if (r) {
+      if (r.sha7) revBits.push("@" + r.sha7);
+      if (r.mode) revBits.push(r.mode);
+      if (r.tier != null) revBits.push("t" + r.tier);
+      if (p.review_round_secs != null && p.review_round_secs > 0) {
+        revBits.push("wall " + hum(p.review_round_secs));
+      }
+    }
     const models = modelsLine(p);
-    const tokens = p.tokens_total != null
-      ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
-      : "unknown";
+    const burnBits = [];
+    if (p.burn_per_min != null) burnBits.push(humK(p.burn_per_min) + "/min");
+    if (p.tokens_total != null) burnBits.push(humK(p.tokens_total) + " tok");
     const phases = phaseBar(p.phases);
-    const revWall = (p.review_round_secs != null && p.review_round_secs > 0)
-      ? hum(p.review_round_secs) : null;
+
+    const sub = [
+      esc(p.branch) + " @" + esc(p.head),
+      activity,
+      session ? ("sess " + session) : null,
+      life.plan ? "plan" : null,
+      life.plan_review ? "plan-review" : null,
+    ].filter(Boolean).join(" · ");
+
+    // Show cleaned prompt only if headline is next (avoid duplicating same text)
+    const showPrompt = prompt && next && prompt.toLowerCase() !== next.toLowerCase()
+      && prompt.slice(0, 40).toLowerCase() !== next.slice(0, 40).toLowerCase();
 
     return (
       '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
-        '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
-        '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
-        '<div class="chips">' + chips.join("") + "</div>" +
+        '<div class="row">' +
+          '<div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div>" +
+        "</div>" +
+        '<div class="submeta" title="' + esc(p.path) + '">' + sub + "</div>" +
+        (chips.length ? '<div class="chips">' + chips.join("") + "</div>" : "") +
+        (headline
+          ? '<div class="headline"><span class="lbl">' + esc(headlineLbl) + "</span>" +
+            esc(headline) + "</div>"
+          : "") +
+        (showPrompt ? '<div class="prompt-line" title="Last human-looking prompt">' + esc(prompt) + "</div>" : "") +
         '<dl class="kv">' +
-          "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
-          "<dt>lifecycle</dt><dd>" + esc((life.phase||"build") + (life.plan?" · plan":"") + (life.plan_review?" · deep":"") + (life.handoff?" · handoff":"") + (life.dual_degraded?" · dual-degraded":"")) + "</dd>" +
-          "<dt>next</dt><dd class=\"task\">" + (life.next ? esc(String(life.next).slice(0,120)) : '<span class="muted">—</span>') + "</dd>" +
-          "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
-          "<dt>session</dt><dd>" + esc(session) + "</dd>" +
-          "<dt>review</dt><dd>" + esc(revDetail) +
-            (revWall ? " · wall " + esc(revWall) : "") + "</dd>" +
-          "<dt>models</dt><dd class=\"wrap muted\">" + esc(models) + "</dd>" +
-          "<dt>burn</dt><dd class=\"muted\">" +
-            (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
-            tokens + "</dd>" +
-          "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
+          (r || p.error
+            ? "<dt>review</dt><dd>" +
+              esc(r ? (r.verdict || (r.running ? "running" : "—")) : "—") +
+              (revBits.length ? ' <span class="muted">' + esc(revBits.join(" · ")) + "</span>" : "") +
+              "</dd>"
+            : "") +
+          (models !== "—"
+            ? '<dt>models</dt><dd class="wrap muted">' + esc(models) + "</dd>"
+            : "") +
+          (burnBits.length
+            ? "<dt>burn</dt><dd class=\"muted\">" + esc(burnBits.join(" · ")) + "</dd>"
+            : "") +
         "</dl>" +
         (phases ? '<div>' + phases + "</div>" : "") +
-        '<div class="footer-note">click NEEDS-HUMAN for open items · phases = event-gap heuristic (active SID)' +
-          (revWall ? " · review wall " + esc(revWall) : "") + "</div>" +
       "</article>"
     );
   }
@@ -647,7 +742,7 @@
     const ageSpan = '<span class="dim">polled ' + esc(age) + "</span>";
     const rows = [];
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
-    const preferred = ["claude", "codex", "grok", "gemini", "agy"];
+    const preferred = ["claude", "codex", "grok"];
     const ordered = preferred
       .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
       .filter(Boolean)
@@ -687,6 +782,9 @@
         if (q.overall.used_pct != null) return;
       }
       if (v.available && v.used_pct != null) {
+        const extraBits = [];
+        if (v.plan_type) extraBits.push(String(v.plan_type));
+        if (v.primary_window) extraBits.push(String(v.primary_window));
         rows.push(quotaRowHTML(
           v.vendor.toUpperCase(),
           v.used_pct,
@@ -694,7 +792,9 @@
           v.reset_text,
           formatProjection(v),
           v.rate_pct_per_hour != null ? v.rate_pct_per_hour + "%/h" : null,
-          v.primary_window ? '<span class="dim">' + esc(v.primary_window) + "</span>" : ""
+          extraBits.length
+            ? '<span class="dim">' + esc(extraBits.join(" · ")) + "</span>"
+            : ""
         ));
       } else {
         const why = v.error || (v.available ? "no window" : "unavailable");

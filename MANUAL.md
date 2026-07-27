@@ -554,22 +554,24 @@ Claude transcript is reachable.
 - Not billing, not complete wall-clock of the human day; use it to spot relative
   bottlenecks (coding-heavy vs review-heavy), not absolute SLA.
 
-**Vendor plan quota (overall weekly):** official CLIs only (not scraped web UIs).
+**Vendor plan quota (per vendor):** official surfaces only (not scraped web UIs).
 `plinth dash --snapshot` is **offline** — reads
 `/tmp/plinth-dash-quota-$UID/dash-quota.json` if present, else `offline`/`skipped`;
-it does **not** spawn vendor CLIs (caller env cannot force a probe on
-`--snapshot`). The HTTP serve path **may** spawn a timeout-bounded Claude usage
-probe in an empty `/tmp` directory (internal `dash --snapshot-with-quota`) and
-write the quota cache only at
+it does **not** spawn vendor probes (caller env cannot force a probe on
+`--snapshot`). The HTTP serve path **may** refresh quota (internal
+`dash --snapshot-with-quota`) and write the cache only at
 `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
-`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`). Scratch temps for event/transcript
-parsing use the process `TMPDIR` (default system temp) — do not point
-`TMPDIR` or a discovered project root at `/tmp` or the quota-cache directory if
-you need a hard quarantine. TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
-`PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
-usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
-time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history
-drops prior-week / reset-less samples).
+`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
+- **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir.
+- **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline).
+- **Grok** — no headless plan-quota API yet (`no_headless_usage_surface`).
+Scratch temps for event/transcript parsing use the process `TMPDIR` (default
+system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
+the quota-cache directory if you need a hard quarantine. TTL ~15 min
+(`PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0`
+for smoke). Empty/unparsed usage is `parse_failed`. Projection: time-to-100%
+from ≥2 **same-reset-window** samples ≥10 min apart per vendor (history drops
+prior-window / reset-less samples).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
 fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase
