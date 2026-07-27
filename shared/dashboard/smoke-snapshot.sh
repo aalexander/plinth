@@ -791,6 +791,14 @@ export PLINTH_DASH_ROOTS="$PH2"
   and (.phases.ci == 20)          # Pre→Post Bash gh
   and (.phases.reviewing == 30)   # PostToolUse review.sh gap 70→40
 ' >/dev/null
+# Reinstall successful weekly-usage claude (prior sentinel was empty stdout).
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
 # Legacy reset-less history must not project across upgrade
 QLEG="$FIX/quota-legacy.json"
 jq -nc --argjson now "$NOWQ" '{
@@ -803,7 +811,13 @@ jq -nc --argjson now "$NOWQ" '{
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QLEG" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot-with-quota \
-  | jq -e '.quota.overall.projected_100pct_at == null' >/dev/null
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 80
+    and .quota.overall.projected_100pct_at == null
+    and (.quota.history | length) == 1
+    and .quota.history[0].reset_text != null
+  ' >/dev/null
 # Cross-reset history must not project from prior week
 QXR="$FIX/quota-xreset.json"
 jq -nc --argjson now "$NOWQ" '{
@@ -813,20 +827,16 @@ jq -nc --argjson now "$NOWQ" '{
     {t:($now-3600),week_all_models_pct:20,reset_text:"Jul 23 at 9am (America/Puerto_Rico)"}
   ], vendors:[]
 }' > "$QXR"
-cat > "$QBIN/claude" <<'C'
-#!/usr/bin/env python3
-import json
-print(json.dumps({"result":
-"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
-C
-chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QXR" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
-  | jq -e '.quota.overall.projected_100pct_at == null and (.quota.history|length)==1' >/dev/null
-# also: serve child must be ignored for meaning — only serve sets it;
-# plain snapshot with serve-child-env=0 stays offline even if someone exports serve-child-env wrongly
-# (caller cannot force probe without serve-child-env; serve always sets it)
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 80
+    and .quota.overall.projected_100pct_at == null
+    and (.quota.history|length)==1
+  ' >/dev/null
+# Public --snapshot is always offline; only serve uses --snapshot-with-quota.
 
 # review_round_secs: request→findings mtime delta, not folded into phases.reviewing
 RR="$FIX/rho-review-secs"
