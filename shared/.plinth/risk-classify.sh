@@ -57,7 +57,12 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
-is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -E "$SPECRE" >/dev/null; }
+# Strip one trailing slash so documented `spec_path = tree/` still prefixes paths.
+is_spec() {
+  local _sp="${SPEC_PATH%/}"
+  [ "$1" = "$SPEC_PATH" ] || [ "$1" = "$_sp" ] || [ "${1#"$_sp"/}" != "$1" ] \
+    || printf '%s' "$1" | grep -E "$SPECRE" >/dev/null
+}
 
 # plinth#11: never swallow git diff failures as "empty diff" / Tier 0.
 raw=""; raw_rc=0

@@ -1302,12 +1302,14 @@ $(cat "$RECEIPT")"
       die_infra "git diff --name-only for spec-change detection failed (rc=$_sn_rc)"
     fi
     # Fixed-string path match (not ERE): exact path OR any path under a directory
-    # spec_path (e.g. spec_path=spec → spec/part.md). Paths may contain + ( ) { }.
+    # spec_path (e.g. spec_path=spec or spec/ → spec/part.md). Strip one trailing
+    # slash so documented `spec/` form still prefixes correctly.
+    _sp="${sp%/}"
     _match=0
     while IFS= read -r _p || [ -n "${_p:-}" ]; do
       [ -n "${_p:-}" ] || continue
       case "$_p" in
-        "$sp"|"$sp"/*) _match=1; break ;;
+        "$_sp"|"$_sp"/*) _match=1; break ;;
       esac
     done <<EOF
 $_sn

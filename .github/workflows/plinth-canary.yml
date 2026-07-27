@@ -821,11 +821,30 @@ jobs:
           if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | grep -q SKIPADD; then
             echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
           fi
-          # product must match directory-valued spec_path and rename-away of file specs
-          grep -q 'no-renames' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
-            || { echo "::error::#15 review.sh spec_changed missing --no-renames"; exit 1; }
-          grep -q '"$sp"/\*' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
-            || { echo "::error::#15 review.sh spec_changed missing directory-prefix match"; exit 1; }
+          # Behavioral: directory spec_path with and without trailing slash → Tier 2
+          for _spv in 'blueprints' 'blueprints/'; do
+            T_DSP="$(mktemp -d)"; ( cd "$T_DSP"; git init -qb main . >/dev/null
+              mkdir -p .plinth blueprints
+              printf 'spec_path = %s\n' "$_spv" > .plinth/config
+              echo hi > README.md; git add -A; git commit -qm b >/dev/null
+              git checkout -qb feat >/dev/null 2>&1
+              echo ch > blueprints/chapter.md; git add -A; git commit -qm w >/dev/null
+              out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null)"
+              [ "$(printf '%s' "$out" | jq -r .tier)" = "2" ] \
+                || { echo "::error::#15 risk-classify missed directory spec_path='$_spv' (out=$out)"; exit 1; }
+            )
+          done
+          # Behavioral: rename-away of file SPEC.md still surfaces as delete with --no-renames
+          T_RN="$(mktemp -d)"; ( cd "$T_RN"; git init -qb main . >/dev/null
+            mkdir -p .plinth; printf 'spec_path = SPEC.md\n' > .plinth/config
+            echo REQ > SPEC.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            git mv SPEC.md OTHER.md; git commit -qm ren >/dev/null
+            # Product loop uses --no-renames so SPEC.md appears deleted
+            names="$(git diff --name-only --no-renames main...HEAD)"
+            printf '%s\n' "$names" | grep -qxF 'SPEC.md' \
+              || { echo "::error::#15 rename-away fixture: --no-renames did not list SPEC.md (got $names)"; exit 1; }
+          )
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
           RV3="$(mktemp -d)"; BORG3="$(mktemp -d)"; git init -q --bare "$BORG3"
@@ -2097,9 +2116,12 @@ jobs:
           # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
           # the happy path's live re-check matches.
           R9D_GHDIR="$(mktemp -d)"
+          # Unquoted heredoc expands $R9D_HEAD/$R9D_PROJ at write time; \$_base and
+          # \$(git ...) expand at each mock invocation so repins update base_sha.
           cat > "$R9D_GHDIR/gh" <<GHEOF
           #!/usr/bin/env bash
-          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          _base="\$(git -C "$R9D_PROJ" rev-parse origin/main 2>/dev/null || true)"
+          printf '%s' "{\"sha\":\"$R9D_HEAD\",\"base_sha\":\"\$_base\",\"body\":\"\"}"
           GHEOF
           chmod +x "$R9D_GHDIR/gh"
           # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
