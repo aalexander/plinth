@@ -463,24 +463,37 @@
 
   function modelsLine(p) {
     const m = p.models || {};
-    const bits = [];
-    if (p.model_driver || m.driver_live) {
-      bits.push("drv " + (p.model_driver || m.driver_live));
+    const live = m.live || {};
+    const seats = m.seats || {};
+    const liveBits = [];
+    const seatBits = [];
+    const drv = p.model_driver || live.driver;
+    if (drv) liveBits.push("drv " + drv);
+    const rev = p.model_reviewer || live.reviewer;
+    if (rev || live.reviewer_vendor) {
+      liveBits.push("rev " + [live.reviewer_vendor, rev].filter(Boolean).join("/"));
     }
-    const rev = p.model_reviewer || m.reviewer_live;
-    const rv = m.reviewer_vendor;
-    if (rev || rv) {
-      bits.push("rev " + [rv, rev].filter(Boolean).join("/"));
-    } else if (m.reviewer_seat_t2 || m.reviewer_seat_t1) {
-      bits.push("rev seat " + (m.reviewer_seat_t2 || m.reviewer_seat_t1));
+    if (seats.reviewer_vendor || seats.reviewer_tier1 || seats.reviewer_tier2) {
+      seatBits.push("rev " + [
+        seats.reviewer_vendor,
+        seats.reviewer_tier2 ? "t2=" + seats.reviewer_tier2 : null,
+        seats.reviewer_tier1 ? "t1=" + seats.reviewer_tier1 : null
+      ].filter(Boolean).join("/"));
     }
-    if (m.audit_vendor || m.audit_model) {
-      bits.push("aud " + [m.audit_vendor, m.audit_model].filter(Boolean).join("/"));
+    if (seats.audit_vendor || seats.audit_model) {
+      seatBits.push("aud " + [seats.audit_vendor, seats.audit_model].filter(Boolean).join("/"));
     }
-    if (m.advisor_model || m.advisor_vendor) {
-      bits.push("adv " + [m.advisor_vendor, m.advisor_model].filter(Boolean).join("/"));
+    if (seats.advisor_vendor || seats.advisor_model || seats.advisor_model_max) {
+      seatBits.push("adv " + [
+        seats.advisor_vendor,
+        seats.advisor_model,
+        seats.advisor_model_max ? "max=" + seats.advisor_model_max : null
+      ].filter(Boolean).join("/"));
     }
-    return bits.join(" · ") || "—";
+    const parts = [];
+    if (liveBits.length) parts.push("live " + liveBits.join(" · "));
+    if (seatBits.length) parts.push("seats " + seatBits.join(" · "));
+    return parts.join(" | ") || "—";
   }
 
   // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
@@ -631,6 +644,10 @@
         const blk = typeof it === "object" && it.blocking;
         return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
       }).join("");
+      if (p.needs_human && p.needs_human.truncated) {
+        nhList.innerHTML +=
+          '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      }
     }
     nhModal.classList.add("open");
   }

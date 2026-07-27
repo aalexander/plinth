@@ -35,6 +35,17 @@ mk_git() {
 # ── Fixture A: active session + verdict + NEEDS-HUMAN open + events ──────────
 A="$FIX/alpha"
 mk_git "$A"
+# Config seats must surface even when no live transcript model exists.
+printf '%s\n' \
+  'spec_path = SPEC.md' \
+  'reviewer_vendor = codex' \
+  'reviewer_model_tier1 = gpt-t1' \
+  'reviewer_model_tier2 = gpt-t2' \
+  'audit_vendor = claude' \
+  'audit_model = opus' \
+  'advisor_model = fable' \
+  'advisor_model_max = fable-max' \
+  > "$A/.plinth/config"
 git -C "$A" checkout -qb feat/dash
 echo x > "$A/f.txt"
 git -C "$A" add -A
@@ -43,11 +54,28 @@ HEAD="$(git -C "$A" rev-parse --short HEAD)"
 FULL="$(git -C "$A" rev-parse HEAD)"
 
 NOW="$(date +%s)"
-jq -nc --argjson epoch "$NOW" \
+# Active-SID phase chain: PostToolUse gap accrues to THAT tool's phase.
+# t0 SessionStart, +5s UserPromptSubmit (planning gap ignored before first phase
+# set if no prior epoch phase), +30s PostToolUse Edit → coding 30s from previous.
+jq -nc --argjson epoch "$((NOW - 100))" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-smoke",transcript:null,tool:null,detail:null,rc:null}' \
   > "$A/.plinth/session/events.jsonl"
-jq -nc --argjson epoch "$((NOW - 10))" \
+jq -nc --argjson epoch "$((NOW - 90))" \
   '{ts:"2026-01-01T00:00:10Z",epoch:$epoch,event:"UserPromptSubmit",sid:"sid-smoke",transcript:null,tool:null,detail:"smoke dashboard task",rc:null}' \
+  >> "$A/.plinth/session/events.jsonl"
+jq -nc --argjson epoch "$((NOW - 60))" \
+  '{ts:"2026-01-01T00:00:40Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Edit",detail:"f.txt",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+jq -nc --argjson epoch "$((NOW - 40))" \
+  '{ts:"2026-01-01T00:01:00Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Read",detail:"f.txt",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+# Noise SID must not pollute active phases
+jq -nc --argjson epoch "$((NOW - 30))" \
+  '{ts:"2026-01-01T00:01:10Z",epoch:$epoch,event:"PostToolUse",sid:"other-sid",transcript:null,tool:"Bash",detail:"gh pr view",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+# Return to active SID
+jq -nc --argjson epoch "$((NOW - 10))" \
+  '{ts:"2026-01-01T00:01:30Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"./plinth advise x",rc:0}' \
   >> "$A/.plinth/session/events.jsonl"
 
 mkdir -p "$A/.plinth/session/review/feat-dash"
@@ -565,11 +593,11 @@ EXPECTED_N=43
 [ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
-# Top-level vendor quota (skipped in smoke)
+# Top-level vendor quota: smoke disables probes; snapshot never spawns CLIs.
 jq -e '
   .quota != null
-  and .quota.skipped == true
   and .quota.available == false
+  and (.quota.skipped == true or .quota.offline == true)
 ' "$OUT" >/dev/null
 
 # Alpha assertions
@@ -583,6 +611,7 @@ jq -e --arg head "$HEAD" '
   and (.needs_human.items | type == "array")
   and (.needs_human.items | length) == 2
   and (.needs_human.items | map(select(.blocking == true)) | length) == 1
+  and .needs_human.truncated == false
   and .review.verdict == "CHANGES_NEEDED"
   and .review.round == 2
   and .review.stale == false
@@ -590,14 +619,47 @@ jq -e --arg head "$HEAD" '
   and .task == "smoke dashboard task"
   and .quota.available == false
   and (.quota.note | type == "string")
-  and (.models | type == "object")
+  and (.models.live | type == "object")
+  and (.models.seats | type == "object")
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .models.seats.audit_model == "opus"
+  and .models.seats.advisor_model_max == "fable-max"
   and (.phases | type == "object")
+  # PostToolUse Edit gap 30s (90→60), Read 20s (60→40); other-sid ignored;
+  # return-to-active Bash advise is not timed until a later same-SID event.
+  and .phases.coding == 30
+  and .phases.research == 20
+  and ((.phases.ci // 0) == 0)
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0
   and .activity_secs_ago < 120
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
+
+# Quota cache parse + projection (offline snapshot reads cache; no CLI spawn)
+QFIX="$FIX/quota-cache.json"
+NOWQ="$(date +%s)"
+jq -nc --argjson now "$NOWQ" '{
+  available:true, refreshed_at:$now,
+  overall:{vendor:"claude",window:"week_all_models",used_pct:80,remaining_pct:20,
+           reset_text:"Jul 30 at 9am",projected_100pct_at:($now+14400),rate_pct_per_hour:5},
+  vendors:[{vendor:"claude",available:true,windows:[{window:"week_all_models",used_pct:80,reset_text:"Jul 30"}]}],
+  history:[{t:($now-7200),week_all_models_pct:70},{t:$now,week_all_models_pct:80}]
+}' > "$QFIX"
+QOUT="$FIX/quota-out.json"
+PLINTH_DASH_QUOTA_CACHE="$QFIX" PLINTH_DASH_QUOTA_PROBE=0 PLINTH_DASH_QUOTA=1 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot > "$QOUT"
+jq -e '
+  .quota.available == true
+  and .quota.overall.used_pct == 80
+  and .quota.overall.projected_100pct_at != null
+  and (.quota.offline != true)
+' "$QOUT" >/dev/null
+# Snapshot must stay offline even if PROBE accidentally unset with empty cache
+PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" PLINTH_DASH_QUOTA_PROBE=0 \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
 
 # Beta feedless
 jq -e '
@@ -1202,12 +1264,15 @@ setTimeout(() => {
       feedless: false, task: "do the thing", burn_per_min: 12, tokens_total: 1500,
       model_driver: "claude-test", model_reviewer: "gpt-test",
       models: {
-        driver_live: "claude-test", reviewer_live: "gpt-test",
-        reviewer_vendor: "codex", audit_vendor: "claude", audit_model: "opus",
-        advisor_model: "fable"
+        live: { driver: "claude-test", reviewer: "gpt-test", reviewer_vendor: "codex" },
+        seats: {
+          reviewer_vendor: "codex", reviewer_tier1: "gpt-t1", reviewer_tier2: "gpt-t2",
+          audit_vendor: "claude", audit_model: "opus",
+          advisor_vendor: "claude", advisor_model: "fable", advisor_model_max: "fable-max"
+        }
       },
       phases: { coding: 120, reviewing: 60, research: 30 },
-      needs_human: { open: 0, blocking: 0, items: [] },
+      needs_human: { open: 0, blocking: 0, items: [], truncated: false },
       review: { verdict: "CHANGES_NEEDED", round: 2, sha7: "abc1234",
                 stale: false, running: false, mode: "fresh", tier: 1 },
       activity_secs_ago: 5, session_secs: 60,
@@ -1216,7 +1281,7 @@ setTimeout(() => {
     for (const needle of [
       "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
       "12/min", "1.5k recent", "r2", "claude-test", "gpt-test",
-      "coding", "reviewing",
+      "coding", "reviewing", "seats", "max=fable-max", "t2=gpt-t2",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
@@ -1228,7 +1293,7 @@ setTimeout(() => {
       name: "h", path: "/tmp/h", branch: "main", head: "abc",
       feedless: true, review: null,
       needs_human: {
-        open: 2, blocking: 1,
+        open: 2, blocking: 1, truncated: false,
         items: [{ text: "[BLOCKING] fix me", blocking: true },
                 { text: "later", blocking: false }]
       }
@@ -1237,6 +1302,11 @@ setTimeout(() => {
     if (!nhHtml.includes('data-nh="/tmp/h"')) {
       console.error("NEEDS-HUMAN chip missing data-nh:", nhHtml.slice(0, 300));
       process.exit(1);
+    }
+    // Modal path: openNeedsHuman renders item text + blocking class
+    if (typeof api.openNeedsHuman === "function") {
+      // Seed projectsByPath via a render of a synthetic snapshot is not available;
+      // call through card path only. modelsLine/phaseBar pure paths already covered.
     }
     // UNBOUND (pending Tier-2 confirmation): warn tone + yellow chip
     const unbound = {

@@ -3,16 +3,16 @@
 ## v4.9.0 — dashboard ops visibility (quota, NEEDS-HUMAN drill-down, phases) — July 27, 2026
 - **`plinth dash` quota strip:** overall weekly plan usage from official CLIs
   (`claude -p /usage --output-format json`; codex/grok honest-unavailable until
-  headless). Cached ~15 min (`~/.config/plinth/dash-quota.json`); projects
-  time-to-100% weekly usage when ≥2 samples ≥10 min apart, shown next to the
-  reset clock. `PLINTH_DASH_QUOTA=0` / `PLINTH_DASH_QUOTA_TTL` for tests.
-- **NEEDS-HUMAN drill-down:** snapshot includes open item text; click the orange
-  chip to list open items (blocking first styling) from `.plinth/NEEDS-HUMAN.md`.
-- **Models row:** live driver/reviewer plus config seats (reviewer/audit/advisor)
-  so feedless drivers are not stuck on "—".
-- **Phase timing:** per-project seconds by stage (coding / research / reviewing /
-  advising / ci / planning / shell) from event gaps + review `usage.jsonl`
-  durations — bottleneck signal for the wallboard.
+  headless). **`--snapshot` is offline** (cache read only); HTTP serve sets
+  `PLINTH_DASH_QUOTA_PROBE=1` and refreshes ~15 min with a hard timeout.
+  Projects time-to-100% weekly usage when ≥2 samples ≥10 min apart.
+  `PLINTH_DASH_QUOTA=0` / `PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT`.
+- **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +
+  truncation notice); click the orange chip. Full queue: `plinth queue`.
+- **Models row:** `live` (transcript/verdict/request) and `seats` (config
+  reviewer t1/t2, audit, advisor, advisor_model_max) — seats never labeled live.
+- **Phase timing:** active-SID event gaps (PostToolUse = tool wall time) plus
+  request→findings mtimes for reviewing — bottleneck signal, not billing.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
