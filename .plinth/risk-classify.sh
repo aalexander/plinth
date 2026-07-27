@@ -57,10 +57,13 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
-# Strip one trailing slash so documented `spec_path = tree/` still prefixes paths.
+# Normalize leading ./ and one trailing slash so filesystem-equivalent forms
+# (./blueprints, blueprints/, ./blueprints/) still match Git-relative paths.
 is_spec() {
-  local _sp="${SPEC_PATH%/}"
-  [ "$1" = "$SPEC_PATH" ] || [ "$1" = "$_sp" ] || [ "${1#"$_sp"/}" != "$1" ] \
+  local _sp="${SPEC_PATH#./}"; _sp="${_sp%/}"
+  local _p="${1#./}"
+  [ "$_p" = "$SPEC_PATH" ] || [ "$_p" = "$_sp" ] || [ "$_p" = "${SPEC_PATH#./}" ] \
+    || [ "${_p#"$_sp"/}" != "$_p" ] \
     || printf '%s' "$1" | grep -E "$SPECRE" >/dev/null
 }
 

@@ -828,8 +828,8 @@ jobs:
           if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | grep -q SKIPADD; then
             echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
           fi
-          # Behavioral: directory spec_path with and without trailing slash → Tier 2
-          for _spv in 'blueprints' 'blueprints/'; do
+          # Behavioral: directory/file-equivalent spec_path forms → Tier 2
+          for _spv in 'blueprints' 'blueprints/' './blueprints' './blueprints/'; do
             T_DSP="$(mktemp -d)"; ( cd "$T_DSP"; git init -qb main . >/dev/null
               mkdir -p .plinth blueprints
               printf 'spec_path = %s\n' "$_spv" > .plinth/config
