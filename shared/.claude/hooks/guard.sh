@@ -49,8 +49,9 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #     APPROVED at HEAD (local HEAD only — not the create command's --head/-R).
 #   - bare `gh pr merge` is ALWAYS refused (even when APPROVED). A permitted merge
 #     must be origin- and head-bound (plinth#49): either a same-repo PR URL or
-#     -R/--repo naming origin, AND --match-head-commit equal to the origin-resolved
-#     head (so GH_REPO/default-repo cannot desync authorize-from vs merge-into).
+#     -R/--repo naming origin WITH a PR number/URL/branch, AND --match-head-commit
+#     equal to the origin-resolved head. Resolution forces GH_HOST=github.com so
+#     GH_HOST cannot desync authorize-from vs merge-into.
 # Wiring the guard into codex's own hook system (so a codex driver gets it too) is
 # deferred future work.
 # WHAT THIS IS, AND IS NOT — read before "hardening" it:
@@ -171,16 +172,15 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
         || block "$what blocked — -R/--repo names '$target_repo', not local repository '$local_repo'; a local verdict cannot authorize another repository."
     fi
 
-    # Always bind resolve to origin — never gh's implicit default repo (upstream #16).
-    if [ -n "$target_ref" ]; then
-      resolved="$(gh pr view "$target_ref" -R "$local_repo" \
-        --json headRefName,headRefOid,headRepository 2>/dev/null)" \
-        || block "$what blocked — could not resolve targeted pull request."
-    else
-      resolved="$(gh pr view -R "$local_repo" \
-        --json headRefName,headRefOid,headRepository 2>/dev/null)" \
-        || block "$what blocked — could not resolve targeted pull request."
-    fi
+    # Always bind resolve to origin on github.com — never gh's implicit default
+    # repo (upstream #16) and never GH_HOST (which would retarget owner/repo to
+    # another host). gh requires a PR ref when -R is set.
+    [ -n "$target_ref" ] \
+      || block "$what blocked — targeted merge with -R/--repo requires a PR number, URL, or branch (gh rejects bare -R without a ref)."
+    # Force github.com host for resolution so GH_HOST cannot desync authorize-from.
+    resolved="$(GH_HOST=github.com gh pr view "$target_ref" -R "github.com/$local_repo" \
+      --json headRefName,headRefOid,headRepository 2>/dev/null)" \
+      || block "$what blocked — could not resolve targeted pull request."
     resolved_branch="$(printf '%s' "$resolved" | jq -r '.headRefName // empty' 2>/dev/null)" \
       || block "$what blocked — resolved pull-request branch was unreadable."
     resolved_sha="$(printf '%s' "$resolved" | jq -r '.headRefOid // empty' 2>/dev/null)" \

@@ -643,9 +643,10 @@ it has run green with a real smoke_cmd.
   because it is not repository/head-bound (`GH_REPO` / default-repo can desync
   authorize-from vs merge-into). A permitted merge must be origin- and
   head-bound (plinth#49): either a same-repository PR URL **or** `-R`/`--repo`
-  naming the local origin, **and**
-  `--match-head-commit <origin-resolved-head-sha>`. Examples:
-  `gh pr merge --squash -R <owner/repo> --match-head-commit <sha>`,
+  naming the local origin **with a PR number/URL/branch** (gh rejects bare
+  `-R` without a ref), **and**
+  `--match-head-commit <origin-resolved-head-sha>`. Resolution is forced to
+  `github.com` so `GH_HOST` cannot retarget a same-named owner/repo. Examples:
   `gh pr merge 42 -R <owner/repo> --match-head-commit <sha>`,
   `gh pr merge https://github.com/<owner/repo>/pull/42 --match-head-commit <sha>`.
   Like every `.claude/` hook it fires only under a Claude driver, or a CLI

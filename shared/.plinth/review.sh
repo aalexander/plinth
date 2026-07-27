@@ -530,9 +530,12 @@ tool_names="$(git diff --name-only "${base_tip}..HEAD" 2>/dev/null)" || tool_rc=
 if [ "$tool_rc" -ne 0 ]; then
   RISK=2
   RISK_JSON='{"tier":2,"reasons":["git diff --name-only failed — failing closed to Tier 2 (cannot verify tooling floor)"]}'
-# here-string (not pipe+grep -q): under pipefail, early grep -q exit SIGPIPEs a
-# large printf and falsely skips the floor (plinth#15 / large-input fail-open).
-elif grep -Eq "$HARNESS_RE" <<<"$tool_names"; then
+# Full-read grep (not grep -q / not here-string): -q early-exits SIGPIPEs a large
+# printf under pipefail; here-string fails open if bash cannot create its temp.
+# rc 0 = match (floor), 1 = no match, other = infra fail-closed.
+elif _hrc=0; printf '%s\n' "$tool_names" | grep -E "$HARNESS_RE" >/dev/null || _hrc=$?; \
+     { [ "$_hrc" -eq 0 ] || [ "$_hrc" -eq 1 ]; } || die_infra "tooling floor grep failed (rc=$_hrc)"; \
+     [ "$_hrc" -eq 0 ]; then
   RISK=2
   RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored to Tier 2 before any classifier runs (self-referential bypass prevention)"]}'
 else
@@ -839,13 +842,25 @@ else
   elif [ -n "$_ag_tree" ]; then
     agents_body="$(git show "${base_tip}:AGENTS.md" 2>/dev/null)" \
       || die_infra "cannot read base AGENTS.md while resolving the reviewer contract"
-    # here-string: pipe+grep -q under pipefail SIGPIPEs on large AGENTS.md (fail-open).
-    if grep -qF '# Plinth — Reviewer' <<<"$agents_body"; then
+    # Full-read grep -F (not -q / not here-string): -q SIGPIPEs large input under
+    # pipefail; here-string fails open if bash cannot create its temp file.
+    _ag_hit=0; _ag_rc=0
+    printf '%s\n' "$agents_body" | grep -F '# Plinth — Reviewer' >/dev/null || _ag_rc=$?
+    if [ "$_ag_rc" -eq 0 ]; then _ag_hit=1
+    elif [ "$_ag_rc" -ne 1 ]; then die_infra "AGENTS.md reviewer-marker grep failed (rc=$_ag_rc)"
+    fi
+    if [ "$_ag_hit" = 1 ]; then
       printf '%s\n' "$agents_body" > "$RC_FILE" \
         || die_infra "cannot write base AGENTS.md reviewer contract"
       RC_SRC="AGENTS.md (base — pre-v4.4 reviewer contract)"
-    elif grep -qF 'Plinth driver shell (version-pinned)' <<<"$agents_body"; then
-      die_infra "post-v4.4 base has the driver-shell AGENTS.md but no ratified .plinth/reviewer.md — the reviewer contract is missing (corruption/tampering); refusing to review."
+    else
+      _dr_rc=0
+      printf '%s\n' "$agents_body" | grep -F 'Plinth driver shell (version-pinned)' >/dev/null || _dr_rc=$?
+      if [ "$_dr_rc" -eq 0 ]; then
+        die_infra "post-v4.4 base has the driver-shell AGENTS.md but no ratified .plinth/reviewer.md — the reviewer contract is missing (corruption/tampering); refusing to review."
+      elif [ "$_dr_rc" -ne 1 ]; then
+        die_infra "AGENTS.md driver-shell marker grep failed (rc=$_dr_rc)"
+      fi
     fi
   fi
 fi
