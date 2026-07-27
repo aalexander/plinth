@@ -763,7 +763,7 @@
     const ageSpan = '<span class="dim">polled ' + esc(age) + "</span>";
     const rows = [];
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
-    const preferred = ["claude", "codex"];
+    const preferred = ["claude", "codex", "grok"];
     const ordered = preferred
       .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
       .filter(Boolean)

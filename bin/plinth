@@ -2851,7 +2851,208 @@ print(json.dumps(out, separators=(",", ":")))
       >> "$vendors_tmp"
   fi
 
-  # Grok: no programmatic plan-quota surface — omit from the dash (do not show a dead row).
+  # ── Grok: cli-chat-proxy billing via ~/.grok/auth.json OIDC token (curl). Never log tokens/PII.
+  # Gated on `grok` on PATH so restricted-PATH smoke never hits the network.
+  if command -v grok >/dev/null 2>&1; then
+    local gk_auth="${HOME}/.grok/auth.json" gk_to="$_DASH_QUOTA_TIMEOUT" gk_out gk_rc=0
+    case "$gk_to" in ''|*[!0-9]*) gk_to=25 ;; esac
+    if [ ! -f "$gk_auth" ]; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"grok",available:false,error:"auth_missing",
+          note:"Run grok login — need ~/.grok/auth.json",probed_at:$now}' \
+        >> "$vendors_tmp"
+    elif ! command -v curl >/dev/null 2>&1; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"grok",available:false,error:"curl_missing",probed_at:$now}' \
+        >> "$vendors_tmp"
+    else
+      gk_out="$(python3 -c '
+import json, subprocess, sys
+from datetime import datetime, timezone
+
+auth_path, to_s = sys.argv[1], int(sys.argv[2])
+try:
+    with open(auth_path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+except Exception:
+    sys.exit(3)
+if not isinstance(auth, dict) or not auth:
+    sys.exit(2)
+# OIDC entries keyed by issuer::client_id; pick the first with a key/token.
+token = None
+plan_hint = None
+for _k, entry in auth.items():
+    if not isinstance(entry, dict):
+        continue
+    cand = entry.get("key") or entry.get("access_token")
+    if isinstance(cand, str) and cand:
+        token = cand
+        break
+if not token:
+    sys.exit(2)
+
+def curl_json(url):
+    cmd = [
+        "curl", "-sS", "-f", "--max-time", str(to_s),
+        "-H", "Authorization: Bearer " + token,
+        "-H", "Accept: application/json",
+        url,
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=to_s + 2)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(124)
+    if p.returncode != 0:
+        raise SystemExit(4 if p.returncode == 22 else 1)
+    try:
+        return json.loads(p.stdout or "")
+    except Exception:
+        raise SystemExit(5)
+
+try:
+    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing")
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+
+cfg = bill.get("config") if isinstance(bill, dict) else None
+if not isinstance(cfg, dict):
+    sys.exit(5)
+
+def num_val(obj, *keys):
+    cur = obj
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    if isinstance(cur, dict) and "val" in cur:
+        cur = cur.get("val")
+    if isinstance(cur, (int, float)):
+        return float(cur)
+    return None
+
+used = num_val(cfg, "used")
+limit = num_val(cfg, "monthlyLimit")
+# Optional richer fields when the API starts returning them.
+credit_pct = num_val(cfg, "creditUsagePercent")
+if credit_pct is None and isinstance(cfg.get("creditUsagePercent"), (int, float)):
+    credit_pct = float(cfg["creditUsagePercent"])
+
+def parse_iso(s):
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        s2 = s.replace("Z", "+00:00")
+        return int(datetime.fromisoformat(s2).timestamp())
+    except Exception:
+        return None
+
+start_at = parse_iso(cfg.get("billingPeriodStart"))
+end_at = parse_iso(cfg.get("billingPeriodEnd"))
+windows = []
+if used is not None and limit is not None and limit > 0:
+    used_pct = int(round(100.0 * used / limit))
+    used_pct = max(0, min(100, used_pct))
+    win = {"window": "month", "used_pct": used_pct}
+    if end_at is not None:
+        win["reset_at"] = end_at
+        win["reset_text"] = datetime.fromtimestamp(end_at, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+    if start_at is not None and end_at is not None and end_at > start_at:
+        win["window_seconds"] = end_at - start_at
+    elif end_at is not None:
+        win["window_seconds"] = 30 * 86400  # fallback calendar-ish month
+    windows.append(win)
+
+if credit_pct is not None:
+    cp = int(round(credit_pct))
+    cp = max(0, min(100, cp))
+    # Prefer weekly credit window as primary when present.
+    w = {"window": "week_credits", "used_pct": cp, "window_seconds": 604800}
+    # If API exposes currentPeriod end, use it; else no reset_at.
+    cp_end = cfg.get("currentPeriod")
+    if isinstance(cp_end, dict):
+        ea = parse_iso(cp_end.get("end") or cp_end.get("end_at") or cp_end.get("billingPeriodEnd"))
+        if ea is not None:
+            w["reset_at"] = ea
+            w["reset_text"] = datetime.fromtimestamp(ea, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+    windows.insert(0, w)
+
+if not windows:
+    sys.exit(5)
+
+# Plan tier from user endpoint (best-effort; ignore failures).
+plan = None
+try:
+    user = curl_json("https://cli-chat-proxy.grok.com/v1/user?include=subscription")
+    if isinstance(user, dict) and isinstance(user.get("subscriptionTier"), str):
+        plan = user["subscriptionTier"]
+except Exception:
+    plan = None
+
+out = {"vendor": "grok", "available": True, "windows": windows}
+if plan:
+    out["plan_type"] = plan
+# Never emit tokens, email, user ids, or raw bodies.
+print(json.dumps(out, separators=(",", ":")))
+' "$gk_auth" "$gk_to" 2>/dev/null)" || gk_rc=$?
+      case "$gk_rc" in
+        0)
+          if [ -n "$gk_out" ]; then
+            printf '%s' "$gk_out" | jq -c --argjson now "$now" '. + {probed_at:$now}' \
+              >> "$vendors_tmp" 2>/dev/null || \
+              jq -nc --argjson now "$now" \
+                '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+                >> "$vendors_tmp"
+          else
+            jq -nc --argjson now "$now" \
+              '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+              >> "$vendors_tmp"
+          fi
+          ;;
+        2)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"auth_missing",
+              note:"grok auth has no OIDC token — re-run grok login",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        3)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"auth_unreadable",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        4)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"http_failed",
+              note:"cli-chat-proxy billing rejected request (re-login if expired)",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        5)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        124)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"cli_timeout",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        *)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"probe_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+      esac
+    fi
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"grok",available:false,error:"cli_missing",probed_at:$now}' \
+      >> "$vendors_tmp"
+  fi
 
   # Parse Claude-style reset_text → reset_at so linear-from-reset works without multi-sample history.
   # Mutates vendors_tmp in place (NDJSON of vendor objects). Best-effort; never fails the probe.
@@ -3020,8 +3221,9 @@ except Exception:
                 reset_at: $ra,
                 window_seconds: $ws,
                 projected_100pct_at: $proj100,
+                # Two decimals — monthly burns can be ≪ 0.1 %/h (one decimal would floor to 0).
                 rate_pct_per_hour: (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
-                                    else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
+                                    else ((($rate.rate_pct_per_s * 3600 * 100) | floor) / 100) end)
               }
           end
       end;
@@ -3059,7 +3261,7 @@ except Exception:
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "claude: -p /usage; codex: ChatGPT wham/usage via ~/.codex/auth.json. Burn: linear from last reset (0% → current). Grok omitted (no plan-quota API)."
+        note: "claude: -p /usage; codex: ChatGPT wham/usage; grok: cli-chat-proxy /v1/billing (OIDC). Burn: linear from last reset (0% → current)."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

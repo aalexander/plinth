@@ -564,7 +564,7 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 `TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
 - **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir.
 - **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline).
-- **Grok** — omitted (no programmatic plan-quota API; interactive `/usage` is not account quota).
+- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (+ optional user subscription tier) via `curl` + OIDC token in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH so restricted-PATH smoke stays offline). Monthly allotment `used/monthlyLimit`; weekly `creditUsagePercent` when the API returns it.
 Scratch temps for event/transcript parsing use the process `TMPDIR` (default
 system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
 the quota-cache directory if you need a hard quarantine. TTL ~15 min

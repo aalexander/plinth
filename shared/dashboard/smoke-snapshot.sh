@@ -740,7 +740,8 @@ jq -e '
   and (.quota.overall.projected_100pct_at | type == "number")
   and .quota.overall.projected_100pct_at > .quota.refreshed_at
   and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
-  and ([.quota.vendors[] | select(.vendor=="grok")] | length) == 0
+  # Grok is probed when on PATH; restricted smoke PATH yields cli_missing, not a live plan row.
+  and ([.quota.vendors[] | select(.vendor=="grok" and .available==true)] | length) == 0
 ' "$QPROBE" >/dev/null
 # Cross-check projection math against the same reset parse the probe uses.
 python3 - "$QPROBE" <<'PY'
