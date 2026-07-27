@@ -342,7 +342,7 @@
   <div class="empty">Loading snapshot…</div>
 </main>
 <footer>
-  Local-only · 127.0.0.1 · read-only · vendor plan via CLI /usage (≈15m cache) ·
+  Local-only · 127.0.0.1 · project-read-only · may probe CLI /usage → ~/.config/plinth cache ·
   <code style="color:var(--muted)">plinth watch</code> stays the TTY dashboard
 </footer>
 <div id="nh-modal" role="dialog" aria-modal="true" aria-labelledby="nh-title">
@@ -568,7 +568,7 @@
           "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
         "</dl>" +
         (phases ? '<div>' + phases + "</div>" : "") +
-        '<div class="footer-note">click NEEDS-HUMAN chip for open items · phases ≈ event gaps + review ledger</div>' +
+        '<div class="footer-note">click NEEDS-HUMAN for open items · phases = event-gap heuristic (active SID)</div>' +
       "</article>"
     );
   }

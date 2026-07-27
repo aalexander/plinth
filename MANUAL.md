@@ -522,27 +522,29 @@ reviewer_tier1/2, audit, advisor, advisor_model_max — never labeled as live),
 **phase timing** for the **active SID only** in the events tail (see below), and
 **observed** driver burn when a Claude transcript is reachable.
 
-**Phase timing semantics (bottleneck signal, not billing):**
-- Scope: only the active session id (latest SID in the 10k-line events tail).
-- Accrual: on `PostToolUse`, the gap since the previous same-SID event is the
-  tool’s wall time (pulse fires after the tool). Other events accrue the gap to
+**Phase timing (bottleneck heuristic, not instrumented tool clocks):**
+- Scope: active session id only (latest SID in the 10k-line events tail).
+- Accrual is an **event-gap heuristic**: on `PostToolUse`, the gap since the previous
+  same-SID event is attributed to that tool’s stage class (pulse emits after the
+  tool; there is often no PreToolUse start stamp). Other events accrue the gap to
   the previous phase; `UserPromptSubmit` sets phase `planning`. Gaps ≥3600s drop.
 - Stages: coding / research / reviewing / advising / ci / planning / shell / other
   (Bash detail regex for review.sh / `plinth advise` / gh|canary|ci).
-- Plus: sum of `request-N` → `findings-N` file mtimes for the branch slug (review
-  wall time). `usage.jsonl` does **not** carry duration fields.
-- Not double-counted with burn tokens; not a complete wall-clock of the human day.
+- **Separate field** `review_round_secs`: sum of `request-N` → `findings-N` mtimes
+  for the branch slug — not folded into `phases.reviewing` (avoids double-count).
+- Not billing, not complete wall-clock of the human day; use it to spot relative
+  bottlenecks (coding-heavy vs review-heavy), not absolute SLA.
 
 **Vendor plan quota (overall weekly):** official CLIs only (not scraped web UIs).
 `plinth dash --snapshot` is **offline** — reads
 `~/.config/plinth/dash-quota.json` if present, else `offline`/`skipped`; it does
-**not** spawn vendor CLIs. The HTTP serve path sets `PLINTH_DASH_QUOTA_PROBE=1`
-and refreshes ~every 15 min (`PLINTH_DASH_QUOTA_TTL`) with a hard timeout
-(`PLINTH_DASH_QUOTA_TIMEOUT`, default 25s). `PLINTH_DASH_QUOTA=0` disables probes
-entirely (smoke). Claude: `claude -p /usage --output-format json`; empty/unparsed
-windows are `parse_failed`, not a fake available. Codex/grok: no headless surface
-yet. Projection: time-to-100% weekly from ≥2 samples ≥10 min apart, shown next to
-the reset clock.
+**not** spawn vendor CLIs. The HTTP serve path is **project-read-only** (never
+writes the discovered repos) but **may** spawn a timeout-bounded Claude usage
+probe in an empty temp cwd and write the quota cache under
+`~/.config/plinth/` (~15 min, `PLINTH_DASH_QUOTA_TTL` /
+`PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
+usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
+time-to-100% weekly from ≥2 samples ≥10 min apart vs the reset clock.
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
 fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase

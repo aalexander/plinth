@@ -2051,15 +2051,15 @@ snapshot_one_project() {
       nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
       nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
       # Drill-down list for the wallboard (cap 50; full queue via `plinth queue`).
-      # truncated=true when open count exceeds the listed items so the UI never
-      # implies the modal is the complete queue.
-      nh_items_json="$(printf '%s\n' "$raw" | head -n 50 | jq -Rsc --argjson open "$nhn" '
+      # Avoid printf|head SIGPIPE under pipefail: materialize then slice in jq.
+      nh_items_json="$(printf '%s\n' "$raw" | jq -Rsc --argjson open "$nhn" '
         split("\n")
         | map(select(length > 0))
-        | map({text: ., blocking: startswith("[BLOCKING]")})
-        | {items: ., truncated: ((. | length) < $open)}
-      ' 2>/dev/null || echo '{"items":[],"truncated":false}')"
-      # open_items count was computed above; if head truncated, mark flag on object later
+        | . as $all
+        | ($all[:50]) as $items
+        | {items: ($items | map({text: ., blocking: startswith("[BLOCKING]")})),
+           truncated: (($items | length) < $open)}
+      ' 2>/dev/null || echo '{"items":[],"truncated":true}')"
     fi
     case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
@@ -2205,10 +2205,12 @@ snapshot_one_project() {
     fi
   fi
 
-  # Reviewing wall time from request-N → findings-N mtimes (usage.jsonl has no duration).
+  # Separate review-round wall time (request-N → findings-N mtimes). NOT folded into
+  # phases.reviewing (that would double-count Bash review.sh event gaps).
+  local review_round_secs=0
   local rev_dir="$dir/.plinth/session/review/$slug"
   if [ -d "$rev_dir" ]; then
-    local rev_secs=0 f n rqff fnd
+    local n rqff fnd t0 t1
     for fnd in "$rev_dir"/findings-*.json; do
       [ -f "$fnd" ] || continue
       n="${fnd##*/findings-}"
@@ -2216,20 +2218,14 @@ snapshot_one_project() {
       case "$n" in ''|*[!0-9]*) continue ;; esac
       rqff="$rev_dir/request-$n.json"
       [ -f "$rqff" ] || continue
-      local t0 t1
       t0="$(_dash_mtime "$rqff")"
       t1="$(_dash_mtime "$fnd")"
       case "$t0" in ''|*[!0-9]*) continue ;; esac
       case "$t1" in ''|*[!0-9]*) continue ;; esac
       if [ "$t1" -ge "$t0" ] 2>/dev/null; then
-        rev_secs=$((rev_secs + t1 - t0))
+        review_round_secs=$((review_round_secs + t1 - t0))
       fi
     done
-    if [ "$rev_secs" -gt 0 ] 2>/dev/null; then
-      phases_json="$(jq -c --argjson s "$rev_secs" '
-        . + {reviewing: ((.reviewing // 0) + $s)}
-      ' <<<"$phases_json" 2>/dev/null || echo "$phases_json")"
-    fi
   fi
 
   # Malformed events or present-but-non-object verdict → error card.
@@ -2283,6 +2279,7 @@ snapshot_one_project() {
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
         --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
         --argjson phases "$phases_json" \
+        --argjson review_round_secs "$review_round_secs" \
         --arg seat_rv "${seat_reviewer_vendor:-}" \
         --arg seat_rt1 "${seat_reviewer_t1:-}" \
         --arg seat_rt2 "${seat_reviewer_t2:-}" \
@@ -2377,6 +2374,7 @@ snapshot_one_project() {
         tokens_window: "recent_transcript_tail",
         burn_per_min: $burn,
         phases: ($phases // {}),
+        review_round_secs: $review_round_secs,
         review: (if $V == null and ($running | not) and ($has_last_error | not) then null
                  elif $V == null and $has_last_error then {
                    verdict: null, round: ($RQ.round // null), sha7: null,
@@ -2476,16 +2474,19 @@ _dash_quota_probe() {
   if command -v claude >/dev/null 2>&1; then
     local cl_out cl_rc=0 cl_to="$_DASH_QUOTA_TIMEOUT"
     case "$cl_to" in ''|*[!0-9]*) cl_to=25 ;; esac
+    # Empty cwd: never inherit a project checkout's hooks/settings into the probe.
     cl_out="$(python3 -c '
-import json, subprocess, sys
+import os, subprocess, sys, tempfile
 to = int(sys.argv[1])
 try:
-    p = subprocess.run(
-        ["claude", "-p", "/usage", "--output-format", "json"],
-        capture_output=True, text=True, timeout=to,
-    )
-    sys.stdout.write(p.stdout or "")
-    sys.exit(p.returncode)
+    with tempfile.TemporaryDirectory(prefix="plinth-quota-") as d:
+        p = subprocess.run(
+            ["claude", "-p", "/usage", "--output-format", "json"],
+            capture_output=True, text=True, timeout=to, cwd=d,
+            env={**os.environ, "CLAUDE_PROJECT_DIR": d},
+        )
+        sys.stdout.write(p.stdout or "")
+        sys.exit(p.returncode)
 except subprocess.TimeoutExpired:
     sys.exit(124)
 except Exception:

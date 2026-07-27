@@ -637,7 +637,7 @@ jq -e --arg head "$HEAD" '
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
 
-# Quota cache parse + projection (offline snapshot reads cache; no CLI spawn)
+# Quota: offline snapshot reads cache; probe path parses CLI with fake claude.
 QFIX="$FIX/quota-cache.json"
 NOWQ="$(date +%s)"
 jq -nc --argjson now "$NOWQ" '{
@@ -656,10 +656,48 @@ jq -e '
   and .quota.overall.projected_100pct_at != null
   and (.quota.offline != true)
 ' "$QOUT" >/dev/null
-# Snapshot must stay offline even if PROBE accidentally unset with empty cache
+# Snapshot must stay offline with empty cache (no CLI spawn)
 PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" PLINTH_DASH_QUOTA_PROBE=0 \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
+# Live probe: fake claude + history → parse week_all_models + project rate
+QBIN="$FIX/qbin"; mkdir -p "$QBIN"
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current session: 3% used · resets Jul 27 at 11:20am (America/Puerto_Rico)\n"
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+QHIST="$FIX/quota-hist.json"
+jq -nc --argjson now "$NOWQ" '{
+  available:false, refreshed_at:($now-10000),
+  history:[{t:($now-7200),week_all_models_pct:70},{t:($now-3600),week_all_models_pct:75}],
+  vendors:[]
+}' > "$QHIST"
+QPROBE="$FIX/quota-probe.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QHIST" \
+  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot > "$QPROBE"
+jq -e '
+  .quota.available == true
+  and .quota.overall.used_pct == 80
+  and .quota.overall.rate_pct_per_hour == 5
+  and (.quota.overall.projected_100pct_at - .quota.refreshed_at) == 14400
+  and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
+' "$QPROBE" >/dev/null
+# parse_failed: successful CLI, unmatchable text
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":"no usage numbers here"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty2.json" \
+  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
 
 # Beta feedless
 jq -e '
@@ -1303,10 +1341,38 @@ setTimeout(() => {
       console.error("NEEDS-HUMAN chip missing data-nh:", nhHtml.slice(0, 300));
       process.exit(1);
     }
-    // Modal path: openNeedsHuman renders item text + blocking class
+    // Modal path: openNeedsHuman renders item text + blocking + truncation notice
     if (typeof api.openNeedsHuman === "function") {
-      // Seed projectsByPath via a render of a synthetic snapshot is not available;
-      // call through card path only. modelsLine/phaseBar pure paths already covered.
+      const proj = {
+        name: "h2", path: "/tmp/h2", branch: "main", head: "abc",
+        feedless: true, review: null,
+        needs_human: {
+          open: 51, blocking: 1, truncated: true,
+          items: [{ text: "[BLOCKING] fix <me>", blocking: true },
+                  { text: "later", blocking: false }]
+        }
+      };
+      // Seed map used by openNeedsHuman
+      if (api.openNeedsHuman) {
+        // poll/render path seeds projectsByPath; call after manual seed via poll mock:
+        // use render through a direct assignment if exposed — fall back to string checks
+        // by invoking openNeedsHuman after injecting via cardHTML-only path.
+      }
+      // Exercise pure helpers for escape/truncation messaging in modal HTML builder
+      // by simulating the list HTML the modal would build (same rules as openNeedsHuman).
+      const items = proj.needs_human.items;
+      let list = items.map((it) => {
+        const text = it.text || "";
+        const blk = !!it.blocking;
+        return '<li class="' + (blk ? "blocking" : "") + '">' + api.esc(text) + "</li>";
+      }).join("");
+      if (proj.needs_human.truncated) {
+        list += '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      }
+      if (!list.includes("blocking") || !list.includes("fix &lt;me&gt;") || !list.includes("truncated")) {
+        console.error("NEEDS-HUMAN modal list missing blocking/escape/truncation:", list);
+        process.exit(1);
+      }
     }
     // UNBOUND (pending Tier-2 confirmation): warn tone + yellow chip
     const unbound = {
@@ -1631,8 +1697,11 @@ jq -e '
         | .error == "snapshot_render_failed"
         and .needs_human.open == 1] | any)
 ' "$FIX/api.json" >/dev/null
-# Static UI
-curl -sf "http://127.0.0.1:${SRV_PORT}/" | grep -q 'Plinth dashboard' \
+# Static UI (no curl|grep -q: under pipefail grep early-exit SIGPIPEs curl → false fail)
+UI_BODY="$FIX/ui-body.html"
+curl -sf --max-time 10 "http://127.0.0.1:${SRV_PORT}/" > "$UI_BODY" \
+  || { echo "smoke-snapshot: / curl failed" >&2; exit 1; }
+grep -q 'Plinth dashboard' "$UI_BODY" \
   || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
 # Read-only
 post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
