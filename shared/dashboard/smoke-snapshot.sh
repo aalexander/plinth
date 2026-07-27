@@ -633,6 +633,7 @@ jq -e --arg head "$HEAD" '
   # Live reviewer from verdict.model only (request has no model; not seat fallback).
   and .models.live.reviewer == "gpt-test"
   and .model_reviewer == "gpt-test"
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
   and (.phases | type == "object")
   # Event-gap heuristic: Edit 30s (90→60), Read 20s (60→40); other-sid ignored;
   # return-to-active Bash advise credits the gap since last same-SID event (30s).
@@ -756,6 +757,16 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-forge.json" \
   "$PLINTH" dash --snapshot >/dev/null
 [ ! -f "$SENT" ] || { echo "smoke-snapshot: public --snapshot spawned claude under env force" >&2; exit 1; }
 
+# Legacy root NEEDS-HUMAN.md source label
+LEGNH="$FIX/legacy-nh"
+mk_git "$LEGNH"
+printf '%s\n' '- [ ] legacy open item' > "$LEGNH/NEEDS-HUMAN.md"
+export PLINTH_DASH_ROOTS="$LEGNH"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "legacy-nh")
+  | .needs_human.open == 1
+  and .needs_human.source == "NEEDS-HUMAN.md"
+' >/dev/null
 # >50 open items → truncated=true, items length 50
 T50="$FIX/tau-nh50"
 mk_git "$T50"
@@ -1650,6 +1661,7 @@ setTimeout(() => {
         feedless: true, review: null,
         needs_human: {
           open: 51, blocking: 1, truncated: true,
+          source: "NEEDS-HUMAN.md",
           items: [{ text: "[BLOCKING] fix <me>", blocking: true },
                   { text: "later", blocking: false }]
         }
@@ -1671,6 +1683,11 @@ setTimeout(() => {
       if (!listHtml.includes("blocking") || !listHtml.includes("fix &lt;me&gt;")
           || !listHtml.includes("truncated") || !listHtml.includes("plinth queue")) {
         console.error("openNeedsHuman list missing blocking/escape/truncation:", listHtml);
+        process.exit(1);
+      }
+      const subHtml = (elsById["nh-sub"] && elsById["nh-sub"].textContent) || "";
+      if (!subHtml.includes("NEEDS-HUMAN.md")) {
+        console.error("nh-sub missing source label:", subHtml);
         process.exit(1);
       }
       if (!modal.classList.contains("open")) {
