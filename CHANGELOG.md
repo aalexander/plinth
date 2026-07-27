@@ -1,5 +1,18 @@
 # Plinth changelog
 
+## v4.9.0 — Lifecycle: default build, ship-time harden, handoff — July 27, 2026
+- **Default BUILD phase:** Stop gate no longer requires APPROVED@HEAD on feature
+  branches unless harden is active. Logs `build_defer` (watch/events) so
+  unreviewed commits stay visible. **Ship gate unchanged** — `gh pr create|merge`
+  still needs APPROVED@HEAD.
+- **`plinth harden` / `plinth build` / `plinth phase`:** enter ship-prep (Stop
+  requires review again), return to default build, or print phase. State:
+  `.plinth/session/phase-<slug>.json` (CLI-written; agents cannot forge session).
+- **`plinth handoff`:** writes root `HANDOFF.md` with goal/next/restart prompt.
+  Restart convention: read HANDOFF.md and continue.
+- **Driver rules + MANUAL:** plan → build → harden → ship; advisor anytime.
+- **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`.
+
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
   `.plinth-lane.*/prompt` again (SPEC_EOF shell heredoc of the five-part spec is gone),

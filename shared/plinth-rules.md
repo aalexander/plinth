@@ -140,15 +140,28 @@ reflexively.
 Work on a feature branch — never commit directly to the base branch. The Stop
 gate deliberately does not guard base branches (it logs and releases), and the
 PR needs a branch to exist. Branch first, then build.
+
+## Lifecycle — plan → build → harden → ship
+Default phase is **build**: the Stop gate does **not** require APPROVED@HEAD
+to end a turn that committed (it logs `build_defer`). Ship is unchanged —
+`gh pr create|merge` still needs APPROVED@HEAD. When the product is ready:
+`plinth harden`, then run `./.plinth/review.sh` until APPROVED, then open the PR.
+`plinth build` returns to default build. `plinth phase` prints the current phase.
+`plinth handoff` writes root `HANDOFF.md`. **Restart:** read `HANDOFF.md` if
+present and continue from ## Next. Advisor (`plinth advise`) is available in
+every phase; it never replaces APPROVED. Prefer a short product plan (PLAN.md)
+before large features; human owns product tradeoffs.
+
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.
-Before the first paid round, run a FREE self-review pre-flight (your harness's
-built-in review command if it has one, else your own adversarial pass over the
-diff) plus this project's known defect classes, and fix what you find — a clean
-round 1 typically saves two to three paid rounds. Between rounds, batch the
-fixes for ALL open findings into ONE commit per round — never a round per fix.
-When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
-large diffs can exceed 10 minutes — if your shell tool caps there, run it in
+Before the first paid round (after `plinth harden`), run a FREE self-review
+pre-flight (your harness's built-in review command if it has one, else your own
+adversarial pass over the diff) plus this project's known defect classes, and
+fix what you find — a clean round 1 typically saves two to three paid rounds.
+Between rounds, batch the fixes for ALL open findings into ONE commit per round
+— never a round per fix.
+When ship-ready: `plinth harden`, commit if needed, then run `./.plinth/review.sh`.
+Rounds on large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (branch-keyed;

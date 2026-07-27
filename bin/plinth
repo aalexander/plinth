@@ -43,7 +43,9 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
        plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)
        plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
-       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)"; exit 1; }
+       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)
+       plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
+       plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
@@ -53,6 +55,14 @@ if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" 
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
+elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ]; then
+  # Lifecycle commands: project path optional (default CWD).
+  if [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
+    target="$(pwd)"
+  fi
+  if [ ! -d "$target" ]; then
+    echo "No such directory: $target"; exit 1
+  fi
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -2494,6 +2504,142 @@ finally:
 PY
 }
 
+# ── Lifecycle: default build, ship-time harden, handoff ─────────────────────
+# Phase is branch-keyed session state (agents cannot write .plinth/session/).
+# Missing phase file => build (Stop does not force review). harden => Stop
+# requires APPROVED@HEAD. Ship gate always requires APPROVED@HEAD.
+
+_lifecycle_slug() {
+  local b
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  printf '%s' "$b" | tr '/ ' '--'
+}
+
+_lifecycle_phase_file() {
+  local root="$1" slug
+  slug=$(_lifecycle_slug "$root")
+  printf '%s' "$root/.plinth/session/phase-$slug.json"
+}
+
+_lifecycle_read_phase() {
+  local f
+  f=$(_lifecycle_phase_file "$1")
+  if [ -f "$f" ]; then
+    jq -r '.phase // "build"' "$f" 2>/dev/null || echo build
+  else
+    echo build
+  fi
+}
+
+_lifecycle_write_phase() {
+  local root="$1" phase="$2" f dir slug head ts
+  slug=$(_lifecycle_slug "$root")
+  dir="$root/.plinth/session"
+  mkdir -p "$dir"
+  f="$dir/phase-$slug.json"
+  head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -n --arg p "$phase" --arg b "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" \
+    --arg slug "$slug" --arg head "$head" --arg ts "$ts" --arg who "${USER:-unknown}" \
+    '{phase:$p, branch:$b, slug:$slug, head:$head, updated_at:$ts, by:$who}' > "$f"
+}
+
+run_phase_status() {
+  local root="${1:-$target}" p f
+  p=$(_lifecycle_read_phase "$root")
+  f=$(_lifecycle_phase_file "$root")
+  echo "project: $root"
+  echo "branch:  $(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
+  echo "phase:   $p"
+  if [ -f "$f" ]; then
+    echo "state:   $f"
+    jq -c . "$f" 2>/dev/null || true
+  else
+    echo "state:   (absent — default build)"
+  fi
+  if [ "$p" = "harden" ]; then
+    echo "stop:    requires APPROVED@HEAD (run ./.plinth/review.sh)"
+  else
+    echo "stop:    build_defer (no forced review); ship still needs APPROVED@HEAD"
+  fi
+}
+
+run_harden() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth harden: not a git repo: $root" >&2; exit 1; }
+  case "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" in
+    main|master|HEAD)
+      echo "plinth harden: refuse on base/detached branch — use a feature branch" >&2
+      exit 1 ;;
+  esac
+  _lifecycle_write_phase "$root" harden
+  echo "Plinth phase → HARDEN (ship prep)."
+  echo "  Stop gate now requires APPROVED@HEAD."
+  echo "  Run:  (cd \"$root\" && ./.plinth/review.sh)"
+  echo "  When done shipping prep without ship: plinth build \"$root\""
+  echo "  Ship still blocked until APPROVED@HEAD (unchanged)."
+}
+
+run_build_phase() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth build: not a git repo: $root" >&2; exit 1; }
+  _lifecycle_write_phase "$root" build
+  echo "Plinth phase → BUILD (default)."
+  echo "  Stop gate allows end-of-turn without APPROVED (build_defer)."
+  echo "  PR/merge still requires APPROVED@HEAD — run plinth harden when ready to ship."
+}
+
+run_handoff() {
+  local root="${1:-$target}" out head branch phase slug vfile verdict vsha goal next
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth handoff: not a git repo: $root" >&2; exit 1; }
+  head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  phase=$(_lifecycle_read_phase "$root")
+  slug=$(_lifecycle_slug "$root")
+  vfile="$root/.plinth/session/review/$slug/verdict.json"
+  verdict="none"; vsha=""
+  if [ -f "$vfile" ]; then
+    verdict=$(jq -r '.verdict // "none"' "$vfile" 2>/dev/null || echo none)
+    vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null | head -c 12)
+  fi
+  goal="(edit: one paragraph of what this branch ships)"
+  next="1. (edit: next concrete step)"$'\n'"2. …"
+  if [ -f "$root/PLAN.md" ]; then
+    goal=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p&&NF{print; exit}' "$root/PLAN.md" 2>/dev/null || echo "$goal")
+  fi
+  out="$root/HANDOFF.md"
+  cat > "$out" <<EOF
+# Handoff — \`${branch}\` @ ${head}
+
+Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ) · Phase: **${phase}** · Verdict: ${verdict}${vsha:+ @ $vsha}
+
+## Goal
+${goal}
+
+## Done
+- (edit: bullets of what is already committed)
+
+## Next (ordered)
+${next}
+
+## Restart prompt
+> Read HANDOFF.md and continue from ## Next.
+> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD).
+> Advisor: \`plinth advise\` anytime.
+
+## Evidence
+- HEAD: \`${head}\` on \`${branch}\`
+- Lifecycle phase: ${phase}
+- Review verdict: ${verdict}${vsha:+ (sha $vsha)}
+- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)
+
+## Risks / Noticed
+- (edit)
+EOF
+  echo "Wrote $out"
+  echo "Restart: Read HANDOFF.md and continue."
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -2503,6 +2649,10 @@ case "$cmd" in
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   dash|dashboard) run_dashboard "$@" ;;
+  harden) run_harden "$target" ;;
+  build) run_build_phase "$target" ;;
+  phase) run_phase_status "$target" ;;
+  handoff) run_handoff "$target" ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent

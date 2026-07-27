@@ -86,6 +86,13 @@ Everything between is the model's call.
   dashboard finds it, warning instead of clobbering if both exist), re-run the GitHub
   preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
+- `plinth harden [path]`        — enter HARDEN (ship prep): Stop requires
+  APPROVED@HEAD again; then run `./.plinth/review.sh`. Default path: CWD.
+- `plinth build [path]`         — return to default BUILD: Stop does **not**
+  force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
+- `plinth phase [path]`         — print lifecycle phase (build|harden).
+- `plinth handoff [path]`       — write/refresh root `HANDOFF.md` (restart:
+  “Read HANDOFF.md and continue”).
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
 - `plinth queue ~/Dev/<repo>`   — the full NEEDS-HUMAN queue, every item
@@ -351,8 +358,10 @@ Two operator chores the rules generate:
    branch protection's required checks on the PR. For Rule-10 evidence under
    grok, read the session scrollback and the review verdicts instead of the
    evidence line.
-4. **The model:** commits, then runs `./.plinth/review.sh`.
-   *Background:* the script refuses to run on uncommitted work (verdicts bind
+4. **The model:** builds on the feature branch (default **BUILD** phase: Stop
+   does not force review). When you are happy with the product: `plinth harden`,
+   then the model runs `./.plinth/review.sh` until APPROVED@HEAD, then opens the PR.
+   *Background:* the review script refuses to run on uncommitted work (verdicts bind
    to a commit SHA), diffs the branch against main, and classifies the diff into
    a **risk tier** (deterministic, version-pinned, not driver-writable). The tier
    routes review DEPTH:

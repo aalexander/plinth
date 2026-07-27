@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Plinth review gate v1 (shared, version-pinned). Stop hook: a session that
-# created commits may not end its turn until ./.plinth/review.sh has recorded
-# an APPROVED verdict at HEAD (.plinth/session/review/<slug>/verdict.json,
-# branch-keyed by the slugified branch name).
-# Receives Claude Code Stop JSON on stdin. Exit 2 = block (stderr shown to the
-# model). Exit 0 = allow.
+# Plinth review gate v2 (shared, version-pinned). Stop hook: lifecycle-aware.
 #
-# Deliberately narrow: never enforces outside a git repo, without a SessionStart
-# baseline, on sessions that made no commits, or on the base branch. Releases
-# the session (loudly) after a recent infrastructure failure of review.sh, and
-# after PLINTH_GATE_MAX_BLOCKS blocks (default 10) — a gate, not a trap.
-# EVERY release of provably-unreviewed commits is logged to the session event
-# feed as a gate_release event; plinth watch surfaces them in red.
+# Default (BUILD): a session that committed may end without APPROVED@HEAD.
+#   Logs event build_defer so watch/dash stay honest. Ship is unchanged
+#   (guard still requires APPROVED for gh pr create|merge).
+# HARDEN (plinth harden): same as v1 — block until APPROVED@HEAD.
+#
+# Phase file: .plinth/session/phase-<slug>.json  {"phase":"build"|"harden",...}
+# Missing file => build (default).
+#
+# Receives Claude Code Stop JSON on stdin. Exit 2 = block (stderr to model).
+# Exit 0 = allow.
+#
+# Still narrow: no git / no session / no baseline / no commits / base branch
+# fail open. Infra last-error escape and PLINTH_GATE_MAX_BLOCKS remain.
 set -euo pipefail
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty')
@@ -21,28 +23,40 @@ block() { echo "PLINTH REVIEW GATE: $1" >&2; exit 2; }
 
 git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 [ -n "$sid" ] || exit 0
-[ -f "$SDIR/start-head-$sid" ] || exit 0          # no baseline recorded -> fail open
+[ -f "$SDIR/start-head-$sid" ] || exit 0
 head=$(git -C "$proj" rev-parse HEAD 2>/dev/null) || exit 0
-[ "$(cat "$SDIR/start-head-$sid")" != "$head" ] || exit 0   # no commits this session
+[ "$(cat "$SDIR/start-head-$sid")" != "$head" ] || exit 0
 
-# From here on, this session provably created commits. Any exit 0 below is a
-# RELEASE of unreviewed work — always logged so plinth watch and humans see it.
-log_release() {
-  { jq -cn --arg sid "$sid" --arg head "$head" --arg detail "$1" \
-      '{ts:(now|todate), epoch:(now|floor), event:"gate_release", sid:$sid, tool:null, detail:$detail, head:$head}' \
+log_event() {
+  local event="$1" detail="$2"
+  { jq -cn --arg sid "$sid" --arg head "$head" --arg detail "$detail" --arg event "$event" \
+      '{ts:(now|todate), epoch:(now|floor), event:$event, sid:$sid, tool:null, detail:$detail, head:$head}' \
       >> "$SDIR/events.jsonl"; } 2>/dev/null || true
 }
+log_release() { log_event "gate_release" "$1"; }
 
 branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
 case "$branch" in
-  main|master|HEAD)  # base branch / detached: not this gate's job — but say so
+  main|master|HEAD)
     log_release "commits landed directly on '$branch' — base branch is never gated"
     exit 0 ;;
 esac
-slug=$(printf '%s' "$branch" | tr '/ ' '--')   # review state is branch-keyed (v4)
+slug=$(printf '%s' "$branch" | tr '/ ' '--')
 
-# Infra escape: a recent mechanical review failure needs the human, not a trap
-# that hides the breakage behind a session that can't end.
+# Lifecycle phase: default build (no forced review). Harden restores v1 Stop.
+phase="build"
+pfile="$SDIR/phase-$slug.json"
+if [ -f "$pfile" ]; then
+  phase=$(jq -r '.phase // "build"' "$pfile" 2>/dev/null || echo build)
+fi
+case "$phase" in
+  harden) ;;
+  *)
+    log_event "build_defer" "phase=${phase:-build} — Stop allows without APPROVED; ship still needs APPROVED@HEAD (plinth harden when ready)"
+    exit 0
+    ;;
+esac
+
 err="$SDIR/review/$slug/last-error"
 if [ -f "$err" ] && [ -n "$(find "$err" -mmin -30 2>/dev/null)" ]; then
   log_release "infra escape: $(cat "$err" 2>/dev/null | head -c 120)"
@@ -50,7 +64,6 @@ if [ -f "$err" ] && [ -n "$(find "$err" -mmin -30 2>/dev/null)" ]; then
   exit 0
 fi
 
-# Anti-wedge cap (each block costs a full model turn; tune per project).
 maxblocks="${PLINTH_GATE_MAX_BLOCKS:-10}"
 cnt=$(cat "$SDIR/gate-blocks-$sid" 2>/dev/null || echo 0)
 if [ "$cnt" -ge "$maxblocks" ]; then
@@ -68,6 +81,6 @@ fi
 
 echo $((cnt + 1)) > "$SDIR/gate-blocks-$sid"
 if [ -n "$(git -C "$proj" status --porcelain 2>/dev/null)" ]; then
-  block "this session committed work, the tree is dirty, and there is no APPROVED review at HEAD. Commit (or stash), then run ./.plinth/review.sh; on exit 1 fix the findings, commit, re-run until it exits 0 (APPROVED). Then stop."
+  block "HARDEN phase: this session committed work, the tree is dirty, and there is no APPROVED review at HEAD. Commit (or stash), then run ./.plinth/review.sh; on exit 1 fix findings, commit, re-run until APPROVED. Or: plinth build to leave harden (ship still blocked without APPROVED)."
 fi
-block "this session committed work with no APPROVED review at HEAD ($head). Run ./.plinth/review.sh; on exit 1 fix the findings, commit, and re-run until it exits 0 (APPROVED). Then stop."
+block "HARDEN phase: no APPROVED review at HEAD ($head). Run ./.plinth/review.sh until APPROVED, then stop. Or: plinth build to return to default build (PR/merge still requires APPROVED@HEAD)."
