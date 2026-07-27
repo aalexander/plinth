@@ -543,8 +543,8 @@ Claude transcript is reachable.
 HTTP serve path does not write into discovered project trees; it **may** spawn a
 timeout-bounded Claude usage probe in an empty temp cwd (internal
 `dash --snapshot-with-quota`) and write a quota cache only under
-`~/.config/plinth/` or `$TMPDIR` (`PLINTH_DASH_QUOTA_CACHE` overrides outside those
-prefixes are ignored). TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
+`$HOME/.config/plinth/` (`PLINTH_DASH_QUOTA_CACHE` overrides outside that prefix
+are ignored). TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
 `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
 usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
 time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history

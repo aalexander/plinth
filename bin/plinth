@@ -2458,27 +2458,24 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Resolve quota cache path: only under $HOME/.config/plinth/ or $TMPDIR (never
-# inside a discovered project). Invalid overrides fall back to the default.
+# Resolve quota cache path: ONLY under $HOME/.config/plinth/ (never under a
+# discovered project tree, even if that tree is under /tmp). Invalid overrides
+# fall back to the default. Smoke points HOME at a private fixture tree.
 _dash_quota_cache_path() {
   local def="$HOME/.config/plinth/dash-quota.json" cand="${PLINTH_DASH_QUOTA_CACHE:-}"
-  local tmpd="${TMPDIR:-/tmp}"
   [ -n "$cand" ] || { printf '%s\n' "$def"; return 0; }
   case "$cand" in
-    "$HOME"/.config/plinth/*|"$tmpd"/*|/tmp/*|/var/folders/*)
-      printf '%s\n' "$cand"
-      ;;
-    *)
-      printf '%s\n' "$def"
-      ;;
+    "$HOME"/.config/plinth/*) printf '%s\n' "$cand" ;;
+    *) printf '%s\n' "$def" ;;
   esac
 }
 
 _dash_quota_read_cache() {
-  # Exactly one JSON object; multi-doc / non-object → empty (offline miss).
+  # Exactly one JSON object document; multi-doc / non-object → miss.
   local cache="$1"
   [ -f "$cache" ] || return 1
-  jq -ce 'if type == "object" then . else empty end' "$cache" 2>/dev/null
+  jq -s -ce 'if length == 1 and (.[0] | type) == "object" then .[0] else empty end' \
+    "$cache" 2>/dev/null
 }
 
 _dash_quota_probe() {
@@ -2538,6 +2535,7 @@ import os, subprocess, sys, tempfile
 to = int(sys.argv[1])
 try:
     with tempfile.TemporaryDirectory(prefix="plinth-quota-") as d:
+        d = os.path.realpath(d)
         p = subprocess.run(
             ["claude", "-p", "/usage", "--output-format", "json"],
             capture_output=True, text=True, timeout=to, cwd=d,

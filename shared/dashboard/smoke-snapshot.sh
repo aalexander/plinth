@@ -569,6 +569,10 @@ PY
 
 # Never hit live vendor CLIs in smoke (quota is optional / cached separately).
 export PLINTH_DASH_QUOTA=0
+# Quota cache may only live under $HOME/.config/plinth/
+QHOME="$FIX/qhome"
+mkdir -p "$QHOME/.config/plinth"
+export HOME="$QHOME"
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
@@ -651,7 +655,7 @@ jq -e --arg head "$HEAD" '
 ' "$OUT" >/dev/null
 
 # Quota: offline snapshot reads cache; probe path parses CLI with fake claude.
-QFIX="$FIX/quota-cache.json"
+QFIX="$HOME/.config/plinth/quota-cache.json"
 NOWQ="$(date +%s)"
 jq -nc --argjson now "$NOWQ" '{
   available:true, refreshed_at:$now,
@@ -670,7 +674,7 @@ jq -e '
   and (.quota.offline != true)
 ' "$QOUT" >/dev/null
 # Snapshot must stay offline with empty cache (no CLI spawn)
-PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" \
+PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/no-such-quota.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
 # Live probe: fake claude records argv/cwd; asserts isolation contract
@@ -692,13 +696,13 @@ print(json.dumps({"result":
 "Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
 C
 chmod +x "$QBIN/claude"
-QHIST="$FIX/quota-hist.json"
+QHIST="$HOME/.config/plinth/quota-hist.json"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
   history:[{t:($now-7200),week_all_models_pct:70,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"},{t:($now-3600),week_all_models_pct:75,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"}],
   vendors:[]
 }' > "$QHIST"
-QPROBE="$FIX/quota-probe.json"
+QPROBE="$HOME/.config/plinth/quota-probe.json"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QHIST" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota > "$QPROBE"
@@ -715,10 +719,10 @@ jq -e '
 ' "$QPROBE" >/dev/null
 # Isolation + argv contract from the recording claude
 jq -e '
-  .argv == ["'"$QBIN"'/claude", "-p", "/usage", "--output-format", "json"]
-  or (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
-  and (.cwd | length > 0)
-  and .CLAUDE_PROJECT_DIR == .cwd
+  (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
+  and (.cwd | type == "string" and test("plinth-quota-"))
+  and (.CLAUDE_PROJECT_DIR | type == "string" and test("plinth-quota-"))
+  and ((.cwd | sub("^/private";"")) == (.CLAUDE_PROJECT_DIR | sub("^/private";"")))
 ' "$QREC" >/dev/null \
   || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
 # parse_failed: successful CLI, unmatchable text
@@ -728,7 +732,7 @@ import json
 print(json.dumps({"result":"no usage numbers here"}))
 C
 chmod +x "$QBIN/claude"
-PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty2.json" \
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/quota-empty2.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
@@ -738,7 +742,7 @@ cat > "$QBIN/claude" <<'C'
 exit 0
 C
 chmod +x "$QBIN/claude"
-PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty3.json" \
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/quota-empty3.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
@@ -749,7 +753,7 @@ sleep 30
 exit 0
 C
 chmod +x "$QBIN/claude"
-PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-to.json" \
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/quota-to.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_QUOTA_TIMEOUT=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="cli_timeout")] | length == 1' >/dev/null
@@ -762,13 +766,13 @@ echo called > "$SENT"
 exit 0
 C
 chmod +x "$QBIN/claude"
-PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-offline-sent.json" \
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/quota-offline-sent.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot >/dev/null
 [ ! -f "$SENT" ] || { echo "smoke-snapshot: offline snapshot spawned claude" >&2; exit 1; }
 
 # Public --snapshot cannot be forced online via legacy/env knobs
-PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-forge.json" \
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/quota-forge.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_SERVE_CHILD=1 \
   _DASH_QUOTA_ALLOW_PROBE=1 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot >/dev/null
@@ -849,7 +853,7 @@ print(json.dumps({"result":
 C
 chmod +x "$QBIN/claude"
 # Legacy reset-less history must not project across upgrade
-QLEG="$FIX/quota-legacy.json"
+QLEG="$HOME/.config/plinth/quota-legacy.json"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
   history:[
@@ -868,7 +872,7 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QLEG" \
     and .quota.history[0].reset_text != null
   ' >/dev/null
 # Cross-reset history must not project from prior week
-QXR="$FIX/quota-xreset.json"
+QXR="$HOME/.config/plinth/quota-xreset.json"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
   history:[
@@ -918,7 +922,7 @@ jq -e '
   and ((.phases.reviewing // 0) == 0)
 ' "$RROUT" >/dev/null
 # Fresh cache TTL suppresses CLI on --snapshot-with-quota
-TTLDIR="$FIX/ttl"
+TTLDIR="$HOME/.config/plinth/ttl"
 mkdir -p "$TTLDIR"
 SENT2="$FIX/claude-ttl-called"; rm -f "$SENT2"
 cat > "$QBIN/claude" <<C
@@ -947,7 +951,7 @@ print(json.dumps({"result":
 "Current week (all models): 55% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
 C
 chmod +x "$QBIN/claude"
-PCACHE="$FIX/persist-cache.json"
+PCACHE="$HOME/.config/plinth/persist-cache.json"
 rm -f "$PCACHE"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$PCACHE" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
