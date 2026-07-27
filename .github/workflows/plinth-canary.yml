@@ -1728,25 +1728,25 @@ jobs:
             grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             # After any run_round returns, if verdict is UNBOUND with confirmation reason, stop
             # BEFORE the confirmation gate — that proves the write itself was UNBOUND.
-            python3 - <<'PY'
-            from pathlib import Path
-            p = Path('.plinth/review.sh')
-            t = p.read_text()
-            needle = 'run_round "$mode" "$round" "" ;;\nesac\n# Confirmation gate'
-            insert = (
-                'run_round "$mode" "$round" "" ;;\n'
-                'esac\n'
-                '# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate\n'
-                'if [ "${RVERDICT:-}" = "APPROVED" ] && [ "$(jq -r .verdict "$SDIR/verdict.json" 2>/dev/null)" = "UNBOUND" ]; then\n'
-                '  echo "CANARY_PROCESS_WINDOW_UNBOUND"\n'
-                '  exit 42\n'
-                'fi\n'
-                '# Confirmation gate'
-            )
-            if needle not in t:
-                raise SystemExit('hook insertion point missing in review.sh')
-            p.write_text(t.replace(needle, insert, 1))
-            PY
+            # Use python -c (not a heredoc) so YAML | indentation cannot break the PY delimiter.
+            python3 -c '
+from pathlib import Path
+p = Path(".plinth/review.sh")
+t = p.read_text()
+needle = "run_round \"$mode\" \"$round\" \"\" ;;\nesac\n# Confirmation gate"
+insert = (
+    "run_round \"$mode\" \"$round\" \"\" ;;\n"
+    "esac\n"
+    "# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate\n"
+    "if [ \"\${RVERDICT:-}\" = \"APPROVED\" ] && [ \"\$(jq -r .verdict \"\$SDIR/verdict.json\" 2>/dev/null)\" = \"UNBOUND\" ]; then\n"
+    "  echo \"CANARY_PROCESS_WINDOW_UNBOUND\"\n"
+    "  exit 42\n"
+    "fi\n"
+    "# Confirmation gate"
+)
+assert needle in t, "hook insertion point missing in review.sh"
+p.write_text(t.replace(needle, insert, 1))
+'
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
             PATH="$PW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
