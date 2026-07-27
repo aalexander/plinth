@@ -2458,15 +2458,14 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Operator cache at a fixed absolute path under /tmp (never honors TMPDIR or
-# HOME — a discovered project that happens to own TMPDIR/HOME cannot receive
-# the write). PLINTH_DASH_QUOTA_CACHE is ignored.
+# Operator cache at fixed /tmp/plinth-dash-quota-$UID/ (ignores TMPDIR/HOME/
+# PLINTH_DASH_QUOTA_CACHE). Tests may set PLINTH_DASH_QUOTA_DIR to
+# /tmp/plinth-dash-quota-test-* only. Does not mkdir (write path creates).
 _dash_quota_cache_path() {
   local dir="/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)"
-  mkdir -p "$dir" 2>/dev/null || true
-  # If that path is somehow a non-directory, fall back to a private subdir.
-  [ -d "$dir" ] || dir="/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)-$$"
-  mkdir -p "$dir" 2>/dev/null || true
+  case "${PLINTH_DASH_QUOTA_DIR:-}" in
+    /tmp/plinth-dash-quota-test-*) dir="$PLINTH_DASH_QUOTA_DIR" ;;
+  esac
   printf '%s\n' "$dir/dash-quota.json"
 }
 
@@ -2678,10 +2677,20 @@ except Exception:
       '{available:false, refreshed_at:$now, note:"quota assemble failed", vendors:[]}'
     return 0
   fi
-  # Persist cache atomically (best-effort; never under a project root).
-  mkdir -p "$(dirname "$cache")" 2>/dev/null || true
+  # Persist cache atomically (best-effort). Create parent only if missing and a
+  # directory; if the target path is already a directory, skip write.
+  local parent
+  parent="$(dirname "$cache")"
+  if [ -e "$cache" ] && [ ! -f "$cache" ]; then
+    printf '%s\n' "$assembled"
+    return 0
+  fi
+  if [ ! -d "$parent" ]; then
+    mkdir -p "$parent" 2>/dev/null || true
+  fi
+  [ -d "$parent" ] || { printf '%s\n' "$assembled"; return 0; }
   local tmpc
-  tmpc="$(mktemp "${cache}.XXXXXX" 2>/dev/null || true)"
+  tmpc="$(mktemp "$parent/dash-quota.XXXXXX" 2>/dev/null || true)"
   if [ -n "$tmpc" ]; then
     printf '%s\n' "$assembled" > "$tmpc" 2>/dev/null \
       && mv -f "$tmpc" "$cache" 2>/dev/null \

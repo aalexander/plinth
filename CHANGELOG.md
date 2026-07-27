@@ -6,9 +6,10 @@
   headless). **`--snapshot` is offline** (cache read only; env cannot force a
   probe). HTTP serve uses internal `dash --snapshot-with-quota` and refreshes
   ~15 min with a hard timeout into the fixed absolute cache
-  `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores TMPDIR/HOME overrides;
-  single-object validation; atomic write). Projects time-to-100% weekly when ≥2
-  same-reset samples ≥10 min apart. `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
+  `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores TMPDIR/HOME/
+  PLINTH_DASH_QUOTA_CACHE; single-object validation; atomic write). Projects
+  time-to-100% weekly when ≥2 same-reset samples ≥10 min apart.
+  `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
 - **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +
   truncation notice + source path); click the orange chip. Full queue:
   `plinth queue`.

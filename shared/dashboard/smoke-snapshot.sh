@@ -18,7 +18,7 @@ command -v curl >/dev/null 2>&1 || { echo "smoke-snapshot: curl required for ser
 
 FIX="$(mktemp -d "${TMPDIR:-/tmp}/plinth-dash-smoke.XXXXXX")"
 cleanup() { rm -rf "$FIX"; }
-trap cleanup EXIT
+trap 'rm -rf "${PLINTH_DASH_QUOTA_DIR:-}"; cleanup' EXIT
 
 mk_git() {
   local d="$1"
@@ -573,12 +573,14 @@ export PLINTH_DASH_QUOTA=0
 QHOME="$FIX/qhome"
 mkdir -p "$QHOME/.config/plinth"
 export HOME="$QHOME"
-# Quota cache is always /tmp/plinth-dash-quota-$UID/ (product ignores TMPDIR).
-QCACHE="/tmp/plinth-dash-quota-$(id -u)/dash-quota.json"
-mkdir -p "$(dirname "$QCACHE")"
+# Isolated test cache dir (product only accepts /tmp/plinth-dash-quota-test-*).
+export PLINTH_DASH_QUOTA_DIR="/tmp/plinth-dash-quota-test-$$"
+QCACHE="$PLINTH_DASH_QUOTA_DIR/dash-quota.json"
+mkdir -p "$PLINTH_DASH_QUOTA_DIR"
 # Keep a private TMPDIR for other mktemp use so it is not a discovered root.
 export TMPDIR="$FIX/tmp"
 mkdir -p "$TMPDIR"
+trap 'rm -rf "$PLINTH_DASH_QUOTA_DIR"; cleanup' EXIT
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
@@ -679,8 +681,13 @@ jq -e '
 ' "$QOUT" >/dev/null
 # Snapshot must stay offline with empty cache (no CLI spawn)
 rm -f "$QCACHE"
+# PLINTH_DASH_QUOTA_CACHE is ignored (must not create that path)
+PLINTH_DASH_QUOTA_CACHE="$FIX/should-not-create.json" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
+[ ! -f "$FIX/should-not-create.json" ] || { echo "smoke-snapshot: QUOTA_CACHE override was honored" >&2; exit 1; }
+rm -f "$QCACHE"
 PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
-  | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
+  | jq -e '.quota.offline == true' >/dev/null
 # Live probe: fake claude records argv/cwd; asserts isolation contract
 QBIN="$FIX/qbin"; mkdir -p "$QBIN"
 QREC="$FIX/claude-rec.json"
