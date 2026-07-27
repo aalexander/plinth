@@ -57,13 +57,29 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
-# Normalize for comparison with Git-relative paths: strip leading ./, trailing
-# / and /., collapse // and /./, map . → "" (repo root = whole tree). Bound:
-# path components of ".." are left as-is (Git-relative paths never contain them).
+# Normalize for comparison with Git-relative paths. Portable pure-bash (no GNU
+# sed). Collapse leading ./, trailing / and /., //, /./, and map . → "".
+# Bound: ".." components are left as-is (Git-relative paths never contain them).
 _norm_rel() {
-  # sed: reliable collapse of /./ and // (bash ${//pat/rep} is easy to mis-escape).
-  printf '%s' "$1" | sed -e 's#^\./##' -e 's#/\./#/#g' -e 's#//\+#/#g' \
-    -e 's#/\.$##' -e 's#/$##' -e 's#^\.$##'
+  local p="$1" out="" part
+  # Drop leading ./
+  while [ "${p#./}" != "$p" ]; do p="${p#./}"; done
+  # Rebuild components, dropping empty and "." segments
+  case "$p" in
+    /*) out="/" ; p="${p#/}" ;;  # rare absolute form — keep root marker only if present
+  esac
+  IFS='/'
+  # shellcheck disable=SC2086
+  set -- $p
+  unset IFS
+  for part in "$@"; do
+    case "$part" in
+      ''|.) continue ;;
+      *) out="${out:+$out/}$part" ;;
+    esac
+  done
+  [ "$out" = "." ] && out=""
+  printf '%s' "$out"
 }
 is_spec() {
   local _sp _p

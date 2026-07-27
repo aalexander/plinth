@@ -233,7 +233,7 @@ if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | gre
   echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
 fi
 # Behavioral: directory/file-equivalent and root-form spec_path → Tier 2
-for _spv in 'blueprints' 'blueprints/' './blueprints' './blueprints/' 'blueprints/.' 'blueprints//' './blueprints//' 'blueprints/./sub'; do
+for _spv in 'blueprints' 'blueprints/' './blueprints' './blueprints/' 'blueprints/.' 'blueprints//' './blueprints//' 'blueprints/./sub' 'blueprints/././sub' '././blueprints'; do
   T_DSP="$(mktemp -d)"; ( cd "$T_DSP"; git init -qb main . >/dev/null
     mkdir -p .plinth blueprints/sub
     printf 'spec_path = %s\n' "$_spv" > .plinth/config

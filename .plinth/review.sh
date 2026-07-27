@@ -1290,6 +1290,23 @@ $(cat "$RECEIPT")"
   # If the PR also repoints spec_path, attack the new path too and flag the repoint.
   WSPEC="$(cfg spec_path)"
   spec_changed=""
+
+# Portable path normalize (keep in sync with risk-classify.sh _norm_rel).
+_norm_rel() {
+  local p="$1" out="" part
+  while [ "${p#./}" != "$p" ]; do p="${p#./}"; done
+  case "$p" in /*) out="/" ; p="${p#/}" ;; esac
+  IFS='/'
+  # shellcheck disable=SC2086
+  set -- $p
+  unset IFS
+  for part in "$@"; do
+    case "$part" in ''|.) continue ;; *) out="${out:+$out/}$part" ;; esac
+  done
+  [ "$out" = "." ] && out=""
+  printf '%s' "$out"
+}
+
   for sp in "$SPEC_PATH" "$WSPEC"; do
     [ -n "$sp" ] || continue
     # Full-read grep (not -q): early exit under pipefail can SIGPIPE git and miss
@@ -1304,12 +1321,11 @@ $(cat "$RECEIPT")"
     fi
     # Fixed-string path match (not ERE): exact path OR under-directory, with the
     # same normalization as risk-classify (_norm_rel).
-    # Same normalization as risk-classify _norm_rel (sed collapse).
-    _sp="$(printf '%s' "$sp" | sed -e 's#^\./##' -e 's#/\./#/#g' -e 's#//\+#/#g' -e 's#/\.$##' -e 's#/$##' -e 's#^\.$##')"
+    _sp="$(_norm_rel "$sp")"
     _match=0
     while IFS= read -r _p || [ -n "${_p:-}" ]; do
       [ -n "${_p:-}" ] || continue
-      _p="$(printf '%s' "$_p" | sed -e 's#^\./##' -e 's#/\./#/#g' -e 's#//\+#/#g' -e 's#/\.$##' -e 's#/$##' -e 's#^\.$##')"
+      _p="$(_norm_rel "$_p")"
       if [ -z "$_sp" ] || [ "$_p" = "$_sp" ]; then _match=1; break; fi
       case "$_p" in "$_sp"/*) _match=1; break ;; esac
     done <<EOF
