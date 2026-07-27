@@ -542,8 +542,8 @@ Claude transcript is reachable.
 **not** spawn vendor CLIs (caller env cannot force a probe on `--snapshot`). The
 HTTP serve path does not write into discovered project trees; it **may** spawn a
 timeout-bounded Claude usage probe in an empty temp cwd (internal
-`dash --snapshot-with-quota`) and write a quota cache only at the fixed path
-`$HOME/.config/plinth/dash-quota.json` (no override into project trees).
+`dash --snapshot-with-quota`) and write a quota cache only at
+`$TMPDIR/plinth-dash-quota-$UID/dash-quota.json` (outside project trees; no env override).
 TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
 `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
 usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:

@@ -2458,12 +2458,13 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Fixed cache path under $HOME/.config/plinth/ only — no override that can land
-# inside a discovered project (including when $HOME is a project root, the file
-# is still only the operator config home, not a repo checkout path chosen by
-# discovery). PLINTH_DASH_QUOTA_CACHE is ignored for write location.
+# Operator cache outside project trees: $TMPDIR/plinth-dash-quota-$UID/ (not
+# under $HOME, so a discovered $HOME project cannot receive the write).
+# PLINTH_DASH_QUOTA_CACHE is ignored.
 _dash_quota_cache_path() {
-  printf '%s\n' "$HOME/.config/plinth/dash-quota.json"
+  local dir="${TMPDIR:-/tmp}/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s\n' "$dir/dash-quota.json"
 }
 
 _dash_quota_read_cache() {
