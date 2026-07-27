@@ -538,6 +538,8 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
+# Never hit live vendor CLIs in smoke (quota is optional / cached separately).
+export PLINTH_DASH_QUOTA=0
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
@@ -563,6 +565,13 @@ EXPECTED_N=43
 [ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
+# Top-level vendor quota (skipped in smoke)
+jq -e '
+  .quota != null
+  and .quota.skipped == true
+  and .quota.available == false
+' "$OUT" >/dev/null
+
 # Alpha assertions
 jq -e --arg head "$HEAD" '
   .projects[] | select(.name == "alpha")
@@ -571,6 +580,9 @@ jq -e --arg head "$HEAD" '
   and .feedless == false
   and .needs_human.open == 2
   and .needs_human.blocking == 1
+  and (.needs_human.items | type == "array")
+  and (.needs_human.items | length) == 2
+  and (.needs_human.items | map(select(.blocking == true)) | length) == 1
   and .review.verdict == "CHANGES_NEEDED"
   and .review.round == 2
   and .review.stale == false
@@ -578,6 +590,8 @@ jq -e --arg head "$HEAD" '
   and .task == "smoke dashboard task"
   and .quota.available == false
   and (.quota.note | type == "string")
+  and (.models | type == "object")
+  and (.phases | type == "object")
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0
@@ -1009,7 +1023,16 @@ const m = html.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/i);
 if (!m) { console.error("no script block"); process.exit(2); }
 const elsById = Object.create(null);
 const el = (id) => {
-  const o = { textContent: "", className: "", innerHTML: "", style: { display: "", cssText: "" } };
+  const o = {
+    textContent: "", className: "", innerHTML: "",
+    style: { display: "", cssText: "" },
+    classList: { add() {}, remove() {}, contains() { return false; } },
+    addEventListener() {},
+    removeEventListener() {},
+    getAttribute(name) { return o._attrs && o._attrs[name] || null; },
+    setAttribute(name, v) { o._attrs = o._attrs || {}; o._attrs[name] = v; },
+    closest() { return null; },
+  };
   // Honor real selectors used by the UI: .card after successful render.
   o.querySelector = (sel) => {
     if (sel === ".card" && typeof o.innerHTML === "string" && o.innerHTML.includes("class=\"card")) {
@@ -1064,6 +1087,7 @@ const sandbox = {
     // Unknown IDs return null so production create/insert path runs for #poll-error.
     getElementById: (id) => (Object.prototype.hasOwnProperty.call(elsById, id) ? elsById[id] : null),
     createElement: () => el(),
+    addEventListener() {},
     querySelector: (sel) => {
       if (sel === "header") {
         return {
@@ -1079,7 +1103,9 @@ const sandbox = {
   },
 };
 // Pre-seed only the IDs present in the static HTML (not poll-error).
-["grid", "live-dot", "live-label", "gen-ago", "discovery", "count"].forEach((id) => { elsById[id] = el(id); });
+["grid", "live-dot", "live-label", "gen-ago", "discovery", "count",
+ "quota-bar", "nh-modal", "nh-panel", "nh-title", "nh-sub", "nh-list", "nh-close"
+].forEach((id) => { elsById[id] = el(id); });
 sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 vm.createContext(sandbox);
@@ -1175,7 +1201,13 @@ setTimeout(() => {
       name: "alpha", path: "/tmp/alpha", branch: "feat/dash", head: "abc1234",
       feedless: false, task: "do the thing", burn_per_min: 12, tokens_total: 1500,
       model_driver: "claude-test", model_reviewer: "gpt-test",
-      needs_human: { open: 0, blocking: 0 },
+      models: {
+        driver_live: "claude-test", reviewer_live: "gpt-test",
+        reviewer_vendor: "codex", audit_vendor: "claude", audit_model: "opus",
+        advisor_model: "fable"
+      },
+      phases: { coding: 120, reviewing: 60, research: 30 },
+      needs_human: { open: 0, blocking: 0, items: [] },
       review: { verdict: "CHANGES_NEEDED", round: 2, sha7: "abc1234",
                 stale: false, running: false, mode: "fresh", tier: 1 },
       activity_secs_ago: 5, session_secs: 60,
@@ -1183,12 +1215,28 @@ setTimeout(() => {
     const fullHtml = api.cardHTML(full);
     for (const needle of [
       "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
-      "12/min", "1.5k recent", "r2",
+      "12/min", "1.5k recent", "r2", "claude-test", "gpt-test",
+      "coding", "reviewing",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
         process.exit(1);
       }
+    }
+    // NEEDS-HUMAN drill-down chip carries data-nh
+    const nhOnly = {
+      name: "h", path: "/tmp/h", branch: "main", head: "abc",
+      feedless: true, review: null,
+      needs_human: {
+        open: 2, blocking: 1,
+        items: [{ text: "[BLOCKING] fix me", blocking: true },
+                { text: "later", blocking: false }]
+      }
+    };
+    const nhHtml = api.cardHTML(nhOnly);
+    if (!nhHtml.includes('data-nh="/tmp/h"')) {
+      console.error("NEEDS-HUMAN chip missing data-nh:", nhHtml.slice(0, 300));
+      process.exit(1);
     }
     // UNBOUND (pending Tier-2 confirmation): warn tone + yellow chip
     const unbound = {

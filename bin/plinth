@@ -2041,7 +2041,7 @@ snapshot_one_project() {
     fi
   fi
 
-  local nhn=0 nhb=0 nhf raw
+  local nhn=0 nhb=0 nhf raw nh_items_json='[]'
   nhf="$(needs_human_file "$dir")"
   if [ -s "$nhf" ]; then
     raw="$(open_items "$nhf")"
@@ -2050,15 +2050,41 @@ snapshot_one_project() {
     if [ -n "$raw" ]; then
       nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
       nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+      # Drill-down list for the wallboard (cap 50 items; full queue via `plinth queue`).
+      nh_items_json="$(printf '%s\n' "$raw" | head -n 50 | jq -Rsc '
+        split("\n")
+        | map(select(length > 0))
+        | map({text: ., blocking: startswith("[BLOCKING]")})
+      ' 2>/dev/null || echo '[]')"
     fi
     case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
+  # Config seat labels (always present when set) — models row must not depend only
+  # on a live Claude transcript, which leaves feedless drivers looking "stuck".
+  local cfgf="$dir/.plinth/config"
+  local seat_reviewer_vendor="" seat_reviewer_t1="" seat_reviewer_t2=""
+  local seat_audit_vendor="" seat_audit_model="" seat_advisor_vendor=""
+  local seat_advisor_model="" seat_advisor_max=""
+  if [ -f "$cfgf" ]; then
+    seat_reviewer_vendor="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_reviewer_t1="$(sed -n 's/^reviewer_model_tier1[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_reviewer_t2="$(sed -n 's/^reviewer_model_tier2[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_audit_vendor="$(sed -n 's/^audit_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_audit_model="$(sed -n 's/^audit_model[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_vendor="$(sed -n 's/^advisor_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_model="$(sed -n 's/^advisor_model[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_max="$(sed -n 's/^advisor_model_max[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+  fi
+
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
   # fell off the window, session_secs is null rather than a fabricated age.
+  # Phase seconds: attribute inter-event gaps on the active SID to a coarse stage
+  # (coding / research / reviewing / advising / ci / shell / planning / other).
   local sid="" session_t0="" task="" transcript_path=""
+  local phases_json='{}'
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
     local meta_out meta_rc=0 ev_tmp=""
@@ -2067,14 +2093,30 @@ snapshot_one_project() {
       events_parse_failed=true
     else
       tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
-      meta_out="$(jq -nr '
+      meta_out="$(jq -nr --argjson now "$NOW" '
         # Event names actually produced by Plinth hooks + pulse passthrough.
         def known_event:
           . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
           or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
           or . == "PreCompact" or . == "guard_block" or . == "gate_release"
           or . == "unknown";
-        reduce inputs as $e ({cur:null, by:{}};
+        def phase_of($tool; $detail):
+          if $tool == null or $tool == "" then "other"
+          elif $tool == "Edit" or $tool == "Write" or $tool == "NotebookEdit"
+               or $tool == "MultiEdit" then "coding"
+          elif $tool == "Read" or $tool == "Grep" or $tool == "Glob"
+               or $tool == "WebSearch" or $tool == "WebFetch" then "research"
+          elif $tool == "TodoWrite" or $tool == "TodoRead" or $tool == "EnterPlanMode"
+               or $tool == "ExitPlanMode" then "planning"
+          elif $tool == "Bash" or $tool == "bash" then
+            (($detail // "") as $d
+             | if ($d | test("review\\.sh|plinth/review|/\\.plinth/review")) then "reviewing"
+               elif ($d | test("plinth[ ]+advise|\\badvise\\b")) then "advising"
+               elif ($d | test("\\bgh\\b|canary|ci\\.yml|act |workflow")) then "ci"
+               else "shell" end)
+          else "other" end;
+        reduce inputs as $e (
+          {cur:null, by:{}, phases:{}, last_epoch:null, last_phase:"other"};
           if ($e | type) != "object" then error("bad_event_type")
           # Every object needs a known string event name (incl. sid-less / empty {}).
           elif ($e.event == null) or (($e.event | type) != "string")
@@ -2098,11 +2140,24 @@ snapshot_one_project() {
                 and ((($e.detail // "") | test("^\\s*<")) | not)
               then .by[$e.sid].task = $e.detail else . end
             | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+            # Phase accrual: gap since last event on this feed → last_phase bucket.
+            | (if .last_epoch != null and ($e.epoch != null)
+                  and ($e.epoch >= .last_epoch)
+                  and (($e.epoch - .last_epoch) < 3600)
+               then
+                 (.last_phase) as $ph
+                 | .phases[$ph] = ((.phases[$ph] // 0) + ($e.epoch - .last_epoch))
+               else . end)
+            | if $e.epoch != null then .last_epoch = $e.epoch else . end
+            | if ($e.event == "PreToolUse" or $e.event == "PostToolUse")
+              then .last_phase = phase_of($e.tool; $e.detail)
+              elif $e.event == "UserPromptSubmit" then .last_phase = "planning"
+              else . end
           end
         )
         # Empty or sid-less feed is healthy-but-empty, not a render failure.
-        | if .cur == null then {sid:null, t0:null, task:null, tr:null}
-          else ((.by[.cur] // {t0:null, task:null, tr:null}) + {sid: .cur})
+        | if .cur == null then {sid:null, t0:null, task:null, tr:null, phases:{}}
+          else ((.by[.cur] // {t0:null, task:null, tr:null}) + {sid: .cur, phases: .phases})
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
@@ -2114,7 +2169,24 @@ snapshot_one_project() {
         session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
         task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
         transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
+        phases_json="$(printf '%s' "$meta_out" | jq -c '.phases // {}' 2>/dev/null || echo '{}')"
       fi
+    fi
+  fi
+
+  # Review-phase wall time from usage.jsonl ledger (round durations), when present.
+  local rev_ledger="$dir/.plinth/session/review/$slug/usage.jsonl"
+  if [ -f "$rev_ledger" ]; then
+    local rev_secs
+    rev_secs="$(jq -s '
+      map(select(type=="object" and (.duration_s|type)=="number") | .duration_s)
+      | add // 0 | floor
+    ' "$rev_ledger" 2>/dev/null || echo 0)"
+    case "$rev_secs" in ''|*[!0-9]*) rev_secs=0 ;; esac
+    if [ "$rev_secs" -gt 0 ] 2>/dev/null; then
+      phases_json="$(jq -c --argjson s "$rev_secs" '
+        . + {reviewing: ((.reviewing // 0) + $s)}
+      ' <<<"$phases_json" 2>/dev/null || echo "$phases_json")"
     fi
   fi
 
@@ -2123,10 +2195,12 @@ snapshot_one_project() {
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
       --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      --argjson nh_items "$nh_items_json" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb},
-        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items},
+        phases:{},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is polled separately (CLI /usage|/status cache)"}}'
     return 0
   fi
 
@@ -2165,6 +2239,16 @@ snapshot_one_project() {
         --argjson activity_ago "${activity_ago:-null}" \
         --argjson session_secs "${session_secs_json:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
+        --argjson nh_items "$nh_items_json" \
+        --argjson phases "$phases_json" \
+        --arg seat_rv "${seat_reviewer_vendor:-}" \
+        --arg seat_rt1 "${seat_reviewer_t1:-}" \
+        --arg seat_rt2 "${seat_reviewer_t2:-}" \
+        --arg seat_av "${seat_audit_vendor:-}" \
+        --arg seat_am "${seat_audit_model:-}" \
+        --arg seat_advv "${seat_advisor_vendor:-}" \
+        --arg seat_advm "${seat_advisor_model:-}" \
+        --arg seat_advx "${seat_advisor_max:-}" \
         --argjson has_last_error "$has_last_error" \
         --argjson rq_round_from_name "$rq_round_from_name" '
     def sha_match($a; $b):
@@ -2178,6 +2262,7 @@ snapshot_one_project() {
       ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));
     def round_ok($r):
       ($r | type == "number") and ($r == ($r | floor)) and ($r >= 0);
+    def nonempty($s): if ($s | type) == "string" and ($s | length) > 0 then $s else null end;
     ($vd[0] // null) as $V0
     # Protocol-shape guard: present verdict.json needs enum + hex sha + round.
     | (if $V0 == null then null
@@ -2214,6 +2299,9 @@ snapshot_one_project() {
     | (if ($use | length) == 0 then null
        else ([$use[] | toksum] | add // 0) end) as $tok
     | (($use | map(.m) | map(select(. != null)) | .[-1]) // null) as $driver_model
+    # Live reviewer model: in-flight request beats verdict (which may lag).
+    | (($RQ.model // null) // ($V.model // null) // nonempty($seat_rt2) // nonempty($seat_rt1)) as $rev_model
+    | (($V.vendor // null) // nonempty($seat_rv) // null) as $rev_vendor
     | {
         path: $path,
         name: $name,
@@ -2225,10 +2313,23 @@ snapshot_one_project() {
         session_secs: $session_secs,
         activity_secs_ago: (if $activity_ago == null then null else $activity_ago end),
         model_driver: $driver_model,
-        model_reviewer: ($V.model // null),
+        model_reviewer: $rev_model,
+        models: {
+          driver_live: $driver_model,
+          reviewer_live: $rev_model,
+          reviewer_vendor: $rev_vendor,
+          reviewer_seat_t1: nonempty($seat_rt1),
+          reviewer_seat_t2: nonempty($seat_rt2),
+          audit_vendor: nonempty($seat_av),
+          audit_model: nonempty($seat_am),
+          advisor_vendor: nonempty($seat_advv),
+          advisor_model: nonempty($seat_advm),
+          advisor_model_max: nonempty($seat_advx)
+        },
         tokens_total: $tok,
         tokens_window: "recent_transcript_tail",
         burn_per_min: $burn,
+        phases: ($phases // {}),
         review: (if $V == null and ($running | not) and ($has_last_error | not) then null
                  elif $V == null and $has_last_error then {
                    verdict: null, round: ($RQ.round // null), sha7: null,
@@ -2245,25 +2346,183 @@ snapshot_one_project() {
           tier: ($V.risk.tier // null),
           last_error: $has_last_error
         } end),
-        needs_human: { open: $nhn, blocking: $nhb },
+        needs_human: { open: $nhn, blocking: $nhb, items: $nh_items },
         quota: {
           available: false,
-          note: "Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"
+          note: "Per-project burn only; vendor plan quota is top-level (CLI /usage cache)"
         }
       }
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
-      --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      --argjson nhn "$nhn" --argjson nhb "$nhb" --argjson nh_items "$nh_items_json" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb},
-        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items},
+        phases:{},
+        quota:{available:false,note:"Per-project burn only; vendor plan quota is top-level (CLI /usage cache)"}}'
   [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
   return 0
 }
 
+# Vendor plan quota (overall weekly) via official CLIs — NOT scraped web UIs.
+# Cached under ~/.config/plinth/dash-quota.json; refresh interval default 900s
+# (15 min). PLINTH_DASH_QUOTA_TTL overrides. PLINTH_DASH_QUOTA=0 skips probes
+# (tests / offline). Claude: `claude -p /usage --output-format json`. Codex /
+# grok: best-effort when a headless surface exists; otherwise unavailable.
+_DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
+_DASH_QUOTA_CACHE="${PLINTH_DASH_QUOTA_CACHE:-$HOME/.config/plinth/dash-quota.json}"
+
+_dash_quota_probe() {
+  # Prints one JSON object on stdout. Never fails the snapshot (always 0).
+  local now ttl=$_DASH_QUOTA_TTL cache="$_DASH_QUOTA_CACHE"
+  now="$(date +%s)"
+  case "$ttl" in ''|*[!0-9]*) ttl=900 ;; esac
+  if [ "${PLINTH_DASH_QUOTA:-1}" = "0" ]; then
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, skipped:true,
+        note:"quota probes disabled (PLINTH_DASH_QUOTA=0)", vendors:[]}'
+    return 0
+  fi
+  # Serve cache when fresh.
+  if [ -f "$cache" ]; then
+    local age refreshed
+    refreshed="$(jq -r '.refreshed_at // 0' "$cache" 2>/dev/null || echo 0)"
+    case "$refreshed" in ''|*[!0-9]*) refreshed=0 ;; esac
+    age=$((now - refreshed))
+    if [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$ttl" ] 2>/dev/null; then
+      cat "$cache"
+      return 0
+    fi
+  fi
+
+  local vendors_tmp
+  vendors_tmp="$(mktemp)" || {
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, note:"mktemp failed", vendors:[]}'
+    return 0
+  }
+  : > "$vendors_tmp"
+
+  # ── Claude: headless /usage ───────────────────────────────────────────
+  if command -v claude >/dev/null 2>&1; then
+    local cl_out cl_rc=0
+    cl_out="$(claude -p /usage --output-format json 2>/dev/null)" || cl_rc=$?
+    if [ "$cl_rc" -eq 0 ] && [ -n "$cl_out" ]; then
+      printf '%s' "$cl_out" | jq -c --argjson now "$now" '
+        (.result // "") as $t
+        | [ ($t
+            | capture("(?m)^Current session:\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | {window:"session", used_pct:(.pct|tonumber), reset_text:.reset}),
+            ($t
+            | capture("(?m)^Current week \\(all models\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | {window:"week_all_models", used_pct:(.pct|tonumber), reset_text:.reset}),
+            ($t
+            | capture("(?m)^Current week \\((?<label>[^)]+)\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | select(.label != "all models")
+            | {window:("week_"+(.label|ascii_downcase|gsub(" ";"_"))), used_pct:(.pct|tonumber), reset_text:.reset})
+          ]
+        | {vendor:"claude", available:true, windows:., probed_at:$now}
+      ' >> "$vendors_tmp" 2>/dev/null || \
+        jq -nc --argjson now "$now" \
+          '{vendor:"claude",available:false,error:"parse_failed",probed_at:$now}' >> "$vendors_tmp"
+    else
+      jq -nc --argjson now "$now" \
+        '{vendor:"claude",available:false,error:"cli_failed",probed_at:$now}' >> "$vendors_tmp"
+    fi
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"claude",available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
+  fi
+
+  # ── Codex / Grok: no stable headless surface yet (interactive /status|/usage).
+  # Record honest unavailability so the UI does not invent numbers.
+  for v in codex grok; do
+    if command -v "$v" >/dev/null 2>&1; then
+      jq -nc --arg v "$v" --argjson now "$now" \
+        '{vendor:$v,available:false,error:"no_headless_usage_surface",
+          note:"Use interactive /status (codex) or /usage (grok) until a headless API exists",
+          probed_at:$now}' >> "$vendors_tmp"
+    else
+      jq -nc --arg v "$v" --argjson now "$now" \
+        '{vendor:$v,available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
+    fi
+  done
+
+  # Assemble + projection from history of week_all_models samples.
+  local history_in='[]'
+  if [ -f "$cache" ]; then
+    history_in="$(jq -c '.history // []' "$cache" 2>/dev/null || echo '[]')"
+  fi
+  local assembled
+  assembled="$(jq -nc --slurpfile v "$vendors_tmp" --argjson now "$now" --argjson hist "$history_in" '
+    def week_pct:
+      [.[] | select(.vendor=="claude" and .available==true)
+           | (.windows // [])[]
+           | select(.window=="week_all_models")
+           | .used_pct] | .[0] // null;
+    ($v[0:] | map(select(type=="object"))) as $vendors
+    | ($vendors | week_pct) as $wp
+    | (if $wp == null then $hist
+       else ($hist + [{t:$now, week_all_models_pct:$wp}])
+            | .[-48:]  # keep ~12h at 15m cadence
+       end) as $hist2
+    # Rate: pct per second from oldest sample at least 10 min earlier with different pct.
+    | ([$hist2[] | select(.week_all_models_pct != null)] | sort_by(.t)) as $hs
+    | (if ($hs|length) < 2 then null
+       else
+         ($hs[-1]) as $a
+         | ([ $hs[]
+             | select(($a.t - .t) >= 600 and .week_all_models_pct < $a.week_all_models_pct)
+           ] | .[0] // null) as $b
+         | if $b != null then
+             {rate_pct_per_s: (($a.week_all_models_pct - $b.week_all_models_pct) / ($a.t - $b.t)),
+              from_t:$b.t, to_t:$a.t}
+           else
+             ($hs[0]) as $f
+             | if ($a.t - $f.t) >= 600 and ($a.week_all_models_pct > $f.week_all_models_pct)
+               then {rate_pct_per_s: (($a.week_all_models_pct - $f.week_all_models_pct) / ($a.t - $f.t)),
+                     from_t:$f.t, to_t:$a.t}
+               else null end
+           end
+       end) as $rate
+    | (if $wp == null or $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
+       elif $wp >= 100 then $now
+       else ($now + (((100 - $wp) / $rate.rate_pct_per_s) | floor)) end) as $proj100
+    | {
+        available: ([$vendors[] | select(.available==true)] | length > 0),
+        refreshed_at: $now,
+        overall: (if $wp == null then null else {
+          vendor: "claude",
+          window: "week_all_models",
+          used_pct: $wp,
+          remaining_pct: (100 - $wp),
+          reset_text: (
+            [$vendors[] | select(.vendor=="claude") | (.windows // [])[]
+             | select(.window=="week_all_models") | .reset_text] | .[0] // null
+          ),
+          projected_100pct_at: $proj100,
+          rate_pct_per_hour: (if $rate == null then null
+                              else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
+        } end),
+        vendors: $vendors,
+        history: $hist2,
+        note: "Overall weekly plan usage from claude -p /usage; refreshed every ~15m. Projection needs ≥2 samples ≥10m apart."
+      }
+  ' 2>/dev/null)" || assembled=""
+  rm -f "$vendors_tmp"
+  if [ -z "$assembled" ]; then
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, note:"quota assemble failed", vendors:[]}'
+    return 0
+  fi
+  # Persist cache (best-effort).
+  mkdir -p "$(dirname "$cache")" 2>/dev/null || true
+  printf '%s\n' "$assembled" > "$cache" 2>/dev/null || true
+  printf '%s\n' "$assembled"
+}
+
 build_dashboard_snapshot() {
-  local roots tmp dir projects_json discovery
+  local roots tmp dir projects_json discovery quota_json
   tmp="$(mktemp)" || { echo "plinth dash: mktemp failed" >&2; exit 1; }
   : > "$tmp"
   roots="$(discover_dashboard_projects | sort -u)"
@@ -2288,14 +2547,17 @@ build_dashboard_snapshot() {
   else
     discovery="default:~/Dev/*/.plinth/config"
   fi
+  # Quota probe is independent of project cards; failures stay inside the object.
+  quota_json="$(_dash_quota_probe 2>/dev/null || true)"
+  [ -n "$quota_json" ] || quota_json='{"available":false,"note":"quota probe unavailable","vendors":[]}'
   if [ -n "$top_err" ]; then
     jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
-       --arg discovery "$discovery" --arg error "$top_err" \
-       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error}'
+       --arg discovery "$discovery" --arg error "$top_err" --argjson quota "$quota_json" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error, quota:$quota}'
   else
     jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
-       --arg discovery "$discovery" \
-       '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+       --arg discovery "$discovery" --argjson quota "$quota_json" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, quota:$quota}'
   fi
 }
 

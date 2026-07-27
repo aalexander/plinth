@@ -514,15 +514,28 @@ Subsecond newer requires **python3** (nanosecond mtime); without it, bash
 
 Each card shows project path, branch @ head, review verdict / round / stale vs
 HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
-open/blocking counts, a **feedless** flag when there is no event feed (typical
-for non-Claude drivers), and **observed** driver burn when a Claude transcript is
-reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
-no scrapers, no fake %.
+open/blocking counts (click the orange chip to list open items from
+`.plinth/NEEDS-HUMAN.md`), a **feedless** flag when there is no event feed
+(typical for non-Claude drivers), **models** (live driver/reviewer plus config
+seats for audit/advisor), **phase timing** (coarse seconds from event gaps +
+review `usage.jsonl` durations: coding / research / reviewing / advising / ci /
+planning / shell), and **observed** driver burn when a Claude transcript is
+reachable.
+
+**Vendor plan quota (overall weekly)** is polled from official CLIs — not scraped
+web UIs — into a top-level `quota` object (~15 min cache at
+`~/.config/plinth/dash-quota.json`; `PLINTH_DASH_QUOTA_TTL`, `PLINTH_DASH_QUOTA=0`
+to disable). Claude: `claude -p /usage --output-format json` (week-all-models %
+used + reset text). Codex/grok currently report `no_headless_usage_surface`
+until a stable headless `/status` or `/usage` exists. When two samples ≥10 min
+apart exist, the UI projects time-to-100% weekly usage for comparison with the
+reset clock.
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
-fixture matrix, a node unit test of pure card HTML (error tone / no-review
-suppression), and a short-lived loopback HTTP check (`/`, `/api/snapshot`,
-POST 405) with process cleanup.
+fixture matrix (with `PLINTH_DASH_QUOTA=0`), a node unit test of pure card HTML
+(error tone / no-review suppression / NEEDS-HUMAN chip / phases), and a
+short-lived loopback HTTP check (`/`, `/api/snapshot`, POST 405) with process
+cleanup.
 
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
