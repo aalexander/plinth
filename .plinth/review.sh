@@ -1304,11 +1304,17 @@ $(cat "$RECEIPT")"
     fi
     # Fixed-string path match (not ERE): exact path OR under-directory, with the
     # same normalization as risk-classify (_norm_rel).
+    # Same normalization as risk-classify _norm_rel (leading ./, trailing / /.,
+    # //, /./, root . → empty).
     _sp="$sp"
     while true; do
       case "$_sp" in ./*) _sp="${_sp#./}" ;; */) _sp="${_sp%/}" ;; */.) _sp="${_sp%/.}" ;; .) _sp="" ;; *) break ;; esac
     done
     while [ "${_sp#*//}" != "$_sp" ]; do _sp="${_sp//\/\//\/}"; done
+    while [ "${_sp#*/./}" != "$_sp" ] || [ "${_sp%/./}" != "$_sp" ]; do
+      _sp="${_sp//\/.\//\/}"
+      case "$_sp" in */.) _sp="${_sp%/.}" ;; esac
+    done
     [ "$_sp" = "." ] && _sp=""
     _match=0
     while IFS= read -r _p || [ -n "${_p:-}" ]; do
@@ -1317,6 +1323,10 @@ $(cat "$RECEIPT")"
         case "$_p" in ./*) _p="${_p#./}" ;; */) _p="${_p%/}" ;; */.) _p="${_p%/.}" ;; .) _p="" ;; *) break ;; esac
       done
       while [ "${_p#*//}" != "$_p" ]; do _p="${_p//\/\//\/}"; done
+      while [ "${_p#*/./}" != "$_p" ] || [ "${_p%/./}" != "$_p" ]; do
+        _p="${_p//\/.\//\/}"
+        case "$_p" in */.) _p="${_p%/.}" ;; esac
+      done
       [ "$_p" = "." ] && _p=""
       if [ -z "$_sp" ] || [ "$_p" = "$_sp" ]; then _match=1; break; fi
       case "$_p" in "$_sp"/*) _match=1; break ;; esac

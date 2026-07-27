@@ -58,7 +58,8 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
 # Normalize for comparison with Git-relative paths: strip leading ./, trailing
-# / and /., collapse //, map . → "" (repo root = whole tree).
+# / and /., collapse // and /./, map . → "" (repo root = whole tree). Bound:
+# path components of ".." are left as-is (Git-relative paths never contain them).
 _norm_rel() {
   local p="$1"
   while true; do
@@ -71,6 +72,10 @@ _norm_rel() {
     esac
   done
   while [ "${p#*//}" != "$p" ]; do p="${p//\/\//\/}"; done
+  while [ "${p#*/./}" != "$p" ] || [ "${p%/./}" != "$p" ]; do
+    p="${p//\/.\//\/}"
+    case "$p" in */.) p="${p%/.}" ;; esac
+  done
   [ "$p" = "." ] && p=""
   printf '%s' "$p"
 }
