@@ -3647,14 +3647,26 @@ jobs:
               OUT="$(mktemp -t canary-out.XXXXXX)"
               [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
-              # Shipped handoff printf — round-trip through a fresh shell (step 0 → step 2):
+              # Shipped handoff printf — fresh consumer shell with unset vars:
               HO="$(grep -E "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" | head -1 | sed 's/^[[:space:]]*//')"
               [ -n "$HO" ] || { echo "missing handoff printf in $a agent"; exit 1; }
               BEFORE=deadbeef; SNAP=/tmp/snap.canary
               HOUT="$(BEFORE="$BEFORE" SNAP="$SNAP" SPEC_DIR="$SPEC_DIR" SPEC="$SPEC" OUT="$OUT" bash -c "$HO")"
-              # Fresh shell re-parses the quoted handoff (how the agent pastes into step 2):
-              eval "$(printf '%s\n' "$HOUT" | sed 's/^/export /')"
-              [ "$SPEC" = "$SPEC_DIR/prompt" ] || { echo "handoff round-trip lost SPEC"; exit 1; }
+              # Fresh shell starts with unset vars, then evals only the handoff line:
+              read -r B2 S2 SD2 SP2 O2 <<EOF
+$(env -i PATH="$PATH" HOME="$HOME" bash --noprofile --norc -c '
+  unset BEFORE SNAP SPEC_DIR SPEC OUT
+  eval "'"$HOUT"'"
+  printf "%s %s %s %s %s\n" "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
+')
+EOF
+              [ "$B2" = "deadbeef" ] || { echo "handoff lost BEFORE ($B2)"; exit 1; }
+              [ "$S2" = "/tmp/snap.canary" ] || { echo "handoff lost SNAP ($S2)"; exit 1; }
+              [ "$SD2" = "$SPEC_DIR" ] || { echo "handoff lost SPEC_DIR ($SD2)"; exit 1; }
+              [ "$SP2" = "$SPEC" ] || { echo "handoff lost SPEC ($SP2)"; exit 1; }
+              [ "$O2" = "$OUT" ] || { echo "handoff lost OUT ($O2)"; exit 1; }
+              # Continue in this shell with the handoff values:
+              BEFORE="$B2"; SNAP="$S2"; SPEC_DIR="$SD2"; SPEC="$SP2"; OUT="$O2"
               printf 'objective: test\nMODEL: canary\n' > "$SPEC"   # Write tool creates the file
               export PATH="$STUBS:$PATH"
               cap() { shift; "$@"; }

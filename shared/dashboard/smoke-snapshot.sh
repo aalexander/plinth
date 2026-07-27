@@ -1190,6 +1190,26 @@ setTimeout(() => {
         process.exit(1);
       }
     }
+    // UNBOUND (pending Tier-2 confirmation): warn tone + yellow chip
+    const unbound = {
+      name: "ub", path: "/tmp/ub", branch: "feat/ub", head: "abcdef0",
+      feedless: false, needs_human: { open: 0, blocking: 0 },
+      review: { verdict: "UNBOUND", round: 2, sha7: "abcdef0",
+                stale: false, running: false, mode: "verify", tier: 2 },
+    };
+    if (api.cardTone(unbound) !== "warn") {
+      console.error("cardTone(UNBOUND) expected warn, got", api.cardTone(unbound));
+      process.exit(1);
+    }
+    const ubHtml = api.cardHTML(unbound);
+    if (!ubHtml.includes('class="card warn"')) {
+      console.error("UNBOUND card missing tone class warn");
+      process.exit(1);
+    }
+    if (!ubHtml.includes('chip yellow">UNBOUND')) {
+      console.error("UNBOUND card missing yellow UNBOUND chip:", ubHtml.slice(0, 200));
+      process.exit(1);
+    }
     // Healthy idle: no review chip present, tone idle
     const idle = {
       name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
