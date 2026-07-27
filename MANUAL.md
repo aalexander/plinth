@@ -636,12 +636,15 @@ it has run green with a real smoke_cmd.
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
 - Deny-ship tripwire (same hook): distinguishes create from merge. Plain
-  `gh pr create` is refused unless the branch has an APPROVED review at HEAD.
-  Bare `gh pr merge` is **always** refused — even when APPROVED — because it is
-  not repository/head-bound (`GH_REPO` / default-repo can desync authorize-from
-  vs merge-into). A permitted merge must be origin- and head-bound (plinth#49):
-  either a same-repository PR URL **or** `-R`/`--repo` naming the local origin,
-  **and** `--match-head-commit <origin-resolved-head-sha>`. Examples:
+  `gh pr create` is refused unless the **current checkout** feature branch has
+  an APPROVED review at HEAD (authorization is local HEAD, not the command's
+  `--head` / `-R` arguments — create from `main`/`master`/detached HEAD is not
+  gated here). Bare `gh pr merge` is **always** refused — even when APPROVED —
+  because it is not repository/head-bound (`GH_REPO` / default-repo can desync
+  authorize-from vs merge-into). A permitted merge must be origin- and
+  head-bound (plinth#49): either a same-repository PR URL **or** `-R`/`--repo`
+  naming the local origin, **and**
+  `--match-head-commit <origin-resolved-head-sha>`. Examples:
   `gh pr merge --squash -R <owner/repo> --match-head-commit <sha>`,
   `gh pr merge 42 -R <owner/repo> --match-head-commit <sha>`,
   `gh pr merge https://github.com/<owner/repo>/pull/42 --match-head-commit <sha>`.

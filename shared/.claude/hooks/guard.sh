@@ -45,7 +45,8 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # is verified server-side only where `receipt / verify` is required), plus the trusted driver running
 # the loop. For a Claude driver this hook
 # complements the Stop review-gate by refusing ship commands IMMEDIATELY, mid-turn:
-#   - `gh pr create` is refused unless the feature branch has APPROVED at HEAD.
+#   - `gh pr create` is refused unless the CURRENT CHECKOUT feature branch has
+#     APPROVED at HEAD (local HEAD only — not the create command's --head/-R).
 #   - bare `gh pr merge` is ALWAYS refused (even when APPROVED). A permitted merge
 #     must be origin- and head-bound (plinth#49): either a same-repo PR URL or
 #     -R/--repo naming origin, AND --match-head-commit equal to the origin-resolved

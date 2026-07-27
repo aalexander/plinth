@@ -1058,11 +1058,11 @@ jobs:
           grep -q 'ls-tree' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
             && grep -q 'ls-tree' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" \
             || { echo "::error::#15 product missing ls-tree presence probes"; exit 1; }
-          # First-adoption absence still works (no base config → Tier 1 for app.py; basecfg has=0)
+          # First-adoption absence still works (no base config → Tier 1 for app.py-only;
+          # do NOT commit .plinth/config on the PR — that is tooling Tier 2).
           T_LOC="$(mktemp -d)"; ( cd "$T_LOC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             echo hi > README.md; git add -A; git commit -qm b >/dev/null
-            git checkout -qb feat >/dev/null 2>&1; mkdir -p .plinth; printf 'spec_path = WORK.md\n' > .plinth/config
-            echo code > app.py; git add -A; git commit -qm w >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo code > app.py; git add app.py; git commit -qm w >/dev/null
             out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null || true)"
             [ "$(printf '%s' "$out" | jq -r .tier 2>/dev/null)" = "1" ] || { echo "::error::#15 risk-classify first-adoption absence failed (out=$out)"; exit 1; }
             BCFG_L="$(mktemp)"; awk '/^basecfg=""/ {p=1} p{print} /^bcfg\(\)/ {if(p)exit}' \
