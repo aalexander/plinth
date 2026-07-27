@@ -1295,15 +1295,24 @@ $(cat "$RECEIPT")"
     # Full-read grep (not -q): early exit under pipefail can SIGPIPE git and miss
     # a late match / treat producer error as "spec unchanged".
     _sn=""; _sn_rc=0
-    _sn="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
+    # --no-renames so a renamed-away canonical spec still appears as a delete of $sp
+    # (name-only with renames only reports the destination).
+    _sn="$(git diff --name-only --no-renames "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
     if [ "$_sn_rc" -ne 0 ]; then
       die_infra "git diff --name-only for spec-change detection failed (rc=$_sn_rc)"
     fi
-    # Fixed-string exact path match (not ERE): paths may contain + ( ) { } etc.
-    _grc=0; printf '%s\n' "$_sn" | grep -Fx "$sp" >/dev/null || _grc=$?
-    if [ "$_grc" -eq 0 ]; then spec_changed=1
-    elif [ "$_grc" -ne 1 ]; then die_infra "spec-change grep failed (rc=$_grc)"
-    fi
+    # Fixed-string path match (not ERE): exact path OR any path under a directory
+    # spec_path (e.g. spec_path=spec → spec/part.md). Paths may contain + ( ) { }.
+    _match=0
+    while IFS= read -r _p || [ -n "${_p:-}" ]; do
+      [ -n "${_p:-}" ] || continue
+      case "$_p" in
+        "$sp"|"$sp"/*) _match=1; break ;;
+      esac
+    done <<EOF
+$_sn
+EOF
+    [ "$_match" = 1 ] && spec_changed=1
   done
   [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ] && spec_changed=1
   if [ -n "$spec_changed" ]; then

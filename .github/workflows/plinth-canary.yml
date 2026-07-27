@@ -776,15 +776,19 @@ jobs:
             "$GITHUB_WORKSPACE/shared/.plinth/review.sh" > "$RCAP_BLK"
           grep -q '_rc_hit' "$RCAP_BLK" && grep -q 'ROUND_CAP=' "$RCAP_BLK" \
             || { echo "::error::could not extract round_cap block (got $(wc -l <"$RCAP_BLK") lines)"; exit 1; }
-          basecfg="$(python3 -c 'print("round_cap = 7\n"+"x=1\n"*40000)')"
-          out="$(basecfg="$basecfg" bash -c '
+          # File-backed large basecfg (env would hit ARG_MAX/E2BIG on Linux ~128KB+)
+          BCFG_FILE="$(mktemp)"
+          python3 -c 'import sys; sys.stdout.write("round_cap = 7\n"+"x=1\n"*40000)' > "$BCFG_FILE"
+          out="$(bash -c '
             set -euo pipefail
             die_infra() { echo "die_infra: $*" >&2; exit 9; }
+            basecfg="$(cat "$1")"
             bcfg() { printf "%s" "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
-            source '"$RCAP_BLK"'
+            source "$2"
             printf "cap=%s\n" "$ROUND_CAP"
-          ')"
+          ' _ "$BCFG_FILE" "$RCAP_BLK")"
           printf '%s' "$out" | grep -q 'cap=7' || { echo "::error::#15 product round_cap miss on large basecfg (out=$out)"; exit 1; }
+          rm -f "$BCFG_FILE"
           # 3) risk-classify product: new pre-skipped test must be Tier 2 (SKIPADD path)
           T_SK="$(mktemp -d)"; ( cd "$T_SK"; git init -qb main . >/dev/null
             mkdir -p tests .plinth; printf 'spec_path = SPEC.md\n' > .plinth/config
@@ -817,8 +821,11 @@ jobs:
           if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | grep -q SKIPADD; then
             echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
           fi
-          grep -n 'grep -Fx' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" >/dev/null \
-            || { echo "::error::#15 review.sh must use grep -Fx for spec path match"; exit 1; }
+          # product must match directory-valued spec_path and rename-away of file specs
+          grep -q 'no-renames' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::#15 review.sh spec_changed missing --no-renames"; exit 1; }
+          grep -q '"$sp"/\*' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            || { echo "::error::#15 review.sh spec_changed missing directory-prefix match"; exit 1; }
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
           RV3="$(mktemp -d)"; BORG3="$(mktemp -d)"; git init -q --bare "$BORG3"
