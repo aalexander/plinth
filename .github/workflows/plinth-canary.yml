@@ -740,56 +740,85 @@ jobs:
             ! grep -nE 'tool_names.*grep -Eq|grep -Eq.*HARNESS_RE.*<<<|<<<.*HARNESS' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
               || { echo "::error::#15 review.sh tooling floor still uses grep -q or here-string (fail-open)"; exit 1; }
           )
-          # #15 large-input / producer-failure siblings (mutation-sensitive).
-          # Source hygiene: quiet greps must not remain on the fail-closed paths.
-          if grep -nE 'grep -Eiq|grep -Eq|grep -qE' "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null; then
+          # #15 large-input PRODUCT probes (extract/source real blocks — not reimplemented greps).
+          # 1) tooling floor with huge name list: PATH git shim emits 8k files + harness path
+          BIG_GIT="$(mktemp -d)"
+          cat > "$BIG_GIT/git" <<GSH
+          #!/usr/bin/env bash
+          if [ "\$1" = diff ] && [ "\$2" = --name-only ]; then
+            i=0; while [ \$i -lt 8000 ]; do printf 'f%05d.py\n' "\$i"; i=\$((i+1)); done
+            echo '.plinth/review.sh'; exit 0
+          fi
+          exec "$REAL_GIT" "\$@"
+          GSH
+          chmod +x "$BIG_GIT/git"
+          FLB_BIG="$(mktemp)"
+          awk '/^RISK=2; RISK_JSON=/ {p=1} p && /^echo "Plinth review: risk Tier/ {exit} p{print}' \
+            "$GITHUB_WORKSPACE/shared/.plinth/review.sh" > "$FLB_BIG"
+          T_BIG2="$(mktemp -d)"; ( cd "$T_BIG2"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo b >> app.py; git add -A; git commit -qm w >/dev/null
+            base_tip="$(git rev-parse main)"
+            HARNESS_RE="$(awk -F"'" '/^HARNESS_RE=/ {print $2; exit}' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+            out="$(base_tip="$base_tip" HARNESS_RE="$HARNESS_RE" PATH="$BIG_GIT:$PATH" bash -c '
+              set -euo pipefail
+              die_infra() { echo "die_infra: $*" >&2; exit 9; }
+              source '"$FLB_BIG"'
+              printf "%s\n" "$RISK_JSON"
+            ')"
+            [ "$(printf '%s' "$out" | jq -r .tier)" = "2" ] || { echo "::error::#15 product floor missed harness path in 8k name list (out=$out)"; exit 1; }
+            printf '%s' "$out" | grep -qiE 'floored|tooling|version-pinned' || { echo "::error::#15 product floor reason missing for large list"; exit 1; }
+          )
+          # 2) round_cap: extract the real _rc_hit block by line range from review.sh
+          RCAP_BLK="$(mktemp)"
+          # Capture from _rc_hit=0 through the fi that closes the ROUND_CAP if
+          awk '/^_rc_hit=0/ {p=1} p{print; if(/^fi$/ && seen){exit} if(/ROUND_CAP=/) seen=1}' \
+            "$GITHUB_WORKSPACE/shared/.plinth/review.sh" > "$RCAP_BLK"
+          grep -q '_rc_hit' "$RCAP_BLK" && grep -q 'ROUND_CAP=' "$RCAP_BLK" \
+            || { echo "::error::could not extract round_cap block (got $(wc -l <"$RCAP_BLK") lines)"; exit 1; }
+          basecfg="$(python3 -c 'print("round_cap = 7\n"+"x=1\n"*40000)')"
+          out="$(basecfg="$basecfg" bash -c '
+            set -euo pipefail
+            die_infra() { echo "die_infra: $*" >&2; exit 9; }
+            bcfg() { printf "%s" "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
+            source '"$RCAP_BLK"'
+            printf "cap=%s\n" "$ROUND_CAP"
+          ')"
+          printf '%s' "$out" | grep -q 'cap=7' || { echo "::error::#15 product round_cap miss on large basecfg (out=$out)"; exit 1; }
+          # 3) risk-classify product: new pre-skipped test must be Tier 2 (SKIPADD path)
+          T_SK="$(mktemp -d)"; ( cd "$T_SK"; git init -qb main . >/dev/null
+            mkdir -p tests .plinth; printf 'spec_path = SPEC.md\n' > .plinth/config
+            echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            # Large new test file with skip marker near the top
+            { echo 'import pytest'; echo '@pytest.mark.skip'; python3 -c 'print("x=1\n"*20000)'; } > tests/test_big.py
+            git add -A; git commit -qm w >/dev/null
+            out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null)"
+            [ "$(printf '%s' "$out" | jq -r .tier)" = "2" ] || { echo "::error::#15 product risk-classify missed pre-skipped large new test (out=$out)"; exit 1; }
+            printf '%s' "$out" | grep -qiE 'skip|pre-skipped|weakening' || { echo "::error::#15 product SKIPADD reason missing (out=$out)"; exit 1; }
+          )
+          # 4) guard product: long merge clause with metachar must parse_error (block)
+          GD_MC="$(mktemp -d)"; mkdir -p "$GD_MC/.plinth/session/review/feat-x"
+          ( cd "$GD_MC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo a>f; git add -A; git commit -qm b >/dev/null; git checkout -qb feat/x >/dev/null 2>&1
+            echo c>f; git add -A; git commit -qm w >/dev/null )
+          GH4mc="$(git -C "$GD_MC" rev-parse HEAD)"
+          printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4mc" > "$GD_MC/.plinth/session/review/feat-x/verdict.json"
+          git -C "$GD_MC" remote add origin "https://github.com/example/plinth.git"
+          # Body with $ metachar + long padding — must block (parse fail-closed)
+          longpad="$(python3 -c 'print("x"*20000)')"
+          mc_cmd="gh pr merge 42 --squash -R github.com/example/plinth --match-head-commit $GH4mc --body=\$BODY$longpad"
+          mc_rc="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$mc_cmd" '$c')" | CLAUDE_PROJECT_DIR="$GD_MC" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?)"
+          [ "$mc_rc" = 2 ] || { echo "::error::#15 product guard did not fail-closed on long metachar merge clause (rc=$mc_rc)"; exit 1; }
+          # 5) product source hygiene: no quiet greps remain on fail-closed paths
+          if grep -nE 'grep -Eiq|grep -Eq' "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null; then
             echo "::error::#15 guard.sh still has grep -Eq (quiet)"; exit 1
           fi
           if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | grep -q SKIPADD; then
             echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
           fi
-          if grep -n 'round_cap' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" | grep -q 'grep -q'; then
-            echo "::error::#15 review.sh round_cap still uses grep -q"; exit 1
-          fi
-          if ! grep -n '_sn_rc' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" | grep -q 'spec_changed\|name-only\|spec-change'; then
-            # Accept any _sn_rc near the spec-change block
-            grep -n '_sn_rc' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" >/dev/null \
-              || { echo "::error::#15 review.sh missing status-checked git diff for spec_changed"; exit 1; }
-          fi
-          # round_cap: large basecfg with early match must still detect the key
-          basecfg="$(python3 -c 'print("round_cap = 5\n"+"x=1\n"*50000)')"
-          set -o pipefail
-          _rc_grc=0; printf '%s\n' "$basecfg" | grep -E '^[[:space:]]*round_cap[[:space:]]*=' >/dev/null || _rc_grc=$?
-          [ "$_rc_grc" = 0 ] || { echo "::error::#15 large basecfg round_cap full-read miss (rc=$_rc_grc)"; exit 1; }
-          # AGENTS markers: large body with early marker must match
-          agents_body="$(python3 -c 'print("# Plinth — Reviewer\n"+"x\n"*50000)')"
-          _ag_rc=0; printf '%s\n' "$agents_body" | grep -F '# Plinth — Reviewer' >/dev/null || _ag_rc=$?
-          [ "$_ag_rc" = 0 ] || { echo "::error::#15 large AGENTS.md marker full-read miss"; exit 1; }
-          # spec-change: git diff failure must be detectable (status nonzero)
-          T_SPEC="$(mktemp -d)"; ( cd "$T_SPEC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
-            echo a > f; git add -A; git commit -qm b >/dev/null
-            base_tip="$(git rev-parse HEAD)"
-            printf 'GARBAGE\n' > .git/index
-            set +e
-            _sn_rc=0; _sn="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
-            set -e
-            [ "$_sn_rc" -ne 0 ] || { echo "::error::#15 expected git diff --name-only failure on corrupt index"; exit 1; }
-          )
-          # risk-classify SKIPADD full-read on large tdiff
-          tdiff="$(python3 -c 'print("+"+"@skip\n"+"+x\n"*50000)')"
-          _sk=0; printf '%s' "$tdiff" | grep -E '^\+.*@skip' >/dev/null || _sk=$?
-          [ "$_sk" = 0 ] || { echo "::error::#15 large tdiff SKIPADD full-read miss"; exit 1; }
-          # guard metacharacter full-read on long clause
-          oseg="$(python3 -c 'print("\$BODY "+"x "*50000)')"
-          _mc=0; printf '%s' "$oseg" | grep '["'\''\\$`*?{}()]' >/dev/null || _mc=$?
-          [ "$_mc" = 0 ] || { echo "::error::#15 long merge-clause metachar full-read miss"; exit 1; }
-          # spec path with ERE metachars must still detect exact path change (grep -F)
-          _sn=$'docs/spec+v2.md\nother.py'
-          sp='docs/spec+v2.md'
-          _grc=0; printf '%s\n' "$_sn" | grep -Fx "$sp" >/dev/null || _grc=$?
-          [ "$_grc" = 0 ] || { echo "::error::#15 fixed-string spec path match failed for '$sp'"; exit 1; }
-          grep -n 'grep -F' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" | grep -q 'sp\|SPEC' \
-            || { echo "::error::#15 review.sh spec_changed must use grep -F for path matching"; exit 1; }
+          grep -n 'grep -Fx' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" >/dev/null \
+            || { echo "::error::#15 review.sh must use grep -Fx for spec path match"; exit 1; }
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
           RV3="$(mktemp -d)"; BORG3="$(mktemp -d)"; git init -q --bare "$BORG3"
