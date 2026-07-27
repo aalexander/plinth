@@ -1,5 +1,17 @@
 # Plinth changelog
 
+## v4.8.2 — fail-closed UPSTREAM package (#11, #13, #15, #17, #49) — July 27, 2026
+- **#11 / #15 (risk-classify):** `git diff --raw` and per-test `git diff` failures fail CLOSED to
+  Tier 2 (never Tier 0 empty-diff). Base `.plinth/config` absence vs read failure distinguished.
+- **#13 / #15 (review.sh):** tooling-floor runs **before** any classifier; `git diff --name-only`
+  status-checked. Classifier runs from the **ratified base blob** (temp extract), not the PR
+  working tree. Base config / reviewer-contract / AGENTS-project reads fail closed on I/O error.
+- **#17 (lane-guard):** `ls-files -z` + `core.quotePath=false`; snapshot path field delimited by
+  ASCII US (\x1f) so paths containing two spaces no longer truncate in scope extraction.
+- **#49 (guard ship):** bare `gh pr merge` is **always blocked** — drivers must use the
+  targeted form `gh pr merge … -R <origin> --match-head-commit <sha>` so authorize-from
+  cannot desync from merge-into (GH_REPO / default-repo / head race).
+
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
   `.plinth-lane.*/prompt` again (SPEC_EOF shell heredoc of the five-part spec is gone),

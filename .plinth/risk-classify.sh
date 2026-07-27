@@ -39,17 +39,34 @@ fi
 # spec_path is read from the BASE config, not the working tree: repointing
 # spec_path in the same PR must not downgrade that PR's own spec edits. The
 # canonical spec paths are ALWAYS Tier 2 regardless of config (defense in depth).
-# `|| true` first: under set -euo pipefail a failing `git show` (base has no
-# .plinth/config — a first-adoption PR that adds it) would abort the classifier here,
-# emitting no tier at all. Read the blob soft, then parse the string.
-basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null || true)"
+# Distinguish ABSENCE (first adoption: no blob) from READ FAILURE (infrastructure):
+# conflating them with `|| true` let a same-PR config repoint when git show failed
+# mid-read (plinth#15). Fail CLOSED to Tier 2 on any real error.
+basecfg=""
+_cfg_err=""; _cfg_probe=0
+_cfg_err="$(git cat-file -e "${baseref}:.plinth/config" 2>&1)" || _cfg_probe=$?
+if [ "$_cfg_probe" -eq 0 ]; then
+  basecfg="$(git show "${baseref}:.plinth/config" 2>/dev/null)" \
+    || { printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["cannot read base .plinth/config — failing closed to Tier 2"]}\n' "$baseref"; exit 0; }
+elif ! printf '%s' "$_cfg_err" | grep -qi 'does not exist'; then
+  # Missing path: Git reports exit 128 + "does not exist" (not exit 1). Any other
+  # nonzero is infrastructure (bad tip, corrupt repo) — fail closed to Tier 2.
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git cat-file -e base .plinth/config failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$_cfg_probe"
+  exit 0
+fi
 SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:]]*//p' | head -1)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
 is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -Eq "$SPECRE"; }
 
-raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
+# plinth#11: never swallow git diff failures as "empty diff" / Tier 0.
+raw=""; raw_rc=0
+raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null)" || raw_rc=$?
+if [ "$raw_rc" -ne 0 ]; then
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git diff --raw failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$raw_rc"
+  exit 0
+fi
 [ -n "$raw" ] || { printf '{"tier":0,"reasons":["empty diff"],"files":0,"base_ref":"%s"}\n' "$baseref"; exit 0; }
 
 # High-consequence path signals (Tier 2). Case-insensitive matching below.
@@ -144,7 +161,12 @@ while IFS=$'\t' read -r meta p2 p3; do
     # test file (status A) stays Tier 1.
     if [ "$status" != "A" ]; then bump 2; add_reason "existing test modified (possible weakening): $path"; continue; fi
     # New test file: additive — but suspicious if it lands pre-skipped/ignored.
-    tdiff="$(git diff "${baseref}...HEAD" -- "$path" 2>/dev/null || true)"
+    # plinth#15: a masked git-diff failure missed the skip marker and under-classified.
+    tdiff=""; tdiff_rc=0
+    tdiff="$(git diff "${baseref}...HEAD" -- "$path" 2>/dev/null)" || tdiff_rc=$?
+    if [ "$tdiff_rc" -ne 0 ]; then
+      bump 2; add_reason "cannot diff new test file (fail closed): $path"; continue
+    fi
     if printf '%s' "$tdiff" | grep -Eq "^\+.*$SKIPADD"; then bump 2; add_reason "new test added pre-skipped/ignored: $path"; continue; fi
     bump 1; add_reason "test added: $path"; continue
   fi

@@ -268,15 +268,32 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # git/find failure must NOT be conflated with a legitimately-empty result (which would yield a
   # partial baseline that later reads as "scope ok"). ls-files exits 0 on empty, non-zero on error.
   local _gv _cp _d; local -a _cpdirs=()
-  _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
-    || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
-  # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter):
-  # the ignored-file listing stays FULL (that is the security property — gitignored secrets must be
-  # enumerated), only the per-path fork storm goes away. Status-checked: 0 = candidates found,
-  # 1 = no sensitive path anywhere in the tree (legitimate, e.g. a repo with no secrets), >=2 is a
-  # real grep error that must NOT silently empty the baseline and later read as "scope ok".
+  # plinth#17: core.quotePath=false so tab/special paths are not C-quoted into forms that
+  # miss SECRET_DIRS. Write NUL-delimited ls-files to a temp FILE then convert with
+  # `read -d ''` — bash variables cannot hold NUL, so command-sub + tr is fail-open
+  # (strips NULs and concatenates paths into one nonexistent name).
+  local _gvzfile _gvfile _gline
+  _gvzfile="$(mktemp "${TMPDIR:-/tmp}/plinth-lg-gvz.XXXXXX")" \
+    || { echo "lane-guard: mktemp failed for path enumeration — refusing (fail closed)" >&2; return 5; }
+  _gvfile="$(mktemp "${TMPDIR:-/tmp}/plinth-lg-gv.XXXXXX")" \
+    || { rm -f "$_gvzfile"; echo "lane-guard: mktemp failed for path enumeration — refusing (fail closed)" >&2; return 5; }
+  # Do NOT use trap RETURN here — it would fire on every nested function return
+  # (sens_prefilter, etc.) and delete the temps mid-snapshot.
+  { git -c core.quotePath=false ls-files -c -z \
+      && git -c core.quotePath=false ls-files -o -i --exclude-standard -z \
+      && git -c core.quotePath=false ls-files -o --exclude-standard -z
+  } > "$_gvzfile" 2>/dev/null \
+    || { rm -f "$_gvzfile" "$_gvfile"; echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
+  : > "$_gvfile"
+  while IFS= read -r -d '' _gline || [ -n "${_gline:-}" ]; do
+    [ -n "$_gline" ] || continue
+    printf '%s\n' "$_gline" >> "$_gvfile" \
+      || { rm -f "$_gvzfile" "$_gvfile"; echo "lane-guard: cannot write path enumeration — refusing (fail closed)" >&2; return 5; }
+  done < "$_gvzfile"
+  # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter).
   local _gvrc
-  _gv="$(printf '%s\n' "$_gv" | sens_prefilter)"; _gvrc=$?
+  _gv="$(sens_prefilter < "$_gvfile")"; _gvrc=$?
+  rm -f "$_gvzfile" "$_gvfile"
   [ "$_gvrc" -le 1 ] || { echo "lane-guard: sensitive-candidate prefilter failed (grep rc=$_gvrc) — refusing (fail closed)" >&2; return 5; }
   # control-plane: only find under dirs that EXIST (a missing ref dir is normal, not an error),
   # so a non-zero find is a REAL error (permission, etc.) -> fail closed. Collect into an ARRAY and
@@ -303,9 +320,12 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # require EXACTLY 0 and fail closed otherwise. _ctag has a grep that legitimately exits 1 on an empty
   # control-plane set, so it allows <=1 (a sed error there is >=2 -> caught). sort exits 0 or >=2.
   local _gtrc
-  _gtag="$(printf '%s\n' "$_gv" | ck_sed 's/^/G\t/')"; _gtrc=$?
+  # Tag with ASCII RS (\036), not TAB — IFS-tab parse would strip a leading/trailing
+  # tab from a path (plinth#17 sibling). Embed the real byte (sed does not expand \036).
+  local _rs; _rs="$(printf '\036')"
+  _gtag="$(printf '%s\n' "$_gv" | ck_sed "s/^/G${_rs}/")"; _gtrc=$?
   [ "$_gtrc" -eq 0 ] || { echo "lane-guard: git-visible tag transform failed (sed rc=$_gtrc) — refusing (fail closed)" >&2; return 5; }
-  _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | ck_sed 's/^/C\t/')"; _ctrc=$?
+  _ctag="$(printf '%s\n' "$_cp" | grep -v '^$' | ck_sed "s/^/C${_rs}/")"; _ctrc=$?
   [ "$_ctrc" -le 1 ] || { echo "lane-guard: control-plane tag transform failed (rc=$_ctrc) — refusing (fail closed)" >&2; return 5; }
   _tagged="$(printf '%s\n%s\n' "$_gtag" "$_ctag" | sort -u)"; _snrc=$?
   [ "$_snrc" -eq 0 ] || { echo "lane-guard: could not build the sensitive baseline (sort rc=$_snrc) — refusing (fail closed)" >&2; return 5; }
@@ -323,7 +343,8 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
     while IFS= read -r _cd; do
       [ -n "$_cd" ] || continue
       _cm="$(modeof "$_cd")"; [ -n "$_cm" ] || { echo "lane-guard: cannot stat control-plane dir '$_cd' — refusing (fail closed)" >&2; return 5; }
-      _cpdirmodes="${_cpdirmodes}cpdir ${_cm}  ${_cd}
+      # plinth#17: US separator before path (see sens_snapshot file records).
+      _cpdirmodes="${_cpdirmodes}cpdir ${_cm}"$'\x1f'"${_cd}
 "
     done <<CPDIRS
 $_cpalldirs
@@ -332,7 +353,7 @@ CPDIRS
   # The while-pipeline is the LAST statement in the group so its `exit 5` fail-closed paths make the
   # group (hence `group | sort`, the function's last statement) return 5.
   { printf '%s' "$_cpdirmodes"
-  printf '%s\n' "$_tagged" | while IFS="$(printf '\t')" read -r tag f; do
+  printf '%s\n' "$_tagged" | while IFS="$(printf '\036')" read -r tag f; do
     [ -n "$f" ] || continue
     if [ "$tag" = G ]; then
       # ONLY the hook-appended event log is excluded — pulse.sh appends `.plinth/session/events.jsonl`
@@ -353,7 +374,9 @@ CPDIRS
       if [ -f "$f" ]; then   # -f follows the link: true iff it resolves to a regular file
         th="$(hashof "$f")"; tm="$(modeof_deref "$f")"   # deref: referent content + referent MODE (chmod-on-target caught)
         { [ -n "$th" ] && [ -n "$tm" ]; } || { echo "lane-guard: cannot hash/stat symlink referent for '$f' — refusing (fail closed)" >&2; exit 5; }
-        printf 'symlink %s %s %s  %s\n' "$lt" "$th" "$tm" "$f"   # target + referent content + mode
+        # plinth#17: US (\x1f) before path so a path containing two spaces cannot truncate
+      # when the scope extractor strips "up to the last two-space run".
+      printf 'symlink %s %s %s\x1f%s\n' "$lt" "$th" "$tm" "$f"   # target + referent content + mode
       elif [ -d "$f" ]; then
         # A sensitive path that is a symlink to a DIRECTORY is the write-through vector
         # (a lane writes `<sensitive>/x`, which lands in the external target dir, invisible
@@ -362,7 +385,7 @@ CPDIRS
         echo "lane-guard: sensitive path '$f' is a symlink to a DIRECTORY — refusing (fail closed; a secret path must not be a dir-symlink)" >&2
         exit 5
       else
-        printf 'symlink %s - -  %s\n' "$lt" "$f"   # dangling / special target: no content to hide
+        printf 'symlink %s - -\x1f%s\n' "$lt" "$f"   # dangling / special target: no content to hide
       fi
     elif [ -f "$f" ]; then
       h="$(hashof "$f")"; m="$(modeof "$f")"
@@ -372,9 +395,9 @@ CPDIRS
         echo "lane-guard: cannot hash/stat sensitive file '$f' — refusing (fail closed)" >&2
         exit 5
       fi
-      printf '%s %s  %s\n' "$h" "$m" "$f"
+      printf '%s %s\x1f%s\n' "$h" "$m" "$f"
     else
-      printf 'special present  %s\n' "$f"   # a dir/FIFO/socket/device at a sensitive path — record its presence
+      printf 'special present\x1f%s\n' "$f"   # a dir/FIFO/socket/device at a sensitive path — record its presence
     fi
   done
   } | sort
@@ -716,15 +739,30 @@ CHANGED
         # script runs pipefail WITHOUT -e, so a failing assignment never aborts by itself.
         drc=0; dout="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null)" || drc=$?
         [ "$drc" -le 1 ] || { echo "scope: could not diff the sensitive snapshots (diff rc=$drc) — refusing to accept the lane (fail closed)" >&2; exit 5; }
-        # Every snapshot record ends "<metadata...>  <path>" with a TWO-SPACE separator before
-        # the path — regardless of format (regular `<hash> <mode>`, symlink `symlink <t> <h> <m>`,
-        # dangling `symlink <t> - -`, or `special present`). Strip the diff marker, then everything
-        # up to and including the LAST two-space run — format-independent path extraction.
-        # Status-checked: a masked error here would empty `touched` and skip the sensitive-path
-        # violations below (fail open). dout is already status-checked (drc<=1); we are inside
-        # before!=after, so grep WILL match diff lines (0). pipefail -> $?; 0/1 fine, >=2 fails closed.
-        touched="$(printf '%s\n' "$dout" | grep -E '^[<>]' | ck_sed -E 's/^[<>] //; s/^.*  //' | sort -u)"; trc=$?
-        [ "$trc" -le 1 ] || { echo "scope: could not extract the touched sensitive paths (rc=$trc) — refusing (fail closed)" >&2; exit 5; }
+        # plinth#17: records use ASCII Unit Separator (US, \037) before the path so a
+        # path containing two spaces cannot be truncated. Legacy two-space records
+        # (pre-4.8.2 mid-lane snapshots) still extract via the last two-space fallback.
+        # Pure bash (no sed): embedding US in a sed script is not portable across BSD/GNU.
+        touched=""
+        while IFS= read -r _dline || [ -n "${_dline:-}" ]; do
+          case "$_dline" in
+            '<'\ *|'>'\ *) _dline="${_dline:2}" ;;
+            '<'*|'>'*) _dline="${_dline:1}"; _dline="${_dline# }" ;;
+            *) continue ;;
+          esac
+          case "$_dline" in
+            *$'\037'*) _dpath="${_dline##*$'\037'}" ;;
+            *'  '*) _dpath="${_dline##*  }" ;;
+            *) _dpath="$_dline" ;;
+          esac
+          [ -n "$_dpath" ] || continue
+          touched="${touched}${_dpath}
+"
+        done <<DOUT
+$dout
+DOUT
+        touched="$(printf '%s' "$touched" | sort -u)"; trc=$?
+        [ "$trc" -eq 0 ] || { echo "scope: could not sort the touched sensitive paths (rc=$trc) — refusing (fail closed)" >&2; exit 5; }
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           # SPEC-GATED template lookalikes: a SECRET_SAFE name (.env.example, id_rsa_notes.txt)

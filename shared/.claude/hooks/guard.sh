@@ -88,7 +88,7 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
   local local_url local_repo url_repo n_repo resolved
   local resolved_branch resolved_sha branch head slug vf v vsha
 
-  # Bare current-branch path (create, or merge with no PR number/URL/-R).
+  # Bare current-branch path for CREATE (and legacy create-like ships).
   _ship_bare() {
     git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || return 0
     branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
@@ -313,7 +313,10 @@ ORIGSEGS
       if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
         _ship_targeted
       else
-        _ship_bare
+        # plinth#49: bare `gh pr merge` (no number/URL/-R) is not bound to the
+        # repository/head the CLI will act on (gh default-repo / GH_REPO / race).
+        # Fail closed: require the targeted form with -R origin + --match-head-commit.
+        block "$what blocked — bare 'gh pr merge' is not repository/head-bound (gh default-repo or GH_REPO can desync authorize-from vs merge-into). Use: gh pr merge <n> -R <origin-owner/repo> --match-head-commit <origin-resolved-head-sha> …"
       fi
     done <<< "$disc"
   done <<< "$segments"

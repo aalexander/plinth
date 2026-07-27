@@ -567,8 +567,9 @@ jobs:
           # the REAL resolution block extracted from shared/review.sh (not a copy) with a
           # base spec_path=BASE.md but a working-tree repoint to EVIL.md; base must win.
           RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"; SB="$(mktemp)"
-          awk '/^basecfg="\$\(git show/{p=1} p{print} /SPEC_PATH="SPEC\.md"/{if(p)exit}' "$RS" > "$SB"
-          grep -q 'git show' "$SB" && grep -q 'SPEC.md' "$SB" || { echo "::error::could not extract SPEC_PATH resolution from review.sh"; exit 1; }
+          # Extract base-config resolution (v4.8.2+ uses basecfg="" + cat-file probe, not a single git show assign).
+          awk '/^basecfg=""/ {p=1} p{print} /^SPECRE=/ {if(p)exit} /^is_spec\(\)/ {if(p)exit} /SPEC_PATH="SPEC\.md"/ {if(p){print; exit}}' "$RS" > "$SB"
+          grep -qE 'cat-file -e|git show' "$SB" && grep -q 'SPEC.md' "$SB" || { echo "::error::could not extract SPEC_PATH resolution from review.sh (got $(wc -l <"$SB") lines)"; exit 1; }
           SR="$(mktemp -d)"; SORG2="$(mktemp -d)"; git init -q --bare "$SORG2"
           ( cd "$SR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'spec_path = BASE.md\n' > .plinth/config
             git add -A; git commit -qm b >/dev/null; git remote add origin "$SORG2"; git push -q origin main
@@ -602,8 +603,8 @@ jobs:
           # exec-gating, budget) from the BASE config, not the working tree — else a PR
           # could weaken its OWN review. Behavior: extract the real base-config block and
           # confirm audit_vendor resolves from base even when the working tree repoints it.
-          BC="$(mktemp)"; awk '/^basecfg="\$\(git show/{p=1} p{print} /^AUDIT_VENDOR=/{if(p)exit}' "$RS" > "$BC"
-          grep -q 'bcfg audit_vendor' "$BC" || { echo "::error::could not extract base-config block (audit_vendor) from review.sh"; exit 1; }
+          BC="$(mktemp)"; awk '/^basecfg=""/ {p=1} p{print} /^AUDIT_VENDOR=/ {if(p){print; exit}}' "$RS" > "$BC"
+          grep -q 'bcfg audit_vendor' "$BC" || { echo "::error::could not extract base-config block (audit_vendor) from review.sh (got $(wc -l <"$BC") lines)"; exit 1; }
           BR="$(mktemp -d)"; BORG="$(mktemp -d)"; git init -q --bare "$BORG"
           ( cd "$BR"; git init -qb main . >/dev/null; mkdir -p .plinth; printf 'audit_vendor = grok\n' > .plinth/config
             git add -A; git commit -qm b >/dev/null; git remote add origin "$BORG"; git push -q origin main
@@ -2585,6 +2586,9 @@ jobs:
           [ "$(gcmd 'echo "gh pr create" | bash')" = 0 ] || { echo "::error::deny-ship: pipe-to-shell should be out-of-scope, not blocked"; exit 1; }
           printf '{"verdict":"APPROVED","sha":"%s"}' "$GH4" > "$GV"
           [ "$(gcmd 'gh pr create --fill')" = 0 ] || { echo "::error::deny-ship: gh pr create blocked despite APPROVED@HEAD"; exit 1; }
+          # plinth#49: bare merge remains blocked even with APPROVED — require targeted -R + --match-head-commit
+          [ "$(gcmd 'gh pr merge --squash')" = 2 ] || { echo "::error::deny-ship: bare gh pr merge must stay blocked under APPROVED (use -R origin --match-head-commit)"; exit 1; }
+          [ "$(gcmd 'gh pr merge --squash -R aalexander/plinth --match-head-commit '"$GH4")" = 2 ] || { echo "::error::deny-ship: targeted merge without resolvable origin PR should still block"; exit 1; }
           # Re-STALE the verdict (wrong sha) so the ship-command tests further below (quoted-token
           # `gh "pr" create`, gh-global `gh -R o/r pr create/merge`) run in a NON-approved state and
           # block — otherwise the APPROVED@HEAD written just above would let them through (they are
@@ -3793,10 +3797,15 @@ jobs:
             printf 'doc\n' > docs/id_rsa_format.md; printf 'doc\n' > id_rsa_notes.txt   # true docs ABOUT a key
             git add -A; git commit -qm base >/dev/null
             SNAP="$(mktemp)"; bash "$LG" snapshot > "$SNAP"
-            for s in '  \.env$' '  id_rsa$' '  id_rsa_backup$' '  id_ed25519$' '  id_rsa\.txt$' '  id_ed25519\.md$' '  cert\.pem$' '  prod\.key$'; do
+            for s in $'\x1f\.env$' $'\x1fid_rsa$' $'\x1fid_rsa_backup$' $'\x1fid_ed25519$' $'\x1fid_rsa\.txt$' $'\x1fid_ed25519\.md$' $'\x1fcert\.pem$' $'\x1fprod\.key$'; do
               grep -qE "$s" "$SNAP" || { echo "::error::lane-guard snapshot missed a secret matching /$s/ (denylist narrower than templates/.gitignore)"; exit 1; }
             done
             grep -q node_modules "$SNAP" && { echo "::error::lane-guard snapshot wrongly lists node_modules (would false-positive)"; exit 1; } || true
+
+            # plinth#17: path containing two spaces must snapshot and extract intact
+            printf 'sec\n' > "secrets/key  with spaces"
+            SNAP2="$(mktemp)"; bash "$LG" snapshot > "$SNAP2"
+            grep -q $'\x1fsecrets/key  with spaces$' "$SNAP2" || { echo "::error::snapshot lost two-space path (US delimiter / extraction regression)"; exit 1; }
             # Template lookalikes are RECORDED in the snapshot (they are gitignored — the snapshot is
             # the ONLY check that sees a lane writing real secrets into them) and SPEC-GATED at scope
             # time. .envrc is a different NAME entirely and stays out:
@@ -4226,8 +4235,8 @@ jobs:
             [ "$r" = 0 ] || { echo "::error::(prefilter rc=1) snapshot FAILED (rc=$r) on a repo with no sensitive files at all — 'no matches' is a legitimate grep rc=1, not an error, and treating it as one breaks every lane run in a freshly scaffolded project"; exit 1; }
             # It must still return the control-plane records (a separate scan, not prefiltered),
             # so an empty *sensitive* set does not mean an empty snapshot.
-            printf '%s' "$out" | grep -q '  \.git/' || { echo "::error::(prefilter rc=1) the snapshot lost its control-plane records on a secret-free repo — the control-plane scan must not depend on the sensitive prefilter"; exit 1; }
-            printf '%s' "$out" | grep -q '  app\.py$' && { echo "::error::(prefilter rc=1) a non-sensitive tracked file was recorded as sensitive — the prefilter widened the set"; exit 1; } || true )
+            printf '%s' "$out" | grep -qE $'\x1f\.git/' || { echo "::error::(prefilter rc=1) the snapshot lost its control-plane records on a secret-free repo — the control-plane scan must not depend on the sensitive prefilter"; exit 1; }
+            printf '%s' "$out" | grep -qE $'\x1fapp\.py$' && { echo "::error::(prefilter rc=1) a non-sensitive tracked file was recorded as sensitive — the prefilter widened the set"; exit 1; } || true )
           # SUPERSET property, asserted GENERICALLY rather than by five sample paths. The entire
           # safety argument is that the bulk prefilter can only ever be a superset of what
           # sens_match classifies — so the filtered snapshot must equal an UNFILTERED one, byte
@@ -4431,10 +4440,10 @@ jobs:
             # SECURITY PROPERTY (the point of the snapshot): gitignored secrets are STILL enumerated.
             # A snapshot that got fast by no longer listing ignored files would silently stop seeing a
             # lane planting secrets in .env / secrets/ — a regression, not a fix:
-            for s in '  \.env$' '  secrets/api-token\.txt$' '  credentials/aws\.json$' '  id_rsa$'; do
+            for s in $'\x1f\.env$' $'\x1fsecrets/api-token\.txt$' $'\x1fcredentials/aws\.json$' $'\x1fid_rsa$'; do
               grep -qE "$s" "$SNAPB" || { echo "::error::lane-guard snapshot no longer enumerates the GITIGNORED secret matching /$s/ under a large ignored tree — a speed fix must never narrow WHICH files are seen"; exit 1; }
             done
-            grep -qE '  vendor/pinned/dep\.lock$' "$SNAPB" || { echo "::error::lane-guard snapshot missed a GITIGNORED path that is sensitive only via a protected-paths REGEX — any candidate prefilter must run the REAL pattern set (protected-paths entries are grep -E regexes, not git pathspecs)"; exit 1; }
+            grep -qE $'\x1fvendor/pinned/dep\.lock$' "$SNAPB" || { echo "::error::lane-guard snapshot missed a GITIGNORED path that is sensitive only via a protected-paths REGEX — any candidate prefilter must run the REAL pattern set (protected-paths entries are grep -E regexes, not git pathspecs)"; exit 1; }
             grep -q node_modules "$SNAPB" && { echo "::error::lane-guard snapshot lists node_modules — the candidate prefilter WIDENED the sensitive set (every ignored artifact would be compared)"; exit 1; } || true
             # …and it must be FAST. Measured on THIS fixture: 31s pre-fix vs 1s filtered (a fast
             # laptop; a runner is slower on both). The bound sits between them with room on each
