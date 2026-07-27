@@ -46,9 +46,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # the loop. For a Claude driver this hook
 # complements the Stop review-gate by refusing ship commands IMMEDIATELY, mid-turn:
 #   - `gh pr create` is refused unless the feature branch has APPROVED at HEAD.
-#   - bare `gh pr merge` is ALWAYS refused (even when APPROVED) — require the targeted
-#     form: `gh pr merge <n|url> -R <origin-owner/repo> --match-head-commit <sha> …`
-#     so GH_REPO/default-repo cannot desync authorize-from vs merge-into (plinth#49).
+#   - bare `gh pr merge` is ALWAYS refused (even when APPROVED). A permitted merge
+#     must be origin- and head-bound (plinth#49): either a same-repo PR URL or
+#     -R/--repo naming origin, AND --match-head-commit equal to the origin-resolved
+#     head (so GH_REPO/default-repo cannot desync authorize-from vs merge-into).
 # Wiring the guard into codex's own hook system (so a codex driver gets it too) is
 # deferred future work.
 # WHAT THIS IS, AND IS NOT — read before "hardening" it:

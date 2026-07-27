@@ -639,11 +639,15 @@ it has run green with a real smoke_cmd.
   `gh pr create` is refused unless the branch has an APPROVED review at HEAD.
   Bare `gh pr merge` is **always** refused — even when APPROVED — because it is
   not repository/head-bound (`GH_REPO` / default-repo can desync authorize-from
-  vs merge-into). The mandated form is
-  `gh pr merge <n|url> -R <origin-owner/repo> --match-head-commit <origin-resolved-head-sha> …`
-  (plinth#49). Like every `.claude/` hook it fires only under a Claude driver, or
-  a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe`
-  alone shows invocation, not enforcement (grok 0.2.112 reported no execution
+  vs merge-into). A permitted merge must be origin- and head-bound (plinth#49):
+  either a same-repository PR URL **or** `-R`/`--repo` naming the local origin,
+  **and** `--match-head-commit <origin-resolved-head-sha>`. Examples:
+  `gh pr merge --squash -R <owner/repo> --match-head-commit <sha>`,
+  `gh pr merge 42 -R <owner/repo> --match-head-commit <sha>`,
+  `gh pr merge https://github.com/<owner/repo>/pull/42 --match-head-commit <sha>`.
+  Like every `.claude/` hook it fires only under a Claude driver, or a CLI
+  verified END-TO-END to run the guard — a positive `plinth hookprobe` alone
+  shows invocation, not enforcement (grok 0.2.112 reported no execution
   [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
@@ -856,8 +860,10 @@ installed copies.
   **FIXED in v4.8.2** (plinth#11/#13/#15): cat-file probes distinguish
   "does not exist" absence from infrastructure failure (fail closed); tooling
   floor runs before any classifier; risk-classify fails closed on raw/per-test
-  diff errors. Canary covers absence + failure-injection for the probe/show
-  sites. (Originally: v4.5.0 refresh review, round 3 sweep.)
+  diff errors. Canary covers absence + failure-injection for cat-file probes,
+  post-probe git show, tooling-floor name-only, base-classifier extraction,
+  reviewer/AGENTS-project contract materialization, and inline_contract.
+  (Originally: v4.5.0 refresh review, round 3 sweep.)
 - **review.sh: porcelain `-z` rename records are mis-parsed**
   (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits
   its second pathname as a separate NUL record with no `XY ` prefix, but the
