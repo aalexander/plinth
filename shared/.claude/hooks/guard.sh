@@ -267,8 +267,10 @@ ORIGSEGS
       # $BODY / globs / braces / backticks / process-subs / subshells change argv
       # after inspection. Fail closed on those chars in the ORIGINAL clause
       # (not the discovery fragment — openers are stripped for discovery only).
-      if printf '%s' "$oseg" | grep -q '["'\''\\$`*?{}()]'; then
-        parse_error=1
+      # Full-read grep (not -q): long clauses under pipefail can SIGPIPE and skip parse_error.
+      _mc_rc=0; printf '%s' "$oseg" | grep '["'\''\\$`*?{}()]' >/dev/null || _mc_rc=$?
+      if [ "$_mc_rc" -eq 0 ]; then parse_error=1
+      elif [ "$_mc_rc" -ne 1 ]; then parse_error=1  # fail closed on grep infra
       fi
       for tok in "$@"; do
         if [ -n "$need_value" ]; then

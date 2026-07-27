@@ -212,7 +212,13 @@ ROUND_CAP_MAX=100000
 # Absent key (or all-comment file) => no cap. A present key with an empty value
 # (`round_cap =` or `round_cap =   `) is MALFORMED — same class as a typo: refuse
 # rather than silently disable the breaker the operator thought they set.
-if printf '%s\n' "$basecfg" | grep -qE '^[[:space:]]*round_cap[[:space:]]*='; then
+# Full-read grep (not -q): large basecfg + early match under pipefail SIGPIPEs.
+_rc_hit=0; _rc_grc=0
+printf '%s\n' "$basecfg" | grep -E '^[[:space:]]*round_cap[[:space:]]*=' >/dev/null || _rc_grc=$?
+if [ "$_rc_grc" -eq 0 ]; then _rc_hit=1
+elif [ "$_rc_grc" -ne 1 ]; then die_infra "round_cap key grep failed (rc=$_rc_grc)"
+fi
+if [ "$_rc_hit" = 1 ]; then
   ROUND_CAP="$(bcfg round_cap)"
   [ -n "$ROUND_CAP" ] || die_infra "round_cap in .plinth/config is present but empty — set a non-negative integer, or delete the key for no cap"
 else
@@ -1286,7 +1292,17 @@ $(cat "$RECEIPT")"
   spec_changed=""
   for sp in "$SPEC_PATH" "$WSPEC"; do
     [ -n "$sp" ] || continue
-    git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -q "^${sp}" && spec_changed=1
+    # Full-read grep (not -q): early exit under pipefail can SIGPIPE git and miss
+    # a late match / treat producer error as "spec unchanged".
+    _sn=""; _sn_rc=0
+    _sn="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _sn_rc=$?
+    if [ "$_sn_rc" -ne 0 ]; then
+      die_infra "git diff --name-only for spec-change detection failed (rc=$_sn_rc)"
+    fi
+    _grc=0; printf '%s\n' "$_sn" | grep -E "^${sp}" >/dev/null || _grc=$?
+    if [ "$_grc" -eq 0 ]; then spec_changed=1
+    elif [ "$_grc" -ne 1 ]; then die_infra "spec-change grep failed (rc=$_grc)"
+    fi
   done
   [ -n "$WSPEC" ] && [ "$WSPEC" != "$SPEC_PATH" ] && spec_changed=1
   if [ -n "$spec_changed" ]; then

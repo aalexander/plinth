@@ -8,9 +8,10 @@
   working tree. Base config / reviewer-contract / AGENTS-project reads fail closed on I/O error.
 - **#17 (lane-guard):** `ls-files -z` + `core.quotePath=false`; snapshot path field delimited by
   ASCII US (\x1f) so paths containing two spaces no longer truncate in scope extraction.
-- **#49 (guard ship):** bare `gh pr merge` is **always blocked** — drivers must use the
-  targeted form `gh pr merge … -R <origin> --match-head-commit <sha>` so authorize-from
-  cannot desync from merge-into (GH_REPO / default-repo / head race).
+- **#49 (guard ship):** bare `gh pr merge` is **always blocked** — drivers must use
+  `gh pr merge <n|url> -R github.com/<owner/repo> --match-head-commit <sha>` (or a
+  same-repo github.com PR URL) so authorize-from cannot desync from merge-into
+  (`GH_HOST` / `GH_REPO` / default-repo / head race).
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

@@ -30,9 +30,10 @@
 #       not — the lane must return STATUS: unavailable, never silently implement the task itself.
 #
 #   lane-guard.sh snapshot
-#       Print `<sha256>  <path>` for every existing SENSITIVE file in the SUPERPROJECT — protected
-#       paths (.plinth/protected-paths) OR secret paths (.env, secrets/, credentials/, .ssh/, .aws/,
-#       id_rsa, id_ed25519), INCLUDING gitignored ones. The lane captures this BEFORE the run.
+#       Print `<sha256> <mode>\x1f<path>` (ASCII US before path; plinth#17) for every existing
+#       SENSITIVE file in the SUPERPROJECT — protected paths (.plinth/protected-paths) OR secret
+#       paths (.env, secrets/, credentials/, .ssh/, .aws/, id_rsa, id_ed25519), INCLUDING
+#       gitignored ones. The lane captures this BEFORE the run.
 #       NOT covered (best-effort boundary): files INSIDE a checked-out submodule — `git ls-files` does
 #       not descend into submodules, so a sensitive change within an authorized submodule appears only
 #       as the gitlink change. A submodule is a separate repo with its own review; treat its contents
@@ -453,7 +454,19 @@ case "$sub" in
             fi
             exit 3 ;;
         esac
-        if [ "$_grc" = 0 ] && ! printf '%s' "$_go" | grep -qi 'not authenticated'; then :; else
+        # Full-read grep -i (not -q): early match under pipefail SIGPIPEs printf and
+        # can invert `!` into a false-authenticated pass.
+        _auth_bad=0
+        if [ "$_grc" = 0 ]; then
+          _agrc=0; printf '%s' "$_go" | grep -i 'not authenticated' >/dev/null || _agrc=$?
+          if [ "$_agrc" -eq 0 ]; then _auth_bad=1
+          elif [ "$_agrc" -ne 1 ]; then
+            echo "unavailable: grok auth-output grep failed (rc=$_agrc, elapsed ${_gel}s)" ; exit 3
+          fi
+        else
+          _auth_bad=1
+        fi
+        if [ "$_auth_bad" = 0 ]; then :; else
           # Known unauthenticated signatures: exit 0 + "not authenticated" text, or rc=1.
           # Other non-cap codes (incl. GNU timeout wrapper 125) are NOT "not signed in".
           if [ "$_grc" = 0 ] || [ "$_grc" = 1 ]; then
