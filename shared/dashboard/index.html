@@ -94,21 +94,43 @@
     flex-direction: column;
     gap: 0.28rem;
   }
+  /* Fixed columns so CLAUDE / CODEX / GROK meters line up. */
   #quota-bar .qrow {
-    display: flex; flex-wrap: wrap; gap: 0.35rem 0.85rem;
+    display: grid;
+    grid-template-columns: 7.75rem 10.5rem 11rem minmax(0, 1fr);
+    column-gap: 0.75rem;
+    row-gap: 0.2rem;
     align-items: center;
   }
   #quota-bar .qrow.session { opacity: 0.95; }
+  #quota-bar .qrow.foot {
+    display: flex;
+    grid-template-columns: none;
+  }
   #quota-bar .qlabel {
     color: var(--cyan); font-weight: 600; letter-spacing: 0.03em;
-    text-transform: uppercase; min-width: 6.2rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   #quota-bar .qlabel.sess { color: var(--purple); }
+  #quota-bar .qstat {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
   #quota-bar .qpct { color: var(--text); font-weight: 600; }
   #quota-bar .qpct.warn { color: var(--yellow); }
   #quota-bar .qpct.hot { color: var(--red); }
   #quota-bar .dim { color: var(--muted); }
   #quota-bar .qerr { color: var(--muted); font-size: 0.68rem; }
+  #quota-bar .qmeta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.7rem;
+    align-items: center;
+    min-width: 0;
+  }
   #quota-bar .chip-over {
     color: var(--red);
     background: var(--red-bg);
@@ -121,7 +143,6 @@
   #quota-bar .spark {
     display: inline-block;
     vertical-align: middle;
-    margin-left: 0.15rem;
   }
   #quota-bar .spark svg { display: block; }
   #quota-bar .qfoot {
@@ -130,28 +151,40 @@
     display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem;
     align-items: center;
   }
-  .qmeter {
-    flex: 1 1 140px;
-    max-width: 280px;
-    min-width: 100px;
+  #quota-bar .qmeter {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
     height: 7px;
     background: #21262d;
     border-radius: 999px;
     overflow: hidden;
     border: 1px solid var(--border);
   }
-  .qmeter > i {
+  #quota-bar .qmeter > i {
     display: block; height: 100%;
     background: linear-gradient(90deg, var(--cyan), var(--purple));
     border-radius: 999px;
     transition: width 0.3s ease;
   }
-  .qmeter.warn > i { background: linear-gradient(90deg, var(--cyan), var(--yellow)); }
-  .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
-  @media (max-width: 720px) {
-    #quota-bar .qrow { gap: 0.25rem 0.5rem; }
-    #quota-bar .qmeter { flex-basis: 100%; max-width: none; order: 3; }
-    #quota-bar .qlabel { min-width: 5rem; }
+  #quota-bar .qmeter.warn > i { background: linear-gradient(90deg, var(--cyan), var(--yellow)); }
+  #quota-bar .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
+  #quota-bar .qmeter.empty {
+    background: transparent;
+    border-color: transparent;
+  }
+  @media (max-width: 900px) {
+    #quota-bar .qrow {
+      grid-template-columns: 7.25rem 9.5rem minmax(0, 1fr);
+    }
+    #quota-bar .qmeter { grid-column: 1 / -1; max-width: 100%; }
+    #quota-bar .qmeta { grid-column: 1 / -1; }
+  }
+  @media (max-width: 520px) {
+    #quota-bar .qrow {
+      grid-template-columns: 6.5rem minmax(0, 1fr);
+    }
+    #quota-bar .qstat { grid-column: 2; }
   }
   .filters {
     display: flex; flex-wrap: wrap; gap: 0.35rem;
@@ -870,15 +903,15 @@
     const remaining = win && win.remaining_pct != null ? win.remaining_pct
       : (p != null ? 100 - p : null);
     const cls = p == null ? "" : p >= 90 ? "hot" : p >= 70 ? "warn" : "";
-    const meterCls = p == null ? "" : p >= 90 ? "qmeter hot" : p >= 70 ? "qmeter warn" : "qmeter";
+    const meterCls = p == null ? "qmeter empty" : p >= 90 ? "qmeter hot" : p >= 70 ? "qmeter warn" : "qmeter";
     const pctHtml = p == null
-      ? '<span class="dim">—</span>'
+      ? '<span class="dim">' + esc(opts.emptyStat || "—") + "</span>"
       : '<span class="qpct ' + cls + '">' + esc(String(p)) + "% used</span>" +
         (remaining != null
           ? ' <span class="dim">(' + esc(String(remaining)) + "% left)</span>"
           : "");
     const meter = p == null
-      ? ""
+      ? '<div class="' + meterCls + '" aria-hidden="true"></div>'
       : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
     const reset = formatReset(win);
     const proj = formatProjection(win);
@@ -886,15 +919,19 @@
     const overrun = win && win.overrun_risk;
     const labCls = opts.session ? "qlabel sess" : "qlabel";
     const rowCls = opts.session ? "qrow session" : "qrow";
+    const meta = [
+      reset ? '<span title="quota window reset">' + "reset " + esc(reset) + "</span>" : "",
+      proj ? '<span title="linear from last reset → 100%">' + "→100% " + esc(proj) + "</span>" : "",
+      rate ? "<span>rate " + esc(rate) + "</span>" : "",
+      overrun ? '<span class="chip-over" title="Linear burn hits 100% before window reset">overrun risk</span>' : "",
+      extra || ""
+    ].filter(Boolean).join("");
     return (
       '<div class="' + rowCls + '">' +
         '<span class="' + labCls + '">' + esc(label) + "</span>" +
-        pctHtml + meter +
-        (reset ? '<span title="quota window reset">' + "reset " + esc(reset) + "</span>" : "") +
-        (proj ? '<span title="linear from last reset → 100%">' + "→100% " + esc(proj) + "</span>" : "") +
-        (rate ? "<span>rate " + esc(rate) + "</span>" : "") +
-        (overrun ? '<span class="chip-over" title="Linear burn hits 100% before window reset">overrun risk</span>' : "") +
-        (extra || "") +
+        '<span class="qstat">' + pctHtml + "</span>" +
+        meter +
+        '<span class="qmeta">' + meta + "</span>" +
       "</div>"
     );
   }
@@ -1023,12 +1060,12 @@
           }
         });
       } else {
-        rows.push(
-          '<div class="qrow session">' +
-            '<span class="qlabel sess">' + esc((v.vendor || "?").toUpperCase() + " SESS") + "</span>" +
-            '<span class="dim" title="Vendor API did not expose a short (≤6h) rate window">no short window</span>' +
-          "</div>"
-        );
+        rows.push(quotaRowHTML(
+          (v.vendor || "?").toUpperCase() + " SESS",
+          null,
+          '<span class="dim" title="Vendor API did not expose a short (≤6h) rate window">no short window</span>',
+          { session: true, emptyStat: "—" }
+        ));
       }
     });
 
@@ -1037,7 +1074,7 @@
         return (v.vendor || "?") + ":" + (v.error || "off");
       }).join(" · ");
       rows.push(
-        '<div class="qfoot" title="' + esc(q.note || "") + '">' +
+        '<div class="qrow foot qfoot" title="' + esc(q.note || "") + '">' +
           "<span>hidden " + esc(bits) + "</span>" +
         "</div>"
       );
