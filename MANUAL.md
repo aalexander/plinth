@@ -810,6 +810,13 @@ summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
 
 ## Noticed
+
+- **v4.9.0 dashboard residual:** Quota cache is fixed at
+  `/tmp/plinth-dash-quota-$UID/dash-quota.json`. Do not discover `/tmp` or that
+  directory as a project root. Serve-path scratch files use process TMPDIR.
+  Atomic cache write and non-regular target skips are best-effort; hostile
+  `id` / concurrent smoke vs live dash races remain operator hygiene.
+
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
