@@ -985,9 +985,10 @@ export PLINTH_DASH_ROOTS="$EC"
   and .phases.coding == 30
   and .review_round_secs >= 10
   and .review_round_secs <= 20
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
 ' >/dev/null
 # jq-fallback constructor: parseable JSON object that fails protocol shape
-# (verdict enum invalid) — still retains seats/phases/review_round_secs.
+# (verdict enum invalid) — still retains seats/phases/review_round_secs/source.
 printf '{"verdict":"NOT_A_REAL_VERDICT","sha":"abcdef0","round":1}\n' \
   > "$EC/.plinth/session/review/feat-ek/verdict.json"
 "$PLINTH" dash --snapshot | jq -e '
@@ -996,6 +997,7 @@ printf '{"verdict":"NOT_A_REAL_VERDICT","sha":"abcdef0","round":1}\n' \
   and .models.seats.reviewer_tier2 == "gpt-t2"
   and .phases.coding == 30
   and .review_round_secs >= 10
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
 ' >/dev/null
 
 # Detached HEAD finds verdict under "detached"
@@ -1686,8 +1688,9 @@ setTimeout(() => {
         process.exit(1);
       }
       const subHtml = (elsById["nh-sub"] && elsById["nh-sub"].textContent) || "";
-      if (!subHtml.includes("NEEDS-HUMAN.md")) {
-        console.error("nh-sub missing source label:", subHtml);
+      // Must render the supplied legacy source exactly — not the hard-coded fallback.
+      if (!subHtml.includes(" · NEEDS-HUMAN.md") || subHtml.includes(".plinth/NEEDS-HUMAN.md")) {
+        console.error("nh-sub must show legacy source only:", subHtml);
         process.exit(1);
       }
       if (!modal.classList.contains("open")) {
