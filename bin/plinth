@@ -2661,90 +2661,121 @@ except Exception:
       '{vendor:"claude",available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
   fi
 
-  # ── Codex / Grok: no stable headless surface yet (interactive /status|/usage).
-  # Record honest unavailability so the UI does not invent numbers.
-  for v in codex grok; do
+  # ── Other vendors: honest unavailability until a headless usage surface exists.
+  for v in codex grok gemini agy; do
     if command -v "$v" >/dev/null 2>&1; then
-      jq -nc --arg v "$v" --argjson now "$now" \
-        '{vendor:$v,available:false,error:"no_headless_usage_surface",
-          note:"Use interactive /status (codex) or /usage (grok) until a headless API exists",
-          probed_at:$now}' >> "$vendors_tmp"
+      note_v="Use interactive /status or /usage until a stable headless API exists"
+      case "$v" in
+        codex) note_v="Use interactive codex /status until headless usage exists" ;;
+        grok) note_v="Use interactive grok /usage until headless usage exists" ;;
+        gemini|agy) note_v="Use interactive agy/gemini usage until headless exists" ;;
+      esac
+      jq -nc --arg v "$v" --arg n "$note_v" --argjson now "$now" \
+        '{vendor:$v,available:false,error:"no_headless_usage_surface",note:$n,probed_at:$now}' \
+        >> "$vendors_tmp"
     else
       jq -nc --arg v "$v" --argjson now "$now" \
         '{vendor:$v,available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
     fi
   done
 
-  # Assemble + projection from history of week_all_models samples.
-  # History only from a validated single-object cache (never raw multi-doc).
+  # Assemble: enrich EACH available vendor with burn-rate projection; keep overall
+  # as the primary weekly window (claude week_all_models when present).
+  # History samples are per-vendor: {t, vendor, window, used_pct, reset_text}.
   local history_in='[]' cached_body
   if cached_body="$(_dash_quota_read_cache "$cache")"; then
     history_in="$(printf '%s' "$cached_body" | jq -c '.history // []' 2>/dev/null || echo '[]')"
   fi
   local assembled
   assembled="$(jq -nc --slurpfile v "$vendors_tmp" --argjson now "$now" --argjson hist "$history_in" '
-    def week_pct:
-      [.[] | select(.vendor=="claude" and .available==true)
-           | (.windows // [])[]
-           | select(.window=="week_all_models")
-           | .used_pct] | .[0] // null;
-    def week_reset:
-      [.[] | select(.vendor=="claude" and .available==true)
-           | (.windows // [])[]
-           | select(.window=="week_all_models")
-           | .reset_text] | .[0] // null;
-    ($v[0:] | map(select(type=="object"))) as $vendors
-    | ($vendors | week_pct) as $wp
-    | ($vendors | week_reset) as $reset
-    | (if $wp == null then $hist
-       else
-         # Keep only same-reset samples; drop legacy reset-less entries and other weeks.
-         ([ $hist[]
-            | select(($reset != null) and (.reset_text != null) and (.reset_text == $reset))
-          ] + [{t:$now, week_all_models_pct:$wp, reset_text:$reset}])
-         | .[-48:]
-       end) as $hist2
-    # Rate from same-reset samples only (both ends must carry reset_text).
-    | ([$hist2[] | select(.week_all_models_pct != null and .reset_text != null)] | sort_by(.t)) as $hs
-    | (if ($hs|length) < 2 then null
-       else
-         ($hs[-1]) as $a
-         | ([ $hs[]
-             | select(($a.t - .t) >= 600
-                      and .week_all_models_pct < $a.week_all_models_pct
-                      and .reset_text == $a.reset_text)
-           ] | .[0] // null) as $b
-         | if $b != null then
-             {rate_pct_per_s: (($a.week_all_models_pct - $b.week_all_models_pct) / ($a.t - $b.t)),
-              from_t:$b.t, to_t:$a.t}
-           else
-             ($hs[0]) as $f
-             | if ($a.t - $f.t) >= 600 and ($a.week_all_models_pct > $f.week_all_models_pct)
-                  and ($f.reset_text == $a.reset_text)
-               then {rate_pct_per_s: (($a.week_all_models_pct - $f.week_all_models_pct) / ($a.t - $f.t)),
-                     from_t:$f.t, to_t:$a.t}
-               else null end
-           end
-       end) as $rate
-    | (if $wp == null or $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
-       elif $wp >= 100 then $now
-       else ($now + (((100 - $wp) / $rate.rate_pct_per_s) | floor)) end) as $proj100
+    def primary_window:
+      # Prefer weekly all-models; else first window with used_pct.
+      (.windows // []) as $w
+      | ([$w[] | select(.window=="week_all_models" and (.used_pct!=null))][0] // null) as $wk
+      | if $wk != null then $wk
+        else ([$w[] | select(.used_pct != null)][0] // null) end;
+    def rate_for($vendor; $window; $pct; $reset; $hist):
+      ([ $hist[]
+         | select(.vendor==$vendor and .window==$window
+                  and .used_pct != null and .reset_text != null
+                  and ($reset != null) and (.reset_text == $reset))
+       ] | sort_by(.t)) as $hs
+      | if ($hs|length) < 2 then null
+        else
+          ($hs[-1]) as $a
+          | ([ $hs[]
+              | select(($a.t - .t) >= 600
+                       and .used_pct < $a.used_pct
+                       and .reset_text == $a.reset_text)
+            ] | .[0] // null) as $b
+          | if $b != null then
+              {rate_pct_per_s: (($a.used_pct - $b.used_pct) / ($a.t - $b.t))}
+            else
+              ($hs[0]) as $f
+              | if ($a.t - $f.t) >= 600 and ($a.used_pct > $f.used_pct)
+                   and ($f.reset_text == $a.reset_text)
+                then {rate_pct_per_s: (($a.used_pct - $f.used_pct) / ($a.t - $f.t))}
+                else null end
+            end
+        end;
+    def enrich($hist):
+      if .available != true then .
+      else
+        (primary_window) as $pw
+        | if $pw == null or $pw.used_pct == null then .
+          else
+            ($pw.used_pct) as $pct
+            | ($pw.reset_text // null) as $reset
+            | ($pw.window // "unknown") as $win
+            | rate_for(.vendor; $win; $pct; $reset; $hist) as $rate
+            | (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
+               elif $pct >= 100 then $now
+               else ($now + (((100 - $pct) / $rate.rate_pct_per_s) | floor)) end) as $proj100
+            | . + {
+                used_pct: $pct,
+                remaining_pct: (100 - $pct),
+                primary_window: $win,
+                reset_text: $reset,
+                projected_100pct_at: $proj100,
+                rate_pct_per_hour: (if $rate == null then null
+                                    else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
+              }
+          end
+      end;
+    ($v[0:] | map(select(type=="object"))) as $vendors0
+    # Normalize history: accept legacy {t, week_all_models_pct, reset_text} as claude.
+    | ([ $hist[]
+         | if .vendor != null then .
+           elif .week_all_models_pct != null then
+             {t:.t, vendor:"claude", window:"week_all_models",
+              used_pct:.week_all_models_pct, reset_text:(.reset_text // null)}
+           else empty end
+       ]) as $hist_norm
+    | ($vendors0 | map(enrich($hist_norm))) as $vendors
+    # Append one history sample per available vendor with a primary window.
+    | ($hist_norm + [
+         $vendors[]
+         | select(.available==true and .used_pct != null)
+         | {t:$now, vendor:.vendor, window:(.primary_window // "unknown"),
+            used_pct:.used_pct, reset_text:(.reset_text // null)}
+       ] | .[-96:]) as $hist2
+    | ([$vendors[] | select(.vendor=="claude" and .available==true and .used_pct!=null)][0] // null) as $cl
+    | (if $cl != null then {
+          vendor: "claude",
+          window: ($cl.primary_window // "week_all_models"),
+          used_pct: $cl.used_pct,
+          remaining_pct: $cl.remaining_pct,
+          reset_text: $cl.reset_text,
+          projected_100pct_at: $cl.projected_100pct_at,
+          rate_pct_per_hour: $cl.rate_pct_per_hour
+        } else null end) as $overall
     | {
         available: ([$vendors[] | select(.available==true)] | length > 0),
         refreshed_at: $now,
-        overall: (if $wp == null then null else {
-          vendor: "claude",
-          window: "week_all_models",
-          used_pct: $wp,
-          remaining_pct: (100 - $wp),
-          reset_text: $reset,
-          projected_100pct_at: $proj100,
-          rate_pct_per_hour: (if $rate == null then null
-                              else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
-        } end),
+        overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "Overall weekly plan usage from claude -p /usage; refreshed every ~15m. Projection needs ≥2 same-reset samples ≥10m apart."
+        note: "Per-vendor plan usage when a headless probe exists (claude -p /usage today). Projection needs ≥2 same-reset samples ≥10m apart per vendor."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

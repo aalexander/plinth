@@ -86,15 +86,23 @@
     font-family: var(--font);
     font-size: 0.72rem;
     color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
   }
   #quota-bar .qrow {
-    display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem;
+    display: flex; flex-wrap: wrap; gap: 0.45rem 1rem;
     align-items: center;
   }
-  #quota-bar .qlabel { color: var(--cyan); font-weight: 600; letter-spacing: 0.03em; }
+  #quota-bar .qlabel {
+    color: var(--cyan); font-weight: 600; letter-spacing: 0.03em;
+    text-transform: uppercase; min-width: 5.2rem;
+  }
   #quota-bar .qpct { color: var(--text); font-weight: 600; }
   #quota-bar .qpct.warn { color: var(--yellow); }
   #quota-bar .qpct.hot { color: var(--red); }
+  #quota-bar .dim { color: var(--muted); }
+  #quota-bar .qerr { color: var(--muted); font-size: 0.68rem; }
   .qmeter {
     flex: 1 1 180px;
     max-width: 320px;
@@ -586,55 +594,128 @@
     );
   }
 
+  function quotaRowHTML(label, pct, remaining, reset, proj, rate, extra) {
+    const p = pct == null ? null : Number(pct);
+    const cls = p == null ? "" : p >= 90 ? "hot" : p >= 70 ? "warn" : "";
+    const meterCls = p != null && p >= 90 ? "qmeter hot" : "qmeter";
+    const pctHtml = p == null
+      ? '<span class="dim">—</span>'
+      : '<span class="qpct ' + cls + '">' + esc(String(p)) + "% used</span>" +
+        (remaining != null
+          ? ' <span class="dim">(' + esc(String(remaining)) + "% left)</span>"
+          : "");
+    const meter = p == null
+      ? ""
+      : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
+    return (
+      '<div class="qrow">' +
+        '<span class="qlabel">' + esc(label) + "</span>" +
+        pctHtml + meter +
+        (reset ? "<span>reset " + esc(reset) + "</span>" : "") +
+        (proj ? "<span>→100% " + esc(proj) + "</span>" : "") +
+        (rate ? "<span>rate " + esc(rate) + "</span>" : "") +
+        (extra || "") +
+      "</div>"
+    );
+  }
+
+  function formatProjection(v) {
+    if (v == null || v.projected_100pct_at == null) {
+      if (v && v.available && v.used_pct != null && v.rate_pct_per_hour == null) {
+        return "need ≥2 samples (≥10m)";
+      }
+      return null;
+    }
+    const when = whenLocal(v.projected_100pct_at);
+    const left = v.projected_100pct_at - Math.floor(Date.now() / 1000);
+    return (when || ("@" + v.projected_100pct_at)) +
+      (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
+  }
+
   function renderQuota(q) {
     lastQuota = q || null;
     if (!quotaBar) return;
     if (!q || q.skipped) {
       quotaBar.innerHTML =
         '<div class="qrow"><span class="qlabel">QUOTA</span>' +
-        '<span>probes disabled</span></div>';
+        "<span>probes disabled</span></div>";
       return;
     }
-    const o = q.overall;
-    if (!q.available || !o) {
-      const note = (q.note || "vendor plan unknown").slice(0, 120);
-      const vend = (Array.isArray(q.vendors) ? q.vendors : []).map(function (v) {
-        return v.vendor + (v.available ? "" : "×");
-      }).join(" ");
-      quotaBar.innerHTML =
-        '<div class="qrow"><span class="qlabel">QUOTA</span>' +
-        '<span>unavailable</span>' +
-        (vend ? '<span class="dim">' + esc(vend) + "</span>" : "") +
-        '<span title="' + esc(q.note || "") + '">' + esc(note) + "</span></div>";
-      return;
-    }
-    const pct = o.used_pct;
-    const cls = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
-    const meterCls = pct >= 90 ? "qmeter hot" : "qmeter";
-    let proj = "—";
-    if (o.projected_100pct_at != null) {
-      const when = whenLocal(o.projected_100pct_at);
-      const left = o.projected_100pct_at - Math.floor(Date.now() / 1000);
-      proj = (when || ("@" + o.projected_100pct_at)) +
-        (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
-    } else if (o.rate_pct_per_hour == null) {
-      proj = "need ≥2 samples (≥10m apart)";
-    }
-    const reset = o.reset_text ? esc(o.reset_text) : "—";
-    const rate = o.rate_pct_per_hour != null ? o.rate_pct_per_hour + "%/h" : "—";
     const age = q.refreshed_at != null
       ? hum(Math.max(0, Math.floor(Date.now() / 1000) - q.refreshed_at)) + " ago"
       : "—";
-    quotaBar.innerHTML =
-      '<div class="qrow">' +
-        '<span class="qlabel">WEEKLY TOTAL</span>' +
-        '<span class="qpct ' + cls + '">' + esc(String(pct)) + "% used</span>" +
-        '<div class="' + meterCls + '"><i style="width:' + Math.min(100, pct) + '%"></i></div>' +
-        '<span>reset ' + reset + "</span>" +
-        '<span>→100% ' + esc(proj) + "</span>" +
-        '<span>rate ' + esc(String(rate)) + "</span>" +
-        '<span>polled ' + esc(age) + "</span>" +
-      "</div>";
+    const ageSpan = '<span class="dim">polled ' + esc(age) + "</span>";
+    const rows = [];
+    const vendors = Array.isArray(q.vendors) ? q.vendors : [];
+    const preferred = ["claude", "codex", "grok", "gemini", "agy"];
+    const ordered = preferred
+      .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
+      .filter(Boolean)
+      .concat(vendors.filter(function (v) { return preferred.indexOf(v.vendor) < 0; }));
+
+    if (!ordered.length && !q.overall) {
+      const note = (q.note || "vendor plan unknown").slice(0, 140);
+      quotaBar.innerHTML =
+        '<div class="qrow"><span class="qlabel">QUOTA</span>' +
+        "<span>unavailable</span>" +
+        '<span title="' + esc(q.note || "") + '">' + esc(note) + "</span>" +
+        ageSpan + "</div>";
+      return;
+    }
+
+    // Primary weekly (usually claude) — labeled with vendor, not anonymous TOTAL.
+    if (q.overall && q.overall.used_pct != null) {
+      const o = q.overall;
+      const lab = (o.vendor || "primary").toUpperCase() + " WEEK";
+      rows.push(quotaRowHTML(
+        lab,
+        o.used_pct,
+        o.remaining_pct,
+        o.reset_text,
+        formatProjection(o),
+        o.rate_pct_per_hour != null ? o.rate_pct_per_hour + "%/h" : null,
+        ageSpan
+      ));
+    }
+
+    ordered.forEach(function (v) {
+      if (!v || !v.vendor) return;
+      // Skip duplicate of overall if same vendor+window already shown as primary week.
+      if (q.overall && v.vendor === q.overall.vendor && v.available &&
+          (v.primary_window === q.overall.window || !v.primary_window)) {
+        // Still show if overall missing remaining details — otherwise skip dup row.
+        if (q.overall.used_pct != null) return;
+      }
+      if (v.available && v.used_pct != null) {
+        rows.push(quotaRowHTML(
+          v.vendor.toUpperCase(),
+          v.used_pct,
+          v.remaining_pct,
+          v.reset_text,
+          formatProjection(v),
+          v.rate_pct_per_hour != null ? v.rate_pct_per_hour + "%/h" : null,
+          v.primary_window ? '<span class="dim">' + esc(v.primary_window) + "</span>" : ""
+        ));
+      } else {
+        const why = v.error || (v.available ? "no window" : "unavailable");
+        const tip = v.note || why;
+        rows.push(
+          '<div class="qrow">' +
+            '<span class="qlabel">' + esc((v.vendor || "?").toUpperCase()) + "</span>" +
+            '<span class="qerr" title="' + esc(tip) + '">' + esc(why) + "</span>" +
+            (v.note ? '<span class="dim" title="' + esc(v.note) + '">' + esc(String(v.note).slice(0, 72)) + "</span>" : "") +
+          "</div>"
+        );
+      }
+    });
+
+    if (!rows.length) {
+      quotaBar.innerHTML =
+        '<div class="qrow"><span class="qlabel">QUOTA</span><span>no vendor data</span>' +
+        ageSpan + "</div>";
+      return;
+    }
+    quotaBar.innerHTML = rows.join("");
   }
 
   function openNeedsHuman(path) {
