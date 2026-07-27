@@ -3,10 +3,10 @@
 ## v4.9.0 — dashboard ops visibility (quota, NEEDS-HUMAN drill-down, phases) — July 27, 2026
 - **`plinth dash` quota strip:** overall weekly plan usage from official CLIs
   (`claude -p /usage --output-format json`; codex/grok honest-unavailable until
-  headless). **`--snapshot` is offline** (cache read only); HTTP serve sets
-  `PLINTH_DASH_QUOTA_PROBE=1` and refreshes ~15 min with a hard timeout.
-  Projects time-to-100% weekly usage when ≥2 samples ≥10 min apart.
-  `PLINTH_DASH_QUOTA=0` / `PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT`.
+  headless). **`--snapshot` is offline** (cache read only; env cannot force a
+  probe). HTTP serve sets internal `PLINTH_DASH_SERVE_CHILD=1` and refreshes
+  ~15 min with a hard timeout. Projects time-to-100% weekly when ≥2 same-reset
+  samples ≥10 min apart. `PLINTH_DASH_QUOTA=0` / `TTL` / `TIMEOUT`.
 - **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +
   truncation notice); click the orange chip. Full queue: `plinth queue`.
 - **Models row:** `live` (transcript driver + verdict reviewer) and `seats`

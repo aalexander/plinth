@@ -654,7 +654,7 @@ jq -nc --argjson now "$NOWQ" '{
   history:[{t:($now-7200),week_all_models_pct:70},{t:$now,week_all_models_pct:80}]
 }' > "$QFIX"
 QOUT="$FIX/quota-out.json"
-PLINTH_DASH_QUOTA_CACHE="$QFIX" PLINTH_DASH_QUOTA_PROBE=0 PLINTH_DASH_QUOTA=1 \
+PLINTH_DASH_QUOTA_CACHE="$QFIX" PLINTH_DASH_SERVE_CHILD=0 PLINTH_DASH_QUOTA=1 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot > "$QOUT"
 jq -e '
   .quota.available == true
@@ -663,7 +663,7 @@ jq -e '
   and (.quota.offline != true)
 ' "$QOUT" >/dev/null
 # Snapshot must stay offline with empty cache (no CLI spawn)
-PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" PLINTH_DASH_QUOTA_PROBE=0 \
+PLINTH_DASH_QUOTA_CACHE="$FIX/no-such-quota.json" PLINTH_DASH_SERVE_CHILD=0 \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '.quota.available == false and (.quota.offline == true or .quota.skipped == true)' >/dev/null
 # Live probe: fake claude + history → parse week_all_models + project rate
@@ -679,12 +679,12 @@ chmod +x "$QBIN/claude"
 QHIST="$FIX/quota-hist.json"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
-  history:[{t:($now-7200),week_all_models_pct:70},{t:($now-3600),week_all_models_pct:75}],
+  history:[{t:($now-7200),week_all_models_pct:70,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"},{t:($now-3600),week_all_models_pct:75,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"}],
   vendors:[]
 }' > "$QHIST"
 QPROBE="$FIX/quota-probe.json"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QHIST" \
-  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_SERVE_CHILD=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot > "$QPROBE"
 jq -e '
   .quota.available == true
@@ -705,7 +705,7 @@ print(json.dumps({"result":"no usage numbers here"}))
 C
 chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty2.json" \
-  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_SERVE_CHILD=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
 # parse_failed: empty stdout
@@ -715,7 +715,7 @@ exit 0
 C
 chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty3.json" \
-  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_SERVE_CHILD=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
 # CLI timeout → cli_timeout
@@ -726,7 +726,7 @@ exit 0
 C
 chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-to.json" \
-  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_SERVE_CHILD=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_QUOTA_TIMEOUT=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="cli_timeout")] | length == 1' >/dev/null
 # Offline snapshot must NOT spawn claude (sentinel file)
@@ -739,7 +739,7 @@ exit 0
 C
 chmod +x "$QBIN/claude"
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-offline-sent.json" \
-  PLINTH_DASH_QUOTA_PROBE=0 PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
+  PLINTH_DASH_SERVE_CHILD=0 PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot >/dev/null
 [ ! -f "$SENT" ] || { echo "smoke-snapshot: offline snapshot spawned claude" >&2; exit 1; }
 # >50 open items → truncated=true, items length 50
@@ -783,6 +783,30 @@ export PLINTH_DASH_ROOTS="$PH2"
   and (.phases.ci == 20)          # Pre→Post Bash gh
   and (.phases.reviewing == 30)   # PostToolUse review.sh gap 70→40
 ' >/dev/null
+# Cross-reset history must not project from prior week
+QXR="$FIX/quota-xreset.json"
+jq -nc --argjson now "$NOWQ" '{
+  available:false, refreshed_at:($now-10000),
+  history:[
+    {t:($now-7200),week_all_models_pct:10,reset_text:"Jul 23 at 9am (America/Puerto_Rico)"},
+    {t:($now-3600),week_all_models_pct:20,reset_text:"Jul 23 at 9am (America/Puerto_Rico)"}
+  ], vendors:[]
+}' > "$QXR"
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QXR" \
+  PLINTH_DASH_SERVE_CHILD=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.overall.projected_100pct_at == null and (.quota.history|length)==1' >/dev/null
+# also: PLINTH_DASH_SERVE_CHILD must be ignored for meaning — only serve sets it;
+# plain snapshot with SERVE_CHILD=0 stays offline even if someone exports SERVE_CHILD wrongly
+# (caller cannot force probe without SERVE_CHILD; serve always sets it)
+
 # review_round_secs: request→findings mtime delta, not folded into phases.reviewing
 RR="$FIX/rho-review-secs"
 mk_git "$RR"
@@ -1771,7 +1795,7 @@ for try in 18734 18735 18736 18737 18738 18739 18740; do
   fi
   break
 done
-# Serve-mode must auto-enable PLINTH_DASH_QUOTA_PROBE=1 for the snapshot child.
+# Serve-mode must auto-enable PLINTH_DASH_SERVE_CHILD=1 for the snapshot child.
 # Observe via WRAP: when the child re-invokes dash --snapshot, PROBE must be set.
 PROBE_SEEN="$FIX/probe-seen"
 : > "$PROBE_SEEN"
@@ -1779,7 +1803,7 @@ cat > "$WRAP" <<WRAP
 #!/usr/bin/env bash
 printf '1\n' >> "$COUNT_FILE"
 # Record whether serve path enabled the probe for this snapshot child.
-printf '%s\n' "\${PLINTH_DASH_QUOTA_PROBE:-unset}" >> "$PROBE_SEEN"
+printf '%s\n' "\${PLINTH_DASH_SERVE_CHILD:-unset}" >> "$PROBE_SEEN"
 sleep 0.4
 exec "$PLINTH" "\$@"
 WRAP
@@ -1862,10 +1886,10 @@ curl -sf --max-time 10 "http://127.0.0.1:${SRV_PORT}/" > "$UI_BODY" \
   || { echo "smoke-snapshot: / curl failed" >&2; exit 1; }
 grep -q 'Plinth dashboard' "$UI_BODY" \
   || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
-# Serve path auto-enables PLINTH_DASH_QUOTA_PROBE=1 on the snapshot child
+# Serve path auto-enables PLINTH_DASH_SERVE_CHILD=1 on the snapshot child
 # (even when PLINTH_DASH_QUOTA=0 so no real CLI is spawned).
 grep -qx '1' "$PROBE_SEEN" \
-  || { echo "smoke-snapshot: serve did not set PLINTH_DASH_QUOTA_PROBE=1 (got: $(cat "$PROBE_SEEN"))" >&2; exit 1; }
+  || { echo "smoke-snapshot: serve did not set PLINTH_DASH_SERVE_CHILD=1 (got: $(cat "$PROBE_SEEN"))" >&2; exit 1; }
 # Read-only
 post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
 [ "$post_code" = "405" ] || { echo "smoke-snapshot: POST should be 405, got $post_code" >&2; exit 1; }

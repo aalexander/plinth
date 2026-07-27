@@ -506,8 +506,8 @@
       const blk = p.needs_human.blocking > 0
         ? " · " + p.needs_human.blocking + " blocking" : "";
       chips.push(
-        '<span class="chip orange btn" data-nh="' + esc(p.path) + '" title="Open queue">' +
-        "NEEDS-HUMAN ×" + p.needs_human.open + blk + "</span>"
+        '<button type="button" class="chip orange btn" data-nh="' + esc(p.path) +
+        '" title="Open queue">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</button>"
       );
     }
     const r = p.review;
@@ -550,6 +550,8 @@
       ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
       : "unknown";
     const phases = phaseBar(p.phases);
+    const revWall = (p.review_round_secs != null && p.review_round_secs > 0)
+      ? hum(p.review_round_secs) : null;
 
     return (
       '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
@@ -560,7 +562,8 @@
           "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
           "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
           "<dt>session</dt><dd>" + esc(session) + "</dd>" +
-          "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
+          "<dt>review</dt><dd>" + esc(revDetail) +
+            (revWall ? " · wall " + esc(revWall) : "") + "</dd>" +
           "<dt>models</dt><dd class=\"wrap muted\">" + esc(models) + "</dd>" +
           "<dt>burn</dt><dd class=\"muted\">" +
             (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
@@ -568,7 +571,8 @@
           "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
         "</dl>" +
         (phases ? '<div>' + phases + "</div>" : "") +
-        '<div class="footer-note">click NEEDS-HUMAN for open items · phases = event-gap heuristic (active SID)</div>' +
+        '<div class="footer-note">click NEEDS-HUMAN for open items · phases = event-gap heuristic (active SID)' +
+          (revWall ? " · review wall " + esc(revWall) : "") + "</div>" +
       "</article>"
     );
   }
@@ -585,7 +589,7 @@
     const o = q.overall;
     if (!q.available || !o) {
       const note = (q.note || "vendor plan unknown").slice(0, 120);
-      const vend = (q.vendors || []).map(function (v) {
+      const vend = (Array.isArray(q.vendors) ? q.vendors : []).map(function (v) {
         return v.vendor + (v.available ? "" : "×");
       }).join(" ");
       quotaBar.innerHTML =

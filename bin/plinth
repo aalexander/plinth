@@ -2229,15 +2229,28 @@ snapshot_one_project() {
   fi
 
   # Malformed events or present-but-non-object verdict → error card.
+  # Keep independently available fields (seats, phases, review_round_secs, NH).
   if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
       --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
       --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
-      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+      --argjson phases "$phases_json" --argjson review_round_secs "$review_round_secs" \
+      --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
+      --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
+      --arg seat_am "${seat_audit_model:-}" --arg seat_advv "${seat_advisor_vendor:-}" \
+      --arg seat_advm "${seat_advisor_model:-}" --arg seat_advx "${seat_advisor_max:-}" \
+      'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
+      {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
         needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc},
-        phases:{},
+        phases:($phases // {}),
+        review_round_secs:$review_round_secs,
+        models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
+          seats:{reviewer_vendor:nonempty($seat_rv),reviewer_tier1:nonempty($seat_rt1),
+                 reviewer_tier2:nonempty($seat_rt2),audit_vendor:nonempty($seat_av),
+                 audit_model:nonempty($seat_am),advisor_vendor:nonempty($seat_advv),
+                 advisor_model:nonempty($seat_advm),advisor_model_max:nonempty($seat_advx)}},
         quota:{available:false,note:"Vendor plan remaining quota/reset is polled separately (CLI /usage|/status cache)"}}'
     return 0
   fi
@@ -2403,11 +2416,22 @@ snapshot_one_project() {
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
       --argjson nhn "$nhn" --argjson nhb "$nhb" --argjson nh_items "$nh_items_arr" \
-      --argjson nh_trunc "$nh_trunc" \
-      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+      --argjson nh_trunc "$nh_trunc" --argjson phases "$phases_json" \
+      --argjson review_round_secs "$review_round_secs" \
+      --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
+      --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
+      --arg seat_am "${seat_audit_model:-}" --arg seat_advv "${seat_advisor_vendor:-}" \
+      --arg seat_advm "${seat_advisor_model:-}" --arg seat_advx "${seat_advisor_max:-}" \
+      'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
+      {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
         needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc},
-        phases:{},
+        phases:($phases // {}), review_round_secs:$review_round_secs,
+        models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
+          seats:{reviewer_vendor:nonempty($seat_rv),reviewer_tier1:nonempty($seat_rt1),
+                 reviewer_tier2:nonempty($seat_rt2),audit_vendor:nonempty($seat_av),
+                 audit_model:nonempty($seat_am),advisor_vendor:nonempty($seat_advv),
+                 advisor_model:nonempty($seat_advm),advisor_model_max:nonempty($seat_advx)}},
         quota:{available:false,note:"Per-project burn only; vendor plan quota is top-level (CLI /usage cache)"}}'
   [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
   return 0
@@ -2417,11 +2441,11 @@ snapshot_one_project() {
 # Cached under ~/.config/plinth/dash-quota.json; refresh interval default 900s
 # (15 min). PLINTH_DASH_QUOTA_TTL overrides.
 #
-# Offline by default: `plinth dash --snapshot` and smoke only READ the cache
-# (or return skipped). Live CLI probes run only when PLINTH_DASH_QUOTA_PROBE=1
-# (the HTTP serve path sets this) and PLINTH_DASH_QUOTA is not 0.
-# Claude: `claude -p /usage --output-format json` with a hard timeout.
-# Codex/grok: no headless surface yet — recorded unavailable (no hang).
+# Offline by default: plain `plinth dash --snapshot` only READs the cache
+# (or returns skipped/offline). Live CLI probes run only when the HTTP serve
+# child sets PLINTH_DASH_SERVE_CHILD=1 (not a caller-set PROBE override) and
+# PLINTH_DASH_QUOTA is not 0. Claude: `claude -p /usage --output-format json`
+# with a hard timeout. Codex/grok: no headless surface yet.
 _DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
 _DASH_QUOTA_CACHE="${PLINTH_DASH_QUOTA_CACHE:-$HOME/.config/plinth/dash-quota.json}"
 _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
@@ -2438,7 +2462,8 @@ _dash_quota_probe() {
     return 0
   fi
   # Offline / snapshot path: never spawn vendor CLIs — cache only.
-  if [ "${PLINTH_DASH_QUOTA_PROBE:-0}" != "1" ]; then
+  # Only the HTTP serve child (PLINTH_DASH_SERVE_CHILD=1) may probe.
+  if [ "${PLINTH_DASH_SERVE_CHILD:-0}" != "1" ]; then
     if [ -f "$cache" ]; then
       if jq -e 'type == "object"' "$cache" >/dev/null 2>&1; then
         cat "$cache"
@@ -2447,7 +2472,7 @@ _dash_quota_probe() {
     fi
     jq -nc --argjson now "$now" \
       '{available:false, refreshed_at:$now, offline:true,
-        note:"quota cache empty — serve mode (PLINTH_DASH_QUOTA_PROBE=1) refreshes via CLI ~15m",
+        note:"quota cache empty — HTTP serve refreshes via CLI ~15m",
         vendors:[]}'
     return 0
   fi
@@ -2557,19 +2582,32 @@ except Exception:
            | (.windows // [])[]
            | select(.window=="week_all_models")
            | .used_pct] | .[0] // null;
+    def week_reset:
+      [.[] | select(.vendor=="claude" and .available==true)
+           | (.windows // [])[]
+           | select(.window=="week_all_models")
+           | .reset_text] | .[0] // null;
     ($v[0:] | map(select(type=="object"))) as $vendors
     | ($vendors | week_pct) as $wp
+    | ($vendors | week_reset) as $reset
     | (if $wp == null then $hist
-       else ($hist + [{t:$now, week_all_models_pct:$wp}])
-            | .[-48:]  # keep ~12h at 15m cadence
+       else
+         # Drop prior-window samples when weekly reset_text changes.
+         ([ $hist[]
+            | select(($reset == null) or (.reset_text == null) or (.reset_text == $reset))
+          ] + [{t:$now, week_all_models_pct:$wp, reset_text:$reset}])
+         | .[-48:]
        end) as $hist2
-    # Rate: pct per second from oldest sample at least 10 min earlier with different pct.
+    # Rate from same-reset samples only.
     | ([$hist2[] | select(.week_all_models_pct != null)] | sort_by(.t)) as $hs
     | (if ($hs|length) < 2 then null
        else
          ($hs[-1]) as $a
          | ([ $hs[]
-             | select(($a.t - .t) >= 600 and .week_all_models_pct < $a.week_all_models_pct)
+             | select(($a.t - .t) >= 600
+                      and .week_all_models_pct < $a.week_all_models_pct
+                      and (($a.reset_text == null) or (.reset_text == null)
+                           or (.reset_text == $a.reset_text)))
            ] | .[0] // null) as $b
          | if $b != null then
              {rate_pct_per_s: (($a.week_all_models_pct - $b.week_all_models_pct) / ($a.t - $b.t)),
@@ -2577,6 +2615,8 @@ except Exception:
            else
              ($hs[0]) as $f
              | if ($a.t - $f.t) >= 600 and ($a.week_all_models_pct > $f.week_all_models_pct)
+                  and (($a.reset_text == null) or ($f.reset_text == null)
+                       or ($f.reset_text == $a.reset_text))
                then {rate_pct_per_s: (($a.week_all_models_pct - $f.week_all_models_pct) / ($a.t - $f.t)),
                      from_t:$f.t, to_t:$a.t}
                else null end
@@ -2593,17 +2633,14 @@ except Exception:
           window: "week_all_models",
           used_pct: $wp,
           remaining_pct: (100 - $wp),
-          reset_text: (
-            [$vendors[] | select(.vendor=="claude") | (.windows // [])[]
-             | select(.window=="week_all_models") | .reset_text] | .[0] // null
-          ),
+          reset_text: $reset,
           projected_100pct_at: $proj100,
           rate_pct_per_hour: (if $rate == null then null
                               else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
         } end),
         vendors: $vendors,
         history: $hist2,
-        note: "Overall weekly plan usage from claude -p /usage; refreshed every ~15m. Projection needs ≥2 samples ≥10m apart."
+        note: "Overall weekly plan usage from claude -p /usage; refreshed every ~15m. Projection needs ≥2 same-reset samples ≥10m apart."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"
@@ -2700,11 +2737,11 @@ run_dashboard() {
   echo "plinth dash: http://127.0.0.1:${port}/  (loopback only · ctrl-c to quit)"
   echo "  discovery: $(if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then echo "PLINTH_DASH_ROOTS"; elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then echo "~/.config/plinth/dashboard-projects"; else echo "~/Dev/*/.plinth/config"; fi)"
   # Env passed explicitly so the child inherits roots/config the same way.
-  # PLINTH_DASH_QUOTA_PROBE=1: serve path may refresh vendor quota (timeout-bounded);
-  # plain `dash --snapshot` stays offline (cache-only / skipped).
+  # PLINTH_DASH_SERVE_CHILD=1: only the serve-spawned snapshot may probe quota.
+  # Plain `dash --snapshot` stays offline regardless of caller env.
   PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
   PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
-  PLINTH_DASH_QUOTA_PROBE="${PLINTH_DASH_QUOTA_PROBE:-1}" \
+  PLINTH_DASH_SERVE_CHILD=1 \
   python3 - "$port" <<'PY'
 import json, os, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
