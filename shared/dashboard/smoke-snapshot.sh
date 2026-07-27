@@ -43,6 +43,7 @@ printf '%s\n' \
   'reviewer_model_tier2 = gpt-t2' \
   'audit_vendor = claude' \
   'audit_model = opus' \
+  'advisor_vendor = claude' \
   'advisor_model = fable' \
   'advisor_model_max = fable-max' \
   > "$A/.plinth/config"
@@ -626,6 +627,7 @@ jq -e --arg head "$HEAD" '
   and .models.seats.reviewer_tier2 == "gpt-t2"
   and .models.seats.audit_vendor == "claude"
   and .models.seats.audit_model == "opus"
+  and .models.seats.advisor_vendor == "claude"
   and .models.seats.advisor_model == "fable"
   and .models.seats.advisor_model_max == "fable-max"
   # Live reviewer from verdict.model only (request has no model; not seat fallback).
@@ -909,6 +911,26 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$TTLDIR/cache.json" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=900 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 50' >/dev/null
 [ ! -f "$SENT2" ] || { echo "smoke-snapshot: fresh TTL still invoked claude" >&2; exit 1; }
+# Successful probe persists refreshed history to the cache file
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 55% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+PCACHE="$FIX/persist-cache.json"
+rm -f "$PCACHE"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$PCACHE" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 55' >/dev/null
+[ -f "$PCACHE" ] || { echo "smoke-snapshot: probe did not persist cache file" >&2; exit 1; }
+jq -e '
+  .overall.used_pct == 55
+  and (.history | length) >= 1
+  and (.history[-1].week_all_models_pct == 55)
+  and (.history[-1].reset_text != null)
+' "$PCACHE" >/dev/null
 
 # Beta feedless
 jq -e '
@@ -1668,14 +1690,16 @@ setTimeout(() => {
         console.error("Escape listener did not close modal");
         process.exit(1);
       }
-      // Backdrop click (target === modal)
-      if (modalFns.length) {
-        api.openNeedsHuman("/tmp/h2");
-        modalFns[0]({ target: modal });
-        if (modal.classList.contains("open")) {
-          console.error("backdrop click did not close modal");
-          process.exit(1);
-        }
+      // Backdrop click (target === modal) — required, not optional
+      if (!modalFns.length) {
+        console.error("modal backdrop click listener not registered at boot");
+        process.exit(1);
+      }
+      api.openNeedsHuman("/tmp/h2");
+      modalFns[0]({ target: modal });
+      if (modal.classList.contains("open")) {
+        console.error("backdrop click did not close modal");
+        process.exit(1);
       }
       // Grid chip click wiring
       const gridFns = (elsById["grid"]._listeners && elsById["grid"]._listeners.click) || [];

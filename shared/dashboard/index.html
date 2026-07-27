@@ -639,7 +639,9 @@
       " open · " +
       (p.needs_human && p.needs_human.blocking ? p.needs_human.blocking : 0) +
       " blocking · " + path +
-      " · .plinth/NEEDS-HUMAN.md";
+      " · " + (p.needs_human && p.needs_human.source
+        ? p.needs_human.source
+        : ".plinth/NEEDS-HUMAN.md");
     if (!items.length) {
       nhList.innerHTML = '<li class="muted">(no open item text — counts only or empty parse)</li>';
     } else {

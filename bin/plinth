@@ -2041,8 +2041,12 @@ snapshot_one_project() {
     fi
   fi
 
-  local nhn=0 nhb=0 nhf raw nh_items_json='{"items":[],"truncated":false}'
+  local nhn=0 nhb=0 nhf raw nh_items_json='{"items":[],"truncated":false}' nh_source=".plinth/NEEDS-HUMAN.md"
   nhf="$(needs_human_file "$dir")"
+  case "$nhf" in
+    */.plinth/NEEDS-HUMAN.md) nh_source=".plinth/NEEDS-HUMAN.md" ;;
+    */NEEDS-HUMAN.md) nh_source="NEEDS-HUMAN.md" ;;
+  esac
   if [ -s "$nhf" ]; then
     raw="$(open_items "$nhf")"
     # Open = unchecked boxes only. Empty open_items means the queue is clear —
@@ -2235,6 +2239,7 @@ snapshot_one_project() {
       --arg head "$head" --arg branch "$branch" \
       --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
       --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
+      --arg nh_source "$nh_source" \
       --argjson phases "$phases_json" --argjson review_round_secs "$review_round_secs" \
       --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
       --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
@@ -2243,7 +2248,7 @@ snapshot_one_project() {
       'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
       {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc},
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
         phases:($phases // {}),
         review_round_secs:$review_round_secs,
         models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
@@ -2291,6 +2296,7 @@ snapshot_one_project() {
         --argjson session_secs "${session_secs_json:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
         --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
+        --arg nh_source "$nh_source" \
         --argjson phases "$phases_json" \
         --argjson review_round_secs "$review_round_secs" \
         --arg seat_rv "${seat_reviewer_vendor:-}" \
@@ -2406,7 +2412,8 @@ snapshot_one_project() {
           last_error: $has_last_error
         } end),
         needs_human: {
-          open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc
+          open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc,
+          source: $nh_source
         },
         quota: {
           available: false,
@@ -2416,7 +2423,7 @@ snapshot_one_project() {
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
       --argjson nhn "$nhn" --argjson nhb "$nhb" --argjson nh_items "$nh_items_arr" \
-      --argjson nh_trunc "$nh_trunc" --argjson phases "$phases_json" \
+      --argjson nh_trunc "$nh_trunc" --arg nh_source "$nh_source" --argjson phases "$phases_json" \
       --argjson review_round_secs "$review_round_secs" \
       --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
       --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
@@ -2425,7 +2432,7 @@ snapshot_one_project() {
       'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
       {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc},
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
         phases:($phases // {}), review_round_secs:$review_round_secs,
         models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
           seats:{reviewer_vendor:nonempty($seat_rv),reviewer_tier1:nonempty($seat_rt1),
