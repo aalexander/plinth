@@ -8,9 +8,13 @@
 - **`plinth harden` / `plinth build` / `plinth phase`:** enter ship-prep (Stop
   requires review again), return to default build, or print phase. State:
   `.plinth/session/phase-<slug>.json` (CLI-written; agents cannot forge session).
+- **`plinth plan` / `plinth plan --deep`:** light `PLAN.md` scaffold (no clobber);
+  deep = three parallel plan-review seats → `PLAN-REVIEW.md`. Runnable in-session.
 - **`plinth handoff`:** writes root `HANDOFF.md` with goal/next/restart prompt.
   Restart convention: read HANDOFF.md and continue.
-- **Driver rules + MANUAL:** plan → build → harden → ship; advisor anytime.
+- **Dashboard:** lifecycle phase chip (BUILD/HARDEN), PLAN / PLAN-REVIEW / HANDOFF
+  chips, lifecycle row; `build_defer` is a known event name.
+- **Driver rules + MANUAL + `docs/LIFECYCLE.md`:** plan → build → harden → ship.
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026

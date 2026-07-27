@@ -1,159 +1,139 @@
 # Plinth lifecycle — command reference card
 
-**Version:** 5.0.0 · **Ship gate:** always `APPROVED@HEAD` (unchanged)  
+**Version:** 5.0.0 · **Ship gate:** always `APPROVED@HEAD`  
 **Default phase:** **build** (Stop does **not** force review)
 
 ```
-[optional plan] → build (default) → plinth harden → ./review.sh → PR/ship
+plinth plan [--deep]  →  build  →  plinth harden  →  ./review.sh  →  PR
 ```
 
-Restart any session: **Read `HANDOFF.md` and continue.**
+**In-session:** all of these run from a driver shell in the repo (or `bin/plinth` from a Plinth checkout).  
+**Restart:** `Read HANDOFF.md and continue from ## Next.`
 
 ---
 
-## One-screen cheat sheet
+## Cheat sheet
 
 | When | Command |
 |------|---------|
-| See phase | `plinth phase [path]` |
-| Enter ship-prep (Stop needs APPROVED) | `plinth harden [path]` |
-| Back to default build | `plinth build [path]` |
-| Refresh handoff file | `plinth handoff [path]` |
-| Paid adversarial review | `./.plinth/review.sh [base]` |
-| Advisor (any phase) | `plinth advise "…"` / `plinth advise --impactful "…"` |
-| Open PR (needs APPROVED@HEAD) | `gh pr create …` |
+| Light plan scaffold | `plinth plan [path]` |
+| Deep plan (3 agent critiques) | `plinth plan --deep [path]` |
+| Phase | `plinth phase [path]` |
+| Ship-prep | `plinth harden [path]` |
+| Back to build | `plinth build [path]` |
+| Handoff file | `plinth handoff [path]` |
+| Review | `./.plinth/review.sh [base]` |
+| Advisor | `plinth advise "…"` |
+| Dashboard | `plinth dash` / `plinth dash --snapshot` |
+| PR | `gh pr create` *(needs APPROVED@HEAD)* |
 
-`[path]` defaults to **CWD** for lifecycle commands.
+`[path]` defaults to **CWD**.
 
 ---
 
 ## Happy paths
 
-### A) Typical feature (light)
+### Typical feature (light)
 
 ```bash
 git checkout -b feat/my-thing
-# implement + commit freely (build phase default)
-plinth handoff                    # optional, end of session
-# when product looks right:
-plinth harden
-./.plinth/review.sh               # fix → commit → re-run until exit 0
-git push -u origin HEAD
-gh pr create
-```
-
-### B) New product / ambiguous scope (deep planning)
-
-```bash
-git checkout -b feat/new-product
-# Write PLAN.md: problem, users, non-goals, AC, risks, tradeoffs+recs
-# Optional: 1–2 independent agents critique PLAN.md; human decides tradeoffs
+plinth plan                         # optional scaffold
+# edit PLAN.md lightly or skip
+# implement + commit
 plinth handoff
-# implement…
 plinth harden
 ./.plinth/review.sh
 gh pr create
 ```
 
-> **Note:** `plinth plan` / `plinth plan --deep` are **not shipped yet** in 5.0.0.
-> Deep planning is **convention + PLAN.md + human** until that CLI lands.
-
-### C) Leave harden without shipping
+### New product (deep plan)
 
 ```bash
-plinth build                      # Stop defers review again; ship still blocked
+git checkout -b feat/new-product
+plinth plan --deep                  # scaffold if needed + 3 parallel seats → PLAN-REVIEW.md
+# human: resolve blockers/questions; edit PLAN.md
+# implement…
+plinth harden && ./.plinth/review.sh
+gh pr create
+```
+
+### In this kind of agent session
+
+```bash
+bin/plinth plan                     # if plinth on PATH not updated yet
+bin/plinth plan --deep
+bin/plinth phase
+bin/plinth harden
+./.plinth/review.sh
+bin/plinth handoff
+```
+
+Stop-hook behavior follows phase only if the harness runs `.claude` hooks (Claude yes; grok often no — ship still needs APPROVED).
+
+---
+
+## Phase vs ship
+
+| Phase | Stop | Ship |
+|-------|------|------|
+| **build** (default) | OK without APPROVED (`build_defer`) | Blocked |
+| **harden** | Needs APPROVED@HEAD | Blocked until APPROVED |
+
+---
+
+## Plan depth
+
+| Command | Does |
+|---------|------|
+| `plinth plan` | Create `PLAN.md` skeleton if missing; never clobber |
+| `plinth plan --deep` | Same + 3 parallel critics → `PLAN-REVIEW.md` |
+
+Deep seats (from `.plinth/config`):  
+1. **security_ops** — `reviewer_vendor` / tier2 model  
+2. **completeness** — `audit_vendor` / audit_model  
+3. **delete_simplify** — `advisor_vendor` / advisor_model_max  
+
+Human adjudicates; majority is advisory only.
+
+| Work | Depth |
+|------|--------|
+| Most features | light or skip |
+| New product / fuzzy scope | `--deep` |
+| Tiny hotfix | skip |
+
+---
+
+## Dashboard
+
+Cards show:
+
+- **BUILD** / **HARDEN** chip  
+- **PLAN** / **PLAN-REVIEW** / **HANDOFF** if files present  
+- lifecycle line (phase + ages)  
+- existing review verdict / rounds / NEEDS-HUMAN  
+
+`build_defer` is a known event (does not break snapshot parse).  
+Requires current `bin/plinth` + `shared/dashboard/index.html` (this release).
+
+```bash
+plinth dash --snapshot | jq '.projects[] | {name, lifecycle, review}'
 ```
 
 ---
 
-## Phase behavior
-
-| Phase | How you get there | Stop gate | Ship (`gh pr create\|merge`) |
-|-------|-------------------|-----------|------------------------------|
-| **build** (default) | Missing phase file, or `plinth build` | Allows stop without APPROVED; logs `build_defer` | **Blocked** without APPROVED@HEAD |
-| **harden** | `plinth harden` | **Requires** APPROVED@HEAD | **Blocked** until APPROVED@HEAD |
-
-Phase state: `.plinth/session/phase-<slug>.json` (CLI-written only).
-
----
-
-## Commands (detail)
-
-### `plinth phase [project-path]`
-Print current lifecycle phase, branch, and Stop implications.
-
-### `plinth harden [project-path]`
-- Sets phase → **harden**
-- Stop will block until `./.plinth/review.sh` exits 0 at HEAD
-- Refuses `main` / `master` / detached HEAD
-- Does **not** run the reviewer for you
-
-### `plinth build [project-path]`
-- Sets phase → **build**
-- Stop again allows end-of-turn without APPROVED
-- Does **not** create APPROVED or open ship
-
-### `plinth handoff [project-path]`
-Writes/overwrites repo-root **`HANDOFF.md`** (goal, next, restart prompt, phase, verdict snippet).
-
-**Restart phrase:**  
-`Read HANDOFF.md and continue from ## Next.`
-
-### `./.plinth/review.sh [base]`
-- Default base: `main`
-- Exit **0** = APPROVED@HEAD (+ receipt mint when applicable)
-- Exit **1** = CHANGES_NEEDED — fix, commit, re-run
-- Exit **2** = did not run (infra / dirty tree / empty diff / …)
-- Run only when ship-ready (after `plinth harden`), not every micro-commit
-
-### `plinth advise ["question"]`
-Non-blocking judgment. Available in plan, build, and harden. Never replaces APPROVED.
-
-### Ship (unchanged)
-- Client: guard blocks `gh pr create|merge` without APPROVED@HEAD  
-- Server: branch protection + CI (+ `receipt / verify` where wired)
-
----
-
-## Choosing plan depth
-
-| Situation | Depth |
-|-----------|--------|
-| Clear AC, small feature | **Light** — HANDOFF / short notes; skip formal plan |
-| New product, unclear users/problem | **Deep** — full PLAN.md + multi-agent critique + human ratify |
-| Tiny hotfix | **Minimal** — optional one-line AC |
-| Trust boundary (auth, money, public API) | Prefer **deeper plan** and/or sooner `plinth harden` |
-
-Rule of thumb: if a wrong product call wastes more than ~a week of build → deep; else light.
-
----
-
-## Install / upgrade note
-
-Product Stop hook ships in `shared/.claude/hooks/review-gate.sh`.  
-Projects pick it up via **`plinth update`**. Until then, installed `.claude/hooks/` may still be the old “always require APPROVED” gate.
+## Install
 
 ```bash
-plinth update /path/to/project
-# review diff, commit
+plinth update /path/to/project   # Stop hook + rules from shared/
 ```
 
 ---
 
-## Quick troubleshooting
+## Troubleshooting
 
 | Symptom | Check |
 |---------|--------|
-| Stop still forces review mid-build | Phase? `plinth phase` → should be `build`. Updated hooks? `plinth update` |
-| Stop allows everything in harden | Ran `plinth harden`? Feature branch? |
-| Can’t open PR | Need APPROVED@HEAD: `plinth harden` + `./.plinth/review.sh` |
-| Lost context after compact | `Read HANDOFF.md` or `plinth handoff` then edit Next |
-
----
-
-## Related docs
-
-- Driver rules: `.plinth/plinth-rules.md` (lifecycle section; source `shared/plinth-rules.md`)
-- Manual: `MANUAL.md` (commands + workflow)
-- Changelog: `CHANGELOG.md` → v5.0.0
-- Design backlog (full panel/dual ideas): session plan, not required for v5
+| Stop still forces review | `plinth phase`; hooks updated? |
+| `--deep` seats empty | CLIs installed/signed in? |
+| Dash no lifecycle | Old plinth binary / old index.html |
+| Lost context | `Read HANDOFF.md` or `plinth handoff` |

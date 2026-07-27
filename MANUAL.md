@@ -86,6 +86,11 @@ Everything between is the model's call.
   dashboard finds it, warning instead of clobbering if both exist), re-run the GitHub
   preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
+- `plinth plan [path]`          — light product plan: scaffold root `PLAN.md`
+  if missing (never overwrites). Default path: CWD. Runnable in-session.
+- `plinth plan --deep [path]`   — deep plan: ensure PLAN.md, then three
+  independent agent seats in parallel → `PLAN-REVIEW.md` (security / completeness /
+  delete-simplify). Human adjudicates; then build. Runnable in-session (needs CLIs).
 - `plinth harden [path]`        — enter HARDEN (ship prep): Stop requires
   APPROVED@HEAD again; then run `./.plinth/review.sh`. Default path: CWD.
 - `plinth build [path]`         — return to default BUILD: Stop does **not**
@@ -93,6 +98,7 @@ Everything between is the model's call.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
 - `plinth handoff [path]`       — write/refresh root `HANDOFF.md` (restart:
   “Read HANDOFF.md and continue”).
+- Lifecycle reference: `docs/LIFECYCLE.md`.
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
 - `plinth queue ~/Dev/<repo>`   — the full NEEDS-HUMAN queue, every item

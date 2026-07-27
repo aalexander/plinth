@@ -91,4 +91,26 @@ set -e
 [ "$rc" -ne 0 ] || fail "harden on main should refuse"
 pass "harden refuses base branch"
 
+# --- plinth plan (light) scaffolds PLAN.md ---
+setup_proj "$TMP/p2"
+rm -f "$TMP/p2/PLAN.md"
+"$PLINTH" plan "$TMP/p2" >/dev/null
+[ -f "$TMP/p2/PLAN.md" ] || fail "plinth plan should write PLAN.md"
+grep -q '## Acceptance criteria' "$TMP/p2/PLAN.md" || fail "PLAN scaffold missing AC section"
+# second call does not clobber
+echo "marker" >> "$TMP/p2/PLAN.md"
+"$PLINTH" plan "$TMP/p2" >/dev/null
+grep -q marker "$TMP/p2/PLAN.md" || fail "plinth plan must not overwrite existing PLAN.md"
+pass "plinth plan light scaffolds without clobber"
+
+# --- snapshot includes lifecycle ---
+# Minimal plinth project shape for dash snapshot_one
+mkdir -p "$TMP/p2/.plinth"
+echo "spec_path = MANUAL.md" > "$TMP/p2/.plinth/config"
+# source snapshot via plinth dash --snapshot is heavy; unit-test phase field via jq on phase file
+"$PLINTH" harden "$TMP/p2" >/dev/null
+ph=$("$PLINTH" phase "$TMP/p2" | sed -n 's/^phase:[[:space:]]*//p')
+[ "$ph" = "harden" ] || fail "phase harden expected"
+pass "phase status after harden"
+
 echo "canary-lifecycle-build-harden: ALL PASS"

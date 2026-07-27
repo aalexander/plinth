@@ -45,10 +45,18 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
        plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)
        plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
-       plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)"; exit 1; }
+       plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
+       plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
+# plan may be: plan | plan --deep | plan --deep PATH | plan PATH
+PLAN_DEEP=0
+if [ "$cmd" = "plan" ]; then
+  shift
+  if [ "${1:-}" = "--deep" ]; then PLAN_DEEP=1; shift; fi
+  target="${1:-$(pwd)}"
+  if [ ! -d "$target" ]; then echo "No such directory: $target"; exit 1; fi
+elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
    || [ "$cmd" = "dash" ] || [ "$cmd" = "dashboard" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
@@ -2065,6 +2073,26 @@ snapshot_one_project() {
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
   fi
 
+  # Lifecycle phase + plan/handoff presence (v5).
+  local life_phase="build" life_file="$dir/.plinth/session/phase-$slug.json"
+  if [ -f "$life_file" ]; then
+    life_phase="$(jq -r '.phase // "build"' "$life_file" 2>/dev/null || echo build)"
+  fi
+  case "$life_phase" in harden|build) ;; *) life_phase=build ;; esac
+  local plan_present=false handoff_present=false plan_review_present=false
+  [ -f "$dir/PLAN.md" ] && plan_present=true
+  [ -f "$dir/HANDOFF.md" ] && handoff_present=true
+  [ -f "$dir/PLAN-REVIEW.md" ] && plan_review_present=true
+  local handoff_age=null
+  if [ -f "$dir/HANDOFF.md" ]; then
+    local hm
+    hm="$(_dash_mtime "$dir/HANDOFF.md")"
+    case "$hm" in ''|*[!0-9]*) ;; *)
+      handoff_age=$((NOW - hm))
+      [ "$handoff_age" -ge 0 ] 2>/dev/null || handoff_age=0
+    ;; esac
+  fi
+
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
   # fell off the window, session_secs is null rather than a fabricated age.
@@ -2083,7 +2111,7 @@ snapshot_one_project() {
           . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
           or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
           or . == "PreCompact" or . == "guard_block" or . == "gate_release"
-          or . == "unknown";
+          or . == "build_defer" or . == "unknown";
         reduce inputs as $e ({cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
           # Every object needs a known string event name (incl. sid-less / empty {}).
@@ -2133,8 +2161,14 @@ snapshot_one_project() {
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
       --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      --arg life_phase "$life_phase" \
+      --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+      --argjson plan_review_present "$plan_review_present" \
+      --argjson handoff_age "${handoff_age:-null}" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
+        lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age},
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
     return 0
@@ -2176,7 +2210,11 @@ snapshot_one_project() {
         --argjson session_secs "${session_secs_json:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
         --argjson has_last_error "$has_last_error" \
-        --argjson rq_round_from_name "$rq_round_from_name" '
+        --argjson rq_round_from_name "$rq_round_from_name" \
+        --arg life_phase "$life_phase" \
+        --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+        --argjson plan_review_present "$plan_review_present" \
+        --argjson handoff_age "${handoff_age:-null}" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2256,6 +2294,13 @@ snapshot_one_project() {
           last_error: $has_last_error
         } end),
         needs_human: { open: $nhn, blocking: $nhb },
+        lifecycle: {
+          phase: $life_phase,
+          plan: $plan_present,
+          plan_review: $plan_review_present,
+          handoff: $handoff_present,
+          handoff_age_secs: $handoff_age
+        },
         quota: {
           available: false,
           note: "Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"
@@ -2264,8 +2309,14 @@ snapshot_one_project() {
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
       --argjson nhn "$nhn" --argjson nhb "$nhb" \
+      --arg life_phase "$life_phase" \
+      --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+      --argjson plan_review_present "$plan_review_present" \
+      --argjson handoff_age "${handoff_age:-null}" \
       '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
+        lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age},
         needs_human:{open:$nhn,blocking:$nhb},
         quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
   [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
@@ -2562,6 +2613,7 @@ run_phase_status() {
   else
     echo "stop:    build_defer (no forced review); ship still needs APPROVED@HEAD"
   fi
+  echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  handoff: $([ -f "$root/HANDOFF.md" ] && echo yes || echo no)"
 }
 
 run_harden() {
@@ -2640,6 +2692,177 @@ EOF
   echo "Restart: Read HANDOFF.md and continue."
 }
 
+# Scaffold or ensure PLAN.md (light). --deep also runs multi-agent critique → PLAN-REVIEW.md.
+_plan_scaffold() {
+  local root="$1" f="$1/PLAN.md"
+  if [ -f "$f" ]; then
+    echo "PLAN.md already present — not overwriting ($f)"
+    return 0
+  fi
+  cat > "$f" <<'EOF'
+# Product plan
+product_rev: 1
+
+## Problem
+(What user pain / opportunity?)
+
+## Users / context
+(Who is this for? Constraints?)
+
+## Non-goals
+- …
+
+## Acceptance criteria
+(Testable — Given/When/Then or checklist)
+
+## Risks / trust boundaries
+(Auth, data, fail-open, deploy?)
+
+## Open tradeoffs (with agent recommendation each)
+1. … — **rec:** …
+
+## Ratification
+- by:
+- at:
+- notes: (human product decisions)
+EOF
+  echo "Wrote $f (light scaffold). Fill AC, then build — or: plinth plan --deep"
+}
+
+# One plan-review seat via a vendor CLI (read-only). Prints body to stdout.
+_plan_seat_call() {
+  local vendor="$1" model="$2" role="$3" plan_body="$4"
+  local prompt margs=() unavail
+  unavail="(seat $role unavailable: $vendor CLI missing or failed)"
+  prompt="You are an independent PLAN REVIEWER (role: $role), not the author and not the driver.
+Read-only. Do not implement. Critique the PRODUCT PLAN only.
+
+Role focus:
+- security_ops: trust boundaries, fail-open, secrets, auth, deploy/rollback gaps
+- completeness: testable AC, non-goals, demo/done definition, scope holes
+- delete_simplify: question every requirement; cut non-load-bearing scope; overbuild
+
+Output markdown:
+### Seat: $role
+#### Blockers
+- … (or none)
+#### Questions for human
+- … (or none)
+#### Nits
+- … (or none)
+#### One-line verdict
+…
+
+PLAN:
+$plan_body"
+  case "$vendor" in
+    claude)
+      [ -n "$model" ] && margs=(--model "$model")
+      printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" 2>/dev/null || echo "$unavail"
+      ;;
+    codex)
+      [ -n "$model" ] && margs=(-m "$model")
+      printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
+        --sandbox read-only - 2>/dev/null || echo "$unavail"
+      ;;
+    grok)
+      [ -n "$model" ] && margs=(-m "$model")
+      grok -p "$prompt" --sandbox read-only \
+        --rules 'You are a read-only plan reviewer. Advise only — never implement.' \
+        ${margs[@]+"${margs[@]}"} 2>/dev/null || echo "$unavail"
+      ;;
+    *)
+      echo "(seat $role: unsupported vendor '$vendor')"
+      ;;
+  esac
+}
+
+run_plan() {
+  local root="$1" deep="${2:-0}"
+  local cfg planf body ts
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth plan: not a git repo: $root" >&2; exit 1; }
+  _plan_scaffold "$root"
+  planf="$root/PLAN.md"
+  [ -f "$planf" ] || { echo "plinth plan: PLAN.md missing after scaffold" >&2; exit 1; }
+
+  if [ "$deep" != 1 ]; then
+    echo "Plan depth: light (scaffold only)."
+    echo "  Edit $planf — fill Problem, AC, risks."
+    echo "  New product / fuzzy scope: plinth plan --deep \"$root\""
+    echo "  Then build; when ready to ship: plinth harden && ./.plinth/review.sh"
+    return 0
+  fi
+
+  # Deep: parallel independent seats (best-effort vendors from project config).
+  cfg="$root/.plinth/config"
+  aval() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1; }
+  local rv am av rm amodel
+  rv="$(aval reviewer_vendor)"; [ -n "$rv" ] || rv=codex
+  av="$(aval audit_vendor)"; [ -n "$av" ] || av=claude
+  rm="$(aval reviewer_model_tier2)"; [ -n "$rm" ] || rm="$(aval reviewer_model_tier1)"
+  amodel="$(aval audit_model)"
+  # Third seat: advisor vendor if distinct, else same as primary with different role.
+  local tv tm
+  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv="$rv"
+  tm="$(aval advisor_model_max)"; [ -n "$tm" ] || tm="$(aval advisor_model)"
+
+  body="$(cat "$planf")"
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local d1 d2 d3 o1 o2 o3
+  d1="$(mktemp)"; d2="$(mktemp)"; d3="$(mktemp)"
+  o1="$(mktemp)"; o2="$(mktemp)"; o3="$(mktemp)"
+  trap 'rm -f "$d1" "$d2" "$d3" "$o1" "$o2" "$o3"' RETURN
+
+  echo "plinth plan --deep: launching 3 independent seats (parallel)…" >&2
+  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" 2>"$d1" ) &
+  local p1=$!
+  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" 2>"$d2" ) &
+  local p2=$!
+  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" 2>"$d3" ) &
+  local p3=$!
+  wait "$p1" "$p2" "$p3" || true
+
+  local out="$root/PLAN-REVIEW.md"
+  {
+    echo "# Plan review — deep"
+    echo
+    echo "Updated: $ts"
+    echo "Seats: security_ops ($rv${rm:+ /$rm}) · completeness ($av${amodel:+ /$amodel}) · delete_simplify ($tv${tm:+ /$tm})"
+    echo
+    echo "Human: resolve **Blockers** and **Questions for human** before treating the plan as ratified."
+    echo "Majority among seats is advisory only — you adjudicate product tradeoffs."
+    echo
+    echo "---"
+    echo
+    echo "## security_ops"
+    echo
+    cat "$o1"
+    echo
+    echo "---"
+    echo
+    echo "## completeness"
+    echo
+    cat "$o2"
+    echo
+    echo "---"
+    echo
+    echo "## delete_simplify"
+    echo
+    cat "$o3"
+    echo
+    echo "---"
+    echo
+    echo "## Human adjudication"
+    echo "- [ ] Blockers addressed or dismissed with reason"
+    echo "- [ ] Product tradeoffs decided"
+    echo "- [ ] PLAN.md updated (bump product_rev if AC/scope changed)"
+  } > "$out"
+
+  echo "Wrote $out"
+  echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -2653,6 +2876,7 @@ case "$cmd" in
   build) run_build_phase "$target" ;;
   phase) run_phase_status "$target" ;;
   handoff) run_handoff "$target" ;;
+  plan) run_plan "$target" "$PLAN_DEEP" ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent

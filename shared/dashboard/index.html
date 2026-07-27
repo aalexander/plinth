@@ -310,6 +310,16 @@
     if (p.burn_per_min != null) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
+    // Lifecycle (v5): phase + plan/handoff presence
+    const life = p.lifecycle || {};
+    if (life.phase === "harden") {
+      chips.push('<span class="chip orange">HARDEN</span>');
+    } else if (life.phase === "build" || life.phase) {
+      chips.push('<span class="chip">BUILD</span>');
+    }
+    if (life.plan) chips.push('<span class="chip cyan">PLAN</span>');
+    if (life.plan_review) chips.push('<span class="chip cyan">PLAN-REVIEW</span>');
+    if (life.handoff) chips.push('<span class="chip">HANDOFF</span>');
 
     const activity = p.activity_secs_ago == null
       ? (p.feedless ? "no pulse feed" : "—")
@@ -329,6 +339,12 @@
     const tokens = p.tokens_total != null
       ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
       : "unknown";
+    const lifeDetail = (life.phase || "build") +
+      (life.plan ? " · plan" : "") +
+      (life.plan_review ? " · deep review" : "") +
+      (life.handoff
+        ? " · handoff" + (life.handoff_age_secs != null ? " (" + hum(life.handoff_age_secs) + " ago)" : "")
+        : "");
 
     return (
       '<article class="card ' + tone + '">' +
@@ -337,6 +353,7 @@
         '<div class="chips">' + chips.join("") + "</div>" +
         '<dl class="kv">' +
           "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
+          "<dt>lifecycle</dt><dd>" + esc(lifeDetail) + "</dd>" +
           "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
           "<dt>session</dt><dd>" + esc(session) + "</dd>" +
           "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +

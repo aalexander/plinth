@@ -149,8 +149,8 @@ to end a turn that committed (it logs `build_defer`). Ship is unchanged —
 `plinth build` returns to default build. `plinth phase` prints the current phase.
 `plinth handoff` writes root `HANDOFF.md`. **Restart:** read `HANDOFF.md` if
 present and continue from ## Next. Advisor (`plinth advise`) is available in
-every phase; it never replaces APPROVED. Prefer a short product plan (PLAN.md)
-before large features; human owns product tradeoffs.
+every phase; it never replaces APPROVED. Prefer `plinth plan` (light) or `plinth plan --deep` (new product / fuzzy scope)
+before large features; human owns product tradeoffs. Runnable in-session.
 
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.
