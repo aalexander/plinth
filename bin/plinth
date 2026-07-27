@@ -2111,7 +2111,7 @@ snapshot_one_project() {
           . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
           or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
           or . == "PreCompact" or . == "guard_block" or . == "gate_release"
-          or . == "build_defer" or . == "unknown";
+          or . == "build_defer" or . == "handoff_snapshot" or . == "unknown";
         reduce inputs as $e ({cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
           # Every object needs a known string event name (incl. sid-less / empty {}).
@@ -2616,11 +2616,22 @@ run_phase_status() {
   echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  handoff: $([ -f "$root/HANDOFF.md" ] && echo yes || echo no)"
 }
 
-# Write HANDOFF.md. Args: root, optional reason (milestone label), optional next_hint.
-# Auto snapshots preserve prior ## Next / ## Done when present (don't clobber agent edits).
+# Classify handoff: milestone (optional compact advice) vs checkpoint (keep cooking).
+# NEVER waits for human/compaction — notify and return immediately.
+_handoff_kind() {
+  case "${1:-manual}" in
+    enter-harden|enter-build|plan-deep|review-approved|approved|manual-milestone)
+      echo milestone ;;
+    *) echo checkpoint ;;
+  esac
+}
+
+# Write HANDOFF.md. Args: root, optional reason, optional next_hint.
+# Auto snapshots preserve prior ## Next / ## Done when present.
+# Always continues immediately (max automation). context_advice is advisory only.
 _write_handoff() {
   local root="$1" reason="${2:-manual}" next_hint="${3:-}"
-  local out head branch phase slug vfile verdict vsha goal next done_block ts
+  local out head branch phase slug vfile verdict vsha goal next done_block ts kind advice
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
   head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
   branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
@@ -2640,7 +2651,6 @@ _write_handoff() {
   done_block="- (edit: bullets of what is already committed)"
   next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$out" ]; then
-    # Preserve human/agent-edited Done/Next sections when auto-refreshing.
     local prev_done prev_next
     prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
     prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
@@ -2650,11 +2660,19 @@ _write_handoff() {
   if [ -n "$next_hint" ]; then
     next="1. ${next_hint}"$'\n'"${next}"
   fi
+  kind=$(_handoff_kind "$reason")
+  if [ "$kind" = "milestone" ]; then
+    advice="optional_fresh_session — NOT required; do not wait. Keep working unless human-blocked."
+  else
+    advice="keep_cooking — checkpoint only; do not compact/clear mid-loop."
+  fi
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   cat > "$out" <<EOF
 # Handoff — \`${branch}\` @ ${head}
 
-Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** · Verdict: ${verdict}${vsha:+ @ $vsha}
+Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}
+
+context_advice: ${advice}
 
 ## Goal
 ${goal}
@@ -2669,12 +2687,12 @@ ${next}
 > Read HANDOFF.md and continue from ## Next.
 > Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD).
 > Advisor: \`plinth advise\` anytime.
-> **Milestone hygiene:** after this handoff, prefer a **fresh session** or harness compaction before the next milestone so context does not rot. Binding state is in HANDOFF / PLAN / verdict — not chat memory.
+> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items.
 
 ## Evidence
 - HEAD: \`${head}\` on \`${branch}\`
 - Lifecycle phase: ${phase}
-- Snapshot reason: ${reason}
+- Snapshot reason: ${reason} (${kind})
 - Review verdict: ${verdict}${vsha:+ (sha $vsha)}
 - PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)
 - PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)
@@ -2682,13 +2700,19 @@ ${next}
 ## Risks / Noticed
 - (edit)
 EOF
-  # Session archive copy (not agent-writable outside session via CLI only)
-  local arch="$root/.plinth/session/handoff-${slug}-$(date -u +%Y%m%dT%H%M%SZ).md"
-  mkdir -p "$root/.plinth/session"
+  local arch sdir
+  sdir="$root/.plinth/session"
+  mkdir -p "$sdir"
+  arch="$sdir/handoff-${slug}-$(date -u +%Y%m%dT%H%M%SZ).md"
   cp "$out" "$arch" 2>/dev/null || true
-  echo "Wrote $out (snapshot: $reason)"
-  echo "Restart: Read HANDOFF.md and continue."
-  echo "Milestone: prefer fresh session / compact after handoff before next milestone."
+  # Non-blocking notification event for watch/dash (never waits).
+  { jq -cn --arg reason "$reason" --arg kind "$kind" --arg advice "$advice" --arg head "$head" \
+      '{ts:(now|todate),epoch:(now|floor),event:"handoff_snapshot",sid:null,tool:null,
+        detail:("reason="+$reason+" kind="+$kind+" advice="+$advice),head:$head}' \
+      >> "$sdir/events.jsonl"; } 2>/dev/null || true
+  echo "Wrote $out (snapshot: $reason / $kind)"
+  echo "NOTIFY: handoff ${kind} — ${advice}"
+  echo "Automation: continuing immediately (no wait for compact/human)."
 }
 
 run_harden() {
@@ -2719,15 +2743,7 @@ run_build_phase() {
 }
 
 run_handoff() {
-  local root="${1:-$target}" reason="manual"
-  shift || true
-  # optional: plinth handoff [path] [--reason X]  — path already in target
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --reason) reason="${2:-manual}"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
+  local root="${1:-$target}" reason="${PLINTH_HANDOFF_REASON:-manual}"
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth handoff: not a git repo: $root" >&2; exit 1; }
   _write_handoff "$root" "$reason" ""
 }

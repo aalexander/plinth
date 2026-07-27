@@ -151,16 +151,29 @@ to end a turn that committed (it logs `build_defer`). Ship is unchanged —
 `plinth harden`, `plinth build`, `plinth plan --deep`, and after review rounds
 (CHANGES_NEEDED / APPROVED). SessionStart nudges when HANDOFF exists.
 **Restart:** read `HANDOFF.md` if present and continue from ## Next.
-**Milestone hygiene (self-handoff):** after a handoff at a phase or ship
-milestone, **prefer a fresh session or harness compaction** before the next
-milestone so chat context does not rot. Binding state lives in HANDOFF / PLAN /
-verdict / receipts — not conversation memory.
-Advisor (`plinth advise`) is available in every phase; it **annotates only** —
-never clears majors, never sets APPROVED or phase. Prefer `plinth plan` (light)
-or `plinth plan --deep` (new product / fuzzy scope) before large features; human
-owns product tradeoffs. Runnable in-session.
-Review anti-thrash: BUILD vs HARDENING phase in prompts; sticky finding ids;
-compact verify ledgers; Tier-2 dual first-pass when audit_vendor differs.
+
+## Autonomous execution (max automation)
+Default: **keep cooking**. Never wait for optional compaction, human ack of a
+handoff, or a timer. Handoff snapshots **notify and return immediately**.
+
+Loop until one of:
+1. **Done** — HANDOFF ## Next empty / all acceptance criteria met and (if
+   shipping) APPROVED@HEAD + PR opened as required, or
+2. **Human-blocked** — open `[BLOCKING]` items in NEEDS-HUMAN, or a product
+   tradeoff that only the human can decide (record in NEEDS-HUMAN and stop
+   that path only), or
+3. **Hard fail** — infra exit 2 you cannot fix; record and surface.
+
+Otherwise: pick the next item from HANDOFF ## Next, PLAN AC, or the current
+review findings; implement; commit; continue. Mid-loop review CHANGES_NEEDED is
+a **checkpoint** (keep session). Phase changes / APPROVED are **milestones**
+(optional fresh session advice only — still do not wait).
+
+Advisor annotates only — never clears majors or sets APPROVED/phase.
+Prefer `plinth plan` / `plinth plan --deep` for large/new work; human owns
+true product ambiguity (park in NEEDS-HUMAN and continue other paths if any).
+Review anti-thrash: BUILD vs HARDENING phase; sticky ids; compact verify;
+Tier-2 dual first-pass when audit_vendor differs.
 
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.

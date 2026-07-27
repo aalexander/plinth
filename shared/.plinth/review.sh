@@ -1557,9 +1557,11 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' \
     "$SDIR/findings-$round.json"
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
-  # Auto handoff snapshot (milestone within harden loop).
-  if [ -x "./bin/plinth" ]; then ./bin/plinth handoff "$PWD" 2>/dev/null || true
-  elif command -v plinth >/dev/null 2>&1; then plinth handoff "$PWD" 2>/dev/null || true
+  # Checkpoint handoff (keep cooking — do not wait/compact).
+  if [ -x "./bin/plinth" ]; then
+    PLINTH_HANDOFF_REASON=review-changes-needed ./bin/plinth handoff "$PWD" 2>/dev/null || true
+  elif command -v plinth >/dev/null 2>&1; then
+    PLINTH_HANDOFF_REASON=review-changes-needed plinth handoff "$PWD" 2>/dev/null || true
   fi
   exit 1
 fi
@@ -1647,9 +1649,11 @@ elif [ "$RISK" = "2" ]; then
 fi
 mint_receipt "$round"
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
-# Auto handoff at binding APPROVED (ship-ready milestone).
-if [ -x "./bin/plinth" ]; then ./bin/plinth handoff "$PWD" 2>/dev/null || true
-elif command -v plinth >/dev/null 2>&1; then plinth handoff "$PWD" 2>/dev/null || true
+# Milestone handoff (notify only — continue immediately; never wait for compact).
+if [ -x "./bin/plinth" ]; then
+  PLINTH_HANDOFF_REASON=review-approved ./bin/plinth handoff "$PWD" 2>/dev/null || true
+elif command -v plinth >/dev/null 2>&1; then
+  PLINTH_HANDOFF_REASON=review-approved plinth handoff "$PWD" 2>/dev/null || true
 fi
-echo "Handoff refreshed. Prefer a fresh session after ship if starting a new milestone."
+echo "Handoff refreshed (milestone). Automation: do not wait for compact — open PR or pick next task."
 exit 0

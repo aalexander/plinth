@@ -9,7 +9,9 @@ plinth plan [--deep]  →  build  →  plinth harden  →  ./review.sh  →  PR
 
 **In-session:** all of these run from a driver shell in the repo (or `bin/plinth` from a Plinth checkout).  
 **Restart:** `Read HANDOFF.md and continue from ## Next.`  
-**Self-handoff:** after auto/manual HANDOFF at a milestone → prefer **fresh session or compaction** before the next milestone (state is in files, not chat).
+**Automation default:** **keep cooking** after every handoff — never wait for
+compaction or a human timer. Optional fresh session is advice only at milestones.
+Stop only when ## Next is done or paths are **human-blocked** (`[BLOCKING]` NEEDS-HUMAN).
 
 ---
 

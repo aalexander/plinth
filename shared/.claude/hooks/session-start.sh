@@ -39,7 +39,7 @@ if [ -f "$proj/HANDOFF.md" ]; then
   phase="build"
   [ -f "$SDIR/phase-$slug.json" ] && phase=$(jq -r '.phase // "build"' "$SDIR/phase-$slug.json" 2>/dev/null || echo build)
   head=$(git -C "$proj" rev-parse --short HEAD 2>/dev/null || echo "?")
-  ctx="Plinth lifecycle: phase=${phase} branch=${branch} @ ${head}. HANDOFF.md is present — READ it and continue from ## Next before new work. Prefer fresh context after milestone handoffs. Ship still needs APPROVED@HEAD (plinth harden + ./.plinth/review.sh)."
+  ctx="Plinth lifecycle: phase=${phase} branch=${branch} @ ${head}. HANDOFF.md present — READ it and continue from ## Next. Automation: keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items. Never wait for compaction (optional only). Ship needs APPROVED@HEAD (plinth harden + ./.plinth/review.sh)."
   { jq -cn --arg sid "$sid" --arg detail "handoff present phase=$phase" \
       '{ts:(now|todate),epoch:(now|floor),event:"SessionStart",sid:$sid,tool:null,detail:$detail,head:null}' \
       >> "$EV"; } 2>/dev/null || true

@@ -23,6 +23,8 @@
   finding ids + auto-resolve reopens when file blob unchanged; compact verify
   open-ledger; Tier-2 dual first-pass (primary + audit seat) on fresh round 1.
 - **Schema:** optional finding `id` field.
+- **Autonomous default:** handoff snapshots never wait (notify + continue);
+  milestone vs checkpoint advice; driver rules loop until done or human-blocked.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
