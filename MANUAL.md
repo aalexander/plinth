@@ -635,11 +635,16 @@ it has run green with a real smoke_cmd.
   probeable — `plinth hookprobe <vendor>`; grok 0.2.112 reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). The guard is a
   CLIENT-SIDE tripwire, not the security boundary: CI required-checks and branch protection
   are the hard layers.
-- Deny-ship tripwire (same hook): the plain `gh pr create`/`gh pr merge` command is
-  refused unless the branch has an APPROVED review at HEAD. Like every `.claude/` hook it
-  fires only under a Claude driver, or a CLI verified END-TO-END to run the guard —
-  a positive `plinth hookprobe` alone shows invocation, not enforcement (grok 0.2.112
-  reported no execution [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
+- Deny-ship tripwire (same hook): distinguishes create from merge. Plain
+  `gh pr create` is refused unless the branch has an APPROVED review at HEAD.
+  Bare `gh pr merge` is **always** refused — even when APPROVED — because it is
+  not repository/head-bound (`GH_REPO` / default-repo can desync authorize-from
+  vs merge-into). The mandated form is
+  `gh pr merge <n|url> -R <origin-owner/repo> --match-head-commit <origin-resolved-head-sha> …`
+  (plinth#49). Like every `.claude/` hook it fires only under a Claude driver, or
+  a CLI verified END-TO-END to run the guard — a positive `plinth hookprobe`
+  alone shows invocation, not enforcement (grok 0.2.112 reported no execution
+  [receipt: docs/receipts/hookprobe-grok-0.2.112.txt]). Under a non-executing
   driver this hook does NOT fire — their merge gate is branch protection's required
   checks (floor + checks — CI and tooling integrity; the review verdict has no
   server-side verifier until `receipt / verify` is wired, required, and protected
@@ -847,15 +852,12 @@ installed copies.
   If status enumeration fails, the loop sees no records, `dirty=0`, and review
   proceeds as if clean. Capture and validate the producer status; add
   failure-injection coverage. (Round 1, same review.)
-- **review.sh: ratified-base probes conflate producer errors with absence**
-  (`shared/.plinth/review.sh` — `git cat-file -e` probes for base config
-  (~line 114), base project rules (~line 231), and the reviewer contract
-  (~line 386); `git diff --name-only` for tooling-path detection (~line 351)).
-  A probe ERROR currently reads as "absent", enabling working-tree fallback for
-  config/rules/contract, and a diff error reads as "no tooling paths", which can
-  leave a forged Tier-0 classification in force. Distinguish absence (rc 1)
-  from failure (rc >= 2 / 128) and fail closed; existing tests cover absence
-  only. (v4.5.0 refresh review, round 3 sweep.)
+- ~~**review.sh: ratified-base probes conflate producer errors with absence**~~
+  **FIXED in v4.8.2** (plinth#11/#13/#15): cat-file probes distinguish
+  "does not exist" absence from infrastructure failure (fail closed); tooling
+  floor runs before any classifier; risk-classify fails closed on raw/per-test
+  diff errors. Canary covers absence + failure-injection for the probe/show
+  sites. (Originally: v4.5.0 refresh review, round 3 sweep.)
 - **review.sh: porcelain `-z` rename records are mis-parsed**
   (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits
   its second pathname as a separate NUL record with no `XY ` prefix, but the

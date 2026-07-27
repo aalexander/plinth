@@ -233,8 +233,9 @@ modeof_deref() { stat -L -c '%a' "$1" 2>/dev/null || stat -Lf '%p' "$1" 2>/dev/n
   # referent mode, not the link's own. GNU -L; BSD -Lf '%p' (full mode; take the low 3 perm digits).
   # BSD stat rejects -c and falls through to -f. The reverse order is WRONG: GNU `stat -f` SUCCEEDS
   # (filesystem status, not the file's mode) so the `||` would never fall through on Linux.
-sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for a regular file, or
-  # `symlink <target>` for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
+sens_snapshot() {  # `<f1> <f2>\x1f<path>` per sensitive node (US before path; plinth#17):
+  # `<sha> <mode>\x1f<path>` for a regular file, or `symlink <target> [<hash> <mode>]\x1f<path>`
+  # for a symlink — so a secret replaced by (or repointed to) a symlink is detected.
   # Enumerates git-visible paths (tracked + ignored + untracked FILES incl. secrets under a
   # secret-named dir). BOUND: an EMPTY sensitive directory (e.g. an empty `secrets/`) is not git-
   # enumerated and so isn't recorded — but an empty dir holds no secret, so this is vacuous; any
@@ -259,7 +260,7 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   GITDIR="$(git rev-parse --git-dir 2>/dev/null)" || { echo "lane-guard: cannot resolve the git dir — refusing (fail closed)" >&2; return 5; }
   GITCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)" || { echo "lane-guard: cannot resolve the git common dir — refusing (fail closed)" >&2; return 5; }
   { [ -n "$GITDIR" ] && [ -n "$GITCOMMON" ]; } || { echo "lane-guard: cannot resolve the git dir — refusing (fail closed)" >&2; return 5; }
-  # TWO tagged sources into one record loop (tab-separated tag<TAB>path):
+  # TWO tagged sources into one record loop (RS-separated tag\036path — not TAB; plinth#17):
   #   G = git-visible file — GATE through sens_match (secret/protected classification)
   #   C = control-plane file — the enumeration ALREADY knows it is control-plane (it resolved
   #       the real gitdir), so record it UNCONDITIONALLY; no path-name heuristic to miss an
@@ -731,8 +732,8 @@ CHANGED
       # sensitive files present, silently verify nothing) — fail closed instead.
       before="$(cat "$snapfile")" || { echo "scope: cannot read --snapshot file '$snapfile' — refusing (fail closed)" >&2; exit 5; }
       if [ "$before" != "$after" ]; then
-        # strip the diff marker + the two record fields (`<sha> <mode>` or `symlink <target>`) + the
-        # two-space separator, leaving just the path:
+        # Extract path from each diff line: strip the `<`/`>` marker, then take the field
+        # after the US delimiter (or legacy two-space separator for pre-4.8.2 snapshots).
         # Split the diff from the extraction and gate on ITS exit code: rc=1 is the expected
         # "files differ"; rc>1 is diff TROUBLE, and letting it yield an empty `touched` would
         # silently pass a lane that changed sensitive paths (fail closed instead). Note the
@@ -742,7 +743,8 @@ CHANGED
         # plinth#17: records use ASCII Unit Separator (US, \037) before the path so a
         # path containing two spaces cannot be truncated. Legacy two-space records
         # (pre-4.8.2 mid-lane snapshots) still extract via the last two-space fallback.
-        # Pure bash (no sed): embedding US in a sed script is not portable across BSD/GNU.
+        # Pure bash (no sed / no ck_sed): embedding US in a sed script is not portable
+        # across BSD/GNU, and a sed extraction site would reintroduce the two-space bug.
         touched=""
         while IFS= read -r _dline || [ -n "${_dline:-}" ]; do
           case "$_dline" in

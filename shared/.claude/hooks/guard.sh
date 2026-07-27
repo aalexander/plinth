@@ -44,10 +44,13 @@ each_protected() {  # builtin pattern + project patterns, one per line
 # checks (floor + checks; the cloud review is advisory comments, and the review verdict
 # is verified server-side only where `receipt / verify` is required), plus the trusted driver running
 # the loop. For a Claude driver this hook
-# complements the Stop review-gate by
-# refusing the plain `gh pr create`/`gh pr merge` command IMMEDIATELY, mid-turn, unless
-# the feature branch's review verdict is APPROVED at HEAD. Wiring the guard into codex's
-# own hook system (so a codex driver gets it too) is deferred future work.
+# complements the Stop review-gate by refusing ship commands IMMEDIATELY, mid-turn:
+#   - `gh pr create` is refused unless the feature branch has APPROVED at HEAD.
+#   - bare `gh pr merge` is ALWAYS refused (even when APPROVED) — require the targeted
+#     form: `gh pr merge <n|url> -R <origin-owner/repo> --match-head-commit <sha> …`
+#     so GH_REPO/default-repo cannot desync authorize-from vs merge-into (plinth#49).
+# Wiring the guard into codex's own hook system (so a codex driver gets it too) is
+# deferred future work.
 # WHAT THIS IS, AND IS NOT — read before "hardening" it:
 #  - It is a CLIENT-SIDE hook, therefore bypassable BY DEFINITION: the driver controls
 #    its own machine. It catches the HONEST ship command a trusted driver runs; it does
@@ -65,13 +68,14 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #    deliberate act.
 #  - Direct base-branch pushes are likewise left to branch protection (the Stop gate
 #    logs+releases base commits); client-side base detection was fragile and redundant.
-# A BARE current-branch ship keeps the old fail-open behavior outside a git repo
-# and on the base branch. A targeted merge is different: its PR is resolved against
-# the checkout's origin (always `gh pr view … -R <origin-owner/repo>`) and every
-# error blocks. The actionable merge must ALSO be origin- and head-bound: either a
-# same-repo PR URL or an explicit -R/--repo naming origin, plus
-# --match-head-commit equal to the origin-resolved head (so GH_REPO / default-repo
-# and a racing new push cannot desync authorize-from-vs-merge-into). Multi-segment:
+# CREATE on the current branch keeps the old fail-open behavior outside a git repo
+# and on the base branch. MERGE is different: bare `gh pr merge` is always blocked
+# (plinth#49); the targeted form resolves the PR against the checkout's origin
+# (always `gh pr view … -R <origin-owner/repo>`) and every error blocks. The
+# actionable merge must be origin- and head-bound: either a same-repo PR URL or an
+# explicit -R/--repo naming origin, plus --match-head-commit equal to the
+# origin-resolved head (so GH_REPO / default-repo and a racing new push cannot
+# desync authorize-from-vs-merge-into). Multi-segment:
 # each real create/merge segment is gated on its own — an APPROVED targeted merge
 # must not authorize an unreviewed create. Quote-stripped argv is not a shell
 # parser: any quote/apostrophe/backslash OR expansion metacharacter
