@@ -363,7 +363,7 @@ inline_goal() {
 # (fresh/verify) and the tools-forbidden auditor.
 inline_contract() {
   # The reviewer contract was resolved to $RC_FILE up front (die-able there). Project
-  # rules come from the RATIFIED base (object existence via cat-file -e, so an
+  # rules come from the RATIFIED base (object existence via ls-tree, so an
   # exists-but-empty base file still wins over the working tree), else the working tree.
   #
   # AUTHORITATIVE OVERRIDE, emitted FIRST so it governs everything below: a resolved
@@ -530,7 +530,9 @@ tool_names="$(git diff --name-only "${base_tip}..HEAD" 2>/dev/null)" || tool_rc=
 if [ "$tool_rc" -ne 0 ]; then
   RISK=2
   RISK_JSON='{"tier":2,"reasons":["git diff --name-only failed — failing closed to Tier 2 (cannot verify tooling floor)"]}'
-elif printf '%s\n' "$tool_names" | grep -Eq "$HARNESS_RE"; then
+# here-string (not pipe+grep -q): under pipefail, early grep -q exit SIGPIPEs a
+# large printf and falsely skips the floor (plinth#15 / large-input fail-open).
+elif grep -Eq "$HARNESS_RE" <<<"$tool_names"; then
   RISK=2
   RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored to Tier 2 before any classifier runs (self-referential bypass prevention)"]}'
 else
@@ -837,11 +839,12 @@ else
   elif [ -n "$_ag_tree" ]; then
     agents_body="$(git show "${base_tip}:AGENTS.md" 2>/dev/null)" \
       || die_infra "cannot read base AGENTS.md while resolving the reviewer contract"
-    if printf '%s' "$agents_body" | grep -qF '# Plinth — Reviewer'; then
+    # here-string: pipe+grep -q under pipefail SIGPIPEs on large AGENTS.md (fail-open).
+    if grep -qF '# Plinth — Reviewer' <<<"$agents_body"; then
       printf '%s\n' "$agents_body" > "$RC_FILE" \
         || die_infra "cannot write base AGENTS.md reviewer contract"
       RC_SRC="AGENTS.md (base — pre-v4.4 reviewer contract)"
-    elif printf '%s' "$agents_body" | grep -qF 'Plinth driver shell (version-pinned)'; then
+    elif grep -qF 'Plinth driver shell (version-pinned)' <<<"$agents_body"; then
       die_infra "post-v4.4 base has the driver-shell AGENTS.md but no ratified .plinth/reviewer.md — the reviewer contract is missing (corruption/tampering); refusing to review."
     fi
   fi

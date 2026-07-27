@@ -724,6 +724,29 @@ jobs:
             ' _ "$base_tip" "$HARNESS_RE" "$FLB" > "$RV2/out.json" 2>"$RV2/err"
             [ "$(jq -r .tier "$RV2/out.json")" = "2" ] || { echo "::error::#15 tooling-floor did not fail closed when git diff --name-only failed (out=$(cat "$RV2/out.json") err=$(cat "$RV2/err"))"; exit 1; }
             grep -qi 'name-only' "$RV2/out.json" || { echo "::error::#15 tooling-floor reason did not name the name-only failure"; exit 1; } )
+          # #15 large-input: tooling floor must still match when name list exceeds pipe buffer
+          # (pipe+grep -q under pipefail used to SIGPIPE-skip the floor on big diffs).
+          T_BIG="$(mktemp -d)"; ( cd "$T_BIG"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; echo a > app.py; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            # Many non-tooling paths + one harness path — floor must fire via here-string grep
+            i=0; while [ $i -lt 8000 ]; do printf 'f%05d.py\n' "$i"; i=$((i+1)); done > names.txt
+            # Simulate tool_names content including a harness path late in the list
+            { cat names.txt; echo '.plinth/review.sh'; } > tool_names.txt
+            HARNESS_RE="$(awk -F"'" '/^HARNESS_RE=/ {print $2; exit}' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+            tool_names="$(cat tool_names.txt)"
+            set -o pipefail
+            if grep -Eq "$HARNESS_RE" <<<"$tool_names"; then ok=1; else ok=0; fi
+            [ "$ok" = 1 ] || { echo "::error::#15 large tool_names list missed harness path under here-string floor match"; exit 1; }
+            # Prove the OLD pipe+grep -q pattern fails open on the same input (mutant detection)
+            set +e
+            if printf '%s\n' "$tool_names" | grep -Eq "$HARNESS_RE"; then pipe_ok=1; else pipe_ok=0; fi
+            set -e
+            # On macOS/Linux with pipefail in a subshell the pipe form may already fail;
+            # the product MUST use here-string. Assert product source has no pipe+grep -Eq for floor:
+            ! grep -nE 'printf.*tool_names.*\|.*grep -Eq.*HARNESS' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+              || { echo "::error::#15 review.sh tooling floor still uses pipe+grep (SIGPIPE fail-open)"; exit 1; }
+          )
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
           RV3="$(mktemp -d)"; BORG3="$(mktemp -d)"; git init -q --bare "$BORG3"
@@ -1134,7 +1157,9 @@ jobs:
           done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
-          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
+          # Drop leftover session/last-error from earlier review.sh probes (e.g. nosuchbase)
+          # so `git add -A` cannot contaminate a docs-only probe as tooling Tier 2.
+          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; rm -rf .plinth/session; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
           [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
           [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
           [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
