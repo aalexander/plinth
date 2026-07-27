@@ -621,8 +621,12 @@ jq -e --arg head "$HEAD" '
   and (.quota.note | type == "string")
   and (.models.live | type == "object")
   and (.models.seats | type == "object")
+  and .models.seats.reviewer_vendor == "codex"
+  and .models.seats.reviewer_tier1 == "gpt-t1"
   and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .models.seats.audit_vendor == "claude"
   and .models.seats.audit_model == "opus"
+  and .models.seats.advisor_model == "fable"
   and .models.seats.advisor_model_max == "fable-max"
   # Live reviewer from verdict.model only (request has no model; not seat fallback).
   and .models.live.reviewer == "gpt-test"
@@ -791,6 +795,21 @@ export PLINTH_DASH_ROOTS="$PH2"
   and (.phases.ci == 20)          # Pre→Post Bash gh
   and (.phases.reviewing == 30)   # PostToolUse review.sh gap 70→40
 ' >/dev/null
+# shell stage (plain Bash, not review/advise/gh)
+SHP="$FIX/shell-phase"
+mk_git "$SHP"
+git -C "$SHP" checkout -qb feat/sh
+echo s > "$SHP/s.txt"; git -C "$SHP" add -A; git -C "$SHP" commit -qm w
+NOWS="$(date +%s)"
+mkdir -p "$SHP/.plinth/session"
+{
+  jq -nc --argjson e "$((NOWS-40))" '{epoch:$e,event:"SessionStart",sid:"s",tool:null,detail:null}'
+  jq -nc --argjson e "$((NOWS-10))" '{epoch:$e,event:"PostToolUse",sid:"s",tool:"Bash",detail:"ls -la",rc:0}'
+} > "$SHP/.plinth/session/events.jsonl"
+export PLINTH_DASH_ROOTS="$SHP"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "shell-phase") | .phases.shell == 30
+' >/dev/null
 # Reinstall successful weekly-usage claude (prior sentinel was empty stdout).
 cat > "$QBIN/claude" <<'C'
 #!/usr/bin/env python3
@@ -838,32 +857,58 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QXR" \
   ' >/dev/null
 # Public --snapshot is always offline; only serve uses --snapshot-with-quota.
 
-# review_round_secs: request→findings mtime delta, not folded into phases.reviewing
+# review_round_secs: sum of request→findings mtimes across rounds
 RR="$FIX/rho-review-secs"
 mk_git "$RR"
 git -C "$RR" checkout -qb feat/rr
 echo z > "$RR/z.txt"; git -C "$RR" add -A; git -C "$RR" commit -qm w
 mkdir -p "$RR/.plinth/session/review/feat-rr"
-# request older than findings by ~12s via touch
 printf '{"round":1,"mode":"fresh"}\n' > "$RR/.plinth/session/review/feat-rr/request-1.json"
 printf '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[]}\n' \
   > "$RR/.plinth/session/review/feat-rr/findings-1.json"
-# set mtimes: request = now-12, findings = now
+printf '{"round":2,"mode":"resume"}\n' > "$RR/.plinth/session/review/feat-rr/request-2.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"y","findings":[]}\n' \
+  > "$RR/.plinth/session/review/feat-rr/findings-2.json"
 python3 - <<PY
 import os, time
 base = time.time()
-os.utime("$RR/.plinth/session/review/feat-rr/request-1.json", (base-12, base-12))
-os.utime("$RR/.plinth/session/review/feat-rr/findings-1.json", (base, base))
+# round1: 12s, round2: 8s → sum ~20s
+os.utime("$RR/.plinth/session/review/feat-rr/request-1.json", (base-30, base-30))
+os.utime("$RR/.plinth/session/review/feat-rr/findings-1.json", (base-18, base-18))
+os.utime("$RR/.plinth/session/review/feat-rr/request-2.json", (base-10, base-10))
+os.utime("$RR/.plinth/session/review/feat-rr/findings-2.json", (base-2, base-2))
 PY
 export PLINTH_DASH_ROOTS="$RR"
 RROUT="$FIX/rr.json"
 "$PLINTH" dash --snapshot > "$RROUT"
 jq -e '
   .projects[] | select(.name == "rho-review-secs")
-  | .review_round_secs >= 10
-  and .review_round_secs <= 15
+  | .review_round_secs >= 18
+  and .review_round_secs <= 22
   and ((.phases.reviewing // 0) == 0)
 ' "$RROUT" >/dev/null
+# Fresh cache TTL suppresses CLI on --snapshot-with-quota
+TTLDIR="$FIX/ttl"
+mkdir -p "$TTLDIR"
+SENT2="$FIX/claude-ttl-called"; rm -f "$SENT2"
+cat > "$QBIN/claude" <<C
+#!/bin/sh
+echo called > "$SENT2"
+exit 0
+C
+chmod +x "$QBIN/claude"
+NOWQ2="$(date +%s)"
+jq -nc --argjson now "$NOWQ2" '{
+  available:true, refreshed_at:$now,
+  overall:{vendor:"claude",window:"week_all_models",used_pct:50,remaining_pct:50,
+           reset_text:"Jul 30",projected_100pct_at:null,rate_pct_per_hour:null},
+  vendors:[{vendor:"claude",available:true,windows:[{window:"week_all_models",used_pct:50,reset_text:"Jul 30"}]}],
+  history:[{t:$now,week_all_models_pct:50,reset_text:"Jul 30"}]
+}' > "$TTLDIR/cache.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$TTLDIR/cache.json" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=900 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 50' >/dev/null
+[ ! -f "$SENT2" ] || { echo "smoke-snapshot: fresh TTL still invoked claude" >&2; exit 1; }
 
 # Beta feedless
 jq -e '
@@ -1339,7 +1384,8 @@ const el = (id) => {
     textContent: "", className: "", innerHTML: "",
     style: { display: "", cssText: "" },
     classList: { add() {}, remove() {}, contains() { return false; } },
-    addEventListener() {},
+    _listeners: {},
+    addEventListener(type, fn) { o._listeners[type] = o._listeners[type] || []; o._listeners[type].push(fn); },
     removeEventListener() {},
     getAttribute(name) { return o._attrs && o._attrs[name] || null; },
     setAttribute(name, v) { o._attrs = o._attrs || {}; o._attrs[name] = v; },
@@ -1399,7 +1445,13 @@ const sandbox = {
     // Unknown IDs return null so production create/insert path runs for #poll-error.
     getElementById: (id) => (Object.prototype.hasOwnProperty.call(elsById, id) ? elsById[id] : null),
     createElement: () => el(),
-    addEventListener() {},
+    _listeners: {},
+    addEventListener(type, fn) {
+      // `this` is the document stub (do not close over an unbound `document`).
+      this._listeners = this._listeners || {};
+      this._listeners[type] = this._listeners[type] || [];
+      this._listeners[type].push(fn);
+    },
     querySelector: (sel) => {
       if (sel === "header") {
         return {
@@ -1480,6 +1532,8 @@ setTimeout(() => {
   }
   resolvers[1]();
   setTimeout(() => {
+    // setTimeout runs outside the vm context — bind DOM stubs explicitly.
+    const document = sandbox.document;
     // Error card
     const errProj = {
       error: "snapshot_render_failed",
@@ -1578,6 +1632,18 @@ setTimeout(() => {
                   { text: "later", blocking: false }]
         }
       }]);
+      // Boot-time listeners were registered on pre-seeded nodes / document.
+      const closeFns = (elsById["nh-close"]._listeners && elsById["nh-close"]._listeners.click) || [];
+      const escFns = (document._listeners && document._listeners.keydown) || [];
+      const modalFns = (modal._listeners && modal._listeners.click) || [];
+      if (!closeFns.length) {
+        console.error("nh-close click listener not registered at boot");
+        process.exit(1);
+      }
+      if (!escFns.length) {
+        console.error("document keydown (Escape) listener not registered at boot");
+        process.exit(1);
+      }
       api.openNeedsHuman("/tmp/h2");
       const listHtml = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
       if (!listHtml.includes("blocking") || !listHtml.includes("fix &lt;me&gt;")
@@ -1589,9 +1655,51 @@ setTimeout(() => {
         console.error("openNeedsHuman did not open modal");
         process.exit(1);
       }
-      api.closeNeedsHuman();
+      // Close button listener
+      closeFns[0]({ target: elsById["nh-close"] });
       if (modal.classList.contains("open")) {
-        console.error("closeNeedsHuman did not close modal");
+        console.error("Close button listener did not close modal");
+        process.exit(1);
+      }
+      // Escape
+      api.openNeedsHuman("/tmp/h2");
+      escFns[0]({ key: "Escape" });
+      if (modal.classList.contains("open")) {
+        console.error("Escape listener did not close modal");
+        process.exit(1);
+      }
+      // Backdrop click (target === modal)
+      if (modalFns.length) {
+        api.openNeedsHuman("/tmp/h2");
+        modalFns[0]({ target: modal });
+        if (modal.classList.contains("open")) {
+          console.error("backdrop click did not close modal");
+          process.exit(1);
+        }
+      }
+      // Grid chip click wiring
+      const gridFns = (elsById["grid"]._listeners && elsById["grid"]._listeners.click) || [];
+      if (!gridFns.length) {
+        console.error("grid click listener not registered for NEEDS-HUMAN chips");
+        process.exit(1);
+      }
+      api.seedProjects([{
+        name: "h2", path: "/tmp/h2", branch: "main", head: "abc",
+        feedless: true, review: null,
+        needs_human: {
+          open: 1, blocking: 0, truncated: false,
+          items: [{ text: "from chip", blocking: false }]
+        }
+      }]);
+      const chip = { closest: (sel) => sel === "[data-nh]" ? { getAttribute: () => "/tmp/h2" } : null };
+      gridFns[0]({ target: chip });
+      if (!modal.classList.contains("open")) {
+        console.error("chip click path did not open modal");
+        process.exit(1);
+      }
+      const chipList = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!chipList.includes("from chip")) {
+        console.error("chip click did not render items:", chipList);
         process.exit(1);
       }
     }
