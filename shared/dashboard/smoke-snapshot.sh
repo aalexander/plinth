@@ -89,6 +89,8 @@ mkdir -p "$C2/.plinth/session/review/feat-unbound"
 jq -nc --arg sha "$UBSHA" \
   '{verdict:"UNBOUND",unbound_reason:"Tier-2 clean-slate confirmation not yet complete",sha:$sha,round:2,mode:"verify",model:"gpt-test"}' \
   > "$C2/.plinth/session/review/feat-unbound/verdict.json"
+mkdir -p "$C2/.plinth/session"
+printf '{"event":"SessionStart","sid":"s1","epoch":1}\n' > "$C2/.plinth/session/events.jsonl"
 
 # ── Fixture D: core.abbrev=12 must not false-stale a matching full SHA ───────
 D="$FIX/delta-abbrev"
@@ -556,7 +558,7 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-# Base 34 + 8 extra protocol fixtures (L18–L25) + optional sha256
+# Base 35 (incl. gamma-unbound) + 8 extra protocol fixtures (L18–L25) + optional sha256
 EXPECTED_N=43
 [ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
@@ -608,6 +610,10 @@ jq -e '
   and .review != null
   and .review.verdict == "UNBOUND"
 ' "$OUT" >/dev/null
+# statusline must label UNBOUND (not "CHANGES")
+sl="$( "$PLINTH" statusline "$FIX/gamma-unbound" )"
+printf '%s' "$sl" | grep -q 'UNBOUND' || { echo "smoke-snapshot: statusline missing UNBOUND (got: $sl)" >&2; exit 1; }
+printf '%s' "$sl" | grep -q 'CHANGES' && { echo "smoke-snapshot: statusline mislabels UNBOUND as CHANGES (got: $sl)" >&2; exit 1; } || true
 
 # core.abbrev=12: matching full SHA is not stale
 jq -e '
