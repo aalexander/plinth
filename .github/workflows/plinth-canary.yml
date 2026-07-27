@@ -945,6 +945,92 @@ jobs:
             set -e
             [ "$erc" -ne 0 ] || { echo "::error::#15 inline_contract did not fail on AGENTS-project cat-file infra error"; exit 1; }
             printf '%s' "$err" | grep -qiE 'AGENTS-project|cat-file|inline_contract' || { echo "::error::#15 AGENTS-project probe message missing (err=$err)"; exit 1; } )
+          # #15 inline_contract: cat "$RC_FILE" failure → return 1
+          T_CATRC="$(mktemp -d)"; ( cd "$T_CATRC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '# Plinth — Reviewer\n' > .plinth/reviewer.md
+            echo a > f; git add -A; git commit -qm b >/dev/null
+            base_tip="$(git rev-parse HEAD)"; RC_FILE=".plinth/reviewer.md"; RC_SRC="base"
+            chmod a-r "$RC_FILE"
+            set +e
+            err="$(base_tip="$base_tip" baseref="main" RC_FILE="$RC_FILE" RC_SRC="$RC_SRC" bash -c '
+              set -euo pipefail
+              source '"$IC_FN"'
+              inline_contract >/dev/null
+            ' 2>&1)"; erc=$?
+            set -e
+            chmod u+r "$RC_FILE" 2>/dev/null || true
+            [ "$erc" -ne 0 ] || { echo "::error::#15 inline_contract did not fail when cat RC_FILE failed (unreadable)"; exit 1; }
+            printf '%s' "$err" | grep -qiE 'cannot read|inline_contract|Permission|RC_FILE|reviewer' || { echo "::error::#15 cat RC_FILE fail message missing (err=$err)"; exit 1; } )
+          # #15 inline_contract: cat-file OK for AGENTS-project, git show fails → return 1
+          SHIM_APSHOW="$(mktemp -d)"
+          cat > "$SHIM_APSHOW/git" <<GSH
+          #!/usr/bin/env bash
+          if [ "\$1" = show ] && [[ "\$2" == *AGENTS-project.md ]]; then
+            echo "fatal: show AGENTS-project failed (injected)" >&2; exit 128
+          fi
+          exec "$REAL_GIT" "\$@"
+          GSH
+          chmod +x "$SHIM_APSHOW/git"
+          T_APS="$(mktemp -d)"; ( cd "$T_APS"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '# Plinth — Reviewer\n' > .plinth/reviewer.md
+            printf 'rule\n' > .plinth/AGENTS-project.md
+            echo a > f; git add -A; git commit -qm b >/dev/null
+            base_tip="$(git rev-parse HEAD)"; RC_FILE=".plinth/reviewer.md"; RC_SRC="base"
+            set +e
+            err="$(base_tip="$base_tip" baseref="main" RC_FILE="$RC_FILE" RC_SRC="$RC_SRC" PATH="$SHIM_APSHOW:$PATH" bash -c '
+              set -euo pipefail
+              source '"$IC_FN"'
+              inline_contract >/dev/null
+            ' 2>&1)"; erc=$?
+            set -e
+            [ "$erc" -ne 0 ] || { echo "::error::#15 inline_contract did not fail when git show AGENTS-project.md failed"; exit 1; }
+            printf '%s' "$err" | grep -qiE 'AGENTS-project|cannot read|inline_contract' || { echo "::error::#15 AGENTS-project show fail message missing (err=$err)"; exit 1; } )
+          # #15 inline_contract: base AGENTS-project ABSENT (does-not-exist), working-tree cat fails → return 1
+          SHIM_APABS="$(mktemp -d)"
+          cat > "$SHIM_APABS/git" <<GSH
+          #!/usr/bin/env bash
+          if [ "\$1" = cat-file ] && [ "\$2" = -e ] && [[ "\$3" == *AGENTS-project.md ]]; then
+            echo "fatal: path '.plinth/AGENTS-project.md' does not exist in 'HEAD'" >&2; exit 128
+          fi
+          exec "$REAL_GIT" "\$@"
+          GSH
+          chmod +x "$SHIM_APABS/git"
+          T_APWT="$(mktemp -d)"; ( cd "$T_APWT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '# Plinth — Reviewer\n' > .plinth/reviewer.md
+            echo a > f; git add -A; git commit -qm b >/dev/null
+            printf 'wt-rule\n' > .plinth/AGENTS-project.md; chmod a-r .plinth/AGENTS-project.md
+            base_tip="$(git rev-parse HEAD)"; RC_FILE=".plinth/reviewer.md"; RC_SRC="base"
+            set +e
+            err="$(base_tip="$base_tip" baseref="main" RC_FILE="$RC_FILE" RC_SRC="$RC_SRC" PATH="$SHIM_APABS:$PATH" bash -c '
+              set -euo pipefail
+              source '"$IC_FN"'
+              inline_contract >/dev/null
+            ' 2>&1)"; erc=$?
+            set -e
+            chmod u+r .plinth/AGENTS-project.md 2>/dev/null || true
+            [ "$erc" -ne 0 ] || { echo "::error::#15 inline_contract did not fail when WT AGENTS-project.md cat failed"; exit 1; }
+            printf '%s' "$err" | grep -qiE 'AGENTS-project|cannot read|inline_contract|Permission' || { echo "::error::#15 WT AGENTS-project cat fail message missing (err=$err)"; exit 1; } )
+          # #15 outer CONTRACT_TEXT gate: inline_contract failure propagates to die_infra
+          # Extract the materialize-assignment lines from review.sh
+          CT_BLK="$(mktemp)"
+          awk '/^if ! CONTRACT_TEXT=/ {p=1} p{print} p && /produced empty policy/ {print; exit}' \
+            "$GITHUB_WORKSPACE/shared/.plinth/review.sh" > "$CT_BLK"
+          grep -q 'inline_contract' "$CT_BLK" || { echo "::error::could not extract CONTRACT_TEXT gate from review.sh"; exit 1; }
+          T_CT="$(mktemp -d)"; ( cd "$T_CT"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            mkdir -p .plinth; printf '# Plinth — Reviewer\n' > .plinth/reviewer.md
+            echo a > f; git add -A; git commit -qm b >/dev/null
+            base_tip="$(git rev-parse HEAD)"; RC_FILE=".plinth/reviewer.md"; RC_SRC="base"
+            # Force inline_contract to fail via AGENTS-project cat-file inject
+            set +e
+            err="$(base_tip="$base_tip" baseref="main" RC_FILE="$RC_FILE" RC_SRC="$RC_SRC" PATH="$SHIM_AP:$PATH" bash -c '
+              set -euo pipefail
+              die_infra() { echo "die_infra: $*" >&2; exit 9; }
+              source '"$IC_FN"'
+              source '"$CT_BLK"'
+            ' 2>&1)"; erc=$?
+            set -e
+            [ "$erc" -ne 0 ] || { echo "::error::#15 CONTRACT_TEXT gate did not die_infra when inline_contract failed"; exit 1; }
+            printf '%s' "$err" | grep -qiE 'inline_contract|die_infra|AGENTS-project' || { echo "::error::#15 CONTRACT_TEXT propagation message missing (err=$err)"; exit 1; } )
           # #15 inline_contract empty policy: RC_FILE empty after materialization → die_infra at empty check
           # (status-checked empty-contract gate)
           T_EMPTY="$(mktemp -d)"; ( cd "$T_EMPTY"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
