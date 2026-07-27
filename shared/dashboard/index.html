@@ -716,8 +716,8 @@
 
   function formatProjection(v) {
     if (v == null || v.projected_100pct_at == null) {
-      if (v && v.available && v.used_pct != null && v.rate_pct_per_hour == null) {
-        return "need ≥2 samples (≥10m)";
+      if (v && v.available && v.used_pct != null && v.used_pct > 0 && v.rate_pct_per_hour == null) {
+        return "no reset clock";
       }
       return null;
     }
@@ -742,7 +742,7 @@
     const ageSpan = '<span class="dim">polled ' + esc(age) + "</span>";
     const rows = [];
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
-    const preferred = ["claude", "codex", "grok"];
+    const preferred = ["claude", "codex"];
     const ordered = preferred
       .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
       .filter(Boolean)

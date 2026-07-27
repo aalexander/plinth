@@ -564,14 +564,16 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 `TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
 - **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir.
 - **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline).
-- **Grok** — no headless plan-quota API yet (`no_headless_usage_surface`).
+- **Grok** — omitted (no programmatic plan-quota API; interactive `/usage` is not account quota).
 Scratch temps for event/transcript parsing use the process `TMPDIR` (default
 system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
 the quota-cache directory if you need a hard quarantine. TTL ~15 min
 (`PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0`
-for smoke). Empty/unparsed usage is `parse_failed`. Projection: time-to-100%
-from ≥2 **same-reset-window** samples ≥10 min apart per vendor (history drops
-prior-window / reset-less samples).
+for smoke). Empty/unparsed usage is `parse_failed`. Burn projection: **linear
+from last reset** (assume 0% at window start = `reset_at − window_seconds`,
+line through current `used_pct` → time-to-100%). Needs a parseable next-reset
+clock + window length (week = 7d; Claude session = 5h; Codex uses API
+`limit_window_seconds`).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
 fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase

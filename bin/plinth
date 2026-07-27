@@ -2649,14 +2649,17 @@ except Exception:
         (.result // "") as $t
         | [ ($t
             | capture("(?m)^Current session:\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
-            | {window:"session", used_pct:(.pct|tonumber), reset_text:.reset}),
+            | {window:"session", used_pct:(.pct|tonumber), reset_text:.reset,
+               window_seconds:18000}),
             ($t
             | capture("(?m)^Current week \\(all models\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
-            | {window:"week_all_models", used_pct:(.pct|tonumber), reset_text:.reset}),
+            | {window:"week_all_models", used_pct:(.pct|tonumber), reset_text:.reset,
+               window_seconds:604800}),
             ($t
             | capture("(?m)^Current week \\((?<label>[^)]+)\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
             | select(.label != "all models")
-            | {window:("week_"+(.label|ascii_downcase|gsub(" ";"_"))), used_pct:(.pct|tonumber), reset_text:.reset})
+            | {window:("week_"+(.label|ascii_downcase|gsub(" ";"_"))), used_pct:(.pct|tonumber),
+               reset_text:.reset, window_seconds:604800})
           ] as $wins
         | if ($wins | length) == 0 then
             {vendor:"claude", available:false, error:"parse_failed", probed_at:$now}
@@ -2749,17 +2752,22 @@ if reset_at is not None:
     except Exception:
         reset_text = str(reset_at)
 win = "primary"
+win_secs = None
 try:
-    if int(pw.get("limit_window_seconds") or 0) == 604800:
-        win = "week"
+    win_secs = int(pw.get("limit_window_seconds") or 0) or None
 except Exception:
-    pass
-windows = [{"window": win, "used_pct": used_pct, "reset_text": reset_text}]
+    win_secs = None
+if win_secs == 604800:
+    win = "week"
+w0 = {"window": win, "used_pct": used_pct, "reset_text": reset_text}
 if reset_at is not None:
     try:
-        windows[0]["reset_at"] = int(reset_at)
+        w0["reset_at"] = int(reset_at)
     except Exception:
         pass
+if win_secs:
+    w0["window_seconds"] = win_secs
+windows = [w0]
 sw = rl.get("secondary_window")
 if isinstance(sw, dict) and sw.get("used_percent") is not None:
     try:
@@ -2770,7 +2778,16 @@ if isinstance(sw, dict) and sw.get("used_percent") is not None:
             sw_text = datetime.fromtimestamp(int(sw_reset), tz=timezone.utc).strftime(
                 "%Y-%m-%d %H:%M UTC"
             )
-        windows.append({"window": "secondary", "used_pct": sw_pct, "reset_text": sw_text})
+        sw_entry = {"window": "secondary", "used_pct": sw_pct, "reset_text": sw_text}
+        if sw_reset is not None:
+            sw_entry["reset_at"] = int(sw_reset)
+        try:
+            sw_secs = int(sw.get("limit_window_seconds") or 0) or None
+        except Exception:
+            sw_secs = None
+        if sw_secs:
+            sw_entry["window_seconds"] = sw_secs
+        windows.append(sw_entry)
     except Exception:
         pass
 plan = d.get("plan_type") if isinstance(d.get("plan_type"), str) else None
@@ -2834,21 +2851,127 @@ print(json.dumps(out, separators=(",", ":")))
       >> "$vendors_tmp"
   fi
 
-  # ── Grok: no headless plan-quota surface yet (interactive /usage is agent-local).
-  if command -v grok >/dev/null 2>&1; then
-    jq -nc --argjson now "$now" \
-      '{vendor:"grok",available:false,error:"no_headless_usage_surface",
-        note:"No plan-quota API yet — interactive grok /usage is not account quota",
-        probed_at:$now}' >> "$vendors_tmp"
-  else
-    jq -nc --argjson now "$now" \
-      '{vendor:"grok",available:false,error:"cli_missing",probed_at:$now}' \
-      >> "$vendors_tmp"
-  fi
+  # Grok: no programmatic plan-quota surface — omit from the dash (do not show a dead row).
 
-  # Assemble: enrich EACH available vendor with burn-rate projection; keep overall
-  # as the primary weekly window (claude week_all_models when present).
-  # History samples are per-vendor: {t, vendor, window, used_pct, reset_text}.
+  # Parse Claude-style reset_text → reset_at so linear-from-reset works without multi-sample history.
+  # Mutates vendors_tmp in place (NDJSON of vendor objects). Best-effort; never fails the probe.
+  python3 -c '
+import json, re, sys
+from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
+
+path, now_s = sys.argv[1], int(sys.argv[2])
+try:
+    lines = open(path, "r", encoding="utf-8").read().splitlines()
+except Exception:
+    sys.exit(0)
+
+def parse_reset(text, now_ts):
+    if not text or not isinstance(text, str):
+        return None
+    text = text.strip()
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", text)
+    if m:
+        body, tzname = m.group(1).strip(), m.group(2).strip()
+    else:
+        body, tzname = text, "UTC"
+    tz = timezone.utc
+    if ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(tzname)
+        except Exception:
+            tz = timezone.utc
+    body_n = re.sub(r"\s+", " ", body)
+    now_dt = datetime.fromtimestamp(now_ts, tz=tz)
+    dt = None
+    has_year = False
+    # Prefer formats with year (codex-style); Claude uses "Jul 30 at 9am".
+    candidates = [
+        ("%Y-%m-%d %H:%M UTC", True),
+        ("%Y-%m-%d %H:%M", True),
+        ("%b %d at %I:%M%p", False),
+        ("%b %d at %I%p", False),
+        ("%b %d at %H:%M", False),
+    ]
+    for fmt, yflag in candidates:
+        try:
+            raw = body_n
+            if fmt.endswith("%p"):
+                raw = re.sub(r"\b([ap])m\b", lambda mm: mm.group(1).upper() + "M", raw, flags=re.I)
+            dt = datetime.strptime(raw, fmt)
+            has_year = yflag
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return None
+    if not has_year:
+        dt = dt.replace(year=now_dt.year)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    ts = int(dt.timestamp())
+    # Reset times are in the future within the window; if already past, try next year.
+    if not has_year and ts < now_ts - 3600:
+        try:
+            dt = dt.replace(year=dt.year + 1)
+            ts = int(dt.timestamp())
+        except Exception:
+            pass
+    return ts
+
+def default_window_seconds(name):
+    if not name:
+        return None
+    if name == "session":
+        return 18000  # Claude 5h session
+    if name.startswith("week") or name in ("primary", "week"):
+        return 604800
+    return None
+
+out_lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        out_lines.append(line)
+        continue
+    if not isinstance(obj, dict) or obj.get("available") is not True:
+        out_lines.append(json.dumps(obj, separators=(",", ":")))
+        continue
+    wins = obj.get("windows")
+    if isinstance(wins, list):
+        new_wins = []
+        for w in wins:
+            if not isinstance(w, dict):
+                new_wins.append(w)
+                continue
+            w = dict(w)
+            if w.get("window_seconds") is None:
+                ws = default_window_seconds(w.get("window"))
+                if ws is not None:
+                    w["window_seconds"] = ws
+            if w.get("reset_at") is None and w.get("reset_text"):
+                ra = parse_reset(w.get("reset_text"), now_s)
+                if ra is not None:
+                    w["reset_at"] = ra
+            new_wins.append(w)
+        obj["windows"] = new_wins
+    out_lines.append(json.dumps(obj, separators=(",", ":")))
+try:
+    open(path, "w", encoding="utf-8").write("\n".join(out_lines) + ("\n" if out_lines else ""))
+except Exception:
+    pass
+' "$vendors_tmp" "$now" 2>/dev/null || true
+
+  # Assemble: enrich EACH available vendor with linear-from-reset burn projection;
+  # overall = claude week_all_models when present.
+  # History samples are per-vendor: {t, vendor, window, used_pct, reset_text} (observability only).
   local history_in='[]' cached_body
   if cached_body="$(_dash_quota_read_cache "$cache")"; then
     history_in="$(printf '%s' "$cached_body" | jq -c '.history // []' 2>/dev/null || echo '[]')"
@@ -2861,31 +2984,19 @@ print(json.dumps(out, separators=(",", ":")))
       | ([$w[] | select(.window=="week_all_models" and (.used_pct!=null))][0] // null) as $wk
       | if $wk != null then $wk
         else ([$w[] | select(.used_pct != null)][0] // null) end;
-    def rate_for($vendor; $window; $pct; $reset; $hist):
-      ([ $hist[]
-         | select(.vendor==$vendor and .window==$window
-                  and .used_pct != null and .reset_text != null
-                  and ($reset != null) and (.reset_text == $reset))
-       ] | sort_by(.t)) as $hs
-      | if ($hs|length) < 2 then null
-        else
-          ($hs[-1]) as $a
-          | ([ $hs[]
-              | select(($a.t - .t) >= 600
-                       and .used_pct < $a.used_pct
-                       and .reset_text == $a.reset_text)
-            ] | .[0] // null) as $b
-          | if $b != null then
-              {rate_pct_per_s: (($a.used_pct - $b.used_pct) / ($a.t - $b.t))}
-            else
-              ($hs[0]) as $f
-              | if ($a.t - $f.t) >= 600 and ($a.used_pct > $f.used_pct)
-                   and ($f.reset_text == $a.reset_text)
-                then {rate_pct_per_s: (($a.used_pct - $f.used_pct) / ($a.t - $f.t))}
-                else null end
-            end
-        end;
-    def enrich($hist):
+    # Linear extrapolation from last reset: assume 0% at (reset_at - window_seconds).
+    def rate_from_reset($pct; $reset_at; $win_secs):
+      if $pct == null or $reset_at == null or $win_secs == null then null
+      elif ($win_secs | type) != "number" or $win_secs <= 0 then null
+      else
+        ($reset_at - $win_secs) as $start
+        | ($now - $start) as $elapsed
+        | if $elapsed <= 0 then null
+          elif $pct <= 0 then {rate_pct_per_s: 0}
+          else {rate_pct_per_s: ($pct / $elapsed)}
+          end
+      end;
+    def enrich:
       if .available != true then .
       else
         (primary_window) as $pw
@@ -2894,17 +3005,22 @@ print(json.dumps(out, separators=(",", ":")))
             ($pw.used_pct) as $pct
             | ($pw.reset_text // null) as $reset
             | ($pw.window // "unknown") as $win
-            | rate_for(.vendor; $win; $pct; $reset; $hist) as $rate
-            | (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
+            | ($pw.reset_at // null) as $ra
+            | ($pw.window_seconds // null) as $ws
+            | rate_from_reset($pct; $ra; $ws) as $rate
+            | (if $rate == null then null
                elif $pct >= 100 then $now
+               elif ($rate.rate_pct_per_s // 0) <= 0 then null
                else ($now + (((100 - $pct) / $rate.rate_pct_per_s) | floor)) end) as $proj100
             | . + {
                 used_pct: $pct,
                 remaining_pct: (100 - $pct),
                 primary_window: $win,
                 reset_text: $reset,
+                reset_at: $ra,
+                window_seconds: $ws,
                 projected_100pct_at: $proj100,
-                rate_pct_per_hour: (if $rate == null then null
+                rate_pct_per_hour: (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
                                     else (($rate.rate_pct_per_s * 3600 * 10) | floor / 10) end)
               }
           end
@@ -2918,7 +3034,7 @@ print(json.dumps(out, separators=(",", ":")))
               used_pct:.week_all_models_pct, reset_text:(.reset_text // null)}
            else empty end
        ]) as $hist_norm
-    | ($vendors0 | map(enrich($hist_norm))) as $vendors
+    | ($vendors0 | map(enrich)) as $vendors
     # Append one history sample per available vendor with a primary window.
     | ($hist_norm + [
          $vendors[]
@@ -2942,7 +3058,7 @@ print(json.dumps(out, separators=(",", ":")))
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "claude: -p /usage; codex: ChatGPT wham/usage via ~/.codex/auth.json; grok: no headless plan quota yet. Projection needs ≥2 same-reset samples ≥10m apart per vendor."
+        note: "claude: -p /usage; codex: ChatGPT wham/usage via ~/.codex/auth.json. Burn: linear from last reset (0% → current). Grok omitted (no plan-quota API)."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

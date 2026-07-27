@@ -730,17 +730,47 @@ QPROBE="$HOME/.config/plinth/quota-probe.json"
 PATH="$QBIN:/usr/bin:/bin" \
   PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota > "$QPROBE"
+# Linear-from-reset: 80% used, week window (7d), next reset parseable from fixture text.
+# rate = 80 / elapsed_since_window_start; proj delta = (20/80)*elapsed = elapsed/4.
 jq -e '
   .quota.available == true
   and .quota.overall.used_pct == 80
-  # Rate/projection tolerate a few seconds of setup clock skew on history ages.
   and (.quota.overall.rate_pct_per_hour | type == "number")
-  and .quota.overall.rate_pct_per_hour >= 4
-  and .quota.overall.rate_pct_per_hour <= 6
-  and ((.quota.overall.projected_100pct_at - .quota.refreshed_at) >= 14000)
-  and ((.quota.overall.projected_100pct_at - .quota.refreshed_at) <= 15000)
+  and .quota.overall.rate_pct_per_hour > 0
+  and (.quota.overall.projected_100pct_at | type == "number")
+  and .quota.overall.projected_100pct_at > .quota.refreshed_at
   and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
+  and ([.quota.vendors[] | select(.vendor=="grok")] | length) == 0
 ' "$QPROBE" >/dev/null
+# Cross-check projection math against the same reset parse the probe uses.
+python3 - "$QPROBE" <<'PY'
+import json, re, sys, time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+q = json.load(open(sys.argv[1]))["quota"]
+now = q["refreshed_at"]
+o = q["overall"]
+assert o["used_pct"] == 80
+# Fixture: "Jul 30 at 9am (America/Puerto_Rico)"
+tz = ZoneInfo("America/Puerto_Rico")
+reset = datetime(datetime.fromtimestamp(now, tz=tz).year, 7, 30, 9, 0, tzinfo=tz)
+ra = int(reset.timestamp())
+if ra < now - 3600:
+    reset = reset.replace(year=reset.year + 1)
+    ra = int(reset.timestamp())
+elapsed = now - (ra - 604800)
+assert elapsed > 0, elapsed
+exp_rate_h = (80 / elapsed) * 3600
+exp_proj = now + int((20 / (80 / elapsed)))
+got_rate = o["rate_pct_per_hour"]
+got_proj = o["projected_100pct_at"]
+# Tolerate 0.2 %/h and 5s clock skew from floor/int
+if abs(got_rate - exp_rate_h) > 0.25:
+    raise SystemExit(f"rate mismatch got={got_rate} exp≈{exp_rate_h}")
+if abs(got_proj - exp_proj) > 5:
+    raise SystemExit(f"proj mismatch got={got_proj} exp≈{exp_proj}")
+print("linear-from-reset ok", got_rate, got_proj - now)
+PY
 # Isolation + argv contract from the recording claude
 jq -e '
   (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
@@ -924,7 +954,8 @@ print(json.dumps({"result":
 "Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
 C
 chmod +x "$QBIN/claude"
-# Legacy reset-less history must not project across upgrade
+# History multi-sample is observability only — projection is linear-from-reset on
+# the current probe window (not history pairs). Fixture has parseable week reset → project.
 QLEG="$QCACHE"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
@@ -939,11 +970,11 @@ PATH="$QBIN:/usr/bin:/bin" \
   | jq -e '
     .quota.available == true
     and .quota.overall.used_pct == 80
-    and .quota.overall.projected_100pct_at == null
-    and (.quota.history | length) == 1
-    and .quota.history[0].reset_text != null
+    and (.quota.overall.projected_100pct_at | type == "number")
+    and (.quota.history | length) >= 1
+    and .quota.history[-1].reset_text != null
   ' >/dev/null
-# Cross-reset history must not project from prior week
+# Prior-week history must not block projection when the live window has a new reset.
 QXR="$QCACHE"
 jq -nc --argjson now "$NOWQ" '{
   available:false, refreshed_at:($now-10000),
@@ -958,9 +989,34 @@ PATH="$QBIN:/usr/bin:/bin" \
   | jq -e '
     .quota.available == true
     and .quota.overall.used_pct == 80
-    and .quota.overall.projected_100pct_at == null
-    and (.quota.history|length)==1
+    and (.quota.overall.projected_100pct_at | type == "number")
+    and (.quota.history|length) >= 1
   ' >/dev/null
+# Unparseable reset → no projection (linear-from-reset needs a clock).
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 55% used · resets sometime soon\n"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 55
+    and .quota.overall.projected_100pct_at == null
+    and .quota.overall.rate_pct_per_hour == null
+  ' >/dev/null
+# Restore parseable fixture for later smoke steps that expect 80%
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
 # Public --snapshot is always offline; only serve uses --snapshot-with-quota.
 
 # review_round_secs: sum of request→findings mtimes across rounds
