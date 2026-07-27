@@ -46,7 +46,7 @@ enforce them below.
 The spec is arbitrary data, never shell source. Step 1 MUST use the non-shell Write
 tool; do not interpolate the spec into a Bash heredoc, `printf`, or `echo`. Shell
 variables do not persist across tool calls, so step 0 prints shell-quoted state that
-you paste at the start of step 2. Step 2 echoes the state needed by steps 3–4.
+you paste at the start of step 2. Step 2 echoes the state needed by steps 3–5.
 
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first so
@@ -129,7 +129,7 @@ except subprocess.TimeoutExpired:
            echo "SPEC_DIR not under \${PWD}/.plinth-lane.* — refusing cleanup (got: $SPEC_DIR)"; exit 1
            ;;
        esac
-       echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-4
+       echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-5
 
    Three axes, all required:
    - `--rules "$LANE_RULES"` — grok loads the repo's CLAUDE.md/AGENTS.md (the driver contract) and

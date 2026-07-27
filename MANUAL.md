@@ -382,8 +382,9 @@ Two operator chores the rules generate:
      that confirmation (v4.7+ retired the once-per-loop skip). v4.8.1 demotes non-fresh Tier-2 APPROVED to UNBOUND before launching confirmation
      so ship/Stop fail closed on an interrupted confirmation; re-run recovers.
    The verdict comes back as machine-readable JSON in `.plinth/session/review/`
-   — APPROVED or CHANGES_NEEDED with file:line findings. Exit code 0 = approved
-   after any required Tier-2 confirmation for this run has completed,
+   — **APPROVED**, **CHANGES_NEEDED**, or **UNBOUND** (non-fresh Tier-2 approval
+   waiting for clean-slate confirmation; ship/Stop treat as non-APPROVED). Exit
+   code 0 = approved after any required Tier-2 confirmation for this run has completed,
    1 = fix findings (the model fixes, commits, re-runs; re-review rounds reuse the
    same reviewer session with just the incremental diff, or — if that session is
    too large or dead — a SCOPED verify round that reads
@@ -877,8 +878,9 @@ installed copies.
   prevents writes while permitting filesystem reads — cwd merely hides the
   path. Either enforce the isolation or reword the claim (overclaiming is this
   repo's worst defect class). (v4.5.0 refresh review, round 11.)
-- **Lane + auditor temp files are never cleaned up** (both
-  `shared/.claude/agents/*-implementer.md` SNAP/SPEC/OUT temps and
+- **Lane + auditor temp files: SNAP/OUT cleanup backlog** (SPEC is cleaned after
+  CLI in v4.8.1; residual is SNAP/OUT and interrupted pre-invocation residue in
+  `shared/.claude/agents/*-implementer.md` temps and
   `shared/.plinth/review.sh`'s per-audit `mktemp -d`). Prompt/output data and
   snapshot metadata accumulate under the system temp dir; add a post-report /
   post-audit cleanup step. (Round 11, minors.)

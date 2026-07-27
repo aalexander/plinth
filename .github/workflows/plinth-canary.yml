@@ -3647,15 +3647,22 @@ jobs:
               OUT="$(mktemp -t canary-out.XXXXXX)"
               [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] || { echo "failed to extract SPEC_DIR/SPEC"; exit 1; }
               [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
+              # Shipped handoff printf — round-trip through a fresh shell (step 0 → step 2):
+              HO="$(grep -E "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              [ -n "$HO" ] || { echo "missing handoff printf in $a agent"; exit 1; }
+              BEFORE=deadbeef; SNAP=/tmp/snap.canary
+              HOUT="$(BEFORE="$BEFORE" SNAP="$SNAP" SPEC_DIR="$SPEC_DIR" SPEC="$SPEC" OUT="$OUT" bash -c "$HO")"
+              # Fresh shell re-parses the quoted handoff (how the agent pastes into step 2):
+              eval "$(printf '%s\n' "$HOUT" | sed 's/^/export /')"
+              [ "$SPEC" = "$SPEC_DIR/prompt" ] || { echo "handoff round-trip lost SPEC"; exit 1; }
               printf 'objective: test\nMODEL: canary\n' > "$SPEC"   # Write tool creates the file
               export PATH="$STUBS:$PATH"
               cap() { shift; "$@"; }
               LANE_RULES=x
-              # Extract the RC=0; cap 600 ... block (multi-line until blank or comment) from agent:
               CMD="$(awk -v a="$a" '
                 $0 ~ "RC=0; cap 600 " a {p=1}
                 p { sub(/^[[:space:]]+/, ""); print }
-                p && /OUT=|2>&1 \|\| RC=\$\?/ { if (/RC=\$\?/) exit }
+                p && /RC=\$\?/ { exit }
               ' "$A")"
               [ -n "$CMD" ] || { echo "failed to extract CLI invocation from $a agent"; exit 1; }
               if [ "$a" = grok ]; then
@@ -3668,8 +3675,7 @@ jobs:
               RC=0; eval "$CMD" || RC=$?
               [ "$RC" = 0 ] || { echo "extracted CLI failed rc=$RC out=$(cat "$OUT" 2>/dev/null)"; exit 1; }
               grep -q 'objective: test' "$OUT" || { echo "extracted CLI did not consume SPEC"; exit 1; }
-              # Extract COMPLETE cleanup (rest= through OUTER case/esac), tracking depth
-              # so nested `case "$rest"` does not stop early. Includes shipped rm -f.
+              # Extract COMPLETE cleanup (rest= through OUTER case/esac), tracking depth.
               CLEAN="$(awk '
                 /rest="\$\{SPEC_DIR#/ {p=1; depth=0}
                 p {
@@ -3686,12 +3692,24 @@ jobs:
                 || { echo "extracted cleanup missing shipped rm -f -- \"\$SPEC\""; exit 1; }
               printf '%s\n' "$CLEAN" | grep -q 'rmdir -- "\$SPEC_DIR"' \
                 || { echo "extracted cleanup missing shipped rmdir"; exit 1; }
-              # Must contain nested rest case + outer SPEC_DIR case terminators
               [ "$(printf '%s\n' "$CLEAN" | grep -c '^esac$')" -ge 2 ] \
                 || { echo "extracted cleanup incomplete (need outer+inner esac)"; exit 1; }
               eval "$CLEAN"
-              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after extracted cleanup"; exit 1; }
-              [ ! -e "$SPEC" ] || { echo "SPEC remained after extracted cleanup"; exit 1; }
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after success cleanup"; exit 1; }
+              # Nonzero stub path: CLI fails, RC preserved, cleanup still empties SPEC_DIR
+              if [ "$a" = grok ]; then
+                printf '#!/usr/bin/env bash\nexit 7\n' > "$STUBS/grok"; chmod +x "$STUBS/grok"
+              else
+                printf '#!/usr/bin/env bash\nexit 7\n' > "$STUBS/codex"; chmod +x "$STUBS/codex"
+              fi
+              eval "$(grep -E '^\s+SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              eval "$(grep -E '^\s+SPEC="\$SPEC_DIR/prompt"' "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              OUT="$(mktemp -t canary-out.XXXXXX)"
+              printf 'fail path\n' > "$SPEC"
+              RC=0; eval "$CMD" || RC=$?
+              [ "$RC" = 7 ] || { echo "nonzero stub did not preserve CLI rc (got $RC want 7)"; exit 1; }
+              eval "$CLEAN"
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after fail-path cleanup"; exit 1; }
             ) || { echo "::error::${a} extracted shipped CLI/cleanup lifecycle canary failed"; exit 1; }
           done
           echo "lane-guard delegation + Write-tool lifecycle canary OK"
