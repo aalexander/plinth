@@ -18,7 +18,7 @@ command -v curl >/dev/null 2>&1 || { echo "smoke-snapshot: curl required for ser
 
 FIX="$(mktemp -d "${TMPDIR:-/tmp}/plinth-dash-smoke.XXXXXX")"
 cleanup() { rm -rf "$FIX"; }
-trap 'rm -rf "${PLINTH_DASH_QUOTA_DIR:-}"; cleanup' EXIT
+trap cleanup EXIT
 
 mk_git() {
   local d="$1"
@@ -573,14 +573,21 @@ export PLINTH_DASH_QUOTA=0
 QHOME="$FIX/qhome"
 mkdir -p "$QHOME/.config/plinth"
 export HOME="$QHOME"
-# Isolated test cache dir (product only accepts /tmp/plinth-dash-quota-test-*).
-export PLINTH_DASH_QUOTA_DIR="/tmp/plinth-dash-quota-test-$$"
-QCACHE="$PLINTH_DASH_QUOTA_DIR/dash-quota.json"
-mkdir -p "$PLINTH_DASH_QUOTA_DIR"
+# Use the real product cache path; backup/restore any operator cache on exit.
+QCACHE="/tmp/plinth-dash-quota-$(id -u)/dash-quota.json"
+QBAK="$FIX/operator-quota.bak"
+mkdir -p "$(dirname "$QCACHE")"
+[ -f "$QCACHE" ] && cp -p "$QCACHE" "$QBAK" || true
 # Keep a private TMPDIR for other mktemp use so it is not a discovered root.
 export TMPDIR="$FIX/tmp"
 mkdir -p "$TMPDIR"
-trap 'rm -rf "$PLINTH_DASH_QUOTA_DIR"; cleanup' EXIT
+_quota_cleanup() {
+  if [ -f "$QBAK" ]; then mv -f "$QBAK" "$QCACHE"
+  else rm -f "$QCACHE"; rmdir "$(dirname "$QCACHE")" 2>/dev/null || true
+  fi
+  cleanup
+}
+trap _quota_cleanup EXIT
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"

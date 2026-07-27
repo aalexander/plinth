@@ -544,7 +544,9 @@ it does **not** spawn vendor CLIs (caller env cannot force a probe on
 it **may** spawn a timeout-bounded Claude usage probe in an empty `/tmp`
 directory (internal `dash --snapshot-with-quota`) and write the quota cache only
 at the fixed absolute path `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
-`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`). TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
+`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`). HONEST residual: do not set a
+discovered project root to `/tmp` or that exact cache directory — the wallboard
+is not a general-purpose FS quarantine. TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
 `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
 usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
 time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history

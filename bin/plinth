@@ -2445,28 +2445,20 @@ snapshot_one_project() {
 }
 
 # Vendor plan quota (overall weekly) via official CLIs — NOT scraped web UIs.
-# Cached under ~/.config/plinth/dash-quota.json; refresh interval default 900s
-# (15 min). PLINTH_DASH_QUOTA_TTL overrides.
-#
 # Offline by default: plain `plinth dash --snapshot` only READs the cache
 # (or returns skipped/offline). Live CLI probes run only for the internal
-# `dash --snapshot-with-quota` command used by the HTTP serve child (not a
-# caller-set env var). PLINTH_DASH_QUOTA=0 disables probes entirely.
+# `dash --snapshot-with-quota` command used by the HTTP serve child.
+# Cache: fixed absolute /tmp/plinth-dash-quota-$UID/dash-quota.json
+# (ignores TMPDIR/HOME/PLINTH_DASH_QUOTA_CACHE). HONEST residual: if a
+# discovered project root is exactly that path or /tmp itself, the cache
+# collides — operators should not discover /tmp as a Plinth project.
 # Claude: `claude -p /usage --output-format json` with a hard timeout.
 _DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
 _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
-# Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Operator cache at fixed /tmp/plinth-dash-quota-$UID/ (ignores TMPDIR/HOME/
-# PLINTH_DASH_QUOTA_CACHE). Tests may set PLINTH_DASH_QUOTA_DIR to
-# /tmp/plinth-dash-quota-test-* only. Does not mkdir (write path creates).
 _dash_quota_cache_path() {
-  local dir="/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)"
-  case "${PLINTH_DASH_QUOTA_DIR:-}" in
-    /tmp/plinth-dash-quota-test-*) dir="$PLINTH_DASH_QUOTA_DIR" ;;
-  esac
-  printf '%s\n' "$dir/dash-quota.json"
+  printf '%s\n' "/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)/dash-quota.json"
 }
 
 _dash_quota_read_cache() {
