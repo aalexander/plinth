@@ -517,10 +517,11 @@ HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
 open/blocking counts (click the orange chip to list up to 50 open items from
 `.plinth/NEEDS-HUMAN.md`; truncated lists say so and point at `plinth queue`), a
 **feedless** flag when there is no event feed (typical for non-Claude drivers),
-**models** as `live` (transcript/verdict/request) plus `seats` (config
-reviewer_tier1/2, audit, advisor, advisor_model_max — never labeled as live),
-**phase timing** for the **active SID only** in the events tail (see below), and
-**observed** driver burn when a Claude transcript is reachable.
+**models** as `live` (transcript driver + verdict reviewer; request-N has no
+model field) plus `seats` (config reviewer_tier1/2, audit, advisor,
+advisor_model_max — never labeled as live), **phase timing** for the **active
+SID only** in the events tail (see below), and **observed** driver burn when a
+Claude transcript is reachable.
 
 **Phase timing (bottleneck heuristic, not instrumented tool clocks):**
 - Scope: active session id only (latest SID in the 10k-line events tail).

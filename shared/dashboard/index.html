@@ -644,10 +644,10 @@
         const blk = typeof it === "object" && it.blocking;
         return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
       }).join("");
-      if (p.needs_human && p.needs_human.truncated) {
-        nhList.innerHTML +=
-          '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
-      }
+    }
+    if (p.needs_human && p.needs_human.truncated) {
+      nhList.innerHTML +=
+        '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
     }
     nhModal.classList.add("open");
   }

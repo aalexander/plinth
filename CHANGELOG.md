@@ -9,10 +9,10 @@
   `PLINTH_DASH_QUOTA=0` / `PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT`.
 - **NEEDS-HUMAN drill-down:** snapshot includes open item text (cap 50 +
   truncation notice); click the orange chip. Full queue: `plinth queue`.
-- **Models row:** `live` (transcript/verdict/request) and `seats` (config
-  reviewer t1/t2, audit, advisor, advisor_model_max) — seats never labeled live.
-- **Phase timing:** active-SID event gaps (PostToolUse = tool wall time) plus
-  request→findings mtimes for reviewing — bottleneck signal, not billing.
+- **Models row:** `live` (transcript driver + verdict reviewer) and `seats`
+  (config reviewer t1/t2, audit, advisor, advisor_model_max) — seats never live.
+- **Phase timing:** active-SID event-gap heuristic by PostToolUse tool class;
+  separate `review_round_secs` from request→findings mtimes — bottleneck signal.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

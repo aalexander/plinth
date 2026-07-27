@@ -625,11 +625,13 @@ jq -e --arg head "$HEAD" '
   and .models.seats.audit_model == "opus"
   and .models.seats.advisor_model_max == "fable-max"
   and (.phases | type == "object")
-  # PostToolUse Edit gap 30s (90→60), Read 20s (60→40); other-sid ignored;
-  # return-to-active Bash advise is not timed until a later same-SID event.
+  # Event-gap heuristic: Edit 30s (90→60), Read 20s (60→40); other-sid ignored;
+  # return-to-active Bash advise credits the gap since last same-SID event (30s).
   and .phases.coding == 30
   and .phases.research == 20
+  and .phases.advising == 30
   and ((.phases.ci // 0) == 0)
+  and (.review_round_secs | type == "number")
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0
@@ -683,8 +685,12 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$QHIST" \
 jq -e '
   .quota.available == true
   and .quota.overall.used_pct == 80
-  and .quota.overall.rate_pct_per_hour == 5
-  and (.quota.overall.projected_100pct_at - .quota.refreshed_at) == 14400
+  # Rate/projection tolerate a few seconds of setup clock skew on history ages.
+  and (.quota.overall.rate_pct_per_hour | type == "number")
+  and .quota.overall.rate_pct_per_hour >= 4
+  and .quota.overall.rate_pct_per_hour <= 6
+  and ((.quota.overall.projected_100pct_at - .quota.refreshed_at) >= 14000)
+  and ((.quota.overall.projected_100pct_at - .quota.refreshed_at) <= 15000)
   and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
 ' "$QPROBE" >/dev/null
 # parse_failed: successful CLI, unmatchable text
@@ -698,6 +704,42 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty2.json" \
   PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
+# parse_failed: empty stdout
+cat > "$QBIN/claude" <<'C'
+#!/bin/sh
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty3.json" \
+  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
+# review_round_secs: request→findings mtime delta, not folded into phases.reviewing
+RR="$FIX/rho-review-secs"
+mk_git "$RR"
+git -C "$RR" checkout -qb feat/rr
+echo z > "$RR/z.txt"; git -C "$RR" add -A; git -C "$RR" commit -qm w
+mkdir -p "$RR/.plinth/session/review/feat-rr"
+# request older than findings by ~12s via touch
+printf '{"round":1,"mode":"fresh"}\n' > "$RR/.plinth/session/review/feat-rr/request-1.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[]}\n' \
+  > "$RR/.plinth/session/review/feat-rr/findings-1.json"
+# set mtimes: request = now-12, findings = now
+python3 - <<PY
+import os, time
+base = time.time()
+os.utime("$RR/.plinth/session/review/feat-rr/request-1.json", (base-12, base-12))
+os.utime("$RR/.plinth/session/review/feat-rr/findings-1.json", (base, base))
+PY
+export PLINTH_DASH_ROOTS="$RR"
+RROUT="$FIX/rr.json"
+"$PLINTH" dash --snapshot > "$RROUT"
+jq -e '
+  .projects[] | select(.name == "rho-review-secs")
+  | .review_round_secs >= 10
+  and .review_round_secs <= 15
+  and ((.phases.reviewing // 0) == 0)
+' "$RROUT" >/dev/null
 
 # Beta feedless
 jq -e '

@@ -2130,13 +2130,13 @@ snapshot_one_project() {
                elif ($d | test("\\bgh\\b|canary|ci\\.yml|\\bact\\b|workflow")) then "ci"
                else "shell" end)
           else "other" end;
-        # Phase timing (active SID only):
-        # - PostToolUse: the gap since the previous same-SID event IS the tool
-        #   wall time (pulse emits PostToolUse after the tool finishes).
+        # Phase timing (active SID only) — EVENT-GAP HEURISTIC, not instrumented
+        # tool wall clocks (pulse often has PostToolUse without PreToolUse):
+        # - PostToolUse: gap since previous same-SID event is attributed to that
+        #   tool class (completion stamp only).
         # - PreToolUse: gap is idle/previous; then phase becomes the new tool.
         # - Other events: gap accrues to last_phase; UserPromptSubmit -> planning.
-        # Gaps >=3600s are dropped (session pause). No review-ledger duration_s
-        # (usage.jsonl does not record wall time).
+        # Gaps >=3600s are dropped (session pause).
         reduce inputs as $e (
           {cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
@@ -2338,8 +2338,9 @@ snapshot_one_project() {
     | (if ($use | length) == 0 then null
        else ([$use[] | toksum] | add // 0) end) as $tok
     | (($use | map(.m) | map(select(. != null)) | .[-1]) // null) as $driver_model
-    # Live reviewer model: in-flight request beats verdict (config seats are separate).
-    | (($RQ.model // null) // ($V.model // null)) as $rev_model
+    # Live reviewer from verdict only (request-N.json has no model/vendor field).
+    # Config seats are separate under models.seats for first-round / feedless.
+    | (($V.model // null)) as $rev_model
     | (($V.vendor // null) // null) as $rev_vendor
     | {
         path: $path,
@@ -2495,7 +2496,11 @@ except Exception:
     if [ "$cl_rc" -eq 124 ]; then
       jq -nc --argjson now "$now" \
         '{vendor:"claude",available:false,error:"cli_timeout",probed_at:$now}' >> "$vendors_tmp"
-    elif [ "$cl_rc" -eq 0 ] && [ -n "$cl_out" ]; then
+    elif [ "$cl_rc" -eq 0 ] && [ -z "$cl_out" ]; then
+      # Empty stdout is parse_failed (not cli_failed) — promised empty/unparsed path.
+      jq -nc --argjson now "$now" \
+        '{vendor:"claude",available:false,error:"parse_failed",probed_at:$now}' >> "$vendors_tmp"
+    elif [ "$cl_rc" -eq 0 ]; then
       printf '%s' "$cl_out" | jq -c --argjson now "$now" '
         (.result // "") as $t
         | [ ($t
