@@ -22,5 +22,7 @@
 
 - [x] **geneus remote** — `origin` = `aalexander/geneus` (private); branches pushed.
 
-- [ ] **anvil harness** — full SPEC acceptance still awaits harness PR #1
-  (`build/harness-v14`); main is instrumented scaffold until that lands.
+- [x] **anvil harness** — not a plinth human gate. Scaffold main is instrumented
+  (seats + receipt @ v4.8.0 via anvil#6). Full SPEC acceptance is **anvil product work**
+  on open [anvil#1](https://github.com/aalexander/anvil/pull/1) (`build/harness-v14`),
+  not an operator credential/config action for this repo. Track progress on that PR.
