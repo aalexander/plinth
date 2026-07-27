@@ -61,23 +61,9 @@ SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
 # / and /., collapse // and /./, map . → "" (repo root = whole tree). Bound:
 # path components of ".." are left as-is (Git-relative paths never contain them).
 _norm_rel() {
-  local p="$1"
-  while true; do
-    case "$p" in
-      ./*) p="${p#./}" ;;
-      */)  p="${p%/}" ;;
-      */.) p="${p%/.}" ;;
-      .)   p="" ;;
-      *)   break ;;
-    esac
-  done
-  while [ "${p#*//}" != "$p" ]; do p="${p//\/\//\/}"; done
-  while [ "${p#*/./}" != "$p" ] || [ "${p%/./}" != "$p" ]; do
-    p="${p//\/.\//\/}"
-    case "$p" in */.) p="${p%/.}" ;; esac
-  done
-  [ "$p" = "." ] && p=""
-  printf '%s' "$p"
+  # sed: reliable collapse of /./ and // (bash ${//pat/rep} is easy to mis-escape).
+  printf '%s' "$1" | sed -e 's#^\./##' -e 's#/\./#/#g' -e 's#//\+#/#g' \
+    -e 's#/\.$##' -e 's#/$##' -e 's#^\.$##'
 }
 is_spec() {
   local _sp _p

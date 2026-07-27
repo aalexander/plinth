@@ -233,13 +233,14 @@ if grep -nE 'grep -Eq' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" | gre
   echo "::error::#15 risk-classify still quiet-greps SKIPADD"; exit 1
 fi
 # Behavioral: directory/file-equivalent and root-form spec_path → Tier 2
-for _spv in 'blueprints' 'blueprints/' './blueprints' './blueprints/' 'blueprints/.' 'blueprints//' './blueprints//'; do
+for _spv in 'blueprints' 'blueprints/' './blueprints' './blueprints/' 'blueprints/.' 'blueprints//' './blueprints//' 'blueprints/./sub'; do
   T_DSP="$(mktemp -d)"; ( cd "$T_DSP"; git init -qb main . >/dev/null
-    mkdir -p .plinth blueprints
+    mkdir -p .plinth blueprints/sub
     printf 'spec_path = %s\n' "$_spv" > .plinth/config
     echo hi > README.md; git add -A; git commit -qm b >/dev/null
     git checkout -qb feat >/dev/null 2>&1
-    echo ch > blueprints/chapter.md; git add -A; git commit -qm w >/dev/null
+    case "$_spv" in *sub*) echo ch > blueprints/sub/chapter.md ;; *) echo ch > blueprints/chapter.md ;; esac
+    git add -A; git commit -qm w >/dev/null
     out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null)"
     [ "$(printf '%s' "$out" | jq -r .tier)" = "2" ] \
       || { echo "::error::#15 risk-classify missed directory spec_path='$_spv' (out=$out)"; exit 1; }
