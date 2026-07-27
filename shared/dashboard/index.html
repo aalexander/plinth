@@ -80,33 +80,61 @@
   .meta .dot.spin { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.35; } }
   #quota-bar {
-    padding: 0.55rem 1.5rem 0.7rem;
+    position: sticky;
+    top: 52px;
+    z-index: 9;
+    padding: 0.45rem 1.5rem 0.55rem;
     border-bottom: 1px solid var(--border);
-    background: rgba(22, 27, 34, 0.85);
+    background: rgba(22, 27, 34, 0.94);
+    backdrop-filter: blur(8px);
     font-family: var(--font);
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     color: var(--muted);
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.28rem;
   }
   #quota-bar .qrow {
-    display: flex; flex-wrap: wrap; gap: 0.45rem 1rem;
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.85rem;
     align-items: center;
   }
+  #quota-bar .qrow.session { opacity: 0.95; }
   #quota-bar .qlabel {
     color: var(--cyan); font-weight: 600; letter-spacing: 0.03em;
-    text-transform: uppercase; min-width: 5.2rem;
+    text-transform: uppercase; min-width: 6.2rem;
   }
+  #quota-bar .qlabel.sess { color: var(--purple); }
   #quota-bar .qpct { color: var(--text); font-weight: 600; }
   #quota-bar .qpct.warn { color: var(--yellow); }
   #quota-bar .qpct.hot { color: var(--red); }
   #quota-bar .dim { color: var(--muted); }
   #quota-bar .qerr { color: var(--muted); font-size: 0.68rem; }
+  #quota-bar .chip-over {
+    color: var(--red);
+    background: var(--red-bg);
+    border: 1px solid rgba(248,81,73,0.35);
+    border-radius: 999px;
+    padding: 0.05rem 0.45rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+  }
+  #quota-bar .spark {
+    display: inline-block;
+    vertical-align: middle;
+    margin-left: 0.15rem;
+  }
+  #quota-bar .spark svg { display: block; }
+  #quota-bar .qfoot {
+    font-size: 0.62rem;
+    color: var(--dim);
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem;
+    align-items: center;
+  }
   .qmeter {
-    flex: 1 1 180px;
-    max-width: 320px;
-    height: 8px;
+    flex: 1 1 140px;
+    max-width: 280px;
+    min-width: 100px;
+    height: 7px;
     background: #21262d;
     border-radius: 999px;
     overflow: hidden;
@@ -120,6 +148,65 @@
   }
   .qmeter.warn > i { background: linear-gradient(90deg, var(--cyan), var(--yellow)); }
   .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
+  @media (max-width: 720px) {
+    #quota-bar .qrow { gap: 0.25rem 0.5rem; }
+    #quota-bar .qmeter { flex-basis: 100%; max-width: none; order: 3; }
+    #quota-bar .qlabel { min-width: 5rem; }
+  }
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 0.35rem;
+    padding: 0.55rem 1.5rem 0;
+    font-family: var(--font);
+  }
+  .filters button {
+    font: inherit;
+    font-size: 0.68rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    cursor: pointer;
+  }
+  .filters button:hover { color: var(--text); border-color: #484f58; }
+  .filters button.on {
+    color: var(--cyan);
+    border-color: rgba(57, 210, 192, 0.45);
+    background: var(--cyan-bg);
+  }
+  .name.btn {
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+    padding: 0;
+    text-align: left;
+  }
+  .name.btn:hover { color: var(--cyan); }
+  .toast {
+    position: fixed;
+    bottom: 1.25rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-card-hi);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 0.75rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 8px;
+    z-index: 60;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .toast.show { opacity: 1; }
   main {
     padding: 1.25rem 1.5rem 2.5rem;
     display: grid;
@@ -379,9 +466,16 @@
   </div>
 </header>
 <div id="quota-bar"><div class="qrow"><span class="qlabel">QUOTA</span><span>loading…</span></div></div>
+<div class="filters" id="filters" role="toolbar" aria-label="Project filter">
+  <button type="button" data-filter="all" class="on">all</button>
+  <button type="button" data-filter="active">active</button>
+  <button type="button" data-filter="nh">nh</button>
+  <button type="button" data-filter="review">review</button>
+</div>
 <main id="grid">
   <div class="empty">Loading snapshot…</div>
 </main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <footer>
   Local-only · 127.0.0.1 · may probe CLI /usage → /tmp/plinth-dash-quota-$UID cache ·
   <code style="color:var(--muted)">plinth watch</code> stays the TTY dashboard
@@ -403,13 +497,18 @@
   const discoveryEl = document.getElementById("discovery");
   const countEl = document.getElementById("count");
   const quotaBar = document.getElementById("quota-bar");
+  const filtersEl = document.getElementById("filters");
+  const toastEl = document.getElementById("toast");
   const nhModal = document.getElementById("nh-modal");
   const nhTitle = document.getElementById("nh-title");
   const nhSub = document.getElementById("nh-sub");
   const nhList = document.getElementById("nh-list");
   let lastGen = null;
   let lastQuota = null;
+  let lastProjects = [];
+  let projectFilter = "all";
   let projectsByPath = {};
+  let toastTimer = null;
   // Sticky diagnostic under the header when a later poll fails after cards exist.
   let errBanner = document.getElementById("poll-error");
   if (!errBanner) {
@@ -682,7 +781,8 @@
     return (
       '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
         '<div class="row">' +
-          '<div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div>" +
+          '<button type="button" class="name btn" data-copy-path="' + esc(p.path) +
+            '" title="Click to copy path: ' + esc(p.path) + '">' + esc(p.name) + "</button>" +
         "</div>" +
         '<div class="submeta" title="' + esc(p.path) + '">' + sub + "</div>" +
         (chips.length ? '<div class="chips">' + chips.join("") + "</div>" : "") +
@@ -710,8 +810,65 @@
     );
   }
 
-  function quotaRowHTML(label, pct, remaining, reset, proj, rate, extra) {
-    const p = pct == null ? null : Number(pct);
+  function windowLabel(vendor, w, role) {
+    const v = (vendor || "?").toUpperCase();
+    if (role === "session") return v + " SESS";
+    const win = (w && w.window) || "";
+    if (win === "week_all_models" || win === "week" || /^week_/.test(win)) return v + " WEEK";
+    if (win === "month") return v + " MONTH";
+    if (win === "day") return v + " DAY";
+    if (win === "session") return v + " SESS";
+    if (role === "plan") return v + " PLAN";
+    return v;
+  }
+
+  function sparklineSVG(points, w, h) {
+    // points: [{t, used_pct}] sorted by t; last 24h preferred
+    if (!points || points.length < 2) return "";
+    const vals = points.map(function (p) { return Number(p.used_pct); }).filter(function (n) {
+      return !Number.isNaN(n);
+    });
+    if (vals.length < 2) return "";
+    const min = Math.min.apply(null, vals);
+    const max = Math.max.apply(null, vals);
+    const span = Math.max(1, max - min);
+    const step = (w - 2) / (vals.length - 1);
+    const coords = vals.map(function (v, i) {
+      const x = 1 + i * step;
+      const y = h - 1 - ((v - min) / span) * (h - 2);
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    const last = vals[vals.length - 1];
+    const hot = last >= 90 ? "var(--red)" : last >= 70 ? "var(--yellow)" : "var(--cyan)";
+    return (
+      '<span class="spark" title="24h burn (' + vals.length + " samples, " +
+        min + "→" + max + '%)">' +
+        '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h +
+        '" aria-hidden="true">' +
+        '<polyline fill="none" stroke="' + hot + '" stroke-width="1.5" points="' +
+        coords + '"/></svg></span>'
+    );
+  }
+
+  function historySeries(q, vendor, windowName) {
+    const hist = (q && Array.isArray(q.history)) ? q.history : [];
+    const now = Math.floor(Date.now() / 1000);
+    const cut = now - 86400;
+    return hist
+      .filter(function (h) {
+        return h && h.vendor === vendor && h.used_pct != null &&
+          (windowName == null || h.window === windowName ||
+            (windowName === "plan" && h.window && !/session/.test(h.window))) &&
+          h.t != null && h.t >= cut;
+      })
+      .sort(function (a, b) { return a.t - b.t; });
+  }
+
+  function quotaRowHTML(label, win, extra, opts) {
+    opts = opts || {};
+    const p = win == null || win.used_pct == null ? null : Number(win.used_pct);
+    const remaining = win && win.remaining_pct != null ? win.remaining_pct
+      : (p != null ? 100 - p : null);
     const cls = p == null ? "" : p >= 90 ? "hot" : p >= 70 ? "warn" : "";
     const meterCls = p == null ? "" : p >= 90 ? "qmeter hot" : p >= 70 ? "qmeter warn" : "qmeter";
     const pctHtml = p == null
@@ -723,13 +880,20 @@
     const meter = p == null
       ? ""
       : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
+    const reset = formatReset(win);
+    const proj = formatProjection(win);
+    const rate = win && win.rate_pct_per_hour != null ? win.rate_pct_per_hour + "%/h" : null;
+    const overrun = win && win.overrun_risk;
+    const labCls = opts.session ? "qlabel sess" : "qlabel";
+    const rowCls = opts.session ? "qrow session" : "qrow";
     return (
-      '<div class="qrow">' +
-        '<span class="qlabel">' + esc(label) + "</span>" +
+      '<div class="' + rowCls + '">' +
+        '<span class="' + labCls + '">' + esc(label) + "</span>" +
         pctHtml + meter +
         (reset ? '<span title="quota window reset">' + "reset " + esc(reset) + "</span>" : "") +
         (proj ? '<span title="linear from last reset → 100%">' + "→100% " + esc(proj) + "</span>" : "") +
         (rate ? "<span>rate " + esc(rate) + "</span>" : "") +
+        (overrun ? '<span class="chip-over" title="Linear burn hits 100% before window reset">overrun risk</span>' : "") +
         (extra || "") +
       "</div>"
     );
@@ -737,7 +901,7 @@
 
   function formatProjection(v) {
     if (v == null || v.projected_100pct_at == null) {
-      if (v && v.available && v.used_pct != null && v.used_pct > 0 && v.rate_pct_per_hour == null) {
+      if (v && v.used_pct != null && v.used_pct > 0 && v.rate_pct_per_hour == null) {
         return "no reset clock";
       }
       return null;
@@ -760,7 +924,6 @@
     const age = q.refreshed_at != null
       ? hum(Math.max(0, Math.floor(Date.now() / 1000) - q.refreshed_at)) + " ago"
       : "—";
-    const ageSpan = '<span class="dim">polled ' + esc(age) + "</span>";
     const rows = [];
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
     const preferred = ["claude", "codex", "grok"];
@@ -769,76 +932,224 @@
       .filter(Boolean)
       .concat(vendors.filter(function (v) { return preferred.indexOf(v.vendor) < 0; }));
 
-    if (!ordered.length && !q.overall) {
+    // Only live plan rows — hide auth/cli_missing noise.
+    let live = ordered.filter(function (v) {
+      return v && v.available && (v.plan || v.session || v.used_pct != null);
+    });
+    const hidden = ordered.filter(function (v) {
+      return v && !v.available;
+    });
+
+    // Offline cache may only have overall (no vendor objects).
+    if (!live.length && q.overall && q.overall.used_pct != null) {
+      live = [{
+        vendor: q.overall.vendor || "primary",
+        available: true,
+        plan: q.overall,
+        session: q.overall.session || null,
+        plan_type: q.overall.plan_type
+      }];
+    }
+
+    if (!live.length) {
       const note = (q.note || "vendor plan unknown").slice(0, 140);
       quotaBar.innerHTML =
         '<div class="qrow"><span class="qlabel">QUOTA</span>' +
         "<span>unavailable</span>" +
         '<span title="' + esc(q.note || "") + '">' + esc(note) + "</span>" +
-        ageSpan + "</div>";
+        '<span class="dim">polled ' + esc(age) + "</span></div>";
       return;
     }
 
-    // Primary weekly (usually claude) — labeled with vendor, not anonymous TOTAL.
-    if (q.overall && q.overall.used_pct != null) {
-      const o = q.overall;
-      const lab = (o.vendor || "primary").toUpperCase() + " WEEK";
-      rows.push(quotaRowHTML(
-        lab,
-        o.used_pct,
-        o.remaining_pct,
-        formatReset(o),
-        formatProjection(o),
-        o.rate_pct_per_hour != null ? o.rate_pct_per_hour + "%/h" : null,
-        ageSpan
-      ));
-    }
-
-    ordered.forEach(function (v) {
-      if (!v || !v.vendor) return;
-      // Skip duplicate of overall if same vendor+window already shown as primary week.
-      if (q.overall && v.vendor === q.overall.vendor && v.available &&
-          (v.primary_window === q.overall.window || !v.primary_window)) {
-        // Still show if overall missing remaining details — otherwise skip dup row.
-        if (q.overall.used_pct != null) return;
+    let firstPlan = true;
+    live.forEach(function (v) {
+      const details = Array.isArray(v.windows_detail) ? v.windows_detail : [];
+      let plans = details.filter(function (d) { return d && d.kind === "plan"; });
+      let sessions = details.filter(function (d) { return d && d.kind === "session"; });
+      if (!plans.length) {
+        const plan = v.plan || (v.used_pct != null ? {
+          window: v.primary_window,
+          used_pct: v.used_pct,
+          remaining_pct: v.remaining_pct,
+          reset_text: v.reset_text,
+          reset_at: v.reset_at,
+          projected_100pct_at: v.projected_100pct_at,
+          rate_pct_per_hour: v.rate_pct_per_hour,
+          overrun_risk: v.overrun_risk,
+          kind: "plan"
+        } : null);
+        if (plan) plans = [plan];
       }
-      if (v.available && v.used_pct != null) {
-        const extraBits = [];
-        if (v.plan_type) extraBits.push(String(v.plan_type));
-        if (v.primary_window && v.primary_window !== "week_all_models") {
-          extraBits.push(String(v.primary_window));
+      if (!sessions.length && v.session) sessions = [v.session];
+      // De-dupe plan windows by window name
+      const seenPlan = {};
+      plans = plans.filter(function (p) {
+        const k = (p.window || "") + ":" + p.used_pct;
+        if (seenPlan[k]) return false;
+        seenPlan[k] = true;
+        return true;
+      });
+
+      plans.forEach(function (plan, idx) {
+        const extraPlan = [];
+        if (idx === 0 && v.plan_type) {
+          extraPlan.push('<span class="dim">' + esc(String(v.plan_type)) + "</span>");
         }
+        if (firstPlan) {
+          extraPlan.push('<span class="dim">polled ' + esc(age) + "</span>");
+          firstPlan = false;
+        }
+        const series = historySeries(q, v.vendor, plan.window || null);
+        const spark = sparklineSVG(series, 56, 16);
+        if (spark) extraPlan.push(spark);
         rows.push(quotaRowHTML(
-          v.vendor.toUpperCase(),
-          v.used_pct,
-          v.remaining_pct,
-          formatReset(v),
-          formatProjection(v),
-          v.rate_pct_per_hour != null ? v.rate_pct_per_hour + "%/h" : null,
-          extraBits.length
-            ? '<span class="dim">' + esc(extraBits.join(" · ")) + "</span>"
-            : ""
+          windowLabel(v.vendor, plan, "plan"),
+          plan,
+          extraPlan.join(""),
+          {}
         ));
+      });
+
+      // Session row(s) — always surface for each live vendor
+      if (sessions.length) {
+        sessions.forEach(function (sess) {
+          if (sess && sess.used_pct != null) {
+            rows.push(quotaRowHTML(
+              windowLabel(v.vendor, sess, "session"),
+              sess,
+              "",
+              { session: true }
+            ));
+          }
+        });
       } else {
-        const why = v.error || (v.available ? "no window" : "unavailable");
-        const tip = v.note || why;
         rows.push(
-          '<div class="qrow">' +
-            '<span class="qlabel">' + esc((v.vendor || "?").toUpperCase()) + "</span>" +
-            '<span class="qerr" title="' + esc(tip) + '">' + esc(why) + "</span>" +
-            (v.note ? '<span class="dim" title="' + esc(v.note) + '">' + esc(String(v.note).slice(0, 72)) + "</span>" : "") +
+          '<div class="qrow session">' +
+            '<span class="qlabel sess">' + esc((v.vendor || "?").toUpperCase() + " SESS") + "</span>" +
+            '<span class="dim" title="Vendor API did not expose a short (≤6h) rate window">no short window</span>' +
           "</div>"
         );
       }
     });
 
+    if (hidden.length) {
+      const bits = hidden.map(function (v) {
+        return (v.vendor || "?") + ":" + (v.error || "off");
+      }).join(" · ");
+      rows.push(
+        '<div class="qfoot" title="' + esc(q.note || "") + '">' +
+          "<span>hidden " + esc(bits) + "</span>" +
+        "</div>"
+      );
+    }
+
     if (!rows.length) {
       quotaBar.innerHTML =
         '<div class="qrow"><span class="qlabel">QUOTA</span><span>no vendor data</span>' +
-        ageSpan + "</div>";
+        '<span class="dim">polled ' + esc(age) + "</span></div>";
       return;
     }
     quotaBar.innerHTML = rows.join("");
+  }
+
+  function attentionScore(p) {
+    if (!p) return 0;
+    let s = 0;
+    const nh = p.needs_human || {};
+    if (nh.blocking > 0) s += 1000 + nh.blocking * 10;
+    else if (nh.open > 0) s += 500 + nh.open;
+    const r = p.review || {};
+    if (r.last_error) s += 450;
+    if (r.stale) s += 400;
+    if (r.running) s += 300;
+    if (r.verdict === "CHANGES_NEEDED") s += 220;
+    if (r.verdict === "UNBOUND") s += 200;
+    if (p.error) s += 480;
+    if (p.activity_secs_ago != null && p.activity_secs_ago < 600) s += 30;
+    if (r.verdict === "APPROVED" && !r.stale) s -= 50;
+    return s;
+  }
+
+  function matchesFilter(p, f) {
+    if (f === "all" || !f) return true;
+    const r = p.review || {};
+    const nh = p.needs_human || {};
+    if (f === "nh") return (nh.open || 0) > 0;
+    if (f === "review") {
+      return !!(r.running || r.stale || r.last_error ||
+        r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND");
+    }
+    if (f === "active") {
+      const recent = p.activity_secs_ago != null && p.activity_secs_ago < 3600;
+      return recent || r.running || (nh.open || 0) > 0 ||
+        r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND" || r.stale;
+    }
+    return true;
+  }
+
+  function sortProjects(list) {
+    return (list || []).slice().sort(function (a, b) {
+      const sa = attentionScore(a);
+      const sb = attentionScore(b);
+      if (sa !== sb) return sb - sa;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }
+
+  function showToast(msg) {
+    if (!toastEl) return;
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1600);
+  }
+
+  function copyPath(path) {
+    if (!path) return;
+    const done = function () { showToast("copied " + path); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path).then(done).catch(function () {
+        // fallback
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = path;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          done();
+        } catch (_) { showToast("copy failed"); }
+      });
+    } else {
+      showToast(path);
+    }
+  }
+
+  function renderGrid() {
+    if (!grid) return;
+    const projects = sortProjects(lastProjects).filter(function (p) {
+      return matchesFilter(p, projectFilter);
+    });
+    countEl.textContent =
+      projects.length + " project" + (projects.length === 1 ? "" : "s") +
+      (projectFilter !== "all" && lastProjects.length !== projects.length
+        ? " / " + lastProjects.length
+        : "");
+    if (!lastProjects.length) {
+      grid.innerHTML =
+        '<div class="empty">No Plinth projects found.<br><br>' +
+        'Default discovery: <code>~/Dev/*/.plinth/config</code><br>' +
+        'Or list paths in <code>~/.config/plinth/dashboard-projects</code><br>' +
+        'Or set <code>PLINTH_DASH_ROOTS=path:path</code></div>';
+      return;
+    }
+    if (!projects.length) {
+      grid.innerHTML =
+        '<div class="empty">No projects match filter <code>' +
+        esc(projectFilter) + "</code>.</div>";
+      return;
+    }
+    grid.innerHTML = projects.map(cardHTML).join("");
   }
 
   function openNeedsHuman(path) {
@@ -889,41 +1200,36 @@
   }
   if (grid && typeof grid.addEventListener === "function") {
     grid.addEventListener("click", function (e) {
+      const copyBtn = e.target && e.target.closest ? e.target.closest("[data-copy-path]") : null;
+      if (copyBtn) {
+        e.preventDefault();
+        copyPath(copyBtn.getAttribute("data-copy-path"));
+        return;
+      }
       const t = e.target && e.target.closest ? e.target.closest("[data-nh]") : null;
       if (t) openNeedsHuman(t.getAttribute("data-nh"));
+    });
+  }
+  if (filtersEl && typeof filtersEl.addEventListener === "function") {
+    filtersEl.addEventListener("click", function (e) {
+      const btn = e.target && e.target.closest ? e.target.closest("[data-filter]") : null;
+      if (!btn) return;
+      projectFilter = btn.getAttribute("data-filter") || "all";
+      Array.prototype.forEach.call(filtersEl.querySelectorAll("[data-filter]"), function (b) {
+        b.classList.toggle("on", b.getAttribute("data-filter") === projectFilter);
+      });
+      renderGrid();
     });
   }
 
   function render(data) {
     lastGen = data.generated_at;
     discoveryEl.textContent = data.discovery || "—";
-    const projects = data.projects || [];
-    countEl.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s");
+    lastProjects = data.projects || [];
     projectsByPath = {};
-    projects.forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    lastProjects.forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
     renderQuota(data.quota);
-
-    if (!projects.length) {
-      grid.innerHTML =
-        '<div class="empty">No Plinth projects found.<br><br>' +
-        'Default discovery: <code>~/Dev/*/.plinth/config</code><br>' +
-        'Or list paths in <code>~/.config/plinth/dashboard-projects</code><br>' +
-        'Or set <code>PLINTH_DASH_ROOTS=path:path</code></div>';
-      return;
-    }
-
-    // Sort: needs-human first, then running review, then name
-    projects.sort((a, b) => {
-      const ah = (a.needs_human && a.needs_human.open) || 0;
-      const bh = (b.needs_human && b.needs_human.open) || 0;
-      if (ah !== bh) return bh - ah;
-      const ar = a.review && a.review.running ? 1 : 0;
-      const br = b.review && b.review.running ? 1 : 0;
-      if (ar !== br) return br - ar;
-      return (a.name || "").localeCompare(b.name || "");
-    });
-
-    grid.innerHTML = projects.map(cardHTML).join("");
+    renderGrid();
   }
 
   // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
@@ -931,8 +1237,11 @@
     cardTone: cardTone, cardHTML: cardHTML, esc: esc,
     modelsLine: modelsLine, phaseBar: phaseBar, renderQuota: renderQuota,
     openNeedsHuman: openNeedsHuman, closeNeedsHuman: closeNeedsHuman,
+    attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
+    formatReset: formatReset, windowLabel: windowLabel,
     seedProjects: function (ps) {
       projectsByPath = {};
+      lastProjects = ps || [];
       (ps || []).forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
     }
   };
@@ -941,7 +1250,7 @@
     if (lastGen == null) return;
     const ago = Math.floor(Date.now() / 1000) - lastGen;
     genAgo.textContent = "snap " + hum(Math.max(0, ago)) + " ago";
-    if (lastQuota && lastQuota.available && lastQuota.overall) renderQuota(lastQuota);
+    if (lastQuota) renderQuota(lastQuota);
   }
 
   // Serialize polls: never start a new fetch while one is pending. Slow

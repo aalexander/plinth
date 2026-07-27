@@ -1905,21 +1905,59 @@ setTimeout(() => {
     }
     {
       const resetAt = Math.floor(Date.now() / 1000) + 86400 * 3; // ~3d out
+      const nowSec = Math.floor(Date.now() / 1000);
       api.renderQuota({
-        available: true, refreshed_at: Math.floor(Date.now() / 1000),
+        available: true, refreshed_at: nowSec,
         overall: {
           vendor: "claude",
           used_pct: 80, remaining_pct: 20, reset_text: "Jul 30 at 9am",
           reset_at: resetAt,
-          projected_100pct_at: Math.floor(Date.now() / 1000) + 3600,
-          rate_pct_per_hour: 5
-        }
+          projected_100pct_at: nowSec + 3600,
+          rate_pct_per_hour: 5,
+          overrun_risk: true
+        },
+        vendors: [{
+          vendor: "claude", available: true,
+          plan: {
+            window: "week_all_models", used_pct: 80, remaining_pct: 20,
+            reset_at: resetAt, projected_100pct_at: nowSec + 3600,
+            rate_pct_per_hour: 5, overrun_risk: true, kind: "plan"
+          },
+          session: {
+            window: "session", used_pct: 12, remaining_pct: 88,
+            reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
+            rate_pct_per_hour: 2, overrun_risk: false, kind: "session"
+          },
+          windows_detail: [
+            { window: "week_all_models", used_pct: 80, remaining_pct: 20,
+              reset_at: resetAt, projected_100pct_at: nowSec + 3600,
+              rate_pct_per_hour: 5, overrun_risk: true, kind: "plan" },
+            { window: "session", used_pct: 12, remaining_pct: 88,
+              reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
+              rate_pct_per_hour: 2, overrun_risk: false, kind: "session" }
+          ]
+        }]
       });
       const qb = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
       const weekday = new Date(resetAt * 1000).toLocaleString(undefined, { weekday: "long" });
       if (!qb.includes("80%") || !qb.includes("WEEK") || !qb.includes("→100%") ||
-          !qb.includes("reset ") || !qb.includes(weekday)) {
+          !qb.includes("reset ") || !qb.includes(weekday) ||
+          !qb.includes("SESS") || !qb.includes("overrun risk") || !qb.includes("12%")) {
         console.error("renderQuota available missing expected text (weekday=" + weekday + "):", qb);
+        process.exit(1);
+      }
+      // attention sort + filter seams
+      if (typeof api.attentionScore !== "function" || typeof api.sortProjects !== "function") {
+        console.error("missing attentionScore/sortProjects seams");
+        process.exit(1);
+      }
+      const sorted = api.sortProjects([
+        { name: "z-idle", needs_human: { open: 0, blocking: 0 }, review: { verdict: "APPROVED" } },
+        { name: "a-block", needs_human: { open: 1, blocking: 1 }, review: null },
+        { name: "m-run", needs_human: { open: 0, blocking: 0 }, review: { running: true } }
+      ]);
+      if (!sorted.length || sorted[0].name !== "a-block" || sorted[1].name !== "m-run") {
+        console.error("attention sort order wrong:", sorted.map(function (p) { return p.name; }));
         process.exit(1);
       }
       api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });

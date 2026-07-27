@@ -562,9 +562,9 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 `dash --snapshot-with-quota`) and write the cache only at
 `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
 `TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
-- **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir.
-- **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline).
-- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (+ optional user subscription tier) via `curl` + OIDC token in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH so restricted-PATH smoke stays offline). Monthly allotment `used/monthlyLimit`; weekly `creditUsagePercent` when the API returns it.
+- **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir (session + week).
+- **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
+- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH). Plan tier from `/v1/user?include=subscription`.
 Scratch temps for event/transcript parsing use the process `TMPDIR` (default
 system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
 the quota-cache directory if you need a hard quarantine. TTL ~15 min

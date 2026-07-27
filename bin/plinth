@@ -2751,45 +2751,85 @@ if reset_at is not None:
         )
     except Exception:
         reset_text = str(reset_at)
-win = "primary"
-win_secs = None
-try:
-    win_secs = int(pw.get("limit_window_seconds") or 0) or None
-except Exception:
-    win_secs = None
-if win_secs == 604800:
-    win = "week"
-w0 = {"window": win, "used_pct": used_pct, "reset_text": reset_text}
-if reset_at is not None:
+def win_name(secs, fallback="primary"):
+    """Classify rate-limit windows by length: session ≤6h, day ≤2d, week ≤8d, else month."""
+    if secs is None:
+        return fallback
     try:
-        w0["reset_at"] = int(reset_at)
+        s = int(secs)
     except Exception:
-        pass
-if win_secs:
-    w0["window_seconds"] = win_secs
-windows = [w0]
-sw = rl.get("secondary_window")
-if isinstance(sw, dict) and sw.get("used_percent") is not None:
+        return fallback
+    if s <= 6 * 3600:
+        return "session"
+    if s <= 2 * 86400:
+        return "day"
+    if s <= 8 * 86400:
+        return "week"
+    return "month"
+
+def window_from(pw, fallback_name="primary"):
+    if not isinstance(pw, dict) or pw.get("used_percent") is None:
+        return None
     try:
-        sw_pct = int(sw["used_percent"])
-        sw_reset = sw.get("reset_at")
-        sw_text = None
-        if sw_reset is not None:
-            sw_text = datetime.fromtimestamp(int(sw_reset), tz=timezone.utc).strftime(
-                "%Y-%m-%d %H:%M UTC"
-            )
-        sw_entry = {"window": "secondary", "used_pct": sw_pct, "reset_text": sw_text}
-        if sw_reset is not None:
-            sw_entry["reset_at"] = int(sw_reset)
+        pct = int(pw["used_percent"])
+    except (TypeError, ValueError):
+        return None
+    try:
+        secs = int(pw.get("limit_window_seconds") or 0) or None
+    except Exception:
+        secs = None
+    ra = pw.get("reset_at")
+    rt = None
+    if ra is not None:
         try:
-            sw_secs = int(sw.get("limit_window_seconds") or 0) or None
+            ra = int(ra)
+            rt = datetime.fromtimestamp(ra, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         except Exception:
-            sw_secs = None
-        if sw_secs:
-            sw_entry["window_seconds"] = sw_secs
-        windows.append(sw_entry)
-    except Exception:
-        pass
+            ra = None
+    name = win_name(secs, fallback_name)
+    ent = {"window": name, "used_pct": pct, "reset_text": rt}
+    if ra is not None:
+        ent["reset_at"] = ra
+    if secs:
+        ent["window_seconds"] = secs
+    return ent
+
+windows = []
+w0 = window_from(pw, "primary")
+if w0:
+    windows.append(w0)
+sw = rl.get("secondary_window")
+w1 = window_from(sw if isinstance(sw, dict) else None, "secondary")
+if w1:
+    windows.append(w1)
+# Extra product meters (Spark, etc.) — only short/session-ish ones surface as session.
+for add in d.get("additional_rate_limits") or []:
+    if not isinstance(add, dict):
+        continue
+    arl = add.get("rate_limit") if isinstance(add.get("rate_limit"), dict) else None
+    if not arl:
+        continue
+    ap = arl.get("primary_window") if isinstance(arl.get("primary_window"), dict) else None
+    ent = window_from(ap, "extra")
+    if not ent:
+        continue
+    # Prefer naming after the product when not a clear session/week.
+    label = add.get("limit_name") or add.get("metered_feature")
+    if ent["window"] in ("primary", "extra", "secondary") and isinstance(label, str) and label:
+        ent["window"] = "extra_" + "".join(
+            ch.lower() if ch.isalnum() else "_" for ch in label
+        )[:40]
+    # De-dupe identical window name+pct+reset
+    if not any(
+        x.get("window") == ent.get("window")
+        and x.get("used_pct") == ent.get("used_pct")
+        and x.get("reset_at") == ent.get("reset_at")
+        for x in windows
+    ):
+        windows.append(ent)
+
+if not windows:
+    sys.exit(5)
 plan = d.get("plan_type") if isinstance(d.get("plan_type"), str) else None
 out = {"vendor": "codex", "available": True, "windows": windows}
 if plan:
@@ -2909,17 +2949,6 @@ def curl_json(url):
     except Exception:
         raise SystemExit(5)
 
-try:
-    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing")
-except SystemExit:
-    raise
-except Exception:
-    sys.exit(1)
-
-cfg = bill.get("config") if isinstance(bill, dict) else None
-if not isinstance(cfg, dict):
-    sys.exit(5)
-
 def num_val(obj, *keys):
     cur = obj
     for k in keys:
@@ -2932,13 +2961,6 @@ def num_val(obj, *keys):
         return float(cur)
     return None
 
-used = num_val(cfg, "used")
-limit = num_val(cfg, "monthlyLimit")
-# Optional richer fields when the API starts returning them.
-credit_pct = num_val(cfg, "creditUsagePercent")
-if credit_pct is None and isinstance(cfg.get("creditUsagePercent"), (int, float)):
-    credit_pct = float(cfg["creditUsagePercent"])
-
 def parse_iso(s):
     if not isinstance(s, str) or not s:
         return None
@@ -2948,12 +2970,66 @@ def parse_iso(s):
     except Exception:
         return None
 
+def cfg_of(payload):
+    if isinstance(payload, dict) and isinstance(payload.get("config"), dict):
+        return payload["config"]
+    return None
+
+# Default payload: monthly allotment. Credits payload: weekly SuperGrok credit %.
+try:
+    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing")
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+cfg = cfg_of(bill)
+if not isinstance(cfg, dict):
+    sys.exit(5)
+
+credits_cfg = None
+try:
+    credits = curl_json("https://cli-chat-proxy.grok.com/v1/billing?format=credits")
+    credits_cfg = cfg_of(credits)
+except Exception:
+    credits_cfg = None
+
+windows = []
+
+# Weekly credit pool (operational burn) — format=credits.
+if isinstance(credits_cfg, dict):
+    credit_pct = num_val(credits_cfg, "creditUsagePercent")
+    if credit_pct is None and isinstance(credits_cfg.get("creditUsagePercent"), (int, float)):
+        credit_pct = float(credits_cfg["creditUsagePercent"])
+    if credit_pct is not None:
+        cp = max(0, min(100, int(round(credit_pct))))
+        w = {"window": "week_credits", "used_pct": cp}
+        period = credits_cfg.get("currentPeriod")
+        start_at = end_at = None
+        if isinstance(period, dict):
+            start_at = parse_iso(period.get("start"))
+            end_at = parse_iso(period.get("end"))
+        if end_at is None:
+            end_at = parse_iso(credits_cfg.get("billingPeriodEnd"))
+        if start_at is None:
+            start_at = parse_iso(credits_cfg.get("billingPeriodStart"))
+        if end_at is not None:
+            w["reset_at"] = end_at
+            w["reset_text"] = datetime.fromtimestamp(end_at, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+        if start_at is not None and end_at is not None and end_at > start_at:
+            w["window_seconds"] = end_at - start_at
+        else:
+            w["window_seconds"] = 604800
+        windows.append(w)
+
+# Monthly allotment from default billing.
+used = num_val(cfg, "used")
+limit = num_val(cfg, "monthlyLimit")
 start_at = parse_iso(cfg.get("billingPeriodStart"))
 end_at = parse_iso(cfg.get("billingPeriodEnd"))
-windows = []
 if used is not None and limit is not None and limit > 0:
-    used_pct = int(round(100.0 * used / limit))
-    used_pct = max(0, min(100, used_pct))
+    used_pct = max(0, min(100, int(round(100.0 * used / limit))))
     win = {"window": "month", "used_pct": used_pct}
     if end_at is not None:
         win["reset_at"] = end_at
@@ -2962,25 +3038,9 @@ if used is not None and limit is not None and limit > 0:
         )
     if start_at is not None and end_at is not None and end_at > start_at:
         win["window_seconds"] = end_at - start_at
-    elif end_at is not None:
-        win["window_seconds"] = 30 * 86400  # fallback calendar-ish month
+    else:
+        win["window_seconds"] = 30 * 86400
     windows.append(win)
-
-if credit_pct is not None:
-    cp = int(round(credit_pct))
-    cp = max(0, min(100, cp))
-    # Prefer weekly credit window as primary when present.
-    w = {"window": "week_credits", "used_pct": cp, "window_seconds": 604800}
-    # If API exposes currentPeriod end, use it; else no reset_at.
-    cp_end = cfg.get("currentPeriod")
-    if isinstance(cp_end, dict):
-        ea = parse_iso(cp_end.get("end") or cp_end.get("end_at") or cp_end.get("billingPeriodEnd"))
-        if ea is not None:
-            w["reset_at"] = ea
-            w["reset_text"] = datetime.fromtimestamp(ea, tz=timezone.utc).strftime(
-                "%Y-%m-%d %H:%M UTC"
-            )
-    windows.insert(0, w)
 
 if not windows:
     sys.exit(5)
@@ -3179,12 +3239,24 @@ except Exception:
   fi
   local assembled
   assembled="$(jq -nc --slurpfile v "$vendors_tmp" --argjson now "$now" --argjson hist "$history_in" '
+    def is_session_win:
+      (.window // "") == "session"
+      or ((.window_seconds // 0) > 0 and (.window_seconds // 0) <= 21600);
+    def is_plan_win:
+      (.window // "" | test("week|month|all_models|^primary$"))
+      or ((.window_seconds // 0) > 21600);
     def primary_window:
-      # Prefer weekly all-models; else first window with used_pct.
+      # Prefer weekly all-models; else first plan window; else first with used_pct.
       (.windows // []) as $w
       | ([$w[] | select(.window=="week_all_models" and (.used_pct!=null))][0] // null) as $wk
       | if $wk != null then $wk
-        else ([$w[] | select(.used_pct != null)][0] // null) end;
+        else
+          ([$w[] | select(.used_pct != null and is_plan_win)][0]
+           // [$w[] | select(.used_pct != null)][0] // null)
+        end;
+    def session_window:
+      (.windows // []) as $w
+      | ([$w[] | select(.used_pct != null and is_session_win)][0] // null);
     # Linear extrapolation from last reset: assume 0% at (reset_at - window_seconds).
     def rate_from_reset($pct; $reset_at; $win_secs):
       if $pct == null or $reset_at == null or $win_secs == null then null
@@ -3197,34 +3269,58 @@ except Exception:
           else {rate_pct_per_s: ($pct / $elapsed)}
           end
       end;
+    def enrich_one_window:
+      . as $w
+      | ($w.used_pct) as $pct
+      | ($w.reset_text // null) as $reset
+      | ($w.window // "unknown") as $win
+      | ($w.reset_at // null) as $ra
+      | ($w.window_seconds // null) as $ws
+      | rate_from_reset($pct; $ra; $ws) as $rate
+      | (if $rate == null then null
+         elif $pct >= 100 then $now
+         elif ($rate.rate_pct_per_s // 0) <= 0 then null
+         else ($now + (((100 - $pct) / $rate.rate_pct_per_s) | floor)) end) as $proj100
+      | (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
+         else ((($rate.rate_pct_per_s * 3600 * 100) | floor) / 100) end) as $rph
+      | (if $proj100 != null and $ra != null and $pct < 100 and $proj100 < $ra
+         then true else false end) as $overrun
+      | {
+          window: $win,
+          used_pct: $pct,
+          remaining_pct: (if $pct == null then null else (100 - $pct) end),
+          reset_text: $reset,
+          reset_at: $ra,
+          window_seconds: $ws,
+          projected_100pct_at: $proj100,
+          rate_pct_per_hour: $rph,
+          overrun_risk: $overrun,
+          kind: (if ($w | is_session_win) then "session"
+                 elif ($w | is_plan_win) then "plan"
+                 else "other" end)
+        };
     def enrich:
       if .available != true then .
       else
-        (primary_window) as $pw
-        | if $pw == null or $pw.used_pct == null then .
+        ((.windows // []) | map(select(.used_pct != null) | enrich_one_window)) as $wd
+        | (primary_window | if . == null then null else enrich_one_window end) as $pw
+        | (session_window | if . == null then null else enrich_one_window end) as $sw
+        | if $pw == null and ($wd | length) == 0 then .
           else
-            ($pw.used_pct) as $pct
-            | ($pw.reset_text // null) as $reset
-            | ($pw.window // "unknown") as $win
-            | ($pw.reset_at // null) as $ra
-            | ($pw.window_seconds // null) as $ws
-            | rate_from_reset($pct; $ra; $ws) as $rate
-            | (if $rate == null then null
-               elif $pct >= 100 then $now
-               elif ($rate.rate_pct_per_s // 0) <= 0 then null
-               else ($now + (((100 - $pct) / $rate.rate_pct_per_s) | floor)) end) as $proj100
-            | . + {
-                used_pct: $pct,
-                remaining_pct: (100 - $pct),
-                primary_window: $win,
-                reset_text: $reset,
-                reset_at: $ra,
-                window_seconds: $ws,
-                projected_100pct_at: $proj100,
-                # Two decimals — monthly burns can be ≪ 0.1 %/h (one decimal would floor to 0).
-                rate_pct_per_hour: (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
-                                    else ((($rate.rate_pct_per_s * 3600 * 100) | floor) / 100) end)
-              }
+            . + {
+              windows_detail: $wd,
+              session: $sw,
+              plan: $pw,
+              used_pct: ($pw.used_pct // $sw.used_pct // null),
+              remaining_pct: ($pw.remaining_pct // $sw.remaining_pct // null),
+              primary_window: ($pw.window // $sw.window // null),
+              reset_text: ($pw.reset_text // $sw.reset_text // null),
+              reset_at: ($pw.reset_at // $sw.reset_at // null),
+              window_seconds: ($pw.window_seconds // $sw.window_seconds // null),
+              projected_100pct_at: ($pw.projected_100pct_at // null),
+              rate_pct_per_hour: ($pw.rate_pct_per_hour // null),
+              overrun_risk: ($pw.overrun_risk // false)
+            }
           end
       end;
     ($v[0:] | map(select(type=="object"))) as $vendors0
@@ -3237,15 +3333,26 @@ except Exception:
            else empty end
        ]) as $hist_norm
     | ($vendors0 | map(enrich)) as $vendors
-    # Append one history sample per available vendor with a primary window.
+    # Append history samples for plan + session windows (sparkline fuel).
     | ($hist_norm + [
          $vendors[]
-         | select(.available==true and .used_pct != null)
-         | {t:$now, vendor:.vendor, window:(.primary_window // "unknown"),
-            used_pct:.used_pct, reset_text:(.reset_text // null)}
-       ] | .[-96:]) as $hist2
-    | ([$vendors[] | select(.vendor=="claude" and .available==true and .used_pct!=null)][0] // null) as $cl
-    | (if $cl != null then {
+         | select(.available==true)
+         | . as $v
+         | (
+             (if $v.plan != null and $v.plan.used_pct != null then
+                {t:$now, vendor:$v.vendor, window:($v.plan.window // "plan"),
+                 used_pct:$v.plan.used_pct, reset_text:($v.plan.reset_text // null)}
+              else empty end),
+             (if $v.session != null and $v.session.used_pct != null then
+                {t:$now, vendor:$v.vendor, window:($v.session.window // "session"),
+                 used_pct:$v.session.used_pct, reset_text:($v.session.reset_text // null)}
+              else empty end)
+           )
+       ] | .[-120:]) as $hist2
+    | ([$vendors[] | select(.vendor=="claude" and .available==true and .plan != null)][0] // null) as $cl
+    | (if $cl != null and $cl.plan != null then
+          ($cl.plan + {vendor:"claude"})
+        elif $cl != null then {
           vendor: "claude",
           window: ($cl.primary_window // "week_all_models"),
           used_pct: $cl.used_pct,
@@ -3253,7 +3360,8 @@ except Exception:
           reset_text: $cl.reset_text,
           reset_at: $cl.reset_at,
           projected_100pct_at: $cl.projected_100pct_at,
-          rate_pct_per_hour: $cl.rate_pct_per_hour
+          rate_pct_per_hour: $cl.rate_pct_per_hour,
+          overrun_risk: ($cl.overrun_risk // false)
         } else null end) as $overall
     | {
         available: ([$vendors[] | select(.available==true)] | length > 0),
@@ -3261,7 +3369,7 @@ except Exception:
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "claude: -p /usage; codex: ChatGPT wham/usage; grok: cli-chat-proxy /v1/billing (OIDC). Burn: linear from last reset (0% → current)."
+        note: "claude: -p /usage (session+week); codex: wham/usage (≤6h=session); grok: billing month (+week credits when present). Burn: linear from last reset."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"
