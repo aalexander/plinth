@@ -13,10 +13,14 @@
 
 - [x] **wren git remote** — `origin` = `aalexander/wren`.
 
-- [x] **anvil seats+instrument** — merged #6.
+- [x] **anvil seats+instrument** — merged #6 (instrument 4.8.1 + seats on scaffold main).
 
-- [x] **certeus seats+instrument** — merged #36; receipt trail-pin merged #37.
+- [x] **certeus seats+instrument** — merged #36; receipt trail-pin merged #37
+  (floor + receipt both @ v4.8.0).
 
 - [x] **wren instrument** — merged #19; protection has `receipt / verify` + `strict:true`.
 
 - [x] **geneus remote** — `origin` = `aalexander/geneus` (private); branches pushed.
+
+- [ ] **anvil harness** — full SPEC acceptance still awaits harness PR #1
+  (`build/harness-v14`); main is instrumented scaffold until that lands.
