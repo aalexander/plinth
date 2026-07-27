@@ -57,13 +57,30 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
-# Normalize leading ./ and one trailing slash so filesystem-equivalent forms
-# (./blueprints, blueprints/, ./blueprints/) still match Git-relative paths.
+# Normalize for comparison with Git-relative paths: strip leading ./, trailing
+# / and /., collapse //, map . → "" (repo root = whole tree).
+_norm_rel() {
+  local p="$1"
+  while true; do
+    case "$p" in
+      ./*) p="${p#./}" ;;
+      */)  p="${p%/}" ;;
+      */.) p="${p%/.}" ;;
+      .)   p="" ;;
+      *)   break ;;
+    esac
+  done
+  while [ "${p#*//}" != "$p" ]; do p="${p//\/\//\/}"; done
+  [ "$p" = "." ] && p=""
+  printf '%s' "$p"
+}
 is_spec() {
-  local _sp="${SPEC_PATH#./}"; _sp="${_sp%/}"
-  local _p="${1#./}"
-  [ "$_p" = "$SPEC_PATH" ] || [ "$_p" = "$_sp" ] || [ "$_p" = "${SPEC_PATH#./}" ] \
-    || [ "${_p#"$_sp"/}" != "$_p" ] \
+  local _sp _p
+  _sp="$(_norm_rel "$SPEC_PATH")"
+  _p="$(_norm_rel "$1")"
+  # Empty _sp = repo-root directory: every path is under the canonical spec tree.
+  if [ -z "$_sp" ]; then return 0; fi
+  [ "$_p" = "$_sp" ] || [ "${_p#"$_sp"/}" != "$_p" ] \
     || printf '%s' "$1" | grep -E "$SPECRE" >/dev/null
 }
 
