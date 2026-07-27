@@ -79,6 +79,38 @@
   .meta .dot.err { background: var(--red); box-shadow: 0 0 8px var(--red); }
   .meta .dot.spin { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.35; } }
+  #quota-bar {
+    padding: 0.55rem 1.5rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(22, 27, 34, 0.85);
+    font-family: var(--font);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  #quota-bar .qrow {
+    display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem;
+    align-items: center;
+  }
+  #quota-bar .qlabel { color: var(--cyan); font-weight: 600; letter-spacing: 0.03em; }
+  #quota-bar .qpct { color: var(--text); font-weight: 600; }
+  #quota-bar .qpct.warn { color: var(--yellow); }
+  #quota-bar .qpct.hot { color: var(--red); }
+  .qmeter {
+    flex: 1 1 180px;
+    max-width: 320px;
+    height: 8px;
+    background: #21262d;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .qmeter > i {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, var(--cyan), var(--purple));
+    border-radius: 999px;
+    transition: width 0.3s ease;
+  }
+  .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
   main {
     padding: 1.25rem 1.5rem 2.5rem;
     display: grid;
@@ -158,6 +190,11 @@
     background: transparent;
     white-space: nowrap;
   }
+  .chip.btn {
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip.btn:hover { border-color: var(--orange); color: var(--orange); }
   .chip.green { color: var(--green); background: var(--green-bg); border-color: rgba(63,185,80,0.35); }
   .chip.red { color: var(--red); background: var(--red-bg); border-color: rgba(248,81,73,0.35); }
   .chip.yellow { color: var(--yellow); background: var(--yellow-bg); border-color: rgba(210,153,34,0.35); }
@@ -188,7 +225,30 @@
     white-space: nowrap;
   }
   .kv dd.muted { color: var(--muted); }
-  .kv dd.task { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .kv dd.task, .kv dd.wrap { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .phases {
+    display: flex;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #21262d;
+    border: 1px solid var(--border);
+  }
+  .phases > i { display: block; height: 100%; min-width: 0; }
+  .phases .p-coding { background: var(--cyan); }
+  .phases .p-research { background: var(--purple); }
+  .phases .p-reviewing { background: var(--yellow); }
+  .phases .p-advising { background: var(--orange); }
+  .phases .p-ci { background: var(--red); }
+  .phases .p-planning { background: #58a6ff; }
+  .phases .p-shell { background: #6e7681; }
+  .phases .p-other { background: #484f58; }
+  .phase-legend {
+    font-family: var(--font);
+    font-size: 0.62rem;
+    color: var(--dim);
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem;
+  }
   .footer-note {
     margin-top: auto;
     padding-top: 0.4rem;
@@ -204,6 +264,67 @@
     color: var(--dim);
     text-align: center;
   }
+  /* NEEDS-HUMAN modal */
+  #nh-modal {
+    display: none;
+    position: fixed; inset: 0;
+    z-index: 50;
+    background: rgba(1, 4, 9, 0.72);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  #nh-modal.open { display: flex; }
+  #nh-panel {
+    width: min(560px, 100%);
+    max-height: min(80vh, 720px);
+    overflow: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.45);
+    padding: 1.1rem 1.2rem 1rem;
+  }
+  #nh-panel h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1rem;
+    font-family: var(--font);
+    color: var(--orange);
+  }
+  #nh-panel .sub {
+    font-family: var(--font);
+    font-size: 0.7rem;
+    color: var(--dim);
+    margin-bottom: 0.85rem;
+  }
+  #nh-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+  #nh-list li {
+    font-family: var(--font);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    padding: 0.55rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    background: rgba(13,17,23,0.5);
+  }
+  #nh-list li.blocking {
+    border-color: rgba(248,81,73,0.4);
+    color: #ffb4af;
+  }
+  #nh-close {
+    margin-top: 0.9rem;
+    font-family: var(--font);
+    font-size: 0.75rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  #nh-close:hover { color: var(--text); border-color: #484f58; }
 </style>
 </head>
 <body>
@@ -216,13 +337,22 @@
     <span id="count">—</span>
   </div>
 </header>
+<div id="quota-bar"><div class="qrow"><span class="qlabel">QUOTA</span><span>loading…</span></div></div>
 <main id="grid">
   <div class="empty">Loading snapshot…</div>
 </main>
 <footer>
-  Local-only · 127.0.0.1 · read-only · vendor plan quota unknown ·
+  Local-only · 127.0.0.1 · may probe CLI /usage → /tmp/plinth-dash-quota-$UID cache ·
   <code style="color:var(--muted)">plinth watch</code> stays the TTY dashboard
 </footer>
+<div id="nh-modal" role="dialog" aria-modal="true" aria-labelledby="nh-title">
+  <div id="nh-panel">
+    <h2 id="nh-title">NEEDS-HUMAN</h2>
+    <div class="sub" id="nh-sub"></div>
+    <ul id="nh-list"></ul>
+    <button type="button" id="nh-close">Close</button>
+  </div>
+</div>
 <script>
 (function () {
   const grid = document.getElementById("grid");
@@ -231,7 +361,14 @@
   const genAgo = document.getElementById("gen-ago");
   const discoveryEl = document.getElementById("discovery");
   const countEl = document.getElementById("count");
+  const quotaBar = document.getElementById("quota-bar");
+  const nhModal = document.getElementById("nh-modal");
+  const nhTitle = document.getElementById("nh-title");
+  const nhSub = document.getElementById("nh-sub");
+  const nhList = document.getElementById("nh-list");
   let lastGen = null;
+  let lastQuota = null;
+  let projectsByPath = {};
   // Sticky diagnostic under the header when a later poll fails after cards exist.
   let errBanner = document.getElementById("poll-error");
   if (!errBanner) {
@@ -262,6 +399,15 @@
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
       .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+  function whenLocal(epoch) {
+    if (epoch == null || Number.isNaN(epoch)) return null;
+    try {
+      return new Date(epoch * 1000).toLocaleString(undefined, {
+        weekday: "short", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit"
+      });
+    } catch (_) { return null; }
+  }
 
   function cardTone(p) {
     if (p.error) return "bad";
@@ -276,6 +422,80 @@
     return "idle";
   }
 
+  const PHASE_ORDER = ["coding", "research", "reviewing", "advising", "ci", "planning", "shell", "other"];
+  const PHASE_CLASS = {
+    coding: "p-coding", research: "p-research", reviewing: "p-reviewing",
+    advising: "p-advising", ci: "p-ci", planning: "p-planning",
+    shell: "p-shell", other: "p-other"
+  };
+
+  function phaseBar(phases) {
+    if (!phases || typeof phases !== "object") return "";
+    let total = 0;
+    const parts = [];
+    for (const k of PHASE_ORDER) {
+      const v = Number(phases[k] || 0);
+      if (v > 0) { total += v; parts.push([k, v]); }
+    }
+    // include unknown keys
+    for (const k of Object.keys(phases)) {
+      if (PHASE_ORDER.indexOf(k) >= 0) continue;
+      const v = Number(phases[k] || 0);
+      if (v > 0) { total += v; parts.push([k, v]); }
+    }
+    if (total <= 0) return "";
+    const segs = parts.map(([k, v]) => {
+      const pct = Math.max(2, Math.round((v / total) * 100));
+      const cls = PHASE_CLASS[k] || "p-other";
+      return '<i class="' + cls + '" style="width:' + pct + '%" title="' +
+        esc(k) + ': ' + hum(v) + '"></i>';
+    }).join("");
+    const legend = parts
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, v]) => esc(k) + " " + hum(v))
+      .join(" · ");
+    return (
+      '<div class="phases">' + segs + "</div>" +
+      '<div class="phase-legend">' + legend + " · Σ " + hum(total) + "</div>"
+    );
+  }
+
+  function modelsLine(p) {
+    const m = p.models || {};
+    const live = m.live || {};
+    const seats = m.seats || {};
+    const liveBits = [];
+    const seatBits = [];
+    const drv = p.model_driver || live.driver;
+    if (drv) liveBits.push("drv " + drv);
+    const rev = p.model_reviewer || live.reviewer;
+    if (rev || live.reviewer_vendor) {
+      liveBits.push("rev " + [live.reviewer_vendor, rev].filter(Boolean).join("/"));
+    }
+    if (seats.reviewer_vendor || seats.reviewer_tier1 || seats.reviewer_tier2) {
+      seatBits.push("rev " + [
+        seats.reviewer_vendor,
+        seats.reviewer_tier2 ? "t2=" + seats.reviewer_tier2 : null,
+        seats.reviewer_tier1 ? "t1=" + seats.reviewer_tier1 : null
+      ].filter(Boolean).join("/"));
+    }
+    if (seats.audit_vendor || seats.audit_model) {
+      seatBits.push("aud " + [seats.audit_vendor, seats.audit_model].filter(Boolean).join("/"));
+    }
+    if (seats.advisor_vendor || seats.advisor_model || seats.advisor_model_max) {
+      seatBits.push("adv " + [
+        seats.advisor_vendor,
+        seats.advisor_model,
+        seats.advisor_model_max ? "max=" + seats.advisor_model_max : null
+      ].filter(Boolean).join("/"));
+    }
+    const parts = [];
+    if (liveBits.length) parts.push("live " + liveBits.join(" · "));
+    if (seatBits.length) parts.push("seats " + seatBits.join(" · "));
+    return parts.join(" | ") || "—";
+  }
+
   // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
   function cardHTML(p) {
     const tone = cardTone(p);
@@ -285,7 +505,10 @@
     if (p.needs_human && p.needs_human.open > 0) {
       const blk = p.needs_human.blocking > 0
         ? " · " + p.needs_human.blocking + " blocking" : "";
-      chips.push('<span class="chip orange">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</span>");
+      chips.push(
+        '<button type="button" class="chip orange btn" data-nh="' + esc(p.path) +
+        '" title="Open queue">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</button>"
+      );
     }
     const r = p.review;
     if (r) {
@@ -310,13 +533,9 @@
     if (p.burn_per_min != null) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
-    // Lifecycle (v5): phase + plan/handoff presence
     const life = p.lifecycle || {};
-    if (life.phase === "harden") {
-      chips.push('<span class="chip orange">HARDEN</span>');
-    } else if (life.phase === "build" || life.phase) {
-      chips.push('<span class="chip">BUILD</span>');
-    }
+    if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
+    else if (life.phase === "build" || life.phase) chips.push('<span class="chip">BUILD</span>');
     if (life.plan) chips.push('<span class="chip cyan">PLAN</span>');
     if (life.plan_review) chips.push('<span class="chip cyan">PLAN-REVIEW</span>');
     if (life.handoff) chips.push('<span class="chip">HANDOFF</span>');
@@ -333,45 +552,142 @@
         (r.mode ? " · " + esc(r.mode) : "") +
         (r.tier != null ? " · tier " + r.tier : "")
       : "none on this branch";
-    const models = [
-      p.model_driver ? "drv " + p.model_driver : null,
-      p.model_reviewer ? "rev " + p.model_reviewer : null,
-    ].filter(Boolean).join(" · ") || "—";
+    const models = modelsLine(p);
     const tokens = p.tokens_total != null
       ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
       : "unknown";
-    const lifeDetail = (life.phase || "build") +
-      (life.plan ? " · plan" : "") +
-      (life.plan_review ? " · deep review" : "") +
-      (life.handoff
-        ? " · handoff" + (life.handoff_age_secs != null ? " (" + hum(life.handoff_age_secs) + " ago)" : "")
-        : "") +
-      (life.dual_degraded ? " · dual-degraded" : "");
-    const nextLine = life.next
-      ? esc(String(life.next).slice(0, 120))
-      : '<span class="muted">—</span>';
+    const phases = phaseBar(p.phases);
+    const revWall = (p.review_round_secs != null && p.review_round_secs > 0)
+      ? hum(p.review_round_secs) : null;
 
     return (
-      '<article class="card ' + tone + '">' +
+      '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
         '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
         '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
         '<div class="chips">' + chips.join("") + "</div>" +
         '<dl class="kv">' +
           "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
-          "<dt>lifecycle</dt><dd>" + esc(lifeDetail) + "</dd>" +
-          "<dt>next</dt><dd class=\"task\">" + nextLine + "</dd>" +
+          "<dt>lifecycle</dt><dd>" + esc((life.phase||"build") + (life.plan?" · plan":"") + (life.plan_review?" · deep":"") + (life.handoff?" · handoff":"") + (life.dual_degraded?" · dual-degraded":"")) + "</dd>" +
+          "<dt>next</dt><dd class=\"task\">" + (life.next ? esc(String(life.next).slice(0,120)) : '<span class="muted">—</span>') + "</dd>" +
           "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
           "<dt>session</dt><dd>" + esc(session) + "</dd>" +
-          "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
-          "<dt>models</dt><dd class=\"muted\">" + esc(models) + "</dd>" +
+          "<dt>review</dt><dd>" + esc(revDetail) +
+            (revWall ? " · wall " + esc(revWall) : "") + "</dd>" +
+          "<dt>models</dt><dd class=\"wrap muted\">" + esc(models) + "</dd>" +
           "<dt>burn</dt><dd class=\"muted\">" +
             (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
-            tokens + " · quota unknown</dd>" +
+            tokens + "</dd>" +
           "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
         "</dl>" +
-        '<div class="footer-note">quota/reset: unavailable without vendor APIs</div>' +
+        (phases ? '<div>' + phases + "</div>" : "") +
+        '<div class="footer-note">click NEEDS-HUMAN for open items · phases = event-gap heuristic (active SID)' +
+          (revWall ? " · review wall " + esc(revWall) : "") + "</div>" +
       "</article>"
     );
+  }
+
+  function renderQuota(q) {
+    lastQuota = q || null;
+    if (!quotaBar) return;
+    if (!q || q.skipped) {
+      quotaBar.innerHTML =
+        '<div class="qrow"><span class="qlabel">QUOTA</span>' +
+        '<span>probes disabled</span></div>';
+      return;
+    }
+    const o = q.overall;
+    if (!q.available || !o) {
+      const note = (q.note || "vendor plan unknown").slice(0, 120);
+      const vend = (Array.isArray(q.vendors) ? q.vendors : []).map(function (v) {
+        return v.vendor + (v.available ? "" : "×");
+      }).join(" ");
+      quotaBar.innerHTML =
+        '<div class="qrow"><span class="qlabel">QUOTA</span>' +
+        '<span>unavailable</span>' +
+        (vend ? '<span class="dim">' + esc(vend) + "</span>" : "") +
+        '<span title="' + esc(q.note || "") + '">' + esc(note) + "</span></div>";
+      return;
+    }
+    const pct = o.used_pct;
+    const cls = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
+    const meterCls = pct >= 90 ? "qmeter hot" : "qmeter";
+    let proj = "—";
+    if (o.projected_100pct_at != null) {
+      const when = whenLocal(o.projected_100pct_at);
+      const left = o.projected_100pct_at - Math.floor(Date.now() / 1000);
+      proj = (when || ("@" + o.projected_100pct_at)) +
+        (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
+    } else if (o.rate_pct_per_hour == null) {
+      proj = "need ≥2 samples (≥10m apart)";
+    }
+    const reset = o.reset_text ? esc(o.reset_text) : "—";
+    const rate = o.rate_pct_per_hour != null ? o.rate_pct_per_hour + "%/h" : "—";
+    const age = q.refreshed_at != null
+      ? hum(Math.max(0, Math.floor(Date.now() / 1000) - q.refreshed_at)) + " ago"
+      : "—";
+    quotaBar.innerHTML =
+      '<div class="qrow">' +
+        '<span class="qlabel">WEEKLY TOTAL</span>' +
+        '<span class="qpct ' + cls + '">' + esc(String(pct)) + "% used</span>" +
+        '<div class="' + meterCls + '"><i style="width:' + Math.min(100, pct) + '%"></i></div>' +
+        '<span>reset ' + reset + "</span>" +
+        '<span>→100% ' + esc(proj) + "</span>" +
+        '<span>rate ' + esc(String(rate)) + "</span>" +
+        '<span>polled ' + esc(age) + "</span>" +
+      "</div>";
+  }
+
+  function openNeedsHuman(path) {
+    const p = projectsByPath[path];
+    if (!p) return;
+    if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
+    const items = (p.needs_human && p.needs_human.items) || [];
+    nhTitle.textContent = "NEEDS-HUMAN — " + (p.name || path);
+    nhSub.textContent =
+      (p.needs_human && p.needs_human.open != null ? p.needs_human.open : items.length) +
+      " open · " +
+      (p.needs_human && p.needs_human.blocking ? p.needs_human.blocking : 0) +
+      " blocking · " + path +
+      " · " + (p.needs_human && p.needs_human.source
+        ? p.needs_human.source
+        : ".plinth/NEEDS-HUMAN.md");
+    if (!items.length) {
+      nhList.innerHTML = '<li class="muted">(no open item text — counts only or empty parse)</li>';
+    } else {
+      nhList.innerHTML = items.map(function (it) {
+        const text = typeof it === "string" ? it : (it.text || "");
+        const blk = typeof it === "object" && it.blocking;
+        return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
+      }).join("");
+    }
+    if (p.needs_human && p.needs_human.truncated) {
+      nhList.innerHTML +=
+        '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+    }
+    nhModal.classList.add("open");
+  }
+  function closeNeedsHuman() {
+    if (nhModal) nhModal.classList.remove("open");
+  }
+  // DOM wiring is browser-only; the node smoke harness loads the script without
+  // a full document tree for pure cardHTML/cardTone tests.
+  const nhClose = document.getElementById("nh-close");
+  if (nhClose) nhClose.addEventListener("click", closeNeedsHuman);
+  if (nhModal) {
+    nhModal.addEventListener("click", function (e) {
+      if (e.target === nhModal) closeNeedsHuman();
+    });
+  }
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeNeedsHuman();
+    });
+  }
+  if (grid && typeof grid.addEventListener === "function") {
+    grid.addEventListener("click", function (e) {
+      const t = e.target && e.target.closest ? e.target.closest("[data-nh]") : null;
+      if (t) openNeedsHuman(t.getAttribute("data-nh"));
+    });
   }
 
   function render(data) {
@@ -379,6 +695,9 @@
     discoveryEl.textContent = data.discovery || "—";
     const projects = data.projects || [];
     countEl.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s");
+    projectsByPath = {};
+    projects.forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    renderQuota(data.quota);
 
     if (!projects.length) {
       grid.innerHTML =
@@ -404,12 +723,21 @@
   }
 
   // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
-  globalThis.__plinthDash = { cardTone: cardTone, cardHTML: cardHTML, esc: esc };
+  globalThis.__plinthDash = {
+    cardTone: cardTone, cardHTML: cardHTML, esc: esc,
+    modelsLine: modelsLine, phaseBar: phaseBar, renderQuota: renderQuota,
+    openNeedsHuman: openNeedsHuman, closeNeedsHuman: closeNeedsHuman,
+    seedProjects: function (ps) {
+      projectsByPath = {};
+      (ps || []).forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    }
+  };
 
   function tickClocks() {
     if (lastGen == null) return;
     const ago = Math.floor(Date.now() / 1000) - lastGen;
     genAgo.textContent = "snap " + hum(Math.max(0, ago)) + " ago";
+    if (lastQuota && lastQuota.available && lastQuota.overall) renderQuota(lastQuota);
   }
 
   // Serialize polls: never start a new fetch while one is pending. Slow
@@ -463,6 +791,7 @@
   globalThis.__plinthDash.getPollState = function () {
     return { inFlight: pollInFlight, seq: pollSeq };
   };
+  globalThis.__plinthDash.openNeedsHuman = openNeedsHuman;
 
   poll();
   setInterval(poll, 2000);

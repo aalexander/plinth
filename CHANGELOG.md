@@ -1,42 +1,18 @@
 # Plinth changelog
 
-## v5.0.0 — Lifecycle: default build, ship-time harden, handoff — July 27, 2026
+## v5.0.0 — Lifecycle + dashboard ops visibility — July 27, 2026
 - **Breaking (behavior):** default **BUILD** phase — Stop no longer requires
-  APPROVED@HEAD on feature branches unless harden is active. Logs `build_defer`
-  so unreviewed commits stay visible. **Ship gate unchanged** —
-  `gh pr create|merge` still needs APPROVED@HEAD.
-- **`plinth harden` / `plinth build` / `plinth phase`:** enter ship-prep (Stop
-  requires review again), return to default build, or print phase. State:
-  `.plinth/session/phase-<slug>.json` (CLI-written; agents cannot forge session).
-- **`plinth plan` / `plinth plan --deep`:** light `PLAN.md` scaffold (no clobber);
-  deep = three parallel plan-review seats → `PLAN-REVIEW.md`. Runnable in-session.
-- **`plinth handoff`:** writes root `HANDOFF.md` with goal/next/restart prompt.
-  Restart convention: read HANDOFF.md and continue.
-- **Dashboard:** lifecycle phase chip (BUILD/HARDEN), PLAN / PLAN-REVIEW / HANDOFF
-  chips, lifecycle row; `build_defer` is a known event name.
-- **Driver rules + MANUAL + `docs/LIFECYCLE.md`:** plan → build → harden → ship.
-- **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`.
-- **Auto-handoff snapshots** on harden/build/plan-deep and after review rounds;
-  SessionStart additionalContext when HANDOFF.md present; milestone guidance to
-  compact/fresh-session after handoff.
-- **Review anti-thrash:** `review_phase` (build|hardening) on requests; sticky
-  finding ids + auto-resolve reopens when file blob unchanged; compact verify
-  open-ledger; Tier-2 dual first-pass (primary + audit seat) on fresh round 1.
-- **Schema:** optional finding `id` field.
-- **Autonomous default:** handoff snapshots never wait (notify + continue);
-  milestone vs checkpoint advice; driver rules loop until done or human-blocked.
-- **`plinth next`:** single next action from HANDOFF / PLAN-REVIEW / review /
-  NEEDS-HUMAN (exit 0 work, 2 human-blocked, 3 done).
-- **Deep plan structured merge:** merged blockers/questions checklist +
-  `.plinth/session/plan-review-merge.json` (majority labels advisory).
-- **Lifecycle migrate on `plinth update`:** open CHANGES_NEEDED/UNBOUND → phase
-  harden; corrupt phase → harden. Stop: corrupt phase fail-closed as harden;
-  open verdict without phase → harden. Dual-degraded recorded on verdict.
-- **`plinth lifecycle-migrate`:** explicit migrate without full update.
-- **Auto Next seed:** CHANGES_NEEDED handoff sets first open major as HANDOFF ## Next.
-- **Plan-review → NEEDS-HUMAN:** security/majority blockers appended for `plinth next`.
-- **Watch/dash:** phase + next line; dual-degraded chip; lifecycle.next on snapshot.
-- **Stop messages** point at `plinth next`.
+  APPROVED@HEAD on feature branches unless harden is active. Logs `build_defer`.
+  **Ship gate unchanged** — `gh pr create|merge` still needs APPROVED@HEAD.
+- **Lifecycle CLI:** `harden` / `build` / `phase` / `handoff` / `plan` / `plan --deep` /
+  `next` / `lifecycle-migrate`. Auto-handoff; keep cooking; anti-thrash review.
+- **Dashboard ops (merged from feat/dashboard-ops-visibility):**
+  - Quota strip (CLI /usage, serve-only probe, fixed /tmp cache, time-to-100%)
+  - NEEDS-HUMAN click modal (items + source path)
+  - Models live vs seats
+  - Phase timing bar + review_round_secs
+- **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
+- **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

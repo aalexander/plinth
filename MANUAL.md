@@ -532,15 +532,49 @@ Subsecond newer requires **python3** (nanosecond mtime); without it, bash
 
 Each card shows project path, branch @ head, review verdict / round / stale vs
 HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
-open/blocking counts, a **feedless** flag when there is no event feed (typical
-for non-Claude drivers), and **observed** driver burn when a Claude transcript is
-reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
-no scrapers, no fake %.
+open/blocking counts (click the orange chip to list up to 50 open items from
+`.plinth/NEEDS-HUMAN.md`; truncated lists say so and point at `plinth queue`), a
+**feedless** flag when there is no event feed (typical for non-Claude drivers),
+**models** as `live` (transcript driver + verdict reviewer; request-N has no
+model field) plus `seats` (config reviewer_tier1/2, audit, advisor,
+advisor_model_max — never labeled as live), **phase timing** for the **active
+SID only** in the events tail (see below), and **observed** driver burn when a
+Claude transcript is reachable.
+
+**Phase timing (bottleneck heuristic, not instrumented tool clocks):**
+- Scope: active session id only (latest SID in the 10k-line events tail).
+- Accrual is an **event-gap heuristic**: on `PostToolUse`, the gap since the previous
+  same-SID event is attributed to that tool’s stage class (pulse emits after the
+  tool; there is often no PreToolUse start stamp). Other events accrue the gap to
+  the previous phase; `UserPromptSubmit` sets phase `planning`. Gaps ≥3600s drop.
+- Stages: coding / research / reviewing / advising / ci / planning / shell / other
+  (Bash detail regex for review.sh / `plinth advise` / gh|canary|ci).
+- **Separate field** `review_round_secs`: sum of `request-N` → `findings-N` mtimes
+  for the branch slug — not folded into `phases.reviewing` (avoids double-count).
+- Not billing, not complete wall-clock of the human day; use it to spot relative
+  bottlenecks (coding-heavy vs review-heavy), not absolute SLA.
+
+**Vendor plan quota (overall weekly):** official CLIs only (not scraped web UIs).
+`plinth dash --snapshot` is **offline** — reads
+`/tmp/plinth-dash-quota-$UID/dash-quota.json` if present, else `offline`/`skipped`;
+it does **not** spawn vendor CLIs (caller env cannot force a probe on
+`--snapshot`). The HTTP serve path **may** spawn a timeout-bounded Claude usage
+probe in an empty `/tmp` directory (internal `dash --snapshot-with-quota`) and
+write the quota cache only at
+`/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
+`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`). Scratch temps for event/transcript
+parsing use the process `TMPDIR` (default system temp) — do not point
+`TMPDIR` or a discovered project root at `/tmp` or the quota-cache directory if
+you need a hard quarantine. TTL ~15 min (`PLINTH_DASH_QUOTA_TTL` /
+`PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0` for smoke). Empty/unparsed
+usage text is `parse_failed`. Codex/grok: no headless surface yet. Projection:
+time-to-100% weekly from ≥2 **same-reset-window** samples ≥10 min apart (history
+drops prior-week / reset-less samples).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
-fixture matrix, a node unit test of pure card HTML (error tone / no-review
-suppression), and a short-lived loopback HTTP check (`/`, `/api/snapshot`,
-POST 405) with process cleanup.
+fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase
+attribution fixture, NEEDS-HUMAN items/truncation, node card HTML, and a
+short-lived loopback HTTP check with process cleanup.
 
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
@@ -794,6 +828,13 @@ summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
 
 ## Noticed
+
+- **v4.9.0 dashboard residual:** Quota cache is fixed at
+  `/tmp/plinth-dash-quota-$UID/dash-quota.json`. Do not discover `/tmp` or that
+  directory as a project root. Serve-path scratch files use process TMPDIR.
+  Atomic cache write and non-regular target skips are best-effort; hostile
+  `id` / concurrent smoke vs live dash races remain operator hygiene.
+
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
