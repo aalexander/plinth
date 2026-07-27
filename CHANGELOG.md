@@ -1,10 +1,10 @@
 # Plinth changelog
 
-## v4.9.0 — Lifecycle: default build, ship-time harden, handoff — July 27, 2026
-- **Default BUILD phase:** Stop gate no longer requires APPROVED@HEAD on feature
-  branches unless harden is active. Logs `build_defer` (watch/events) so
-  unreviewed commits stay visible. **Ship gate unchanged** — `gh pr create|merge`
-  still needs APPROVED@HEAD.
+## v5.0.0 — Lifecycle: default build, ship-time harden, handoff — July 27, 2026
+- **Breaking (behavior):** default **BUILD** phase — Stop no longer requires
+  APPROVED@HEAD on feature branches unless harden is active. Logs `build_defer`
+  so unreviewed commits stay visible. **Ship gate unchanged** —
+  `gh pr create|merge` still needs APPROVED@HEAD.
 - **`plinth harden` / `plinth build` / `plinth phase`:** enter ship-prep (Stop
   requires review again), return to default build, or print phase. State:
   `.plinth/session/phase-<slug>.json` (CLI-written; agents cannot forge session).

@@ -9,7 +9,7 @@ Stop pressure, handoff for restart, ship still APPROVED@HEAD.
 ## Done
 - shared/.claude/hooks/review-gate.sh v2 (build_defer / harden)
 - bin/plinth: harden, build, phase, handoff
-- shared/plinth-rules.md + MANUAL + CHANGELOG 4.9.0 + VERSION
+- shared/plinth-rules.md + MANUAL + CHANGELOG **5.0.0** + VERSION
 - canary-lifecycle-build-harden.sh ALL PASS
 - PLAN.md product plan
 
