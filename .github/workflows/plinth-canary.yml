@@ -60,6 +60,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/VERSION" "$AR/VERSION"
           cat > "$AB/gh" <<'GHSTUB'
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           exit 1
           GHSTUB
           chmod +x "$AB/gh"
@@ -623,6 +624,7 @@ jobs:
           RC_SHOW="$(mktemp -d)"
           cat > "$RC_SHOW/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = show ] && [[ "\$2" == *:.plinth/config ]]; then
             echo "fatal: unable to read tree (injected)" >&2; exit 128
           fi
@@ -638,6 +640,7 @@ jobs:
           RC_RAW="$(mktemp -d)"
           cat > "$RC_RAW/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = diff ] && [ "\$2" = --raw ]; then
             echo "fatal: diff --raw failed (injected)" >&2; exit 128
           fi
@@ -655,6 +658,7 @@ jobs:
           RC_PT="$(mktemp -d)"
           cat > "$RC_PT/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           # Fail path-scoped diffs only — leave --raw intact so the loop runs.
           if [ "\$1" = diff ] && [ "\$2" != --raw ]; then
             for a in "\$@"; do [ "\$a" = -- ] && { echo "fatal: per-path diff failed (injected)" >&2; exit 128; }; done
@@ -672,6 +676,7 @@ jobs:
           RV_CFG="$(mktemp -d)"
           cat > "$RV_CFG/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *.plinth/config* ]]; then
             echo "fatal: bad object (injected)" >&2; exit 128
           fi
@@ -699,6 +704,7 @@ jobs:
           RV_DIFF="$(mktemp -d)"
           cat > "$RV_DIFF/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           # Fail ONLY the tooling-floor name-only probe (base_tip..HEAD form used by review.sh)
           if [ "\$1" = diff ] && [ "\$2" = --name-only ]; then
             echo "fatal: name-only failed (injected)" >&2; exit 128
@@ -745,6 +751,7 @@ jobs:
           BIG_GIT="$(mktemp -d)"
           cat > "$BIG_GIT/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = diff ] && [ "\$2" = --name-only ]; then
             i=0; while [ \$i -lt 8000 ]; do printf 'f%05d.py\n' "\$i"; i=\$((i+1)); done
             echo '.plinth/review.sh'; exit 0
@@ -841,9 +848,22 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1
             git mv SPEC.md OTHER.md; git commit -qm ren >/dev/null
             # Product loop uses --no-renames so SPEC.md appears deleted
-            names="$(git diff --name-only --no-renames main...HEAD)"
+            names="$(git -c core.quotePath=false diff --name-only --no-renames main...HEAD)"
             printf '%s\n' "$names" | grep -qxF 'SPEC.md' \
               || { echo "::error::#15 rename-away fixture: --no-renames did not list SPEC.md (got $names)"; exit 1; }
+          )
+          # Behavioral: non-ASCII custom spec_path is Tier 2 (core.quotePath=false)
+          T_NA="$(mktemp -d)"; ( cd "$T_NA"; git init -qb main . >/dev/null
+            mkdir -p .plinth specs
+            printf 'spec_path = specs/é\n' > .plinth/config
+            printf 'req\n' > "specs/é"; echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1
+            echo ch >> "specs/é"; git add -A; git commit -qm w >/dev/null
+            out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null)"
+            [ "$(printf '%s' "$out" | jq -r .tier)" = "2" ] \
+              || { echo "::error::#15 risk-classify non-ASCII spec_path not Tier 2 (out=$out)"; exit 1; }
+            printf '%s' "$out" | grep -q 'specs/' \
+              || { echo "::error::#15 risk-classify non-ASCII reason missing path (out=$out)"; exit 1; }
           )
           # #13: non-tooling PR rewrite of risk-classify must NOT classify itself —
           # base classifier (honest Tier 1 for app.py) wins over an evil WT that claims Tier 0.
@@ -914,6 +934,7 @@ jobs:
           RV_CLF="$(mktemp -d)"
           cat > "$RV_CLF/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *risk-classify.sh* ]]; then
             echo "fatal: bad object classifier (injected)" >&2; exit 128
           fi
@@ -950,6 +971,7 @@ jobs:
           RV_RC="$(mktemp -d)"
           cat > "$RV_RC/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *reviewer.md* ]]; then
             echo "fatal: bad object reviewer (injected)" >&2; exit 128
           fi
@@ -974,6 +996,7 @@ jobs:
             SHIM="$(mktemp -d)"
             cat > "$SHIM/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = show ] && [[ "\$2" == *:$_path ]]; then
             echo "fatal: show $_path failed (injected)" >&2; exit 128
           fi
@@ -1019,6 +1042,7 @@ jobs:
           SHIM_AG="$(mktemp -d)"
           cat > "$SHIM_AG/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = show ] && [[ "\$2" == *:AGENTS.md ]]; then
             echo "fatal: show AGENTS.md failed (injected)" >&2; exit 128
           fi
@@ -1042,6 +1066,7 @@ jobs:
           SHIM_AGLS="$(mktemp -d)"
           cat > "$SHIM_AGLS/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *reviewer.md* ]]; then
             exit 0
           fi
@@ -1061,6 +1086,7 @@ jobs:
           SHIM_AP="$(mktemp -d)"
           cat > "$SHIM_AP/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *AGENTS-project.md* ]]; then
             echo "fatal: bad object AGENTS-project (injected)" >&2; exit 128
           fi
@@ -1105,6 +1131,7 @@ jobs:
           SHIM_APSHOW="$(mktemp -d)"
           cat > "$SHIM_APSHOW/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = show ] && [[ "\$2" == *AGENTS-project.md ]]; then
             echo "fatal: show AGENTS-project failed (injected)" >&2; exit 128
           fi
@@ -1129,6 +1156,7 @@ jobs:
           SHIM_APABS="$(mktemp -d)"
           cat > "$SHIM_APABS/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           if [ "\$1" = ls-tree ] && [[ "\$*" == *AGENTS-project.md* ]]; then
             exit 0
           fi
@@ -1203,6 +1231,7 @@ jobs:
           SHIM_FR="$(mktemp -d)"
           cat > "$SHIM_FR/git" <<GSH
           #!/usr/bin/env bash
+          while [ "\$1" = -c ]; do shift 2; done
           # Pass through real git; only rewrite cat-file -e stderr to French (legacy trap).
           if [ "\$1" = cat-file ] && [ "\$2" = -e ]; then
             out="\$("$REAL_GIT" "\$@" 2>&1)"; rc=\$?
