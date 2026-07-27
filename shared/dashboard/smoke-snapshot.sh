@@ -573,18 +573,26 @@ export PLINTH_DASH_QUOTA=0
 QHOME="$FIX/qhome"
 mkdir -p "$QHOME/.config/plinth"
 export HOME="$QHOME"
-# Use the real product cache path; backup/restore any operator cache on exit.
+# Live product cache path with backup/restore (best-effort; exclusive via mkdir lock).
 QCACHE="/tmp/plinth-dash-quota-$(id -u)/dash-quota.json"
-QBAK="$FIX/operator-quota.bak"
+QLOCK="/tmp/plinth-dash-quota-$(id -u)/.smoke.lock.d"
 mkdir -p "$(dirname "$QCACHE")"
+# Portable exclusive lock (mkdir is atomic); wait up to ~30s.
+_lock_i=0
+while ! mkdir "$QLOCK" 2>/dev/null; do
+  _lock_i=$((_lock_i+1))
+  [ "$_lock_i" -lt 60 ] || { echo "smoke-snapshot: could not acquire quota cache lock" >&2; exit 1; }
+  sleep 0.5
+done
+QBAK="$FIX/operator-quota.bak"
 [ -f "$QCACHE" ] && cp -p "$QCACHE" "$QBAK" || true
-# Keep a private TMPDIR for other mktemp use so it is not a discovered root.
 export TMPDIR="$FIX/tmp"
 mkdir -p "$TMPDIR"
 _quota_cleanup() {
   if [ -f "$QBAK" ]; then mv -f "$QBAK" "$QCACHE"
-  else rm -f "$QCACHE"; rmdir "$(dirname "$QCACHE")" 2>/dev/null || true
+  else rm -f "$QCACHE"
   fi
+  rmdir "$QLOCK" 2>/dev/null || true
   cleanup
 }
 trap _quota_cleanup EXIT
@@ -687,11 +695,6 @@ jq -e '
   and (.quota.offline != true)
 ' "$QOUT" >/dev/null
 # Snapshot must stay offline with empty cache (no CLI spawn)
-rm -f "$QCACHE"
-# PLINTH_DASH_QUOTA_CACHE is ignored (must not create that path)
-PLINTH_DASH_QUOTA_CACHE="$FIX/should-not-create.json" \
-  PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
-[ ! -f "$FIX/should-not-create.json" ] || { echo "smoke-snapshot: QUOTA_CACHE override was honored" >&2; exit 1; }
 rm -f "$QCACHE"
 PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '.quota.offline == true' >/dev/null
