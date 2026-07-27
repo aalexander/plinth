@@ -1299,7 +1299,8 @@ $(cat "$RECEIPT")"
     if [ "$_sn_rc" -ne 0 ]; then
       die_infra "git diff --name-only for spec-change detection failed (rc=$_sn_rc)"
     fi
-    _grc=0; printf '%s\n' "$_sn" | grep -E "^${sp}" >/dev/null || _grc=$?
+    # Fixed-string exact path match (not ERE): paths may contain + ( ) { } etc.
+    _grc=0; printf '%s\n' "$_sn" | grep -Fx "$sp" >/dev/null || _grc=$?
     if [ "$_grc" -eq 0 ]; then spec_changed=1
     elif [ "$_grc" -ne 1 ]; then die_infra "spec-change grep failed (rc=$_grc)"
     fi
