@@ -48,10 +48,10 @@ each_protected() {  # builtin pattern + project patterns, one per line
 #   - `gh pr create` is refused unless the CURRENT CHECKOUT feature branch has
 #     APPROVED at HEAD (local HEAD only — not the create command's --head/-R).
 #   - bare `gh pr merge` is ALWAYS refused (even when APPROVED). A permitted merge
-#     must be origin- and head-bound (plinth#49): either a same-repo PR URL or
-#     -R/--repo naming origin WITH a PR number/URL/branch, AND --match-head-commit
-#     equal to the origin-resolved head. Resolution forces GH_HOST=github.com so
-#     GH_HOST cannot desync authorize-from vs merge-into.
+#     must be origin- and head-bound (plinth#49): either a same-repo github.com PR
+#     URL or -R github.com/owner/repo WITH a PR number or URL, AND
+#     --match-head-commit equal to the origin-resolved head. Unqualified
+#     owner/repo is refused (follows GH_HOST). Branch refs are not accepted.
 # Wiring the guard into codex's own hook system (so a codex driver gets it too) is
 # deferred future work.
 # WHAT THIS IS, AND IS NOT — read before "hardening" it:
@@ -163,6 +163,12 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     esac
 
     if [ -n "$target_repo" ]; then
+      # Require host-qualified github.com/owner/repo so the actionable merge is
+      # host-bound (unqualified owner/repo follows GH_HOST and can desync).
+      case "$target_repo" in
+        github.com/*|http://github.com/*|https://github.com/*|git@github.com:*) ;;
+        *) block "$what blocked — -R/--repo must be host-qualified as github.com/<owner/repo> (unqualified owner/repo follows GH_HOST and can desync authorize-from vs merge-into)." ;;
+      esac
       n_repo="$(_ship_norm_repo "$target_repo")"
       case "$n_repo" in
         */*) case "${n_repo#*/}" in */*) block "$what blocked — -R/--repo must name one owner/repository." ;; esac ;;
@@ -173,11 +179,12 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     fi
 
     # Always bind resolve to origin on github.com — never gh's implicit default
-    # repo (upstream #16) and never GH_HOST (which would retarget owner/repo to
-    # another host). gh requires a PR ref when -R is set.
+    # repo (upstream #16). gh requires a PR number or URL when -R is set (branch
+    # refs are not accepted by this tripwire).
     [ -n "$target_ref" ] \
-      || block "$what blocked — targeted merge with -R/--repo requires a PR number, URL, or branch (gh rejects bare -R without a ref)."
-    # Force github.com host for resolution so GH_HOST cannot desync authorize-from.
+      || block "$what blocked — targeted merge with -R/--repo requires a PR number or URL (gh rejects bare -R without a ref)."
+    # Force github.com host for resolution; actionable -R was already required
+    # host-qualified above (or is a same-repo github.com PR URL).
     resolved="$(GH_HOST=github.com gh pr view "$target_ref" -R "github.com/$local_repo" \
       --json headRefName,headRefOid,headRepository 2>/dev/null)" \
       || block "$what blocked — could not resolve targeted pull request."

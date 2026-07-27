@@ -3162,17 +3162,18 @@ jobs:
           G49
           chmod +x "$GHBIN49/gh"
           gcmd49() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')" | PATH="$GHBIN49:$PATH" CLAUDE_PROJECT_DIR="$GD" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?; }
-          # -R without a PR ref is invalid (gh rejects it; guard must block):
-          [ "$(gcmd49 "gh pr merge --squash -R example/plinth --match-head-commit $GH4")" = 2 ] || { echo "::error::deny-ship: -R without PR ref must block"; exit 1; }
-          [ "$(gcmd49 "gh pr merge 42 --squash -R example/plinth --match-head-commit $GH4")" = 0 ] || { echo "::error::deny-ship: targeted merge with PR number + -R + match-head failed under APPROVED"; exit 1; }
+                    # -R without a PR ref is invalid (gh rejects it; guard must block):
+          [ "$(gcmd49 "gh pr merge --squash -R github.com/example/plinth --match-head-commit $GH4")" = 2 ] || { echo "::error::deny-ship: -R without PR ref must block"; exit 1; }
+          [ "$(gcmd49 "gh pr merge 42 --squash -R example/plinth --match-head-commit $GH4")" = 2 ] || { echo "::error::deny-ship: unqualified -R owner/repo must block (require github.com/owner/repo)"; exit 1; }
+          [ "$(gcmd49 "gh pr merge 42 --squash -R github.com/example/plinth --match-head-commit $GH4")" = 0 ] || { echo "::error::deny-ship: targeted merge with PR number + -R + match-head failed under APPROVED"; exit 1; }
           # same-repository PR URL binds without -R (documented alternative):
           [ "$(gcmd49 "gh pr merge https://github.com/example/plinth/pull/42 --squash --match-head-commit $GH4")" = 0 ] || { echo "::error::deny-ship: same-repo PR URL + match-head should succeed under APPROVED (repo bound via URL)"; exit 1; }
           # foreign-repo PR URL must still block:
           [ "$(gcmd49 "gh pr merge https://github.com/other/repo/pull/42 --squash --match-head-commit $GH4")" = 2 ] || { echo "::error::deny-ship: foreign-repo PR URL did not block"; exit 1; }
           # wrong match-head still blocks:
-          [ "$(gcmd49 "gh pr merge 42 --squash -R example/plinth --match-head-commit 0000000000000000000000000000000000000001")" = 2 ] || { echo "::error::deny-ship: mismatched --match-head-commit did not block"; exit 1; }
+          [ "$(gcmd49 "gh pr merge 42 --squash -R github.com/example/plinth --match-head-commit 0000000000000000000000000000000000000001")" = 2 ] || { echo "::error::deny-ship: mismatched --match-head-commit did not block"; exit 1; }
           # GH_HOST must not retarget resolution (guard forces github.com):
-          [ "$(GH_HOST=evil.example gcmd49 "gh pr merge 42 --squash -R example/plinth --match-head-commit $GH4")" = 0 ] || { echo "::error::deny-ship: GH_HOST desync should not break github.com-bound resolution"; exit 1; }
+          [ "$(GH_HOST=evil.example gcmd49 "gh pr merge 42 --squash -R github.com/example/plinth --match-head-commit $GH4")" = 0 ] || { echo "::error::deny-ship: GH_HOST desync should not break github.com-bound resolution"; exit 1; }
           # Re-STALE the verdict (wrong sha) so the ship-command tests further below (quoted-token
           # `gh "pr" create`, gh-global `gh -R o/r pr create/merge`) run in a NON-approved state and
           # block — otherwise the APPROVED@HEAD written just above would let them through (they are
