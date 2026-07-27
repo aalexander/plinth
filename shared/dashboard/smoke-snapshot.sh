@@ -54,9 +54,9 @@ HEAD="$(git -C "$A" rev-parse --short HEAD)"
 FULL="$(git -C "$A" rev-parse HEAD)"
 
 NOW="$(date +%s)"
-# Active-SID phase chain: PostToolUse gap accrues to THAT tool's phase.
-# t0 SessionStart, +5s UserPromptSubmit (planning gap ignored before first phase
-# set if no prior epoch phase), +30s PostToolUse Edit → coding 30s from previous.
+# Active-SID phase chain (event-gap heuristic):
+# SessionStart → +10s UserPromptSubmit (gap → other) → +30s Edit (coding) →
+# +20s Read (research) → other-sid noise → +30s advise Bash (advising).
 jq -nc --argjson epoch "$((NOW - 100))" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-smoke",transcript:null,tool:null,detail:null,rc:null}' \
   > "$A/.plinth/session/events.jsonl"
@@ -632,6 +632,7 @@ jq -e --arg head "$HEAD" '
   and .phases.advising == 30
   and ((.phases.ci // 0) == 0)
   and (.review_round_secs | type == "number")
+  and ((.phases.other // 0) == 10)
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0
@@ -714,6 +715,69 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-empty3.json" \
   PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
   PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
   | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
+# CLI timeout → cli_timeout
+cat > "$QBIN/claude" <<'C'
+#!/bin/sh
+sleep 30
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-to.json" \
+  PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_QUOTA_TIMEOUT=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="cli_timeout")] | length == 1' >/dev/null
+# Offline snapshot must NOT spawn claude (sentinel file)
+SENT="$FIX/claude-called"
+rm -f "$SENT"
+cat > "$QBIN/claude" <<C
+#!/bin/sh
+echo called > "$SENT"
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-offline-sent.json" \
+  PLINTH_DASH_QUOTA_PROBE=0 PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot >/dev/null
+[ ! -f "$SENT" ] || { echo "smoke-snapshot: offline snapshot spawned claude" >&2; exit 1; }
+# >50 open items → truncated=true, items length 50
+T50="$FIX/tau-nh50"
+mk_git "$T50"
+{
+  echo '# Queue'
+  i=1
+  while [ "$i" -le 55 ]; do
+    echo "- [ ] item number $i"
+    i=$((i + 1))
+  done
+} > "$T50/.plinth/NEEDS-HUMAN.md"
+export PLINTH_DASH_ROOTS="$T50"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "tau-nh50")
+  | .needs_human.open == 55
+  and .needs_human.truncated == true
+  and (.needs_human.items | length) == 50
+' >/dev/null
+# CI classification + PreToolUse + large gap drop + planning
+PH2="$FIX/phi-phases"
+mk_git "$PH2"
+git -C "$PH2" checkout -qb feat/ph
+echo p > "$PH2/p.txt"; git -C "$PH2" add -A; git -C "$PH2" commit -qm w
+NOWP="$(date +%s)"
+mkdir -p "$PH2/.plinth/session"
+{
+  jq -nc --argjson e "$((NOWP-4000))" '{epoch:$e,event:"SessionStart",sid:"s1",tool:null,detail:null}'
+  # gap 4000s should drop (>=3600)
+  jq -nc --argjson e "$((NOWP-100))" '{epoch:$e,event:"UserPromptSubmit",sid:"s1",tool:null,detail:"plan it"}'
+  jq -nc --argjson e "$((NOWP-90))" '{epoch:$e,event:"PreToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1"}'
+  jq -nc --argjson e "$((NOWP-70))" '{epoch:$e,event:"PostToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1",rc:0}'
+} > "$PH2/.plinth/session/events.jsonl"
+export PLINTH_DASH_ROOTS="$PH2"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "phi-phases")
+  | ((.phases.other // 0) == 0)   # 4000s gap dropped
+  and (.phases.planning == 10)    # prompt→PreToolUse
+  and (.phases.ci == 20)          # Pre→Post Bash gh
+' >/dev/null
 # review_round_secs: request→findings mtime delta, not folded into phases.reviewing
 RR="$FIX/rho-review-secs"
 mk_git "$RR"
@@ -1383,9 +1447,16 @@ setTimeout(() => {
       console.error("NEEDS-HUMAN chip missing data-nh:", nhHtml.slice(0, 300));
       process.exit(1);
     }
-    // Modal path: openNeedsHuman renders item text + blocking + truncation notice
-    if (typeof api.openNeedsHuman === "function") {
-      const proj = {
+    // Modal path: invoke real openNeedsHuman / closeNeedsHuman on the smoke DOM
+    if (typeof api.openNeedsHuman === "function" && typeof api.seedProjects === "function") {
+      const modal = elsById["nh-modal"];
+      let open = false;
+      modal.classList = {
+        add(c) { if (c === "open") open = true; },
+        remove(c) { if (c === "open") open = false; },
+        contains(c) { return c === "open" ? open : false; },
+      };
+      api.seedProjects([{
         name: "h2", path: "/tmp/h2", branch: "main", head: "abc",
         feedless: true, review: null,
         needs_human: {
@@ -1393,26 +1464,43 @@ setTimeout(() => {
           items: [{ text: "[BLOCKING] fix <me>", blocking: true },
                   { text: "later", blocking: false }]
         }
-      };
-      // Seed map used by openNeedsHuman
-      if (api.openNeedsHuman) {
-        // poll/render path seeds projectsByPath; call after manual seed via poll mock:
-        // use render through a direct assignment if exposed — fall back to string checks
-        // by invoking openNeedsHuman after injecting via cardHTML-only path.
+      }]);
+      api.openNeedsHuman("/tmp/h2");
+      const listHtml = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!listHtml.includes("blocking") || !listHtml.includes("fix &lt;me&gt;")
+          || !listHtml.includes("truncated") || !listHtml.includes("plinth queue")) {
+        console.error("openNeedsHuman list missing blocking/escape/truncation:", listHtml);
+        process.exit(1);
       }
-      // Exercise pure helpers for escape/truncation messaging in modal HTML builder
-      // by simulating the list HTML the modal would build (same rules as openNeedsHuman).
-      const items = proj.needs_human.items;
-      let list = items.map((it) => {
-        const text = it.text || "";
-        const blk = !!it.blocking;
-        return '<li class="' + (blk ? "blocking" : "") + '">' + api.esc(text) + "</li>";
-      }).join("");
-      if (proj.needs_human.truncated) {
-        list += '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      if (!modal.classList.contains("open")) {
+        console.error("openNeedsHuman did not open modal");
+        process.exit(1);
       }
-      if (!list.includes("blocking") || !list.includes("fix &lt;me&gt;") || !list.includes("truncated")) {
-        console.error("NEEDS-HUMAN modal list missing blocking/escape/truncation:", list);
+      api.closeNeedsHuman();
+      if (modal.classList.contains("open")) {
+        console.error("closeNeedsHuman did not close modal");
+        process.exit(1);
+      }
+    }
+    // renderQuota available + unavailable
+    if (typeof api.renderQuota === "function") {
+      api.renderQuota({
+        available: true, refreshed_at: Math.floor(Date.now() / 1000),
+        overall: {
+          used_pct: 80, remaining_pct: 20, reset_text: "Jul 30 at 9am",
+          projected_100pct_at: Math.floor(Date.now() / 1000) + 3600,
+          rate_pct_per_hour: 5
+        }
+      });
+      const qb = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb.includes("80%") || !qb.includes("WEEKLY") || !qb.includes("→100%")) {
+        console.error("renderQuota available missing expected text:", qb);
+        process.exit(1);
+      }
+      api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });
+      const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb2.includes("unavailable")) {
+        console.error("renderQuota unavailable missing text:", qb2);
         process.exit(1);
       }
     }

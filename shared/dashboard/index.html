@@ -710,7 +710,12 @@
   // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
   globalThis.__plinthDash = {
     cardTone: cardTone, cardHTML: cardHTML, esc: esc,
-    modelsLine: modelsLine, phaseBar: phaseBar, renderQuota: renderQuota
+    modelsLine: modelsLine, phaseBar: phaseBar, renderQuota: renderQuota,
+    openNeedsHuman: openNeedsHuman, closeNeedsHuman: closeNeedsHuman,
+    seedProjects: function (ps) {
+      projectsByPath = {};
+      (ps || []).forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    }
   };
 
   function tickClocks() {
