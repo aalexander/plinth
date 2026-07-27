@@ -743,11 +743,12 @@ PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-offline-sent.json
   "$PLINTH" dash --snapshot >/dev/null
 [ ! -f "$SENT" ] || { echo "smoke-snapshot: offline snapshot spawned claude" >&2; exit 1; }
 
-# Public --snapshot cannot be forced online (must stay offline even with env noise)
+# Public --snapshot cannot be forced online via legacy/env knobs
 PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/quota-forge.json" \
-  PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_SERVE_CHILD=1 \
+  _DASH_QUOTA_ALLOW_PROBE=1 PLINTH_DASH_ROOTS="$B" \
   "$PLINTH" dash --snapshot >/dev/null
-[ ! -f "$SENT" ] || { echo "smoke-snapshot: public --snapshot spawned claude" >&2; exit 1; }
+[ ! -f "$SENT" ] || { echo "smoke-snapshot: public --snapshot spawned claude under env force" >&2; exit 1; }
 
 # >50 open items → truncated=true, items length 50
 T50="$FIX/tau-nh50"
@@ -862,6 +863,41 @@ jq -e '
   and .activity_secs_ago == null
   and .quota.available == false
 ' "$OUT" >/dev/null
+
+# Error-card constructor retains seats/phases/review_round_secs when only verdict is bad
+EC="$FIX/err-keep"
+mk_git "$EC"
+git -C "$EC" checkout -qb feat/ek
+echo e > "$EC/e.txt"; git -C "$EC" add -A; git -C "$EC" commit -qm w
+printf '%s\n' 'spec_path = SPEC.md' 'reviewer_vendor = codex' 'reviewer_model_tier2 = gpt-t2' \
+  'audit_vendor = claude' 'audit_model = opus' > "$EC/.plinth/config"
+NOWE="$(date +%s)"
+mkdir -p "$EC/.plinth/session/review/feat-ek"
+# valid events → phases accrue; malformed verdict → error card
+{
+  jq -nc --argjson e "$((NOWE-60))" '{epoch:$e,event:"SessionStart",sid:"s",tool:null,detail:null}'
+  jq -nc --argjson e "$((NOWE-30))" '{epoch:$e,event:"PostToolUse",sid:"s",tool:"Edit",detail:"e.txt",rc:0}'
+} > "$EC/.plinth/session/events.jsonl"
+printf 'not-json\n' > "$EC/.plinth/session/review/feat-ek/verdict.json"
+printf '{"round":1,"mode":"fresh"}\n' > "$EC/.plinth/session/review/feat-ek/request-1.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[]}\n' \
+  > "$EC/.plinth/session/review/feat-ek/findings-1.json"
+python3 - <<PY
+import os, time
+b=time.time()
+os.utime("$EC/.plinth/session/review/feat-ek/request-1.json", (b-15, b-15))
+os.utime("$EC/.plinth/session/review/feat-ek/findings-1.json", (b, b))
+PY
+export PLINTH_DASH_ROOTS="$EC"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "err-keep")
+  | .error == "snapshot_render_failed"
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .models.seats.audit_model == "opus"
+  and .phases.coding == 30
+  and .review_round_secs >= 10
+  and .review_round_secs <= 20
+' >/dev/null
 
 # Detached HEAD finds verdict under "detached"
 jq -e '
@@ -1561,6 +1597,18 @@ setTimeout(() => {
       const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
       if (!qb2.includes("unavailable")) {
         console.error("renderQuota unavailable missing text:", qb2);
+        process.exit(1);
+      }
+      // Malformed vendors must not throw (Array.isArray guard)
+      try {
+        api.renderQuota({ available: false, note: "bad", vendors: {} });
+      } catch (e) {
+        console.error("renderQuota crashed on vendors:{}", e);
+        process.exit(1);
+      }
+      const qb3 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb3.includes("unavailable")) {
+        console.error("renderQuota vendors:{} missing unavailable:", qb3);
         process.exit(1);
       }
     }
