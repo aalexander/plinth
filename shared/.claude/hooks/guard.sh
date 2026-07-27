@@ -867,7 +867,8 @@ case "$tool" in
       # relative path sits mid-string after a space, so strip the anchors and
       # match the bare pattern. Over-matching blocks (fail closed) — fine.
       bp="${pattern#"(^|/)"}"; bp="${bp#^}"; bp="${bp%\$}"
-      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[ >/dev/null\"']?[^;|&]*${bp}" \
+      # Full-read grep -E (not -q): >/dev/null AFTER the complete pattern string.
+      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[\"']?[^;|&]*${bp}" >/dev/null \
          || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" >/dev/null \
          || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}" >/dev/null; then
         block "bash write targeting protected path (pattern '${pattern}'). Protected files are off-limits to the driver; if genuinely intended, the human runs it."
@@ -885,7 +886,7 @@ PATTERNS
     # so the Bash branch fails CLOSED on the entire .env family. Write .env.example via the
     # Write tool, or the human runs the bash form.
     for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519' '\.env'; do
-      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[ >/dev/null\"']?[^;|&]*${sp}" \
+      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[\"']?[^;|&]*${sp}" >/dev/null \
          || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" >/dev/null \
          || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}" >/dev/null; then
         block "bash write targeting a secret path (matched '${sp}'). Secret paths need explicit human action; if intended, the human runs it."
@@ -894,13 +895,13 @@ PATTERNS
     ;;
   Edit|Write|MultiEdit)
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
-    if printf '%s' "$path" | grep -E '(^|/)secrets/|(^|/)credentials/|(^|/) >/dev/null\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
+    if printf '%s' "$path" | grep -E '(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519' >/dev/null; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
     # .env* is secret — but .env.example/.sample/.template are conventionally
     # committed documentation, not secrets.
-    if printf '%s' "$path" | grep -E '(^|/) >/dev/null\.env' \
-       && ! printf '%s' "$path" | grep -E ' >/dev/null\.(example|sample|template)$'; then
+    if printf '%s' "$path" | grep -E '(^|/)\.env' >/dev/null \
+       && ! printf '%s' "$path" | grep -E '\.(example|sample|template)$' >/dev/null; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
     while IFS= read -r pattern; do

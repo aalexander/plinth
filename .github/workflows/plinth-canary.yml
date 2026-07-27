@@ -3250,6 +3250,18 @@ jobs:
           [ "$(gcmd 'echo x > out.txt')" = 0 ] || { echo "::error::guard: non-secret bash write 'echo > out.txt' wrongly blocked"; exit 1; }
           [ "$(gcmd 'echo x > environments.md')" = 0 ] || { echo "::error::guard: 'environments.md' (no .env substring) wrongly blocked"; exit 1; }
           [ "$(gcmd 'cat secrets/key')" = 0 ] || { echo "::error::guard: 'cat secrets/key' (read, not write) wrongly blocked"; exit 1; }
+          # Write/Edit/MultiEdit secret-path enforcement (plinth#15 sibling — regex full-read fix)
+          gtool() { printf '{"tool_name":"%s","tool_input":{"file_path":"%s"}}' "$1" "$2" | CLAUDE_PROJECT_DIR="$GD" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?; }
+          for _t in Write Edit MultiEdit; do
+            [ "$(gtool "$_t" '.env')" = 2 ] || { echo "::error::guard: $_t .env not blocked"; exit 1; }
+            [ "$(gtool "$_t" '.env.local')" = 2 ] || { echo "::error::guard: $_t .env.local not blocked"; exit 1; }
+            [ "$(gtool "$_t" '.ssh/id_rsa')" = 2 ] || { echo "::error::guard: $_t .ssh/id_rsa not blocked"; exit 1; }
+            [ "$(gtool "$_t" 'secrets/key')" = 2 ] || { echo "::error::guard: $_t secrets/key not blocked"; exit 1; }
+            [ "$(gtool "$_t" '.env.example')" = 0 ] || { echo "::error::guard: $_t .env.example carve-out broken"; exit 1; }
+            [ "$(gtool "$_t" '.env.sample')" = 0 ] || { echo "::error::guard: $_t .env.sample carve-out broken"; exit 1; }
+            [ "$(gtool "$_t" '.env.template')" = 0 ] || { echo "::error::guard: $_t .env.template carve-out broken"; exit 1; }
+            [ "$(gtool "$_t" 'app.py')" = 0 ] || { echo "::error::guard: $_t app.py wrongly blocked"; exit 1; }
+          done
           # Case-INSENSITIVE destructive SQL DROP (round-50):
           [ "$(gcmd 'psql -c "drop table users"')" = 2 ] || { echo "::error::guard: lowercase 'drop table' bypassed"; exit 1; }
           [ "$(gcmd 'mysql -e "Drop Database app"')" = 2 ] || { echo "::error::guard: mixed-case 'Drop Database' bypassed"; exit 1; }
