@@ -25,11 +25,11 @@ else printf '{"tier":1,"reasons":["base ref not found; defaulting Tier 1"],"file
 
 # An invalid tier2_extra regex (a typo in this driver-protected routing knob) must
 # fail CLOSED, not silently disable the Tier-2 surface: grep exits 2 on a bad
-# pattern, which the per-file `if ... grep -Eq "$TIER2_EXTRA"` below reads as a
+# pattern, which the per-file `if ... grep -E "$TIER2_EXTRA" >/dev/null` below reads as a
 # plain "no match", letting intended Tier-2 paths slip to Tier 0/1. Validate the
 # pattern ONCE against empty input (valid -> exit 0/1; invalid -> >=2).
 if [ -n "$TIER2_EXTRA" ]; then
-  t2rc=0; printf '' | grep -Eq "$TIER2_EXTRA" 2>/dev/null || t2rc=$?
+  t2rc=0; printf '' | grep -E "$TIER2_EXTRA" >/dev/null 2>/dev/null || t2rc=$?
   if [ "$t2rc" -ge 2 ]; then
     printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["invalid tier2_extra regex in .plinth/config — failing closed to Tier 2"]}\n' "$baseref"
     exit 0
@@ -57,7 +57,7 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 [ -n "$SPEC_PATH" ] || SPEC_PATH="$(cfg spec_path || true)"
 [ -n "$SPEC_PATH" ] || SPEC_PATH="SPEC.md"
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
-is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -Eq "$SPECRE"; }
+is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -E "$SPECRE" >/dev/null; }
 
 # plinth#11: never swallow git diff failures as "empty diff" / Tier 0.
 raw=""; raw_rc=0
@@ -91,7 +91,7 @@ DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CO
 tier=0; reasons=(); nfiles=0
 add_reason() { reasons+=("$1"); }
 bump() { [ "$1" -gt "$tier" ] && tier="$1" || true; }
-is_test() { printf '%s' "$1" | grep -Eq "$TESTS"; }
+is_test() { printf '%s' "$1" | grep -E "$TESTS" >/dev/null; }
 
 while IFS=$'\t' read -r meta p2 p3; do
   [ -n "${meta:-}" ] || continue
@@ -124,27 +124,27 @@ while IFS=$'\t' read -r meta p2 p3; do
   if [ -n "$oldpath" ]; then
     if is_test "$oldpath" && ! is_test "$path"; then bump 2; add_reason "test moved out of test tree: $oldpath -> $path"; continue; fi
     if is_spec "$oldpath"; then bump 2; add_reason "spec moved: $oldpath -> $path"; continue; fi
-    if printf '%s' "$oldpath" | grep -Eiq "$SECURITY|$MIGRATION|$TOOLING|$BUILD|$DEPS|$PUBAPI"; then bump 2; add_reason "sensitive/tooling source moved: $oldpath -> $path"; continue; fi
+    if printf '%s' "$oldpath" | grep -Ei "$SECURITY|$MIGRATION|$TOOLING|$BUILD|$DEPS|$PUBAPI" >/dev/null; then bump 2; add_reason "sensitive/tooling source moved: $oldpath -> $path"; continue; fi
     # tier2_extra is a project-declared high-consequence path (case-sensitive, like
     # the destination check below): renaming one out to an inert name must not launder it.
-    if [ -n "$TIER2_EXTRA" ] && printf '%s' "$oldpath" | grep -Eq "$TIER2_EXTRA"; then bump 2; add_reason "tier2_extra source moved: $oldpath -> $path"; continue; fi
-    if printf '%s' "$oldpath" | grep -Eq "$TEST_CONFIG"; then bump 2; add_reason "test-runner config moved out: $oldpath -> $path"; continue; fi
+    if [ -n "$TIER2_EXTRA" ] && printf '%s' "$oldpath" | grep -E "$TIER2_EXTRA" >/dev/null; then bump 2; add_reason "tier2_extra source moved: $oldpath -> $path"; continue; fi
+    if printf '%s' "$oldpath" | grep -E "$TEST_CONFIG" >/dev/null; then bump 2; add_reason "test-runner config moved out: $oldpath -> $path"; continue; fi
     # Renaming real content (non-doc source) into an inert destination is the
     # "relabel code as docs" bypass — it can never be Tier 0. Floor to Tier 1,
     # then let the destination-path rules escalate further if they match.
-    if ! printf '%s' "$oldpath" | grep -Eq "$DOCS"; then bump 1; add_reason "renamed from non-doc source: $oldpath -> $path"; fi
+    if ! printf '%s' "$oldpath" | grep -E "$DOCS" >/dev/null; then bump 1; add_reason "renamed from non-doc source: $oldpath -> $path"; fi
   fi
 
   # Tier 2 — high-consequence surfaces (case-insensitive; tier is the max).
-  if printf '%s' "$path" | grep -Eiq "$TOOLING"; then bump 2; add_reason "tooling: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eiq "$BUILD"; then bump 2; add_reason "build system: $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$TOOLING" >/dev/null; then bump 2; add_reason "tooling: $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$BUILD" >/dev/null; then bump 2; add_reason "build system: $path"; continue; fi
   if is_spec "$path"; then bump 2; add_reason "spec: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eiq "$SECURITY"; then bump 2; add_reason "security-sensitive: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eiq "$MIGRATION"; then bump 2; add_reason "migration/schema: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eiq "$PUBAPI"; then bump 2; add_reason "public API/schema: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eiq "$DEPS"; then bump 2; add_reason "dependency manifest: $path"; continue; fi
-  if [ -n "$TIER2_EXTRA" ] && printf '%s' "$path" | grep -Eq "$TIER2_EXTRA"; then bump 2; add_reason "project tier2_extra: $path"; continue; fi
-  if printf '%s' "$path" | grep -Eq "$TEST_CONFIG"; then bump 2; add_reason "test-runner config (can disable/narrow the suite): $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$SECURITY" >/dev/null; then bump 2; add_reason "security-sensitive: $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$MIGRATION" >/dev/null; then bump 2; add_reason "migration/schema: $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$PUBAPI" >/dev/null; then bump 2; add_reason "public API/schema: $path"; continue; fi
+  if printf '%s' "$path" | grep -Ei "$DEPS" >/dev/null; then bump 2; add_reason "dependency manifest: $path"; continue; fi
+  if [ -n "$TIER2_EXTRA" ] && printf '%s' "$path" | grep -E "$TIER2_EXTRA" >/dev/null; then bump 2; add_reason "project tier2_extra: $path"; continue; fi
+  if printf '%s' "$path" | grep -E "$TEST_CONFIG" >/dev/null; then bump 2; add_reason "test-runner config (can disable/narrow the suite): $path"; continue; fi
 
   # Tests: deletion, ANY modification of an existing test (removed content), or a
   # skip/ignore added -> Tier 2. Net assertion counting is gameable by padding,
@@ -166,7 +166,7 @@ while IFS=$'\t' read -r meta p2 p3; do
     if [ "$tdiff_rc" -ne 0 ]; then
       bump 2; add_reason "cannot diff new test file (fail closed): $path"; continue
     fi
-    if printf '%s' "$tdiff" | grep -Eq "^\+.*$SKIPADD"; then bump 2; add_reason "new test added pre-skipped/ignored: $path"; continue; fi
+    if printf '%s' "$tdiff" | grep -E "^\+.*$SKIPADD" >/dev/null; then bump 2; add_reason "new test added pre-skipped/ignored: $path"; continue; fi
     bump 1; add_reason "test added: $path"; continue
   fi
 
@@ -174,7 +174,7 @@ while IFS=$'\t' read -r meta p2 p3; do
   if [ "$status" = "D" ]; then bump 1; add_reason "deletion: $path"; continue; fi
 
   # Tier 0 — inert docs only (regular blob; symlink/submodule handled above).
-  if printf '%s' "$path" | grep -Eq "$DOCS"; then add_reason "docs: $path"; continue; fi
+  if printf '%s' "$path" | grep -E "$DOCS" >/dev/null; then add_reason "docs: $path"; continue; fi
 
   # Everything else: ordinary code -> Tier 1.
   bump 1; add_reason "code: $path"

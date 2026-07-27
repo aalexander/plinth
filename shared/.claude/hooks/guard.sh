@@ -194,13 +194,13 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
       || block "$what blocked — resolved pull-request head SHA was unreadable."
     [ -n "$resolved_branch" ] \
       || block "$what blocked — pull-request resolution returned incomplete head metadata."
-    printf '%s' "$resolved_sha" | grep -Eq '^[0-9a-fA-F]{40}$' \
+    printf '%s' "$resolved_sha" | grep -E '^[0-9a-fA-F]{40}$' >/dev/null \
       || block "$what blocked — pull-request resolution returned an invalid head SHA."
 
     # Actionable command must pin the head so the merge cannot race past the verdict.
     [ -n "$match_head" ] \
       || block "$what blocked — targeted merge must include --match-head-commit <origin-resolved-head-sha> so the ship is bound to the APPROVED head."
-    printf '%s' "$match_head" | grep -Eq '^[0-9a-fA-F]{40}$' \
+    printf '%s' "$match_head" | grep -E '^[0-9a-fA-F]{40}$' >/dev/null \
       || block "$what blocked — --match-head-commit is not a 40-char commit SHA."
     [ "$match_head" = "$resolved_sha" ] \
       || block "$what blocked — --match-head-commit does not match the origin-resolved PR head ($resolved_sha)."
@@ -243,12 +243,12 @@ ORIGSEGS
     while IFS= read -r dseg; do
       # Real create → bare current-branch gate (independent of sibling merges).
       # OPT between pr and create so `gh pr -R o/r create` is still gated.
-      if printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+create([[:space:]]|$)'; then
+      if printf '%s' "$dseg" | grep -E '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+create([[:space:]]|$)' >/dev/null; then
         _ship_bare
         continue
       fi
       # Real merge only (argument-position prose in another discovery line is ignored).
-      printf '%s' "$dseg" | grep -Eq '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+merge([[:space:]]|$)' \
+      printf '%s' "$dseg" | grep -E '^[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+merge([[:space:]]|$)' >/dev/null \
         || continue
 
       set -f
@@ -842,8 +842,8 @@ case "$tool" in
     # seconds vs. data loss on a miss. The +/: alternatives start right after a space (the
     # prefix group ends in whitespace), so a mid-token plus/colon — an ordinary non-destructive
     # refspec like `feature+x` or `HEAD:main` — is NOT a hit.
-    if printf '%s' "$destructive_stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' \
-       || printf '%s' "$inert_stripped" | grep -Eiq 'DROP[[:space:]]+(TABLE|DATABASE)'; then
+    if printf '%s' "$destructive_stripped" | grep -E '(^|[;&|(`])[[:space:]]*'"$PFX"'(rm[[:space:]]+([^;&|`]*[[:space:]])?(--recursive|-[A-Za-z]*[rR][A-Za-z]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+push[[:space:]]([^;&|`]*[[:space:]])?(--force[^;&|`[:space:]]*|--mirror|--prune|--delete|-[A-Za-z]*[fd][A-Za-z]*|[+][^;&|`[:space:]]*|[:][^;&|`[:space:]]*)([[:space:]]|$)|git'"$OPT"'[[:space:]]+reset[[:space:]]+--hard[[:space:]]+origin)' >/dev/null \
+       || printf '%s' "$inert_stripped" | grep -Ei 'DROP[[:space:]]+(TABLE|DATABASE)' >/dev/null; then
       block "destructive command detected. If intended, run it yourself."
     fi
     # Ship tripwire: block `gh pr create`/`gh pr merge` at COMMAND POSITION on `stripped`
@@ -859,7 +859,7 @@ case "$tool" in
     # that race; branch protection can.
     # OPT between pr and create|merge so `gh pr -R owner/repo merge` is gated
     # (gh accepts inherited -R/--repo before the subcommand).
-    if printf '%s' "$stripped" | grep -Eq '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+(create|merge)'; then
+    if printf '%s' "$stripped" | grep -E '(^|[;&|(`])[[:space:]]*'"$PFX"'gh'"$OPT"'[[:space:]]+pr'"$OPT"'[[:space:]]+(create|merge)' >/dev/null; then
       ship_gate "gh pr create/merge" "$stripped" "$cmd"
     fi
     while IFS= read -r pattern; do
@@ -867,9 +867,9 @@ case "$tool" in
       # relative path sits mid-string after a space, so strip the anchors and
       # match the bare pattern. Over-matching blocks (fail closed) — fine.
       bp="${pattern#"(^|/)"}"; bp="${bp#^}"; bp="${bp%\$}"
-      if printf '%s' "$inert_stripped" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${bp}" \
-         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" \
-         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}"; then
+      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[ >/dev/null\"']?[^;|&]*${bp}" \
+         || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${bp}" >/dev/null \
+         || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${bp}" >/dev/null; then
         block "bash write targeting protected path (pattern '${pattern}'). Protected files are off-limits to the driver; if genuinely intended, the human runs it."
       fi
     done <<PATTERNS
@@ -885,26 +885,26 @@ PATTERNS
     # so the Bash branch fails CLOSED on the entire .env family. Write .env.example via the
     # Write tool, or the human runs the bash form.
     for sp in 'secrets/' 'credentials/' '\.ssh/' '\.aws/' 'id_rsa' 'id_ed25519' '\.env'; do
-      if printf '%s' "$inert_stripped" | grep -Eq ">>?[[:space:]]*[\"']?[^;|&]*${sp}" \
-         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" \
-         || printf '%s' "$inert_stripped" | grep -Eq "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}"; then
+      if printf '%s' "$inert_stripped" | grep -E ">>?[[:space:]]*[ >/dev/null\"']?[^;|&]*${sp}" \
+         || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])(tee|mv|cp|rm|truncate|dd|touch|install|ln|chmod)[[:space:]][^;|&]*${sp}" >/dev/null \
+         || printf '%s' "$inert_stripped" | grep -E "(^|[;&|[:space:]])sed[[:space:]]+-[a-zA-Z]*i[^;|&]*${sp}" >/dev/null; then
         block "bash write targeting a secret path (matched '${sp}'). Secret paths need explicit human action; if intended, the human runs it."
       fi
     done
     ;;
   Edit|Write|MultiEdit)
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
-    if printf '%s' "$path" | grep -Eq '(^|/)secrets/|(^|/)credentials/|(^|/)\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
+    if printf '%s' "$path" | grep -E '(^|/)secrets/|(^|/)credentials/|(^|/) >/dev/null\.ssh/|(^|/)\.aws/|id_rsa|id_ed25519'; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
     # .env* is secret — but .env.example/.sample/.template are conventionally
     # committed documentation, not secrets.
-    if printf '%s' "$path" | grep -Eq '(^|/)\.env' \
-       && ! printf '%s' "$path" | grep -Eq '\.(example|sample|template)$'; then
+    if printf '%s' "$path" | grep -E '(^|/) >/dev/null\.env' \
+       && ! printf '%s' "$path" | grep -E ' >/dev/null\.(example|sample|template)$'; then
       block "attempt to edit a protected/secret path: $path. Needs explicit human action."
     fi
     while IFS= read -r pattern; do
-      if printf '%s' "$path" | grep -Eq "$pattern"; then
+      if printf '%s' "$path" | grep -E "$pattern" >/dev/null; then
         block "path matches protected pattern '$pattern': $path. This file is off-limits to the driver."
       fi
     done <<PATTERNS
