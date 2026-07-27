@@ -684,3 +684,58 @@ T_EMPTY="$(mktemp -d)"; ( cd "$T_EMPTY"; git init -qb main . >/dev/null; git con
   set -e
   [ "$erc" -ne 0 ] || { echo "::error::#15 empty reviewer contract did not die_infra"; exit 1; }
   printf '%s' "$err" | grep -qiE 'empty|die_infra' || { echo "::error::#15 empty contract message missing (err=$err)"; exit 1; } )
+
+
+
+
+# ── Product-level spec_changed (real review.sh for-loop) ────────────────────
+_sc_driver() {
+  # args: SPEC_PATH setup_base setup_feat
+  local sp="$1" setup_b="$2" setup_f="$3"
+  local repo driver base_tip
+  repo="$(mktemp -d)"
+  (
+    cd "$repo"
+    git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+    mkdir -p .plinth
+    printf 'spec_path = %s\n' "$sp" > .plinth/config
+    eval "$setup_b"
+    git add -A; git commit -qm b >/dev/null
+    git checkout -qb feat >/dev/null 2>&1
+    eval "$setup_f"
+    git add -A; git commit -qm w >/dev/null 2>/dev/null || true
+    base_tip="$(git rev-parse main)"
+    driver="$(mktemp)"
+    {
+      echo 'set -euo pipefail'
+      echo 'die_infra() { echo "die_infra: $*" >&2; exit 9; }'
+      printf 'SPEC_PATH=%q; WSPEC=%q\n' "$sp" "$sp"
+      echo "base_tip=$base_tip"
+      echo 'spec_changed=""'
+      sed -n '/^_norm_rel()/,/^}$/p' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh"
+      awk '/for sp in "\$SPEC_PATH" "\$WSPEC"/ {p=1} p{print} p && /^  done$/ {exit}' \
+        "$GITHUB_WORKSPACE/shared/.plinth/review.sh"
+      echo 'printf "sc=%s\n" "${spec_changed:-}"'
+    } > "$driver"
+    bash "$driver"
+  )
+}
+out="$(_sc_driver 'blueprints/' 'mkdir -p blueprints; echo hi > README.md' 'echo ch > blueprints/chapter.md')"
+printf '%s' "$out" | grep -q 'sc=1' || { echo "::error::#15 product spec_changed not set for blueprints/ (out=$out)"; exit 1; }
+out="$(_sc_driver 'SPEC.md' 'echo REQ > SPEC.md' 'git mv SPEC.md OTHER.md')"
+printf '%s' "$out" | grep -q 'sc=1' || { echo "::error::#15 product spec_changed not set for rename-away (out=$out)"; exit 1; }
+
+# Large-input product probes (need a real feature-branch checkout for create gate)
+GD_D="$(mktemp -d)"; mkdir -p "$GD_D/.plinth"
+( cd "$GD_D"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+  echo a > f; git add -A; git commit -qm b >/dev/null
+  git checkout -qb feat/x >/dev/null 2>&1; echo c > f; git add -A; git commit -qm w >/dev/null )
+pad="$(python3 -c 'print("x"*100000)')"
+dc_rc="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "rm -rf /tmp/z $pad" '$c')" | CLAUDE_PROJECT_DIR="$GD_D" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?)"
+[ "$dc_rc" = 2 ] || { echo "::error::#15 product guard missed large destructive command (rc=$dc_rc)"; exit 1; }
+we_rc="$(printf '{"tool_name":"Write","tool_input":{"file_path":".env","content":"x"}}' | CLAUDE_PROJECT_DIR="$GD_D" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?)"
+[ "$we_rc" = 2 ] || { echo "::error::#15 product Write .env not blocked (rc=$we_rc)"; exit 1; }
+cr_rc="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "gh pr create --fill $pad" '$c')" | CLAUDE_PROJECT_DIR="$GD_D" bash "$GITHUB_WORKSPACE/shared/.claude/hooks/guard.sh" >/dev/null 2>&1; echo $?)"
+[ "$cr_rc" = 2 ] || { echo "::error::#15 product guard missed large create command (rc=$cr_rc)"; exit 1; }
+
+echo "canary-fail-closed-upstream: all probes passed"
