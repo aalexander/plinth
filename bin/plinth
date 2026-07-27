@@ -2458,15 +2458,19 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Resolve quota cache path: ONLY under $HOME/.config/plinth/ (never under a
-# discovered project tree, even if that tree is under /tmp). Invalid overrides
-# fall back to the default. Smoke points HOME at a private fixture tree.
+# Resolve quota cache path: ONLY under the realpath of $HOME/.config/plinth/
+# (rejects .. traversal and non-config locations). Invalid overrides → default.
 _dash_quota_cache_path() {
   local def="$HOME/.config/plinth/dash-quota.json" cand="${PLINTH_DASH_QUOTA_CACHE:-}"
-  [ -n "$cand" ] || { printf '%s\n' "$def"; return 0; }
-  case "$cand" in
-    "$HOME"/.config/plinth/*) printf '%s\n' "$cand" ;;
-    *) printf '%s\n' "$def" ;;
+  local base rp
+  base="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' \
+    "$HOME/.config/plinth" 2>/dev/null || true)"
+  [ -n "$base" ] || { printf '%s\n' "$def"; return 0; }
+  [ -n "$cand" ] || { printf '%s\n' "$base/dash-quota.json"; return 0; }
+  rp="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$cand" 2>/dev/null || true)"
+  case "$rp" in
+    "$base"|"$base"/*) printf '%s\n' "$rp" ;;
+    *) printf '%s\n' "$base/dash-quota.json" ;;
   esac
 }
 

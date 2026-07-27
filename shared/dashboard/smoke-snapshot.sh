@@ -683,14 +683,16 @@ QREC="$FIX/claude-rec.json"
 cat > "$QBIN/claude" <<C
 #!/usr/bin/env python3
 import json, os, sys
+cwd = os.getcwd()
+entries = [e for e in os.listdir(cwd) if e not in (".", "..")]
 rec = {
   "argv": sys.argv,
-  "cwd": os.getcwd(),
+  "cwd": cwd,
   "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR"),
+  "cwd_empty": len(entries) == 0,
+  "cwd_entries": entries[:20],
 }
 open("$QREC", "w").write(json.dumps(rec))
-# cwd must be empty temp (no .plinth)
-assert not os.path.exists(os.path.join(os.getcwd(), ".plinth")), "cwd not empty"
 print(json.dumps({"result":
 "Current session: 3% used · resets Jul 27 at 11:20am (America/Puerto_Rico)\n"
 "Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
@@ -723,8 +725,23 @@ jq -e '
   and (.cwd | type == "string" and test("plinth-quota-"))
   and (.CLAUDE_PROJECT_DIR | type == "string" and test("plinth-quota-"))
   and ((.cwd | sub("^/private";"")) == (.CLAUDE_PROJECT_DIR | sub("^/private";"")))
+  and .cwd_empty == true
 ' "$QREC" >/dev/null \
   || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
+# Multi-document cache is treated as miss (offline / re-probe), not crash
+printf '%s\n' '{"available":true,"refreshed_at":1}' '{"available":false}' \
+  > "$HOME/.config/plinth/multi-doc.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$HOME/.config/plinth/multi-doc.json" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=900 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot | jq -e '.quota.offline == true or .quota.skipped == true or .quota.available == false' >/dev/null
+# Path traversal override is rejected (falls back; does not write into project)
+EVIL="$HOME/.config/plinth/../../evil-cache.json"
+rm -f "$HOME/evil-cache.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$EVIL" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota >/dev/null
+[ ! -f "$HOME/evil-cache.json" ] || { echo "smoke-snapshot: traversal wrote outside config plinth" >&2; exit 1; }
+[ -f "$HOME/.config/plinth/dash-quota.json" ] || true
 # parse_failed: successful CLI, unmatchable text
 cat > "$QBIN/claude" <<'C'
 #!/usr/bin/env python3
@@ -1092,13 +1109,14 @@ jq -e '
 ' "$OUT" >/dev/null
 
 # Long session within window: task + ~10000s session (tolerate smoke wall-clock)
+_ks_got="$(jq -c '.projects[] | select(.name == "kappa-long") | {task,session_secs}' "$OUT")"
 jq -e --argjson now "$NOW" --argjson t0 "$J_T0" --argjson gen "$(jq -r .generated_at "$OUT")" '
   .projects[] | select(.name == "kappa-long")
   | .task == "long session task"
   and .session_secs != null
   and (((.session_secs - ($gen - $t0)) | if . < 0 then -. else . end) <= 30)
 ' "$OUT" >/dev/null \
-  || { echo "smoke-snapshot: kappa-long session_secs mismatch (now=$NOW t0=$J_T0 out=$(jq -c '.projects[]|select(.name==\"kappa-long\")|.session_secs' "$OUT"))" >&2; exit 1; }
+  || { echo "smoke-snapshot: kappa-long session_secs mismatch gen=$(jq -r .generated_at "$OUT") t0=$J_T0 got=$_ks_got" >&2; exit 1; }
 
 # Cap boundary: SessionStart outside 10k window → session_secs null (not fabricated)
 jq -e '
