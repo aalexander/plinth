@@ -44,10 +44,30 @@ esac
 slug=$(printf '%s' "$branch" | tr '/ ' '--')
 
 # Lifecycle phase: default build (no forced review). Harden restores v1 Stop.
+# Corrupt/invalid phase file → fail CLOSED as harden (do not silently build_defer).
 phase="build"
 pfile="$SDIR/phase-$slug.json"
 if [ -f "$pfile" ]; then
-  phase=$(jq -r '.phase // "build"' "$pfile" 2>/dev/null || echo build)
+  if phase=$(jq -er '.phase' "$pfile" 2>/dev/null) && { [ "$phase" = "build" ] || [ "$phase" = "harden" ]; }; then
+    :
+  else
+    phase="harden"
+    log_event "phase_corrupt" "phase file invalid — treating as harden (fail closed)"
+    echo "PLINTH REVIEW GATE: phase file corrupt/invalid — treating as HARDEN (fail closed)." >&2
+  fi
+fi
+# Migration hint: open review CHANGES_NEEDED/UNBOUND without phase file → harden.
+if [ ! -f "$pfile" ]; then
+  vtry="$SDIR/review/$slug/verdict.json"
+  if [ -f "$vtry" ]; then
+    vv=$(jq -r '.verdict // empty' "$vtry" 2>/dev/null || true)
+    case "$vv" in
+      CHANGES_NEEDED|UNBOUND)
+        phase="harden"
+        log_event "phase_migrate" "open verdict $vv without phase file — harden"
+        ;;
+    esac
+  fi
 fi
 case "$phase" in
   harden) ;;

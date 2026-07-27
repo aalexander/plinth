@@ -27,8 +27,16 @@ Stop only when ## Next is done or paths are **human-blocked** (`[BLOCKING]` NEED
 | Handoff file | `plinth handoff [path]` |
 | Review | `./.plinth/review.sh [base]` |
 | Advisor | `plinth advise "…"` |
+| Next action (autonomous) | `plinth next [path]` |
 | Dashboard | `plinth dash` / `plinth dash --snapshot` |
 | PR | `gh pr create` *(needs APPROVED@HEAD)* |
+
+### `plinth next` exit codes
+| Code | Meaning |
+|------|---------|
+| 0 | `status: work` — do `action` |
+| 2 | `status: human_blocked` — NEEDS-HUMAN `[BLOCKING]` |
+| 3 | `status: done` — nothing left detected |
 
 `[path]` defaults to **CWD**.
 

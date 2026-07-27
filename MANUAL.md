@@ -98,6 +98,9 @@ Everything between is the model's call.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
 - `plinth handoff [path]`       — write/refresh root `HANDOFF.md` (restart:
   “Read HANDOFF.md and continue”).
+- `plinth next [path]`          — print the single next action for autonomous
+  drivers (HANDOFF ## Next, plan-review blockers, open review findings, or
+  human_blocked). Exit 0=work, 2=human-blocked, 3=done.
 - Lifecycle reference: `docs/LIFECYCLE.md`.
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below

@@ -46,7 +46,8 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)
        plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
        plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
-       plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)"; exit 1; }
+       plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)
+       plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
@@ -63,7 +64,8 @@ elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
-elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ]; then
+elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] \
+   || [ "$cmd" = "next" ]; then
   # Lifecycle commands: project path optional (default CWD).
   if [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
     target="$(pwd)"
@@ -2798,16 +2800,22 @@ Role focus:
 - completeness: testable AC, non-goals, demo/done definition, scope holes
 - delete_simplify: question every requirement; cut non-load-bearing scope; overbuild
 
-Output markdown:
+Output markdown EXACTLY in this shape (bullets must start with \"- \"):
 ### Seat: $role
 #### Blockers
-- … (or none)
+- … (or a single line: - none)
 #### Questions for human
-- … (or none)
+- … (or: - none)
 #### Nits
-- … (or none)
+- … (or: - none)
 #### One-line verdict
 …
+
+Also append a fenced JSON block (for machine merge):
+\`\`\`json
+{\"seat\":\"$role\",\"blockers\":[\"...\"],\"questions\":[\"...\"],\"nits\":[\"...\"],\"verdict\":\"...\"}
+\`\`\`
+Use empty arrays when none.
 
 PLAN:
 $plan_body"
@@ -2879,45 +2887,333 @@ run_plan() {
   local p3=$!
   wait "$p1" "$p2" "$p3" || true
 
-  local out="$root/PLAN-REVIEW.md"
+  local out="$root/PLAN-REVIEW.md" merge_json="$root/.plinth/session/plan-review-merge.json"
+  mkdir -p "$root/.plinth/session"
+  # Structured merge: extract JSON fences if present, else scrape markdown #### Blockers bullets.
+  python3 - "$o1" "$o2" "$o3" "$merge_json" <<'PY'
+import json, re, sys
+paths, outj = sys.argv[1:4], sys.argv[4]
+roles_default = ["security_ops", "completeness", "delete_simplify"]
+seats = []
+for i, p in enumerate(paths):
+    text = open(p, encoding="utf-8", errors="replace").read()
+    role = roles_default[i]
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.S)
+    data = None
+    if m:
+        try:
+            data = json.loads(m.group(1))
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        def section(name):
+            mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
+            if not mm:
+                return []
+            body = mm.group(1)
+            items = []
+            for line in body.splitlines():
+                line = line.strip()
+                if line.startswith("- "):
+                    item = line[2:].strip()
+                    if item and item.lower() not in ("none", "n/a", "…", "..."):
+                        items.append(item)
+            return items
+        data = {
+            "seat": role,
+            "blockers": section("Blockers"),
+            "questions": section("Questions for human"),
+            "nits": section("Nits"),
+            "verdict": "",
+            "raw_ok": False,
+        }
+    else:
+        data.setdefault("seat", role)
+        for k in ("blockers", "questions", "nits"):
+            if not isinstance(data.get(k), list):
+                data[k] = []
+        data["raw_ok"] = True
+    seats.append(data)
+
+def norm(s):
+    return re.sub(r"\s+", " ", s.strip().lower())[:120]
+
+blockers, questions, nits = [], [], []
+seen_b, seen_q, seen_n = set(), set(), set()
+for s in seats:
+    seat = s.get("seat") or "?"
+    for b in s.get("blockers") or []:
+        k = norm(str(b))
+        if k and k not in seen_b:
+            seen_b.add(k)
+            blockers.append({"text": str(b), "seats": [seat], "security": seat == "security_ops"})
+        elif k in seen_b:
+            for x in blockers:
+                if norm(x["text"]) == k and seat not in x["seats"]:
+                    x["seats"].append(seat)
+    for q in s.get("questions") or []:
+        k = norm(str(q))
+        if k and k not in seen_q:
+            seen_q.add(k)
+            questions.append({"text": str(q), "seats": [seat]})
+        elif k in seen_q:
+            for x in questions:
+                if norm(x["text"]) == k and seat not in x["seats"]:
+                    x["seats"].append(seat)
+    for n in s.get("nits") or []:
+        k = norm(str(n))
+        if k and k not in seen_n:
+            seen_n.add(k)
+            nits.append({"text": str(n), "seats": [seat]})
+
+# majority: 2+ seats listed same blocker
+for b in blockers:
+    b["label"] = "majority_blocker" if len(b["seats"]) >= 2 else "minority_blocker"
+    if b.get("security"):
+        b["label"] = "security_" + b["label"]
+
+merge = {
+    "seats": seats,
+    "blockers": blockers,
+    "questions": questions,
+    "nits": nits,
+    "open_blocker_count": len(blockers),
+    "open_question_count": len(questions),
+}
+with open(outj, "w", encoding="utf-8") as f:
+    json.dump(merge, f, indent=2)
+print(json.dumps({"blockers": len(blockers), "questions": len(questions), "nits": len(nits)}))
+PY
+
+  local merge_stats
+  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []))' 2>/dev/null || echo "0 0 0")
+
   {
-    echo "# Plan review — deep"
+    echo "# Plan review — deep (structured merge)"
     echo
     echo "Updated: $ts"
     echo "Seats: security_ops ($rv${rm:+ /$rm}) · completeness ($av${amodel:+ /$amodel}) · delete_simplify ($tv${tm:+ /$tm})"
+    echo "Machine merge: \`.plinth/session/plan-review-merge.json\`"
     echo
-    echo "Human: resolve **Blockers** and **Questions for human** before treating the plan as ratified."
-    echo "Majority among seats is advisory only — you adjudicate product tradeoffs."
+    echo "Human: resolve **Merged blockers** and **Questions** before treating the plan as ratified."
+    echo "Labels are advisory (majority = 2+ seats); you adjudicate. Security-tagged items stay visible even if minority."
+    echo
+    echo "## Merged blockers (checklist)"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+bs = d.get("blockers") or []
+if not bs:
+    print("- [ ] _(none extracted — read raw seats below)_")
+else:
+    for b in bs:
+        seats = ",".join(b.get("seats") or [])
+        lab = b.get("label") or "blocker"
+        print(f"- [ ] **[{lab}]** {b.get('text','')} _(seats: {seats})_")
+PY
+    echo
+    echo "## Merged questions for human"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+qs = d.get("questions") or []
+if not qs:
+    print("- [ ] _(none)_")
+else:
+    for q in qs:
+        seats = ",".join(q.get("seats") or [])
+        print(f"- [ ] {q.get('text','')} _(seats: {seats})_")
+PY
+    echo
+    echo "## Merged nits (non-blocking)"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ns = d.get("nits") or []
+if not ns:
+    print("- _(none)_")
+else:
+    for n in ns:
+        print(f"- {n.get('text','')}")
+PY
     echo
     echo "---"
     echo
-    echo "## security_ops"
+    echo "## Raw: security_ops"
     echo
     cat "$o1"
     echo
     echo "---"
     echo
-    echo "## completeness"
+    echo "## Raw: completeness"
     echo
     cat "$o2"
     echo
     echo "---"
     echo
-    echo "## delete_simplify"
+    echo "## Raw: delete_simplify"
     echo
     cat "$o3"
     echo
     echo "---"
     echo
     echo "## Human adjudication"
-    echo "- [ ] Blockers addressed or dismissed with reason"
+    echo "- [ ] All merged blockers addressed or dismissed with reason"
     echo "- [ ] Product tradeoffs decided"
     echo "- [ ] PLAN.md updated (bump product_rev if AC/scope changed)"
   } > "$out"
 
-  echo "Wrote $out"
-  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md blockers with human; update PLAN.md; then implement."
+  echo "Wrote $out (merged blockers/questions; stats: $merge_stats)"
+  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
   echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  echo "Or: plinth next \"$root\""
+}
+
+# Single next action for autonomous drivers. Exit: 0=action, 2=human-blocked, 3=done.
+run_next() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth next: not a git repo: $root" >&2; exit 1; }
+  local slug phase vfile verdict vsha head nhf
+  slug=$(_lifecycle_slug "$root")
+  phase=$(_lifecycle_read_phase "$root")
+  head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "?")
+  vfile="$root/.plinth/session/review/$slug/verdict.json"
+  verdict=""; vsha=""
+  if [ -f "$vfile" ]; then
+    verdict=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
+    vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || true)
+  fi
+  nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
+  local blocking=""
+  if [ -n "$nhf" ] && [ -s "$nhf" ]; then
+    blocking=$(open_items "$nhf" 2>/dev/null | grep '^\[BLOCKING\]' | head -1 || true)
+  fi
+  if [ -n "$blocking" ]; then
+    echo "status: human_blocked"
+    echo "action: resolve NEEDS-HUMAN blocking item"
+    echo "detail: $blocking"
+    echo "phase: $phase"
+    exit 2
+  fi
+
+  # Open plan-review blockers (unchecked checklist)
+  if [ -f "$root/PLAN-REVIEW.md" ]; then
+    local pb
+    pb=$(grep -E '^- \[ \] \*\*\[.*blocker' "$root/PLAN-REVIEW.md" 2>/dev/null | head -1 || true)
+    if [ -z "$pb" ]; then
+      pb=$(grep -E '^- \[ \] \*\*\[' "$root/PLAN-REVIEW.md" 2>/dev/null | head -1 || true)
+    fi
+    if [ -n "$pb" ]; then
+      echo "status: work"
+      echo "action: resolve plan-review blocker (human if product tradeoff)"
+      echo "detail: $pb"
+      echo "hint: edit PLAN.md / check off PLAN-REVIEW.md; then plinth next"
+      exit 0
+    fi
+  fi
+
+  # Harden path: open review findings
+  if [ "$phase" = "harden" ]; then
+    local full
+    full=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+    if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ] && [ -n "$full" ] && [ "$vsha" = "$full" ]; then
+      echo "status: work"
+      echo "action: open PR (APPROVED@HEAD)"
+      echo "detail: gh pr create — ship gate satisfied at $head"
+      exit 0
+    fi
+    # Check latest findings for open majors
+    local fdir latest
+    fdir="$root/.plinth/session/review/$slug"
+    latest=$(ls -1 "$fdir"/findings-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      local openf
+      openf=$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+        | if . then "[\(.severity)] \(.file):\(.line) — \(.description[0:120])" else empty end' "$latest" 2>/dev/null || true)
+      if [ -n "$openf" ]; then
+        echo "status: work"
+        echo "action: fix review finding, commit, re-run ./.plinth/review.sh"
+        echo "detail: $openf"
+        exit 0
+      fi
+    fi
+    if [ "$verdict" != "APPROVED" ]; then
+      echo "status: work"
+      echo "action: run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"
+      echo "detail: phase=harden head=$head verdict=${verdict:-none}"
+      exit 0
+    fi
+  fi
+
+  # HANDOFF ## Next first actionable line
+  if [ -f "$root/HANDOFF.md" ]; then
+    local nxt
+    nxt=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$root/HANDOFF.md" \
+      | sed -n 's/^[[:space:]]*[0-9]*[.)]*[[:space:]]*//p; s/^-[[:space:]]*//p' \
+      | grep -v '^$' | grep -viE '^\(edit|^\.\.\.|^…' | head -1 || true)
+    if [ -n "$nxt" ]; then
+      echo "status: work"
+      echo "action: $nxt"
+      echo "detail: from HANDOFF.md ## Next (phase=$phase)"
+      exit 0
+    fi
+  fi
+
+  # Build: suggest harden if PLAN has content and product seems ready — still work
+  if [ "$phase" != "harden" ] && [ -f "$root/PLAN.md" ]; then
+    if grep -q 'Acceptance criteria' "$root/PLAN.md" 2>/dev/null \
+       && ! grep -q '^(Testable' "$root/PLAN.md" 2>/dev/null; then
+      :
+    fi
+  fi
+  if [ "$phase" != "harden" ]; then
+    echo "status: work"
+    echo "action: continue build (or plinth harden when product ready)"
+    echo "detail: phase=$phase head=$head — fill HANDOFF ## Next for sharper routing"
+    exit 0
+  fi
+
+  echo "status: done"
+  echo "action: none"
+  echo "detail: no open next / blocking items detected"
+  exit 3
+}
+
+# On plinth update: migrate open review loops → harden phase; corrupt phase → fail closed harden.
+migrate_lifecycle_phases() {
+  local root="$1" sdir revdir
+  sdir="$root/.plinth/session"
+  revdir="$sdir/review"
+  [ -d "$revdir" ] || return 0
+  local d slug phasef vfile v
+  for d in "$revdir"/*/; do
+    [ -d "$d" ] || continue
+    slug=$(basename "$d")
+    phasef="$sdir/phase-$slug.json"
+    vfile="$d/verdict.json"
+    # Corrupt phase file → rewrite as harden (fail closed for Stop)
+    if [ -f "$phasef" ] && ! jq -e '.phase == "build" or .phase == "harden"' "$phasef" >/dev/null 2>&1; then
+      echo "  lifecycle migrate: corrupt phase-$slug.json → harden (fail closed)"
+      jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:"corrupt_phase"}' > "$phasef"
+      continue
+    fi
+    [ -f "$vfile" ] || continue
+    v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
+    case "$v" in
+      CHANGES_NEEDED|UNBOUND)
+        if [ ! -f "$phasef" ] || [ "$(jq -r '.phase // empty' "$phasef" 2>/dev/null)" != "harden" ]; then
+          echo "  lifecycle migrate: $slug verdict=$v → phase harden"
+          jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg v "$v" \
+            '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:("open_review_"+$v)}' > "$phasef"
+        fi
+        ;;
+    esac
+  done
 }
 
 case "$cmd" in
@@ -2934,6 +3230,7 @@ case "$cmd" in
   phase) run_phase_status "$target" ;;
   handoff) run_handoff "$target" ;;
   plan) run_plan "$target" "$PLAN_DEEP" ;;
+  next) run_next "$target" ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent
@@ -2957,6 +3254,7 @@ case "$cmd" in
     copy_shared
     ensure_protected_paths
     migrate_needs_human
+    migrate_lifecycle_phases "$target"
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
     # configs are preserved, so remind upgraded projects (MANUAL.md points here).
     # The audit only runs when audit_vendor DIFFERS from the primary reviewer_vendor,

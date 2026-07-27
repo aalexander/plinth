@@ -25,6 +25,13 @@
 - **Schema:** optional finding `id` field.
 - **Autonomous default:** handoff snapshots never wait (notify + continue);
   milestone vs checkpoint advice; driver rules loop until done or human-blocked.
+- **`plinth next`:** single next action from HANDOFF / PLAN-REVIEW / review /
+  NEEDS-HUMAN (exit 0 work, 2 human-blocked, 3 done).
+- **Deep plan structured merge:** merged blockers/questions checklist +
+  `.plinth/session/plan-review-merge.json` (majority labels advisory).
+- **Lifecycle migrate on `plinth update`:** open CHANGES_NEEDED/UNBOUND → phase
+  harden; corrupt phase → harden. Stop: corrupt phase fail-closed as harden;
+  open verdict without phase → harden. Dual-degraded recorded on verdict.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local

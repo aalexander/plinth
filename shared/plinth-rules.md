@@ -164,10 +164,10 @@ Loop until one of:
    that path only), or
 3. **Hard fail** — infra exit 2 you cannot fix; record and surface.
 
-Otherwise: pick the next item from HANDOFF ## Next, PLAN AC, or the current
-review findings; implement; commit; continue. Mid-loop review CHANGES_NEEDED is
-a **checkpoint** (keep session). Phase changes / APPROVED are **milestones**
-(optional fresh session advice only — still do not wait).
+Otherwise: run `plinth next` (or pick the next item from HANDOFF ## Next, PLAN
+AC, or open review findings); implement; commit; continue. Mid-loop review
+CHANGES_NEEDED is a **checkpoint** (keep session). Phase changes / APPROVED are
+**milestones** (optional fresh session advice only — still do not wait).
 
 Advisor annotates only — never clears majors or sets APPROVED/phase.
 Prefer `plinth plan` / `plinth plan --deep` for large/new work; human owns

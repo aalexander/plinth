@@ -1433,8 +1433,10 @@ ${diff}"
       validate_findings "$SDIR/findings-$r.json" || true
       echo "Plinth review: dual first-pass merged $(jq '[.findings[]|select(.description|startswith("[DUAL-PASS"))]|length' "$SDIR/findings-$r.json") secondary finding(s)."
     else
-      echo "Plinth review: dual first-pass UNAVAILABLE (audit seat failed) — continuing with primary only; recorded in session."
-      echo "{\"dual_degraded\":true,\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "$SDIR/dual-degraded.json"
+      echo "Plinth review: dual first-pass UNAVAILABLE (audit seat failed) — continuing with primary only; recorded dual_degraded (Tier-2 still binds on primary + later audit-on-APPROVED when available)."
+      jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$AUDIT_VENDOR" \
+        '{dual_degraded:true, ts:$ts, audit_vendor:$v, note:"primary continues; bind allowed; surface dual_degraded on verdict"}' \
+        > "$SDIR/dual-degraded.json"
     fi
   fi
 
@@ -1648,6 +1650,13 @@ elif [ "$RISK" = "2" ]; then
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
 fi
 mint_receipt "$round"
+# Surface dual_degraded on binding verdict when present (does not unbind — max automation).
+if [ -f "$SDIR/dual-degraded.json" ]; then
+  jq -s '.[0] + {dual_first_pass: "DEGRADED", dual_degraded: .[1]}' \
+    "$SDIR/verdict.json" "$SDIR/dual-degraded.json" > "$SDIR/verdict.json.tmp" \
+    && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+  echo "Plinth review: NOTE dual first-pass was DEGRADED this loop (see verdict.dual_degraded)."
+fi
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
 # Milestone handoff (notify only — continue immediately; never wait for compact).
 if [ -x "./bin/plinth" ]; then
@@ -1655,5 +1664,5 @@ if [ -x "./bin/plinth" ]; then
 elif command -v plinth >/dev/null 2>&1; then
   PLINTH_HANDOFF_REASON=review-approved plinth handoff "$PWD" 2>/dev/null || true
 fi
-echo "Handoff refreshed (milestone). Automation: do not wait for compact — open PR or pick next task."
+echo "Handoff refreshed (milestone). Automation: do not wait for compact — open PR or plinth next."
 exit 0
