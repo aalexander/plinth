@@ -917,6 +917,25 @@ jobs:
             set +e; err="$(base_tip="$base_tip" SDIR="$SDIR" RC_FILE="$RC_FILE" PATH="$SHIM_AG:$PATH" bash -c 'set -euo pipefail; die_infra(){ echo "die_infra: $*" >&2; exit 9; }; source '"$BLK_AG"'' 2>&1)"; erc=$?; set -e
             [ "$erc" -ne 0 ] || { echo "::error::#15 git show base AGENTS.md failure did not die_infra"; exit 1; }
             printf '%s' "$err" | grep -qiE 'AGENTS|die_infra|cannot read' || { echo "::error::#15 AGENTS.md show fail message missing (err=$err)"; exit 1; } )
+          # #15 AGENTS.md ls-tree infra (reviewer absent) → die_infra — sibling of show-failure above
+          SHIM_AGLS="$(mktemp -d)"
+          cat > "$SHIM_AGLS/git" <<GSH
+          #!/usr/bin/env bash
+          if [ "\$1" = ls-tree ] && [[ "\$*" == *reviewer.md* ]]; then
+            exit 0
+          fi
+          if [ "\$1" = ls-tree ] && [[ "\$*" == *AGENTS.md* ]]; then
+            echo "fatal: ls-tree AGENTS.md failed (injected)" >&2; exit 128
+          fi
+          exec "$REAL_GIT" "\$@"
+          GSH
+          chmod +x "$SHIM_AGLS/git"
+          T_AGLS="$(mktemp -d)"; ( cd "$T_AGLS"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            printf '# Plinth — Reviewer\npolicy\n' > AGENTS.md; echo a > f; git add -A; git commit -qm b >/dev/null
+            base_tip="$(git rev-parse HEAD)"; SDIR="$(mktemp -d)"; RC_FILE="$SDIR/reviewer-contract.md"
+            set +e; err="$(base_tip="$base_tip" SDIR="$SDIR" RC_FILE="$RC_FILE" PATH="$SHIM_AGLS:$PATH" bash -c 'set -euo pipefail; die_infra(){ echo "die_infra: $*" >&2; exit 9; }; source '"$BLK_AG"'' 2>&1)"; erc=$?; set -e
+            [ "$erc" -ne 0 ] || { echo "::error::#15 git ls-tree base AGENTS.md failure did not die_infra"; exit 1; }
+            printf '%s' "$err" | grep -qiE 'AGENTS|ls-tree|die_infra' || { echo "::error::#15 AGENTS.md ls-tree fail message missing (err=$err)"; exit 1; } )
           # #15 AGENTS-project.md ls-tree infra inside inline_contract → return 1 → die_infra
           SHIM_AP="$(mktemp -d)"
           cat > "$SHIM_AP/git" <<GSH
