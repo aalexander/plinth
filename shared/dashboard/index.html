@@ -272,7 +272,7 @@
     if (r.running) return "warn";
     if (r.stale) return "bad";
     if (r.verdict === "APPROVED") return "ok";
-    if (r.verdict === "CHANGES_NEEDED") return "warn";
+    if (r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND") return "warn";
     return "idle";
   }
 
@@ -297,6 +297,8 @@
         chips.push('<span class="chip green">APPROVED</span>');
       } else if (r.verdict === "CHANGES_NEEDED") {
         chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
+      } else if (r.verdict === "UNBOUND") {
+        chips.push('<span class="chip yellow">UNBOUND</span>');
       } else if (r.verdict) {
         chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
       }

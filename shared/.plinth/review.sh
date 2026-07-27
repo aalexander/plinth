@@ -918,7 +918,7 @@ if [ -f "$SDIR/verdict.json" ]; then
   cap_unbound=0
   if [ "$prev_verdict" = "UNBOUND" ]; then
     case "$prev_unbound_reason" in
-      *"round cap"*) cap_unbound=1 ;;
+      *"round cap"*|*"confirmation not yet complete"*|*"confirmation pending"*) cap_unbound=1 ;;
     esac
   fi
   # Budget is ADVISORY: warn loudly and continue — never park the loop on a
@@ -1362,13 +1362,24 @@ ${inc}${evidence}${commits}"
   fi
 
   local usage="$RUSAGE"; [ -n "$usage" ] || usage="null"
-  jq -n --arg verdict "$RVERDICT" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
+  # Non-fresh Tier-2 APPROVED does not bind until clean-slate confirmation. Persist
+  # UNBOUND at THIS write so ship/Stop never observe shippable APPROVED@HEAD in the
+  # gap before confirmation runs (or if confirmation is killed). Shell RVERDICT stays
+  # APPROVED so the caller's confirmation gate still fires.
+  local write_verdict="$RVERDICT" write_extra='{}'
+  if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$m" "$RISK"; then
+    write_verdict="UNBOUND"
+    write_extra="$(jq -n --arg w "Tier-2 clean-slate confirmation not yet complete — non-binding until confirmation succeeds" '{unbound_reason:$w}')"
+  fi
+  jq -n --arg verdict "$write_verdict" --arg raw "$RRAW" --arg sha "$sha" --arg base "$baseref" \
         --argjson round "$r" --arg sid "$RSID" --arg mode "$m" --argjson usage "$usage" \
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
         --arg mbase "$merge_base" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson extra "$write_extra" \
         '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts}
+         + $extra
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
   # usage.jsonl is the CUMULATIVE per-round ledger (verdict.json is overwritten
@@ -1420,6 +1431,8 @@ if [ "$RVERDICT" = "APPROVED" ] && ! binds_directly "$RMODE" "$RISK"; then
     unbind_verdict "the Tier-2 clean-slate confirmation could not run (round cap), so this approval never bound"
     die_infra "circuit breaker: the clean-slate confirmation would be round $((round + 1)), exceeding round_cap (${ROUND_CAP}). The round-${round} APPROVED was demoted to UNBOUND (non-binding until the confirmation runs) — surface to the human; re-run with PLINTH_ROUND_CAP=<n> to run the confirmation."
   fi
+  # Verdict was already written UNBOUND by run_round (atomic with the non-fresh
+  # Tier-2 APPROVED result). Launch confirmation; a successful fresh APPROVED binds.
   echo "Plinth review: round ${round} findings resolved (mode ${RMODE}, Tier ${RISK}) — running clean-slate confirmation review before binding..."
   round=$((round + 1))
   run_round "fresh" "$round" ""

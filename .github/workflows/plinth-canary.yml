@@ -1703,12 +1703,62 @@ jobs:
             echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
             rc=0; PATH="$CR:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
             [ "$rc" = 2 ] || { echo "::error::crashed confirmation should exit 2 (rc=$rc)"; exit 1; }
+            vj=".plinth/session/review/feat/verdict.json"
+            # Immediately after the interrupted confirmation path, verdict must be UNBOUND
+            # (not shippable APPROVED@HEAD) — that is the v4.8.1 process-window close.
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::after crashed confirmation verdict is $(jq -r .verdict "$vj") want UNBOUND (process window still open)"; exit 1; }
+            jq -r '.unbound_reason // empty' "$vj" | grep -qi 'confirmation' \
+              || { echo "::error::UNBOUND missing confirmation reason: $(jq -c . "$vj")"; exit 1; }
             [ ! -f .plinth/session/review/feat/confirmed ] || { echo "::error::marker written despite the confirmation never running"; exit 1; }
             rc=0; out="$(PATH="$CR:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::recovery run failed (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'NON-BINDING and unconfirmed' || { echo "::error::re-run silently trusted an unconfirmed non-binding APPROVED"; exit 1; }
+            printf '%s' "$out" | grep -qE 'NON-BINDING and unconfirmed|confirmation not yet complete|unconfirmed' \
+              || { echo "::error::re-run did not announce recovery of unconfirmed/UNBOUND approval"; exit 1; }
+            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; }
+            [ "$(jq -r .verdict "$vj")" = "APPROVED" ] || { echo "::error::recovery did not bind APPROVED (got $(jq -r .verdict "$vj"))"; exit 1; } )
+          # Mutation-sensitive process window: after a non-fresh Tier-2 verify APPROVED is
+          # written but BEFORE confirmation can run, verdict.json must already be UNBOUND.
+          # Inject an early exit immediately after the first run_round when mode was verify.
+          PW="$(mktemp -d)"; mkstate "$PW"; mk_cap_codex "$PW"
+          printf '%s' "$CNF" > "$PW/verdict-1"; printf '%s' "$APF" > "$PW/verdict-2"
+          pwd_d="$(mktemp -d)"
+          ( cd "$pwd_d"; git init -qb main . >/dev/null; "$GITHUB_WORKSPACE/bin/plinth" init "$pwd_d" >/dev/null 2>&1
+            cp "$GITHUB_WORKSPACE/shared/.plinth/review.sh" .plinth/review.sh
+            cp "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+            grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
+            # After any run_round returns, if verdict is UNBOUND with confirmation reason, stop
+            # BEFORE the confirmation gate — that proves the write itself was UNBOUND.
+            # sed-only injection (no multi-line python) so YAML | stay valid.
+            grep -q 'run_round "\$mode" "\$round" "" ;;' .plinth/review.sh \
+              || { echo "::error::process-window canary: insertion anchor missing"; exit 1; }
+            # Insert after the esac that follows the run_round dispatch, before Confirmation gate.
+            awk '
+              { print }
+              /run_round "\$mode" "\$round" "" ;;/ { saw=1 }
+              saw && /^esac$/ {
+                print "# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate"
+                print "if [ \"${RVERDICT:-}\" = \"APPROVED\" ] && [ \"$(jq -r .verdict \"$SDIR/verdict.json\" 2>/dev/null)\" = \"UNBOUND\" ]; then"
+                print "  echo \"CANARY_PROCESS_WINDOW_UNBOUND\""
+                print "  exit 42"
+                print "fi"
+                saw=0
+              }
+            ' .plinth/review.sh > .plinth/review.sh.hook && mv .plinth/review.sh.hook .plinth/review.sh
+            chmod +x .plinth/review.sh
+            grep -q CANARY_PROCESS_WINDOW_UNBOUND .plinth/review.sh \
+              || { echo "::error::process-window canary: hook not inserted"; exit 1; }
+            echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
+            PATH="$PW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
+            echo fix1 >> SPEC.md; git add -A; git commit -qm f1 >/dev/null
+            rc=0; out="$(PATH="$PW:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
+            [ "$rc" = 42 ] || { echo "::error::process-window canary: expected exit 42 after UNBOUND write (rc=$rc out=$(printf '%s' "$out" | tail -5))"; exit 1; }
+            printf '%s' "$out" | grep -q CANARY_PROCESS_WINDOW_UNBOUND || { echo "::error::process-window canary hook did not fire"; exit 1; }
             vj=".plinth/session/review/feat/verdict.json"
-            [ "$(jq -r .mode "$vj")" = fresh ] || { echo "::error::recovery round was not a clean-slate fresh pass (mode=$(jq -r .mode "$vj"))"; exit 1; } )
+            [ "$(jq -r .verdict "$vj")" = "UNBOUND" ] || { echo "::error::process-window: after verify APPROVED write got $(jq -r .verdict "$vj") want UNBOUND (before confirmation)"; exit 1; }
+            jq -r '.unbound_reason // empty' "$vj" | grep -qi 'confirmation' \
+              || { echo "::error::process-window UNBOUND lacks confirmation reason"; exit 1; }
+          )
           echo "v4.6 loop-efficiency canary block OK"
           # Cross-vendor audit gate keys on reviewer_vendor, not hardcoded codex: a
           # reviewer_vendor == audit_vendor pair is the SAME vendor, so NO false
@@ -3526,6 +3576,172 @@ jobs:
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 3 ] || { echo "::error::lane-guard preflight not fail-loud on an UNAUTHENTICATED codex — 'codex login status' regression (rc=$r)"; exit 1; }
           printf '#!/usr/bin/env bash\nexit 0\n' > "$LGB/codex"; chmod +x "$LGB/codex"
           r=0; PATH="$LGB:$PATH" bash "$LG" preflight codex >/dev/null 2>&1 || r=$?; [ "$r" = 0 ] || { echo "::error::lane-guard preflight rejected an authenticated codex (rc=$r)"; exit 1; }
+          # ── v4.8.1: lane-guard delegation (proof-of-artifact) ──
+          LDR="$(mktemp -d)"; git -C "$LDR" init -q
+          git -C "$LDR" config user.email "canary@plinth.ci"; git -C "$LDR" config user.name "plinth canary"
+          ( cd "$LDR" && git commit --allow-empty -qm "delegation canary base" )
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 /no/such/transcript ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on MISSING transcript (rc=$r want 3)"; exit 1; }
+          : > "$LDR/empty.out"
+          r=0; ( cd "$LDR" && bash "$LG" delegation grok 0 "$LDR/empty.out" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::lane-guard delegation did not fail closed on EMPTY transcript (rc=$r want 3)"; exit 1; }
+          printf 'MODEL: decoy\nbody\nMODEL: canary-model-9\n' > "$LDR/out.txt"
+          want_bytes="$(wc -c < "$LDR/out.txt" | tr -d '[:space:]')"
+          want_hash="$( (shasum -a 256 "$LDR/out.txt" 2>/dev/null || sha256sum "$LDR/out.txt") | cut -d' ' -f1 )"
+          dout="$(cd "$LDR" && bash "$LG" delegation grok 7 "$LDR/out.txt")" || { echo "::error::delegation rejected nonempty transcript"; exit 1; }
+          printf '%s\n' "$dout" | grep -qE "^delegation recorded: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 artifact=" \
+            || { echo "::error::delegation recorded line not exact (got: $dout)"; exit 1; }
+          dart="$(printf '%s\n' "$dout" | sed -n 's/.*artifact=//p')"
+          [ -s "$dart" ] || { echo "::error::delegation artifact missing"; exit 1; }
+          case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::artifact not under session/lanes ($dart)"; exit 1 ;; esac
+          hdr="$(head -n1 "$dart")"
+          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 recorded=" \
+            || { echo "::error::artifact header not exact (got: $hdr)"; exit 1; }
+          tail -n +2 "$dart" > "$LDR/body.got"; cmp -s "$LDR/out.txt" "$LDR/body.got" \
+            || { echo "::error::artifact body not byte-identical to transcript"; exit 1; }
+          dig="$LDR/.plinth/session/.gitignore"
+          [ "$(wc -l < "$dig" | tr -d '[:space:]')" = "1" ] && grep -qxF '*' "$dig" \
+            || { echo "::error::session .gitignore is not exact '*'"; exit 1; }
+          printf 'no model\n' > "$LDR/nomodel.txt"
+          dout2="$(cd "$LDR" && bash "$LG" delegation codex 0 "$LDR/nomodel.txt")" || { echo "::error::delegation rejected no-MODEL transcript"; exit 1; }
+          printf '%s\n' "$dout2" | grep -q 'model=unreported' || { echo "::error::want model=unreported (got: $dout2)"; exit 1; }
+          LDR2="$(mktemp -d)"; git -C "$LDR2" init -q
+          git -C "$LDR2" config user.email "canary@plinth.ci"; git -C "$LDR2" config user.name "plinth canary"
+          ( cd "$LDR2" && git commit --allow-empty -qm "symlink base" )
+          mkdir -p "$LDR2/.plinth/session"; OUTSIDE="$(mktemp -d)"; ln -s "$OUTSIDE" "$LDR2/.plinth/session/lanes"
+          printf 'body\n' > "$LDR2/out.txt"
+          r=0; ( cd "$LDR2" && bash "$LG" delegation grok 0 "$LDR2/out.txt" ) >/dev/null 2>&1 || r=$?
+          [ "$r" = 3 ] || { echo "::error::delegation did not refuse symlinked lanes (rc=$r)"; exit 1; }
+          # agent wiring + BEHAVIORAL Write-tool SPEC lifecycle (not greps alone):
+          # allocate project-local SPEC_DIR, simulate Write by creating $SPEC, "consume"
+          # via CLI reading the path, then run the shipped rmdir cleanup contract.
+          for a in grok codex; do
+            A="$GITHUB_WORKSPACE/shared/.claude/agents/${a}-implementer.md"
+            tools_line="$(awk '/^tools:/{print; exit}' "$A")"
+            printf '%s\n' "$tools_line" | grep -Eq '(^|[,[:space:]])Write([,[:space:]]|$)' \
+              || { echo "::error::${a}-implementer frontmatter tools lacks Write (got: $tools_line)"; exit 1; }
+            grep -q 'Use the \*\*Write tool\*\*, not Bash' "$A" || { echo "::error::${a}-implementer lost Write-tool step"; exit 1; }
+            grep -qE 'SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" \
+              || { echo "::error::${a} lacks project-local SPEC_DIR mktemp"; exit 1; }
+            grep -qE 'SPEC="\$SPEC_DIR/prompt"' "$A" || { echo "::error::${a} must set SPEC=\"\$SPEC_DIR/prompt\""; exit 1; }
+            grep -q 'rmdir -- "$SPEC_DIR"' "$A" || { echo "::error::${a} does not rmdir SPEC_DIR after CLI"; exit 1; }
+            grep -q "lane-guard.sh delegation $a" "$A" || { echo "::error::${a}-implementer lacks delegation $a"; exit 1; }
+            sc_ln="$(grep -n 'lane-guard.sh scope' "$A" | head -1 | cut -d: -f1)"
+            dg_ln="$(grep -n "lane-guard.sh delegation $a" "$A" | head -1 | cut -d: -f1)"
+            [ -n "$sc_ln" ] && [ -n "$dg_ln" ] && [ "$dg_ln" -gt "$sc_ln" ] \
+              || { echo "::error::${a}-implementer delegation not after scope"; exit 1; }
+            dline="$(sed -n "${dg_ln}p" "$A")"
+            printf '%s\n' "$dline" | grep -q 'RUN_RC' || { echo "::error::${a} delegation line missing RUN_RC"; exit 1; }
+            printf '%s\n' "$dline" | grep -q 'OUT' || { echo "::error::${a} delegation line missing OUT"; exit 1; }
+            grep -q 'Never claim completion without all three: a DELEGATION RECEIPT' "$A" \
+              || { echo "::error::${a}-implementer lost three-way complete rule"; exit 1; }
+            grep -nE "<<['\"]?SPEC_EOF" "$A" && { echo "::error::${a}-implementer reintroduced SPEC_EOF shell heredoc"; exit 1; } || true
+            # Behavioral lifecycle: extract and run SHIPPED step-0 allocation + CLI + cleanup.
+            WL="$(mktemp -d)"; STUBS="$(mktemp -d)"
+            (
+              set -euo pipefail
+              cd "$WL"
+              git init -qb main . >/dev/null
+              mkdir -p .plinth
+              cp "$GITHUB_WORKSPACE/shared/.plinth/lane-guard.sh" .plinth/lane-guard.sh
+              chmod +x .plinth/lane-guard.sh
+              echo base > f.txt; git add -A; git commit -qm base >/dev/null
+              ALLOC="$(awk '
+                /BEFORE="\$\(git rev-parse HEAD\)"/ {p=1}
+                p { sub(/^[[:space:]]+/, ""); print }
+                p && /printf '\''BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q/ { exit }
+              ' "$A")"
+              [ -n "$ALLOC" ] || { echo "failed to extract step-0 allocation from $a agent"; exit 1; }
+              HEAD_BEFORE="$(git rev-parse HEAD)"
+              eval "$ALLOC"
+              [ -n "${SPEC_DIR:-}" ] && [ -n "${SPEC:-}" ] && [ -n "${OUT:-}" ] && [ -n "${SNAP:-}" ] && [ -n "${BEFORE:-}" ] \
+                || { echo "allocation incomplete"; exit 1; }
+              [ "$BEFORE" = "$HEAD_BEFORE" ] || { echo "BEFORE != HEAD ($BEFORE vs $HEAD_BEFORE)"; exit 1; }
+              [ -f "$SNAP" ] && [ -s "$SNAP" ] || { echo "SNAP missing or empty (snapshot not run?)"; exit 1; }
+              [ -e "$OUT" ] || { echo "OUT path not created by mktemp"; exit 1; }
+              [ ! -e "$SPEC" ] || { echo "SPEC must not exist before Write"; exit 1; }
+              HO="$(grep -E "printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q" "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              HOUT="$(BEFORE="$BEFORE" SNAP="$SNAP" SPEC_DIR="$SPEC_DIR" SPEC="$SPEC" OUT="$OUT" bash -c "$HO")"
+              MAP="$(env -i PATH="$PATH" HOME="$HOME" bash --noprofile --norc -c '
+                unset BEFORE SNAP SPEC_DIR SPEC OUT
+                eval "$1"
+                printf "B=%q\nS=%q\nSD=%q\nSP=%q\nO=%q\n" "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
+              ' _ "$HOUT")"
+              eval "$MAP"
+              [ "$B" = "$BEFORE" ] && [ "$S" = "$SNAP" ] && [ "$SD" = "$SPEC_DIR" ] && [ "$SP" = "$SPEC" ] && [ "$O" = "$OUT" ] \
+                || { echo "handoff five-tuple mismatch"; exit 1; }
+              printf 'objective: test\nMODEL: canary\n' > "$SPEC"
+              export PATH="$STUBS:$PATH"
+              # Preserve internal indentation of shipped cap() (python fallback is indent-sensitive)
+              CAPX="$(mktemp)"; awk '/^ *cap\(\) \{/{c=1} c{print} c&&/^ *\}/{exit}' "$A" | sed 's/^       //' > "$CAPX"
+              grep -q '^cap() {' "$CAPX" || { echo "could not extract cap() from $a agent"; exit 1; }
+              # shellcheck source=/dev/null
+              . "$CAPX" || { echo "sourcing shipped cap() failed"; exit 1; }
+              type cap >/dev/null 2>&1 || { echo "cap not defined after source"; exit 1; }
+              # Grok requires shipped LANE_RULES; codex does not use it
+              if [ "$a" = grok ]; then
+                eval "$(grep -E "^\s+LANE_RULES=" "$A" | head -1 | sed 's/^[[:space:]]*//')"
+                [ -n "${LANE_RULES:-}" ] || { echo "grok agent missing LANE_RULES assignment"; exit 1; }
+              fi
+              CMD="$(awk -v a="$a" '
+                $0 ~ "RC=0; cap 600 " a {p=1}
+                p { sub(/^[[:space:]]+/, ""); print }
+                p && /RC=\$\?/ { exit }
+              ' "$A")"
+              [ -n "$CMD" ] || { echo "failed to extract CLI invocation from $a agent"; exit 1; }
+              # Explicitly exercise cap's python fallback (hide timeout/gtimeout):
+              CPY="$(mktemp -d)"; for b in bash grep python3; do ln -s "$(command -v "$b")" "$CPY/$b" 2>/dev/null || true; done
+              printf '#!/usr/bin/env bash\necho cap-py-ok\n' > "$CPY/model"; chmod +x "$CPY/model"
+              r=0; PATH="$CPY" bash -c 'source "$1"; cap 5 model' _ "$CAPX" >/dev/null 2>&1 || r=$?
+              [ "$r" = 0 ] || { echo "shipped cap() python-only path failed (rc=$r)"; exit 1; }
+              if [ "$a" = grok ]; then
+                printf '#!/usr/bin/env bash\nset -e\npf=""; while [ $# -gt 0 ]; do case "$1" in --prompt-file) pf="$2"; shift 2;; *) shift;; esac; done\n[ -n "$pf" ] && [ -s "$pf" ] || { echo "stub: no --prompt-file"; exit 9; }\ncat "$pf"\n' > "$STUBS/grok"
+                chmod +x "$STUBS/grok"
+              else
+                printf '#!/usr/bin/env bash\nset -e\n[ -t 0 ] && { echo "stub: no stdin redirect from SPEC"; exit 9; }\ncat\n' > "$STUBS/codex"
+                chmod +x "$STUBS/codex"
+              fi
+              RC=0; eval "$CMD" || RC=$?
+              [ "$RC" = 0 ] || { echo "extracted CLI failed rc=$RC out=$(cat "$OUT" 2>/dev/null)"; exit 1; }
+              grep -q 'objective: test' "$OUT" || { echo "extracted CLI did not consume SPEC"; exit 1; }
+              # Extract COMPLETE cleanup (rest= through OUTER case/esac), tracking depth.
+              CLEAN="$(awk '
+                /rest="\$\{SPEC_DIR#/ {p=1; depth=0}
+                p {
+                  line=$0; sub(/^[[:space:]]+/, "", line); print line
+                  if (line ~ /^case /) depth++
+                  if (line ~ /^esac$/) {
+                    depth--
+                    if (depth <= 0) exit
+                  }
+                }
+              ' "$A")"
+              [ -n "$CLEAN" ] || { echo "failed to extract cleanup from $a agent"; exit 1; }
+              printf '%s\n' "$CLEAN" | grep -q 'rm -f -- "\$SPEC"' \
+                || { echo "extracted cleanup missing shipped rm -f -- \"\$SPEC\""; exit 1; }
+              printf '%s\n' "$CLEAN" | grep -q 'rmdir -- "\$SPEC_DIR"' \
+                || { echo "extracted cleanup missing shipped rmdir"; exit 1; }
+              [ "$(printf '%s\n' "$CLEAN" | grep -c '^esac$')" -ge 2 ] \
+                || { echo "extracted cleanup incomplete (need outer+inner esac)"; exit 1; }
+              eval "$CLEAN"
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after success cleanup"; exit 1; }
+              # Nonzero stub path: CLI fails, RC preserved, cleanup still empties SPEC_DIR
+              if [ "$a" = grok ]; then
+                printf '#!/usr/bin/env bash\nexit 7\n' > "$STUBS/grok"; chmod +x "$STUBS/grok"
+              else
+                printf '#!/usr/bin/env bash\nexit 7\n' > "$STUBS/codex"; chmod +x "$STUBS/codex"
+              fi
+              eval "$(grep -E '^\s+SPEC_DIR="\$\(mktemp -d "\$\{PWD\}/\.plinth-lane\.' "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              eval "$(grep -E '^\s+SPEC="\$SPEC_DIR/prompt"' "$A" | head -1 | sed 's/^[[:space:]]*//')"
+              OUT="$(mktemp -t canary-out.XXXXXX)"
+              printf 'fail path\n' > "$SPEC"
+              RC=0; eval "$CMD" || RC=$?
+              [ "$RC" = 7 ] || { echo "nonzero stub did not preserve CLI rc (got $RC want 7)"; exit 1; }
+              eval "$CLEAN"
+              [ ! -e "$SPEC_DIR" ] || { echo "SPEC_DIR remained after fail-path cleanup"; exit 1; }
+            ) || { echo "::error::${a} extracted shipped CLI/cleanup lifecycle canary failed"; exit 1; }
+          done
+          echo "lane-guard delegation + Write-tool lifecycle canary OK"
           # AUTH-CHECK WALL-CLOCK CAP (round-41): a HANGING `grok models` / `codex login status` must be
           # bounded, not hang the lane before the capped implementation call. Stub hangs, ignoring TERM:
           LGH="$(mktemp -d)"; printf '#!/usr/bin/env bash\n[ "$1" = models ] && { trap "" TERM; sleep 90; }\n' > "$LGH/grok"; chmod +x "$LGH/grok"

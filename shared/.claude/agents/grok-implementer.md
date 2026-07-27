@@ -2,7 +2,7 @@
 name: grok-implementer
 description: Implementation lane that delegates the TYPING to Grok (xAI) via the grok CLI, headless, from a DIFFERENT model family than the driver. Route well-specified implementation volume here — the spec fully determines the outcome and grok types it at a fraction of the frontier model's token cost. Receives a five-part spec, drives grok, ENFORCES scope (protected paths + the spec's file list) and VERIFIES the result independently (Plinth Rule 10), returns a structured report. Reports a structured error if grok is missing or unauthenticated — never silently implements the task itself. Records a delegation receipt (grok's own transcript + exit code, under .plinth/session/lanes/) that the driver can open; no receipt, no STATUS: complete.
 model: sonnet
-tools: Bash, Read, Grep, Glob
+tools: Bash, Read, Write, Grep, Glob
 ---
 <!-- Plinth implementer lane (version-pinned) — refreshed by `plinth update`; do not edit in-project. -->
 
@@ -43,36 +43,47 @@ enforce them below.
 
 ## How you run grok
 
-**Steps 0–2 are ONE Bash invocation.** Shell variables do NOT persist across separate
-tool calls — run the snapshot, the spec write, and the grok invocation as a single
-command, and END it by echoing the state later steps need (BEFORE, SNAP, OUT): you
-will paste those LITERAL values into steps 3–5, which run in fresh shells.
+The spec is arbitrary data, never shell source. Step 1 MUST use the non-shell Write
+tool; do not interpolate the spec into a Bash heredoc, `printf`, or `echo`. Shell
+variables do not persist across tool calls, so step 0 prints shell-quoted state that
+you paste at the start of step 2. Step 2 echoes the state needed by steps 3–5.
 
 0. Snapshot the sensitive-path state and record the pre-run commit so the scope check can catch the
    lane's edits — including gitignored secret/session writes. Commit or stash your own WIP first so
    it is not attributed to the lane:
 
-       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)"
+       BEFORE="$(git rev-parse HEAD)"; SNAP="$(mktemp)" || { echo "SNAP mktemp failed rc=$?"; exit 1; }
        .plinth/lane-guard.sh snapshot > "$SNAP" || { echo "SNAPSHOT FAILED rc=$?"; exit 1; }
+       # SPEC under project CWD so Claude Code Write can create it (system /tmp is
+       # outside the default project file-access scope). Path must NOT exist yet:
+       # Write refuses to overwrite an unread existing file.
+       SPEC_DIR="$(mktemp -d "${PWD}/.plinth-lane.XXXXXX")" || { echo "SPEC_DIR mktemp failed rc=$?"; exit 1; }
+       SPEC="$SPEC_DIR/prompt"
+       OUT="$(mktemp -t grok-out.XXXXXX)" || {
+         _orc=$?
+         rm -rf "$SPEC_DIR" || { echo "SPEC_DIR cleanup after OUT mktemp failed rc=$?"; exit 1; }
+         echo "OUT mktemp failed rc=$_orc"; exit 1
+       }
+       [ ! -e "$SPEC" ] || { echo "SPEC path already exists — refuse to proceed"; exit 1; }
+       printf 'BEFORE=%q SNAP=%q SPEC_DIR=%q SPEC=%q OUT=%q\n' "$BEFORE" "$SNAP" "$SPEC_DIR" "$SPEC" "$OUT"
        # a failed snapshot means NO sensitive baseline — STOP and report STATUS: unavailable
 
-1. Write the spec to a UNIQUE prompt file — never inline shell quoting, never a fixed path
-   (parallel lanes on a fixed path corrupt each other):
-
-       SPEC="$(mktemp -t grok-spec.XXXXXX)"; OUT="$(mktemp -t grok-out.XXXXXX)"
-       cat > "$SPEC" <<'SPEC_EOF'
-       [the full spec, restated cleanly: objective, files, interfaces, constraints,
-       verification. End with: "Run the verification command and include its ACTUAL
-       output in your final message, and end that message with one line
-       `MODEL: <the model id you are running as>`." — the delegation receipt in step 5
-       reads that line, so the driver sees WHICH model claims to have typed the diff.]
-       SPEC_EOF
+1. Use the **Write tool**, not Bash, to create the file at the literal `SPEC`
+   path printed by step 0 (that path does not exist yet — do not pre-create it;
+   it is under the project CWD so Write is authorized without --add-dir)
+   with the full spec, restated cleanly: objective, files, interfaces, constraints,
+   and verification. End it with: “Run the verification command and include its
+   ACTUAL output in your final message, and end that message with one line
+   `MODEL: <the model id you are running as>`.” (the step-5 delegation receipt
+   reads that line). A line such as `SPEC_EOF` has no special meaning because the
+   payload never appears in shell source.
 
 2. Invoke grok headlessly, multi-turn, wall-clocked. The cap must hold even without coreutils —
    `timeout`/`gtimeout` (with -k 10 TERM->KILL) if present, else a python3 process-group cap; if
    NEITHER exists it FAILS UNAVAILABLE (return 3) rather than run grok uncapped — the hard-cap
    contract is never silently broken (python3 is a declared dependency; see SETUP.md):
 
+       # Paste the exact BEFORE=... SNAP=... SPEC_DIR=... SPEC=... OUT=... line from step 0.
        cap() {  # cap N <cmd...> — hard wall-clock cap without depending on coreutils.
          # timeout/gtimeout use -k 10 (TERM then KILL) so a signal-ignoring CLI can't hang; the
          # python3 fallback runs the CLI in its own process group and TERM-then-KILLs it likewise.
@@ -96,6 +107,28 @@ except subprocess.TimeoutExpired:
          --permission-mode bypassPermissions --sandbox workspace --max-turns 20 \
          --output-format plain --cwd "$(pwd)" \
          > "$OUT" 2>&1 || RC=$?
+       # Prompt was consumed path-based; remove the project-local SPEC_DIR (and the
+       # prompt file) on every path — success, timeout, or CLI failure — so specs
+       # do not accumulate as hidden residue under the repo. SPEC_DIR comes from the
+       # pasted step-0 handoff (not re-derived), so cleanup uses the same directory
+       # Write created.
+       # Only delete the direct project-local mktemp dir from step 0. Reject nested
+       # or `..` paths (shell * matches slashes, so a prefix-only case is unsafe).
+       rest="${SPEC_DIR#"${PWD}/.plinth-lane."}"
+       case "$SPEC_DIR" in
+         "${PWD}/.plinth-lane."*)
+           case "$rest" in ''|*/*|*..*)
+             echo "SPEC_DIR not a direct \${PWD}/.plinth-lane.* dir — refusing cleanup (got: $SPEC_DIR)"; exit 1 ;;
+           esac
+           [ "$SPEC" = "$SPEC_DIR/prompt" ] || {
+             echo "SPEC_DIR handoff missing or mismatched SPEC"; exit 1; }
+           rm -f -- "$SPEC" || { echo "SPEC cleanup failed rc=$?"; exit 1; }
+           rmdir -- "$SPEC_DIR" || { echo "SPEC_DIR rmdir failed rc=$?"; exit 1; }
+           ;;
+         *)
+           echo "SPEC_DIR not under \${PWD}/.plinth-lane.* — refusing cleanup (got: $SPEC_DIR)"; exit 1
+           ;;
+       esac
        echo "RUN_RC=$RC BEFORE=$BEFORE SNAP=$SNAP OUT=$OUT"   # paste these literals into steps 3-5
 
    Three axes, all required:

@@ -77,6 +77,20 @@ jq -nc --arg sha "$CFULL" \
   '{verdict:"APPROVED",sha:$sha,round:1,mode:"fresh",model:"gpt-test",
     risk:{tier:1,files:1,reasons:["test"]},ts:"2026-01-01T00:00:00Z"}' \
   > "$C/.plinth/session/review/detached/verdict.json"
+# ── Fixture C2: UNBOUND (pending Tier-2 confirmation) must NOT error the card ─
+C2="$FIX/gamma-unbound"
+mk_git "$C2"
+git -C "$C2" checkout -qb feat/unbound
+echo ub > "$C2/u.txt"
+git -C "$C2" add -A
+git -C "$C2" commit -qm "work"
+UBSHA="$(git -C "$C2" rev-parse HEAD)"
+mkdir -p "$C2/.plinth/session/review/feat-unbound"
+jq -nc --arg sha "$UBSHA" \
+  '{verdict:"UNBOUND",unbound_reason:"Tier-2 clean-slate confirmation not yet complete",sha:$sha,round:2,mode:"verify",model:"gpt-test"}' \
+  > "$C2/.plinth/session/review/feat-unbound/verdict.json"
+mkdir -p "$C2/.plinth/session"
+printf '{"event":"SessionStart","sid":"s1","epoch":1}\n' > "$C2/.plinth/session/events.jsonl"
 
 # ── Fixture D: core.abbrev=12 must not false-stale a matching full SHA ───────
 D="$FIX/delta-abbrev"
@@ -524,7 +538,7 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
-export PLINTH_DASH_ROOTS="$A:$B:$C:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
+export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
 fi
@@ -544,9 +558,9 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-# Base 34 + 8 extra protocol fixtures (L18–L25) + optional sha256
-EXPECTED_N=42
-[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=43
+# Base 35 (incl. gamma-unbound) + 8 extra protocol fixtures (L18–L25) + optional sha256
+EXPECTED_N=43
+[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
 # Alpha assertions
@@ -588,6 +602,18 @@ jq -e '
   and .review.verdict == "APPROVED"
   and .review.stale == false
 ' "$OUT" >/dev/null
+
+# UNBOUND (pending confirmation) is a valid enum — not snapshot_render_failed
+jq -e '
+  .projects[] | select(.name == "gamma-unbound")
+  | (.error == null or .error == "")
+  and .review != null
+  and .review.verdict == "UNBOUND"
+' "$OUT" >/dev/null
+# statusline must label UNBOUND (not "CHANGES")
+sl="$( "$PLINTH" statusline "$FIX/gamma-unbound" )"
+printf '%s' "$sl" | grep -q 'UNBOUND' || { echo "smoke-snapshot: statusline missing UNBOUND (got: $sl)" >&2; exit 1; }
+printf '%s' "$sl" | grep -q 'CHANGES' && { echo "smoke-snapshot: statusline mislabels UNBOUND as CHANGES (got: $sl)" >&2; exit 1; } || true
 
 # core.abbrev=12: matching full SHA is not stale
 jq -e '
@@ -1163,6 +1189,26 @@ setTimeout(() => {
         console.error("cardHTML missing field representation:", needle);
         process.exit(1);
       }
+    }
+    // UNBOUND (pending Tier-2 confirmation): warn tone + yellow chip
+    const unbound = {
+      name: "ub", path: "/tmp/ub", branch: "feat/ub", head: "abcdef0",
+      feedless: false, needs_human: { open: 0, blocking: 0 },
+      review: { verdict: "UNBOUND", round: 2, sha7: "abcdef0",
+                stale: false, running: false, mode: "verify", tier: 2 },
+    };
+    if (api.cardTone(unbound) !== "warn") {
+      console.error("cardTone(UNBOUND) expected warn, got", api.cardTone(unbound));
+      process.exit(1);
+    }
+    const ubHtml = api.cardHTML(unbound);
+    if (!ubHtml.includes('class="card warn"')) {
+      console.error("UNBOUND card missing tone class warn");
+      process.exit(1);
+    }
+    if (!ubHtml.includes('chip yellow">UNBOUND')) {
+      console.error("UNBOUND card missing yellow UNBOUND chip:", ubHtml.slice(0, 200));
+      process.exit(1);
     }
     // Healthy idle: no review chip present, tone idle
     const idle = {
