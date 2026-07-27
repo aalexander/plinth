@@ -14,18 +14,13 @@
 - [x] **wren git remote** — `origin` = `aalexander/wren`.
 
 - [x] **anvil seats+instrument** — merged #6 (instrument 4.8.1 + seats on scaffold main).
-  Full SPEC acceptance still waits on harness PR #1.
 
-- [x] **certeus seats+instrument** — merged #36 (instrument 4.8.1 + seats on main).
-  Follow-up: repin receipt @ v4.8.0 once convenient (landed with floor@v4.8.0, receipt
-  left at main's v4.7.1 pin for base-pin during bootstrap).
+- [x] **certeus seats+instrument** — merged #36; receipt trail-pin merged #37
+  (floor + receipt both @ v4.8.0).
 
-- [x] **wren instrument** — merged #19 (instrument 4.8.1 + floor/checks/receipt@v4.8.0).
-  Admin merge for receipt base-pin chicken-and-egg; protection restored with
-  `receipt / verify` + `strict:true`.
+- [x] **wren instrument** — merged #19; protection has `receipt / verify` + `strict:true`.
 
-- [ ] **geneus** — local only (no remote). Instrument 4.8.1 + advisor=`fable` applied
-  on `feat/phase-0-spec-ratification`. Create GitHub remote when ready.
+- [x] **geneus remote** — `origin` = `aalexander/geneus` (private); branches pushed.
 
-- [ ] **certeus receipt trail-pin follow-up** — optional small PR to set
-  `plinth-receipt.yml@29df9c14… # v4.8.0` now that main has the newer floor pin.
+- [ ] **anvil harness** — full SPEC acceptance still awaits harness PR #1
+  (`build/harness-v14`); main is instrumented scaffold until that lands.
