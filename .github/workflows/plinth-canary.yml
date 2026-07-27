@@ -1728,25 +1728,25 @@ jobs:
             grep -vE '^(audit_vendor|audit_model)' .plinth/config > .plinth/config.t && mv .plinth/config.t .plinth/config
             # After any run_round returns, if verdict is UNBOUND with confirmation reason, stop
             # BEFORE the confirmation gate — that proves the write itself was UNBOUND.
-            # Use python -c (not a heredoc) so YAML | indentation cannot break the PY delimiter.
-            python3 -c '
-from pathlib import Path
-p = Path(".plinth/review.sh")
-t = p.read_text()
-needle = "run_round \"$mode\" \"$round\" \"\" ;;\nesac\n# Confirmation gate"
-insert = (
-    "run_round \"$mode\" \"$round\" \"\" ;;\n"
-    "esac\n"
-    "# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate\n"
-    "if [ \"\${RVERDICT:-}\" = \"APPROVED\" ] && [ \"\$(jq -r .verdict \"\$SDIR/verdict.json\" 2>/dev/null)\" = \"UNBOUND\" ]; then\n"
-    "  echo \"CANARY_PROCESS_WINDOW_UNBOUND\"\n"
-    "  exit 42\n"
-    "fi\n"
-    "# Confirmation gate"
-)
-assert needle in t, "hook insertion point missing in review.sh"
-p.write_text(t.replace(needle, insert, 1))
-'
+            # sed-only injection (no multi-line python) so YAML | stay valid.
+            grep -q 'run_round "\$mode" "\$round" "" ;;' .plinth/review.sh \
+              || { echo "::error::process-window canary: insertion anchor missing"; exit 1; }
+            # Insert after the esac that follows the run_round dispatch, before Confirmation gate.
+            awk '
+              { print }
+              /run_round "\$mode" "\$round" "" ;;/ { saw=1 }
+              saw && /^esac$/ {
+                print "# CANARY HOOK: stop after non-fresh Tier-2 wrote UNBOUND, before confirmation gate"
+                print "if [ \"${RVERDICT:-}\" = \"APPROVED\" ] && [ \"$(jq -r .verdict \"$SDIR/verdict.json\" 2>/dev/null)\" = \"UNBOUND\" ]; then"
+                print "  echo \"CANARY_PROCESS_WINDOW_UNBOUND\""
+                print "  exit 42"
+                print "fi"
+                saw=0
+              }
+            ' .plinth/review.sh > .plinth/review.sh.hook && mv .plinth/review.sh.hook .plinth/review.sh
+            chmod +x .plinth/review.sh
+            grep -q CANARY_PROCESS_WINDOW_UNBOUND .plinth/review.sh \
+              || { echo "::error::process-window canary: hook not inserted"; exit 1; }
             echo REQ > SPEC.md; git add -A; git commit -qm base >/dev/null
             git checkout -qb feat >/dev/null 2>&1; echo more >> SPEC.md; git add -A; git commit -qm t2 >/dev/null
             PATH="$PW:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
