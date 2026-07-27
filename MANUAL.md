@@ -862,8 +862,9 @@ installed copies.
   runs before any classifier; risk-classify fails closed on raw/per-test diff
   errors. Canary covers absence + failure-injection for ls-tree probes,
   post-probe git show, tooling-floor name-only, base-classifier extraction,
-  reviewer/AGENTS-project contract materialization, inline_contract, and a
-  fr_FR locale regression for first-adoption absence.
+  reviewer/AGENTS-project contract materialization, inline_contract, a
+  no-English-phrase source check, and a French cat-file stderr shim for
+  first-adoption absence.
   (Originally: v4.5.0 refresh review, round 3 sweep.)
 - **review.sh: porcelain `-z` rename records are mis-parsed**
   (`shared/.plinth/review.sh` dirty-tree loop, ~line 61). A rename/copy emits

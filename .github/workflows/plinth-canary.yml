@@ -1031,28 +1031,55 @@ jobs:
             set -e
             [ "$erc" -ne 0 ] || { echo "::error::#15 CONTRACT_TEXT gate did not die_infra when inline_contract failed"; exit 1; }
             printf '%s' "$err" | grep -qiE 'inline_contract|die_infra|AGENTS-project' || { echo "::error::#15 CONTRACT_TEXT propagation message missing (err=$err)"; exit 1; } )
-          # #15 locale-independence: absence must not die_infra even when Git speaks non-English.
-          # Force a French locale on real git; first-adoption (no base config) must still fall back.
+          # #15 locale-independence: product sources must not decide absence via English
+          # stderr phrases (the pre-fix defect under localized Git). Presence is ls-tree.
+          ! grep -nE "does not exist" "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" \
+            || { echo "::error::#15 product still matches English 'does not exist' for absence — locale-dependent"; exit 1; }
+          grep -q 'ls-tree' "$GITHUB_WORKSPACE/shared/.plinth/review.sh" \
+            && grep -q 'ls-tree' "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" \
+            || { echo "::error::#15 product missing ls-tree presence probes"; exit 1; }
+          # First-adoption absence still works (no base config → Tier 1 for app.py; basecfg has=0)
           T_LOC="$(mktemp -d)"; ( cd "$T_LOC"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
             echo hi > README.md; git add -A; git commit -qm b >/dev/null
             git checkout -qb feat >/dev/null 2>&1; mkdir -p .plinth; printf 'spec_path = WORK.md\n' > .plinth/config
             echo code > app.py; git add -A; git commit -qm w >/dev/null
-            # risk-classify: no base config → first adoption Tier 1 for app.py, not Tier 2
-            out="$(LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null || true)"
-            [ "$(printf '%s' "$out" | jq -r .tier 2>/dev/null)" = "1" ] || { echo "::error::#15 risk-classify under fr_FR did not treat missing base config as absence (out=$out)"; exit 1; }
-            # review.sh basecfg extract: absent → no die_infra
+            out="$(bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null || true)"
+            [ "$(printf '%s' "$out" | jq -r .tier 2>/dev/null)" = "1" ] || { echo "::error::#15 risk-classify first-adoption absence failed (out=$out)"; exit 1; }
             BCFG_L="$(mktemp)"; awk '/^basecfg=""/ {p=1} p{print} /^bcfg\(\)/ {if(p)exit}' \
               "$GITHUB_WORKSPACE/shared/.plinth/review.sh" > "$BCFG_L"
             base_tip="$(git rev-parse main)"
             set +e
-            err="$(LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 base_tip="$base_tip" bash -c '
+            err="$(base_tip="$base_tip" bash -c '
               set -euo pipefail
               die_infra() { echo "die_infra: $*" >&2; exit 9; }
               source '"$BCFG_L"'
               printf "has=%s\n" "$base_has_config"
             ' 2>&1)"; erc=$?
             set -e
-            [ "$erc" = 0 ] && printf '%s' "$err" | grep -q 'has=0' || { echo "::error::#15 review.sh basecfg under fr_FR treated absence as infra (erc=$erc err=$err)"; exit 1; } )
+            [ "$erc" = 0 ] && printf '%s' "$err" | grep -q 'has=0' || { echo "::error::#15 review.sh basecfg treated absence as infra (erc=$erc err=$err)"; exit 1; } )
+          # Deterministic localized-Git shim: even if Git printed French "n'existe pas",
+          # product no longer reads stderr for absence — ls-tree empty still means absence.
+          SHIM_FR="$(mktemp -d)"
+          cat > "$SHIM_FR/git" <<GSH
+          #!/usr/bin/env bash
+          # Pass through real git; only rewrite cat-file -e stderr to French (legacy trap).
+          if [ "\$1" = cat-file ] && [ "\$2" = -e ]; then
+            out="\$("$REAL_GIT" "\$@" 2>&1)"; rc=\$?
+            if [ "\$rc" -ne 0 ]; then
+              echo "fatal: le chemin n'existe pas dans 'HEAD' (injected fr)" >&2
+              exit "\$rc"
+            fi
+            printf '%s' "\$out"; exit 0
+          fi
+          exec "$REAL_GIT" "\$@"
+          GSH
+          chmod +x "$SHIM_FR/git"
+          T_FR="$(mktemp -d)"; ( cd "$T_FR"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
+            echo hi > README.md; git add -A; git commit -qm b >/dev/null
+            git checkout -qb feat >/dev/null 2>&1; echo code > app.py; git add -A; git commit -qm w >/dev/null
+            out="$(PATH="$SHIM_FR:$PATH" bash "$GITHUB_WORKSPACE/shared/.plinth/risk-classify.sh" main 2>/dev/null || true)"
+            [ "$(printf '%s' "$out" | jq -r .tier 2>/dev/null)" = "1" ] || { echo "::error::#15 risk-classify under French cat-file stderr shim failed absence (out=$out)"; exit 1; } )
           # #15 inline_contract empty policy: RC_FILE empty after materialization → die_infra at empty check
           # (status-checked empty-contract gate)
           T_EMPTY="$(mktemp -d)"; ( cd "$T_EMPTY"; git init -qb main . >/dev/null; git config user.email x@x; git config user.name x
