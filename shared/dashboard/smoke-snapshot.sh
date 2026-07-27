@@ -898,6 +898,17 @@ export PLINTH_DASH_ROOTS="$EC"
   and .review_round_secs >= 10
   and .review_round_secs <= 20
 ' >/dev/null
+# jq-fallback constructor: parseable JSON object that fails protocol shape
+# (verdict enum invalid) — still retains seats/phases/review_round_secs.
+printf '{"verdict":"NOT_A_REAL_VERDICT","sha":"abcdef0","round":1}\n' \
+  > "$EC/.plinth/session/review/feat-ek/verdict.json"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "err-keep")
+  | .error == "snapshot_render_failed"
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .phases.coding == 30
+  and .review_round_secs >= 10
+' >/dev/null
 
 # Detached HEAD finds verdict under "detached"
 jq -e '
@@ -1865,8 +1876,8 @@ for try in 18734 18735 18736 18737 18738 18739 18740; do
   fi
   break
 done
-# Serve-mode must auto-enable snapshot-with-quota for the snapshot child.
-# Observe via WRAP: when the child re-invokes dash --snapshot, PROBE must be set.
+# Serve-mode must re-invoke dash --snapshot-with-quota (not public --snapshot).
+# Observe via WRAP argv.
 PROBE_SEEN="$FIX/probe-seen"
 : > "$PROBE_SEEN"
 cat > "$WRAP" <<WRAP
