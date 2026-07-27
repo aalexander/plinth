@@ -2458,20 +2458,12 @@ _DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
 # Set by run_dashboard when argv is --snapshot-with-quota (serve child only).
 _DASH_QUOTA_ALLOW_PROBE=0
 
-# Resolve quota cache path: ONLY under the realpath of $HOME/.config/plinth/
-# (rejects .. traversal and non-config locations). Invalid overrides → default.
+# Fixed cache path under $HOME/.config/plinth/ only — no override that can land
+# inside a discovered project (including when $HOME is a project root, the file
+# is still only the operator config home, not a repo checkout path chosen by
+# discovery). PLINTH_DASH_QUOTA_CACHE is ignored for write location.
 _dash_quota_cache_path() {
-  local def="$HOME/.config/plinth/dash-quota.json" cand="${PLINTH_DASH_QUOTA_CACHE:-}"
-  local base rp
-  base="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' \
-    "$HOME/.config/plinth" 2>/dev/null || true)"
-  [ -n "$base" ] || { printf '%s\n' "$def"; return 0; }
-  [ -n "$cand" ] || { printf '%s\n' "$base/dash-quota.json"; return 0; }
-  rp="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$cand" 2>/dev/null || true)"
-  case "$rp" in
-    "$base"|"$base"/*) printf '%s\n' "$rp" ;;
-    *) printf '%s\n' "$base/dash-quota.json" ;;
-  esac
+  printf '%s\n' "$HOME/.config/plinth/dash-quota.json"
 }
 
 _dash_quota_read_cache() {
@@ -2605,9 +2597,10 @@ except Exception:
   done
 
   # Assemble + projection from history of week_all_models samples.
-  local history_in='[]'
-  if [ -f "$cache" ]; then
-    history_in="$(jq -c '.history // []' "$cache" 2>/dev/null || echo '[]')"
+  # History only from a validated single-object cache (never raw multi-doc).
+  local history_in='[]' cached_body
+  if cached_body="$(_dash_quota_read_cache "$cache")"; then
+    history_in="$(printf '%s' "$cached_body" | jq -c '.history // []' 2>/dev/null || echo '[]')"
   fi
   local assembled
   assembled="$(jq -nc --slurpfile v "$vendors_tmp" --argjson now "$now" --argjson hist "$history_in" '
