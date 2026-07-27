@@ -122,10 +122,37 @@ plinth dash --snapshot | jq '.projects[] | {name, lifecycle, review}'
 
 ---
 
+## Auto-handoff triggers
+
+| Event | Snapshot reason |
+|-------|-----------------|
+| `plinth harden` | enter-harden |
+| `plinth build` | enter-build |
+| `plinth plan --deep` | plan-deep |
+| `plinth handoff` | manual |
+| review → CHANGES_NEEDED | auto via handoff |
+| review → APPROVED | auto via handoff |
+
+Archives: `.plinth/session/handoff-<slug>-<ts>.md`
+
+---
+
+## Review anti-thrash (automatic)
+
+| Mechanism | Behavior |
+|-----------|----------|
+| `review_phase` | `build` by default; `hardening` when phase=harden (or env/commit marker) |
+| Sticky `id` | Assigned on findings; reopen without file blob change → auto-resolved |
+| Compact verify | Open-finding ledger + fix diff; no whole-repo free-explore |
+| Dual first-pass | Tier-2 fresh round 1: primary + audit_vendor merge open majors |
+
+---
+
 ## Install
 
 ```bash
 plinth update /path/to/project   # Stop hook + rules from shared/
+# For review anti-thrash: update copies shared/.plinth/review.sh into the project
 ```
 
 ---
