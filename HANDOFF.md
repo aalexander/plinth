@@ -1,10 +1,11 @@
-# Handoff — `feat/lifecycle-build-harden`
+# Handoff — `feat/lifecycle-build-harden` @ e1d6152
 
-Updated: 2026-07-27 · Phase: **build** (implementing the lifecycle itself)
+Updated: 2026-07-28T03:37:42Z · Phase: **harden** · Snapshot: **enter-harden** (milestone) · Verdict: none
+
+context_advice: optional_fresh_session — NOT required; do not wait. Keep working unless human-blocked.
 
 ## Goal
-Thin lifecycle: default build (Stop defers review), `plinth harden` restores
-Stop pressure, handoff for restart, ship still APPROVED@HEAD.
+Forced adversarial review after every committing session causes thrash (many
 
 ## Done
 - shared/.claude/hooks/review-gate.sh v2 (build_defer / harden)
@@ -14,17 +15,24 @@ Stop pressure, handoff for restart, ship still APPROVED@HEAD.
 - PLAN.md product plan
 
 ## Next (ordered)
+1. Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden).
 1. Commit on feat/lifecycle-build-harden
 2. `plinth harden` then `./.plinth/review.sh` to APPROVED when ready to ship
 3. PR — note consumers need `plinth update` to get new Stop hook
 
 ## Restart prompt
 > Read HANDOFF.md and continue from ## Next.
-> Product sources are shared/ + bin/; do not edit installed .plinth/.claude judges.
+> Phase is **harden**. Do not open a PR until `plinth harden` and `./.plinth/review.sh` reach APPROVED@HEAD (unless already APPROVED at this HEAD).
+> Advisor: `plinth advise` anytime.
+> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items.
 
 ## Evidence
-- Canary: canary-lifecycle-build-harden: ALL PASS
+- HEAD: `e1d6152` on `feat/lifecycle-build-harden`
+- Lifecycle phase: harden
+- Snapshot reason: enter-harden (milestone)
+- Review verdict: none
+- PLAN.md: present
+- PLAN-REVIEW.md: absent
 
 ## Risks / Noticed
-- Local .claude/hooks/review-gate.sh is still the installed judge until plinth update
-- Full Delphi plan panel / dual harden first-pass deferred (thin core only)
+- (edit)
