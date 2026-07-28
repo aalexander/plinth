@@ -44,10 +44,23 @@ must discover the class one instance at a time pays a full round for each.
 
 ## Verdict policy — what blocks and what doesn't
 - Open blocker or major findings in PROJECT code: CHANGES_NEEDED.
-- **Out of scope — do not review or file findings on `HANDOFF.md`.** It is
-  session restart ephemera (`plinth handoff`), not product code. The harness
-  excludes it from the reviewed pathspec and ignores any finding against it
-  (Goal/Next whitespace must never block ship).
+- **Out of scope — do not review or file findings on session ephemera:**
+  `HANDOFF.md` (restart note from `plinth handoff`) and `NEEDS-HUMAN.md`
+  (root or `.plinth/`). The harness excludes them from the reviewed pathspec
+  and demotes/ignores findings against them. Goal/Next or queue whitespace
+  must never block ship.
+- **BUILD phase — asymptotic coverage is minor, not major.** "Still untested:
+  …", "coverage remains incomplete", horizon expansion beyond the canary for
+  this change → severity **minor** (Noticed backlog). Still **major**: missing
+  tests for *changed behavior*, hollow tests, or a named acceptance criterion
+  the diff does not meet.
+- **Docs prose is minor unless it overclaims a ship/security guarantee.**
+  Findings only about `CHANGELOG.md` / `MANUAL.md` / `README*` / `docs/` wording
+  or comment contradictions → **minor**. Keep major only for false claims about
+  fail-open, auth, secrets, ship gate, or similar.
+- **Scope to the reviewed pathspec.** On verify/resume rounds, new findings
+  only on the fix diff and open-ledger files. Do not free-roam the tree inventing
+  majors on untouched paths — the harness demotes those to minor.
 - Minor findings: report them (severity "minor", status open) but they do NOT
   block. The driver must append open minors to the spec's `## Noticed` section
   before the PR; they ride to CI and the human from there.
@@ -130,6 +143,8 @@ version works and its utility is proven. Reviews serve that order.
 - **Sticky findings:** when re-checking prior opens, preserve `id` if present.
   Do not re-file a resolved class on **unchanged** code as a new major; the
   harness may auto-resolve sticky reopens when the file blob is unchanged.
+  Paraphrases of the same thrash class (coverage-gap, HANDOFF whitespace, …)
+  share one sticky identity — rewording is not a new finding.
 - **Verify rounds:** stay on the fix diff and open-finding ledger; do not
   free-explore the whole repo inventing new non-blocking classes on untouched lines.
 - **HARDENING phase (explicit).** The full adversarial sweep is in-charter only

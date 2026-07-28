@@ -132,30 +132,40 @@ fi
 base_tip="$(git rev-parse --verify "$baseref")" \
   || die_infra "cannot resolve tip of base ref '${baseref}'"
 
-# HANDOFF.md is session restart ephemera (auto-written by plinth handoff) — never
-# part of the reviewed subject. Exclude it from the model diff so thrash on
-# Goal/Next whitespace cannot block ship.
-REVIEW_PATHSPEC=(. ':(exclude)HANDOFF.md' ':(exclude)**/HANDOFF.md')
+# Session ephemera — never part of the reviewed subject:
+#   HANDOFF.md      restart note (plinth handoff); Goal/Next whitespace thrash
+#   NEEDS-HUMAN.md  human queue (root or .plinth/); driver-maintained channel
+# Excluded from model pathspec; findings against them never block (defense in depth).
+REVIEW_PATHSPEC=(.
+  ':(exclude)HANDOFF.md' ':(exclude)**/HANDOFF.md'
+  ':(exclude)NEEDS-HUMAN.md' ':(exclude)**/NEEDS-HUMAN.md'
+)
+# Paths that are ephemera-only (for empty-diff short-circuit + risk-classify parity).
+EPHEMERA_RE='(^|/)(HANDOFF|NEEDS-HUMAN)\.md$'
 diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
   || die_infra "git diff ${baseref}...HEAD failed"
 if [ -z "$diff" ]; then
-  # Only excluded paths (e.g. HANDOFF.md alone) changed — nothing to review.
+  # Only excluded paths (HANDOFF / NEEDS-HUMAN) changed — nothing to review.
   only_ex="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null || true)"
-  if [ -n "$only_ex" ] && ! printf '%s\n' "$only_ex" | grep -Ev '(^|/)HANDOFF\.md$' >/dev/null; then
+  if [ -n "$only_ex" ] && ! printf '%s\n' "$only_ex" | grep -Ev "$EPHEMERA_RE" >/dev/null; then
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
-          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" 2>/dev/null || true
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
+          "$SDIR/open-set-fp" "$SDIR/open-set-streak" 2>/dev/null || true
     mkdir -p "$SDIR"
     jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{verdict:"APPROVED", reviewer_verdict:"HANDOFF_ONLY", sha:$sha, base_ref:$base,
+      '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
         round:0, session_id:"", model:"deterministic-floor",
-        risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
+        risk:{tier:0,files:0,reasons:["HANDOFF/NEEDS-HUMAN only — session ephemera, not reviewed"]},
         usage:null, ts:$ts}' > "$SDIR/verdict.json"
     rm -f "$SDIR/last-error"
-    echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
+    echo "Plinth review: ephemera-only change (HANDOFF/NEEDS-HUMAN) — APPROVED without model."
     exit 0
   fi
   die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
 fi
+# Reviewed file list (full branch, pathspec) — thrash policy scopes NEW findings to these
+# (verify/resume narrow further inside run_round to the fix-diff + open ledger).
+REVIEWED_FILES_FULL="$(git diff --name-only "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
 
 # Per-project config (.plinth/config — the driver must not edit it; it is in protected-paths,
 # so a Claude driver's guard blocks edits at the tool level; a change is otherwise reviewed as
@@ -1075,7 +1085,8 @@ if [ -f "$SDIR/verdict.json" ]; then
     # is swept here rather than left behind as a misleading artifact.
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
           "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
-          "$SDIR/dual-degraded.json" "$SDIR"/findings-dual-*.json
+          "$SDIR/dual-degraded.json" "$SDIR"/findings-dual-*.json \
+          "$SDIR/open-set-fp" "$SDIR/open-set-streak" "$SDIR/sticky-ledger.json"
   fi
 fi
 
@@ -1190,7 +1201,9 @@ validate_findings() {  # <findings-json> — full schema shape: enums, integer l
 
 # Sticky findings + ids (anti-thrash): assign stable ids; auto-resolve reopens of
 # prior-resolved findings when the file blob at HEAD is unchanged AND the
-# finding identity matches (file + severity + full normalized description).
+# finding identity matches (file + severity + full normalized description OR
+# thrash-class fingerprint). Known thrash classes (coverage-gap, handoff-ws, …)
+# collapse paraphrases onto one base id so reworded reopens sticky-resolve.
 # Fail-closed: short-prefix ids, missing ledger fields, or desc/file mismatch
 # never auto-resolve. Ledger: $SDIR/sticky-ledger.json
 sticky_process_findings() {  # <findings-json-path>
@@ -1200,16 +1213,34 @@ sticky_process_findings() {  # <findings-json-path>
   tmp="$(mktemp)"
   # Assign missing ids from FULL normalized desc (not an 80-char prefix — collisions).
   # Explicit reviewer ids are kept only when unique in this payload; collisions get a suffix.
-  # Always use base identity (file|severity|full-norm-desc) — never line-qualified
+  # Always use base identity (file|severity|full-norm-desc|class) — never line-qualified
   # ids that thrash when a sibling disappears. True text-identical siblings share
   # one sticky id by design (anti-thrash).
   jq '
     def strip_sticky:
-      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    # Class-stable fingerprints for paraphrased thrash classes (no severity —
+    # major→minor demotion must not mint a new id).
+    def thrash_class:
+      (normdesc) as $d
+      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
     def nid:
-      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
     # Fill missing ids with base nid (identical siblings share id by design).
     # Disambiguate EXPLICIT id collisions with a monotonic index (stable, unique).
     .findings |= map(
@@ -1264,30 +1295,53 @@ sticky_process_findings() {  # <findings-json-path>
   done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
 
   # Auto-close sticky reopens only when ledger identity fully matches + same blob.
-  # Strip AUTO-STICKY marker BEFORE normalizing punctuation (marker uses [ ] chars).
+  # Strip AUTO-STICKY/THRASH markers BEFORE normalizing punctuation.
+  # Class-stable thrash ids match on class key (not full paraphrased desc).
   # Always use unqualified nid for ledger keys (line-suffixed ids are collision-only
   # and would otherwise thrash when a sibling disappears).
   jq --argjson blobs "$blobs_json" --slurpfile led "$ledger" '
     def strip_sticky:
-      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def thrash_class:
+      (normdesc) as $d
+      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
     def base_id:
-      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
     ($led[0] // {}) as $L
     | .findings |= map(
         (. as $f | ($f | base_id) as $bid
          | (if (.id == null or .id == "") then $bid else .id end) as $disp
-         # AUTO-STICKY uses base identity (file|sev|normdesc), not display id —
+         # AUTO-STICKY uses base identity, not display id —
          # so renames/suffixes after sibling collapse cannot evade resolution.
+         # Class keys: match on class fingerprint (desc_norm may paraphrase).
          | if .status == "open"
               and ($L[$bid] != null)
               and ($L[$bid].status == "resolved")
               and ($L[$bid].blob != null) and ($blobs[.file] != null)
               and ($L[$bid].blob == $blobs[.file])
               and ($L[$bid].file != null) and ($L[$bid].file == .file)
-              and ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
-              and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
+              and (
+                (($f | thrash_class) | startswith("class:"))
+                or (
+                  ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
+                  and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
+                )
+              )
            then .status = "resolved"
                 | .id = $disp
                 | .description = (($f | strip_sticky)
@@ -1299,11 +1353,27 @@ sticky_process_findings() {  # <findings-json-path>
   # Ledger keyed by base_id (stable identity). Open-wins across siblings.
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
     def strip_sticky:
-      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def thrash_class:
+      (normdesc) as $d
+      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
     def base_id:
-      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
     ($led[0] // {}) as $L0
     | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
         ($x | base_id) as $bid
@@ -1321,6 +1391,68 @@ sticky_process_findings() {  # <findings-json-path>
     | . as $acc
     | reduce ($acc.open | keys[]) as $k ($acc.led; .[$k].status = "open")
   ' > "$tmp" && mv "$tmp" "$ledger"
+}
+
+# Thrash policy (deterministic demotions after sticky). Enforces anti-thrash rules
+# the model is asked to follow but often does not:
+#   1) BUILD asymptotic "coverage incomplete" → minor (Noticed), unless the text
+#      clearly names a missing test for THIS change / acceptance criterion
+#   2) Docs prose (CHANGELOG/MANUAL/README/docs/) → minor unless ship/security overclaim
+#   3) NEW findings whose file is outside the reviewed pathspec (and not a prior
+#      open ledger id) → minor — SCOPED verify must not free-roam the tree
+#   4) Ephemera paths (HANDOFF / NEEDS-HUMAN) → minor (also excluded from pathspec)
+# Markers: " [THRASH: …]" so the driver can see what the harness demoted.
+thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <prior-open-ids-nl>
+  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" tmp
+  [ -f "$f" ] || return 0
+  tmp="$(mktemp)"
+  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" '
+    def lines($s):
+      if ($s == null or $s == "") then []
+      else ($s | split("\n") | map(select(length > 0))) end;
+    (lines($scope)) as $files
+    | (lines($prior)) as $prior_ids
+    | def is_ephemera:
+        ((.file // "") | test("(^|/)(HANDOFF|NEEDS-HUMAN)\\.md$"));
+    def is_docs_prose:
+        ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|MANUAL\\.md|README(\\.[^/]+)?)$|(^|/)docs/"))
+        and ((.file // "") | test("(^|/)SPEC(\\.md)?$|(^|/)spec/|(^|/)GOAL\\.md$") | not);
+    def is_overclaim:
+        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
+    def is_coverage_asymp:
+        ((.description // "") | test(
+          "coverage remains incomplete|still untested|missing (test )?cases|no end-to-end|coverage finding|untested:|never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage|asymptotic"; "i"
+        ))
+        and ((.description // "") | test(
+          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior has no test"; "i"
+        ) | not);
+    def is_out_of_scope:
+        (($files | length) > 0)
+        and (((.file // "") as $fp | ($files | index($fp)) == null))
+        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
+    .findings |= map(
+      if (.status != "open") then .
+      elif (.severity != "major" and .severity != "blocker") then .
+      elif is_ephemera then
+        .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH: ephemera path — non-blocking]")
+      elif ($phase == "build") and is_coverage_asymp then
+        .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH: asymptotic coverage → Noticed in BUILD]")
+      elif is_docs_prose and (is_overclaim | not) then
+        .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH: docs prose → Noticed]")
+      elif is_out_of_scope then
+        .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH: file not in reviewed pathspec — scoped]")
+      else .
+      end
+    )
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
 # Review charter phase for prompts (build vs hardening). Default build; harden
@@ -1417,8 +1549,10 @@ Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
 metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
-OUT OF SCOPE: HANDOFF.md (session restart ephemera) is excluded from this diff
-and must not appear in findings — the harness ignores any finding against it.
+OUT OF SCOPE: HANDOFF.md and NEEDS-HUMAN.md (session ephemera) are excluded from
+this diff — do not file findings against them. BUILD: asymptotic coverage gaps
+are minor (Noticed), not major. Docs prose is minor unless a ship/security
+overclaim. Stay on the reviewed pathspec for NEW findings.
 Findings on execution-gated paths whose truth depends on real libraries or
 hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
 they route to the run gate instead of blocking.
@@ -1515,6 +1649,28 @@ ${inc}${evidence}${commits}"
   # Sticky may have cleared all open majors while model said CHANGES_NEEDED — recompute later.
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
 
+  # Scope + prior-open ledger for thrash policy (applied after dual merge below).
+  local thrash_scope thrash_prior=""
+  thrash_scope="${REVIEWED_FILES_FULL:-}"
+  if [ "$m" = "verify" ]; then
+    local vanchor_tp
+    vanchor_tp="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
+    if [ -n "$vanchor_tp" ] && git cat-file -e "${vanchor_tp}^{commit}" 2>/dev/null; then
+      thrash_scope="$(git diff --name-only "${vanchor_tp}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
+    fi
+  elif [ "$m" = "resume" ] && [ -n "${prev_sha:-}" ]; then
+    thrash_scope="$(git diff --name-only "${prev_sha}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
+  fi
+  # Prior open findings stay in scope for re-check even if their file is not in the fix diff.
+  if [ "$r" -gt 1 ] && [ -f "$SDIR/findings-$((r - 1)).json" ]; then
+    thrash_prior="$(jq -r '.findings[] | select(.status=="open") | .id // empty' \
+      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || true)"
+    thrash_scope="$(printf '%s\n%s\n' "$thrash_scope" \
+      "$(jq -r '.findings[] | select(.status=="open") | .file // empty' \
+        "$SDIR/findings-$((r - 1)).json" 2>/dev/null || true)")"
+  fi
+  [ -n "$thrash_scope" ] || thrash_scope="${REVIEWED_FILES_FULL:-}"
+
   # Dual first-pass (Tier 2 fresh round 1): parallel cross-vendor auditor; merge open majors.
   if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
      && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
@@ -1557,6 +1713,18 @@ ${diff}"
     fi
   fi
 
+  # Deterministic thrash demotions (coverage/docs/scope/ephemera) — after dual so
+  # secondary majors get the same treatment.
+  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior"
+  validate_findings "$SDIR/findings-$r.json" \
+    || die_infra "findings invalid after thrash policy — see $SDIR/findings-$r.json"
+  demoted_n="$(jq '[.findings[] | select(.description | test("\\[THRASH:"))] | length' \
+    "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
+  case "$demoted_n" in ''|*[!0-9]*) demoted_n=0 ;; esac
+  if [ "$demoted_n" -gt 0 ]; then
+    echo "Plinth review: thrash policy demoted ${demoted_n} finding(s) to minor (coverage/docs/scope/ephemera)."
+  fi
+
   # Verdict arithmetic is the instrument's job, not the reviewer's judgment
   # (anvil round 12: the reviewer labeled a tooling finding UPSTREAM per policy,
   # then blocked on it anyway). Effective verdict, computed from findings:
@@ -1566,11 +1734,10 @@ ${diff}"
   local blocking tamper RRAW
   # RUNTIME: findings on declared exec-gated paths don't block (dual-keyed:
   # reviewer prefix AND config path match) — they join the run gate instead.
-  # HANDOFF.md: session restart ephemera — never blocks (out of reviewed subject;
-  # also excluded from the model pathspec; this filter is defense in depth if a
-  # reviewer still cites it from sticky prior rounds).
+  # Ephemera (HANDOFF / NEEDS-HUMAN): never blocks (pathspec + thrash demotion;
+  # this filter is defense in depth if a finding still arrives as major).
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-    --arg href '(^|/)HANDOFF\.md$' \
+    --arg href '(^|/)(HANDOFF|NEEDS-HUMAN)\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
@@ -1681,8 +1848,40 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' \
     "$SDIR/findings-$round.json"
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
+  # Soft cap: identical open blocking id-set for N consecutive rounds → human
+  # (exit 2). Distinct from hard round_cap (which kills progressing loops too).
+  # Override: PLINTH_SAME_OPEN_CAP=<n> (default 3); 0 disables.
+  same_cap="${PLINTH_SAME_OPEN_CAP:-3}"
+  case "$same_cap" in ''|*[!0-9]*) same_cap=3 ;; esac
+  open_fp="$(jq -r '
+      [.findings[]
+        | select(.status=="open" and (.severity=="blocker" or .severity=="major"))
+        | .id // ((.file//"") + "|" + (.severity//"") + "|" + (.description//""))]
+      | unique | sort | join("\n")' "$SDIR/findings-$round.json" 2>/dev/null || true)"
+  prev_fp="$(cat "$SDIR/open-set-fp" 2>/dev/null || true)"
+  streak="$(cat "$SDIR/open-set-streak" 2>/dev/null || echo 0)"
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  if [ -n "$open_fp" ] && [ "$open_fp" = "$prev_fp" ]; then
+    streak=$((streak + 1))
+  else
+    streak=1
+  fi
+  printf '%s\n' "$open_fp" > "$SDIR/open-set-fp"
+  printf '%s\n' "$streak" > "$SDIR/open-set-streak"
+  if [ "$same_cap" -gt 0 ] && [ "$streak" -ge "$same_cap" ]; then
+    first_open="$(jq -r --argjson n "$same_cap" '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+      | if . then "HUMAN: same open set \($n)+ rounds — adjudicate: \(.file):\(.line) — \(.description[0:80])" else empty end' \
+      "$SDIR/findings-$round.json" 2>/dev/null || true)"
+    if [ -x "./bin/plinth" ]; then
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="$first_open" \
+        ./bin/plinth handoff "$PWD" 2>/dev/null || true
+    elif command -v plinth >/dev/null 2>&1; then
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="$first_open" \
+        plinth handoff "$PWD" 2>/dev/null || true
+    fi
+    die_infra "same-open soft cap: open blocker/major id-set unchanged for ${streak} consecutive rounds (cap ${same_cap}) — the loop is not converging. Surface to the human: adjudicate residual findings, land with residual note, or re-scope. Override this run: PLINTH_SAME_OPEN_CAP=0 (disable) or PLINTH_SAME_OPEN_CAP=<n>."
+  fi
   # Checkpoint handoff + seed ## Next from first open major (autonomous routing).
-  local first_open
   first_open="$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
     | if . then "Fix [\(.severity)] \(.file):\(.line) — \(.description[0:100]); commit; re-run ./.plinth/review.sh" else empty end' \
     "$SDIR/findings-$round.json" 2>/dev/null || true)"
@@ -1695,6 +1894,8 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   fi
   exit 1
 fi
+# Converged — clear same-open streak so a later loop starts fresh.
+rm -f "$SDIR/open-set-fp" "$SDIR/open-set-streak"
 nonblocking="$(jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' "$SDIR/findings-$round.json")"
 if [ -n "$nonblocking" ]; then
   echo "Non-blocking findings (minors -> '## Noticed'; UPSTREAM -> Plinth repo; RUNTIME -> the run gate, burn down with 'plinth smoke'):"
@@ -1742,8 +1943,11 @@ $(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
+      # Apply thrash demotions to the audit payload before counting (same policy).
+      thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
+        "${REVIEWED_FILES_FULL:-}" ""
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-        --arg href '(^|/)HANDOFF\.md$' \
+        --arg href '(^|/)(HANDOFF|NEEDS-HUMAN)\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select((.file // "" | test($href)) | not)
