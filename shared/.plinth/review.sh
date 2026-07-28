@@ -1213,15 +1213,20 @@ sticky_process_findings() {  # <findings-json-path>
             | ([$f.id] + [range(2; 200) | ($f.id + "#x" + tostring)]
                | map(select(($st.taken[.] // false) | not))
                | .[0]) as $cand
-            | (if $cand != null then $cand
-               else
-                 # Monotonic free suffix never collides with preclaimed #xN or timestamps.
-                 ($st.seq + 1) as $s
-                 | ($f.id + "#u" + ($s|tostring))
-               end) as $final
-            | .seq = (if $cand == null then (.seq + 1) else .seq end)
-            | .taken[$final] = true
-            | .out += [$f | .id = $final | del(._auto)]
+            | if $cand != null then
+                .taken[$cand] = true
+                | .out += [$f | .id = $cand | del(._auto)]
+              else
+                # Walk #uN until free (always checks taken).
+                .seq = (.seq + 1)
+                | until(
+                    (.taken[($f.id + "#u" + (.seq|tostring))] // false) | not;
+                    .seq = (.seq + 1)
+                  )
+                | ($f.id + "#u" + (.seq|tostring)) as $final
+                | .taken[$final] = true
+                | .out += [$f | .id = $final | del(._auto)]
+              end
           end
       )
     | .findings = .out

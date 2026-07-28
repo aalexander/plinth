@@ -679,7 +679,7 @@ jq -e --arg head "$HEAD" '
   and ((.phases.ci // 0) == 0)
   and (.review_round_secs | type == "number")
   and ((.phases.other // 0) == 10)
-  # Watch-parity session live fields (guard_block sid:null still counted)
+  # Watch-parity session live fields (guard_block with session SID)
   and .now != null
   and .now.tool == "Bash"
   and (.now.detail | test("plinth advise"))
