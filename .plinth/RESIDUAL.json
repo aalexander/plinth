@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "bcb579a2ef7a274e5c2f4d4942d751f1427fab18",
+  "sha": "e593c47c68c14bcb615f2b071a3e6d9d9815b7e3",
   "by": "austin",
-  "ts": "2026-07-28T22:17:01Z",
-  "note": "v5.0.0 land: canary 9d empty-ref wording",
+  "ts": "2026-07-28T22:20:29Z",
+  "note": "v5.0.0 land: canary resumable_prev arity",
   "findings": [
     {
       "severity": "major",
