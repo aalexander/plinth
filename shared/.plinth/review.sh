@@ -106,6 +106,7 @@ while IFS= read -r -d '' entry; do
   path="${entry:3}"   # porcelain -z prefixes each record with "XY " (2 status + 1 space)
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
+    HANDOFF.md) ;;                               # review/handoff auto-refresh — not reviewable product
     "") ;;                                       # defensive (e.g. a rename's second field)
     *) dirty=1; break ;;
   esac
@@ -773,12 +774,14 @@ if [ "$RISK" = "0" ]; then
   # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
   if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
     ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-    if [ -z "$ver_txt" ] \
-       || ! head -n 40 CHANGELOG.md 2>/dev/null | grep -Fq "$ver_txt"; then
+    # Top entry only: first markdown H2 after the title (## vX.Y.Z …).
+    top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
+    if [ -z "$ver_txt" ] || [ -z "$top_entry" ] \
+       || ! printf '%s\n' "$top_entry" | grep -Fq "$ver_txt"; then
       RISK=1
-      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" \
-        '{tier:1,reasons:["VERSION present but does not match CHANGELOG top entry (\($v)) — floor refused Tier 0"],files:0}')"
-      echo "Plinth review: VERSION/CHANGELOG consistency failed — elevating above Tier 0 to Tier 1."
+      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}" \
+        '{tier:1,reasons:["VERSION does not match CHANGELOG top H2 (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
+      echo "Plinth review: VERSION/CHANGELOG top-entry consistency failed — elevating above Tier 0 to Tier 1."
     fi
   fi
 fi
@@ -1301,7 +1304,13 @@ sticky_process_findings() {  # <findings-json-path>
   while IFS= read -r fp; do
     [ -n "$fp" ] || continue
     local bh
-    bh=$(git rev-parse "HEAD:${fp}" 2>/dev/null || echo missing)
+    # Unique sentinel per missing path — never "missing"=="missing" across files
+    # (that fail-opened AUTO-STICKY on absent paths / "no file exists" findings).
+    if bh=$(git rev-parse "HEAD:${fp}" 2>/dev/null); then
+      :
+    else
+      bh="absent:$(printf '%s' "$fp" | shasum -a 256 2>/dev/null | cut -d' ' -f1 || printf '%s' "$fp")"
+    fi
     blobs_json=$(jq -cn --argjson b "$blobs_json" --arg f "$fp" --arg h "$bh" '$b + {($f): $h}')
   done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
 
@@ -1345,6 +1354,9 @@ sticky_process_findings() {  # <findings-json-path>
               and ($L[$bid].status == "resolved")
               and ($L[$bid].blob != null) and ($blobs[.file] != null)
               and ($L[$bid].blob == $blobs[.file])
+              # Fail-closed: never AUTO-STICKY on absent blobs (sentinel prefix).
+              and (($L[$bid].blob | startswith("absent:")) | not)
+              and (($blobs[.file] | startswith("absent:")) | not)
               and ($L[$bid].file != null) and ($L[$bid].file == .file)
               and (
                 (($f | thrash_class) | startswith("class:"))
@@ -1435,22 +1447,29 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         (is_canonical_spec | not)
         and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/"));
     def is_overclaim:
-        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
+        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss|null deref|SIGPIPE|real bug|spec (miss|violation)|precedence"; "i"));
+    def is_real_test_gap:
+        ((.description // "") | test(
+          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested: the new|named changed behavior still lacks|zero coverage|with ZERO coverage|no production test|no test covers"; "i"
+        ));
     # Asymptotic horizon only — NOT "changed behavior lacks tests" / "not implemented".
     def is_coverage_asymp:
         ((.description // "") | test(
           "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond"; "i"
         ))
-        and ((.description // "") | test(
-          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not"; "i"
-        ) | not);
+        and (is_real_test_gap | not);
     def is_queue_nit:
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
-        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe"; "i") | not);
+        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue"; "i") | not);
     def is_out_of_scope:
         (($files | length) > 0)
+        and ((.file // "") != "")
+        and ((.file // "") != ".")
         and (((.file // "") as $fp | ($files | index($fp)) == null))
-        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
+        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)))
+        # Never demote security / fail-open / data-loss / real test-gap classes.
+        and (is_overclaim | not)
+        and (is_real_test_gap | not);
     .findings |= map(
       if (.status != "open") then .
       elif (.severity != "major" and .severity != "blocker") then .
@@ -1484,11 +1503,21 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
 # when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
 # Corrupt/unknown phase file → hardening (fail closed — match Stop / CLI helper).
 review_phase_for_round() {
-  local slug pf p
+  local slug pf p envp
+  # Exact allowlist only — typos/HARDEN must not silently weaken to BUILD.
+  # Unknown values are ignored (fall through to lifecycle file / default).
   if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
-    case "$PLINTH_REVIEW_PHASE" in hardening|HARDENING) echo hardening; return ;; *) echo build; return ;; esac
+    envp="$(printf '%s' "$PLINTH_REVIEW_PHASE" | tr '[:upper:]' '[:lower:]')"
+    case "$envp" in
+      hardening|harden) echo hardening; return ;;
+      build) echo build; return ;;
+      *)
+        echo "Plinth review: NOTE — ignoring invalid PLINTH_REVIEW_PHASE='${PLINTH_REVIEW_PHASE}' (want build|harden|hardening)." >&2
+        ;;
+    esac
   fi
-  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
+  # Branch-keyed phase file: encode '/' and space distinctly so feat/a-b ≠ feat/a/b.
+  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | sed 's/\//%2F/g; s/ /%20/g')
   pf=".plinth/session/phase-${slug}.json"
   if [ -f "$pf" ]; then
     p=$(jq -r '.phase // empty' "$pf" 2>/dev/null || true)
@@ -1496,6 +1525,17 @@ review_phase_for_round() {
       build) echo build; return ;;
       harden) echo hardening; return ;;
       *) echo hardening; return ;;  # corrupt/unknown → fail closed
+    esac
+  fi
+  # Legacy slug (tr '/ ' '--') — read-only fallback for pre-encode phase files.
+  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
+  pf=".plinth/session/phase-${slug}.json"
+  if [ -f "$pf" ]; then
+    p=$(jq -r '.phase // empty' "$pf" 2>/dev/null || true)
+    case "$p" in
+      build) echo build; return ;;
+      harden) echo hardening; return ;;
+      *) echo hardening; return ;;
     esac
   fi
   if git log -1 --format=%s 2>/dev/null | grep -qiE 'HARDENING:|hardening pass'; then

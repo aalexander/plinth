@@ -264,19 +264,17 @@ n_review=$(printf '%s\n' "$next_block" | grep -c 'review\.sh' || true)
 pass "handoff Next prioritizes current harden action"
 
 # Invoke production sticky_process_findings (source the function from review.sh)
+# Must use a REAL tracked file: AUTO-STICKY refuses absent blobs (fail-closed).
 setup_proj "$TMP/p9"
 SDIR="$TMP/p9/.plinth/session/review/feat-canary"
 mkdir -p "$SDIR"
-# Minimal sticky harness: define only what sticky_process_findings needs
+printf 'echo ok\n' > "$TMP/p9/a.sh"
+git -C "$TMP/p9" add a.sh
+git -C "$TMP/p9" -c user.email=t@t -c user.name=t commit -qm 'add a.sh for sticky blob'
 export SDIR
-# shellcheck disable=SC1091
-# Extract and run sticky via a tiny wrapper that sources the function body.
 bash -c '
   set -euo pipefail
   SDIR="'"$SDIR"'"
-  # shellcheck source=/dev/null
-  source /dev/null
-  # Inline a call by running review.sh sticky via sed extraction
   eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
   f="$SDIR/findings-test.json"
   jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
@@ -285,20 +283,34 @@ bash -c '
   ]}" > "$f"
   cd "'"$TMP/p9"'"
   sticky_process_findings "$f"
-  # Both get same base id (no line thrash)
   id1=$(jq -r ".findings[0].id" "$f")
   id2=$(jq -r ".findings[1].id" "$f")
   [ -n "$id1" ] && [ "$id1" = "$id2" ] || { echo "expected shared base id, got $id1 vs $id2"; exit 1; }
-  # Resolve both, re-open one, sticky should auto-resolve when blob unchanged
   jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   sticky_process_findings "$f"
   jq ".findings = [{file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   sticky_process_findings "$f"
   st=$(jq -r ".findings[0].status" "$f")
   [ "$st" = "resolved" ] || { echo "expected AUTO-STICKY resolve, got $st"; jq . "$f"; exit 1; }
+  # Blob change must keep reopen open
+  printf "echo changed\n" > a.sh
+  git add a.sh && git -c user.email=t@t -c user.name=t commit -qm "mutate a.sh"
+  jq ".findings = [{file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  st2=$(jq -r ".findings[0].status" "$f")
+  [ "$st2" = "open" ] || { echo "expected open after blob change, got $st2"; exit 1; }
+  # Absent path must never AUTO-STICKY (missing==missing fail-open guard)
+  jq ".findings = [{file:\"no-such-file.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  jq ".findings = [{file:\"no-such-file.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  st3=$(jq -r ".findings[0].status" "$f")
+  [ "$st3" = "open" ] || { echo "expected open on absent path, got $st3"; exit 1; }
   echo "sticky production ok"
 ' || fail "production sticky_process_findings unit"
-pass "production sticky_process_findings (base id + AUTO-STICKY)"
+pass "production sticky_process_findings (base id + AUTO-STICKY + blob fail-closed)"
 
 # Explicit colliding reviewer ids get unique suffixes
 bash -c '
@@ -321,13 +333,14 @@ bash -c '
 ' || fail "explicit sticky id collision suffix"
 pass "sticky suffixes colliding explicit reviewer ids"
 
-# review_phase_for_round: corrupt phase → hardening
-bash -c '
+# review_phase_for_round: corrupt phase → hardening (hermetic: unset ambient override)
+env -u PLINTH_REVIEW_PHASE bash -c '
   set -euo pipefail
   d="'"$TMP"'/p10"
   mkdir -p "$d/.plinth/session"
   git -C "$d" init -q
   git -C "$d" checkout -qb feat/rp 2>/dev/null || git -C "$d" checkout -b feat/rp
+  # Legacy slug (tr / → -) and encoded slug both accepted by review_phase_for_round.
   echo not-json > "$d/.plinth/session/phase-feat-rp.json"
   eval "$(sed -n "/^review_phase_for_round()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
   cd "$d"

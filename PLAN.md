@@ -25,16 +25,27 @@ Drivers (Claude/codex/grok) and operators using Plinth on feature branches.
 7. Canary script proves 1–4 without network (wired in `plinth-canary.yml`).
 8. `plinth plan` scaffolds PLAN.md; `plinth plan --deep` runs three existing seats
    (reviewer/audit/advisor config) as a best-effort plan review panel (not a new Delphi product).
+9. Review anti-thrash (instrument): HANDOFF.md excluded from reviewed pathspec +
+   HANDOFF-only floor APPROVED; BUILD asymptotic coverage demotes to minor with
+   escape hatches for changed-behavior test gaps / AC / not-implemented;
+   sticky class fingerprints + schema-valid sticky reduce; same-open soft cap;
+   VERSION Tier-0 only when VERSION matches CHANGELOG top H2; thrash demotions
+   never swallow fail-open/security/data-loss/spec-miss classes; NEEDS-HUMAN
+   remains project-owned (deletion reviewable).
 
 ## Risks / trust boundaries
 Ship path must not weaken. Phase file is session-local under `.plinth/session/`
 (agent-unwritable via protected paths). Missing phase = build (default).
-Corrupt/unknown phase = harden (fail closed, matches Stop).
+Corrupt/unknown phase = harden (fail closed, matches Stop). Thrash demotions
+are fail-closed on security/ship classes.
 
 ## Open tradeoffs
 - **Harden sticky until build/clear:** yes — explicit `plinth build` to leave.
 - **Plan tooling:** light scaffold always; `--deep` reuses configured seats (ratified for v5).
+- **Thrash demotion vs rigor:** deterministic demotion of known thrash classes;
+  real blocking classes always keep major/blocker.
 
 ## Ratification
-- by: operator (this branch implements lifecycle v5 + dashboard ops agreed in design)
+- by: operator (this branch implements lifecycle v5 + dashboard ops + review
+  anti-thrash agreed in design / land loop)
 - product_rev: 1
