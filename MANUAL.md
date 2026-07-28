@@ -86,6 +86,22 @@ Everything between is the model's call.
   dashboard finds it, warning instead of clobbering if both exist), re-run the GitHub
   preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
+- `plinth plan [path]`          — light product plan: scaffold root `PLAN.md`
+  if missing (never overwrites). Default path: CWD. Runnable in-session.
+- `plinth plan --deep [path]`   — deep plan: ensure PLAN.md, then three
+  independent agent seats in parallel → `PLAN-REVIEW.md` (security / completeness /
+  delete-simplify). Human adjudicates; then build. Runnable in-session (needs CLIs).
+- `plinth harden [path]`        — enter HARDEN (ship prep): Stop requires
+  APPROVED@HEAD again; then run `./.plinth/review.sh`. Default path: CWD.
+- `plinth build [path]`         — return to default BUILD: Stop does **not**
+  force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
+- `plinth phase [path]`         — print lifecycle phase (build|harden).
+- `plinth handoff [path]`       — write/refresh root `HANDOFF.md` (restart:
+  “Read HANDOFF.md and continue”).
+- `plinth next [path]`          — print the single next action for autonomous
+  drivers (HANDOFF ## Next, plan-review blockers, open review findings, or
+  human_blocked). Exit 0=work, 2=human-blocked, 3=done.
+- Lifecycle reference: `docs/LIFECYCLE.md`.
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
 - `plinth queue ~/Dev/<repo>`   — the full NEEDS-HUMAN queue, every item
@@ -351,8 +367,10 @@ Two operator chores the rules generate:
    branch protection's required checks on the PR. For Rule-10 evidence under
    grok, read the session scrollback and the review verdicts instead of the
    evidence line.
-4. **The model:** commits, then runs `./.plinth/review.sh`.
-   *Background:* the script refuses to run on uncommitted work (verdicts bind
+4. **The model:** builds on the feature branch (default **BUILD** phase: Stop
+   does not force review). When you are happy with the product: `plinth harden`,
+   then the model runs `./.plinth/review.sh` until APPROVED@HEAD, then opens the PR.
+   *Background:* the review script refuses to run on uncommitted work (verdicts bind
    to a commit SHA), diffs the branch against main, and classifies the diff into
    a **risk tier** (deterministic, version-pinned, not driver-writable). The tier
    routes review DEPTH:
@@ -514,15 +532,75 @@ Subsecond newer requires **python3** (nanosecond mtime); without it, bash
 
 Each card shows project path, branch @ head, review verdict / round / stale vs
 HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
-open/blocking counts, a **feedless** flag when there is no event feed (typical
-for non-Claude drivers), and **observed** driver burn when a Claude transcript is
-reachable. Vendor plan remaining quota and reset clocks are **always unknown** —
-no scrapers, no fake %.
+open/blocking counts (click the orange chip to list up to 50 open items from
+`.plinth/NEEDS-HUMAN.md`; truncated lists say so and point at `plinth queue`), a
+**session** chip that copies `<project>/.plinth/session` (events / review /
+phase — not root `HANDOFF.md`; browsers block `file://` opens from the loopback
+page, so click = copy path, same as the project name), a
+**feedless** flag when there is no event feed (typical for non-Claude drivers),
+**models** as `live` (transcript driver + verdict reviewer; request-N has no
+model field) plus `seats` (config reviewer_tier1/2, audit, advisor,
+advisor_model_max — never labeled as live), **phase timing** for the **active
+SID only** in the events tail (see below), **observed** driver burn when a
+Claude transcript is reachable, and watch-parity session live fields from the
+same events tail: **now** (last PostToolUse), **evidence** (last VERIFY-class
+test runner Bash + exit code), **signals** (guard blocks / gate releases as
+chips; compactions / subagents as a sig line).
+
+**Phase timing (bottleneck heuristic, not instrumented tool clocks):**
+- Scope: active session id only (latest SID in the 10k-line events tail).
+- Accrual is an **event-gap heuristic**: on `PostToolUse`, the gap since the previous
+  same-SID event is attributed to that tool’s stage class (pulse emits after the
+  tool; there is often no PreToolUse start stamp). Other events accrue the gap to
+  the previous phase; `UserPromptSubmit` sets phase `planning`. Gaps ≥3600s drop.
+- Stages: coding / research / reviewing / advising / ci / planning / shell / other
+  (Bash detail regex for review.sh / `plinth advise` / gh|canary|ci).
+- **Separate field** `review_round_secs`: sum of `request-N` → `findings-N` mtimes
+  for the branch slug — not folded into `phases.reviewing` (avoids double-count).
+- Not billing, not complete wall-clock of the human day; use it to spot relative
+  bottlenecks (coding-heavy vs review-heavy), not absolute SLA.
+
+**Vendor plan quota (per vendor):** official surfaces only (not scraped web UIs).
+`plinth dash --snapshot` is **offline** — reads
+`/tmp/plinth-dash-quota-$UID/dash-quota.json` if present, else `offline`/`skipped`;
+it does **not** spawn vendor probes (caller env cannot force a probe on
+`--snapshot`). The HTTP serve path **may** refresh quota (internal
+`dash --snapshot-with-quota`) and write the cache only at
+`/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
+`TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
+- **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir (session + week).
+- **Codex** — ChatGPT `wham/usage` via Python `urllib` + `~/.codex/auth.json` access token (bearer stays out of process argv; tokens never logged; requires `codex` + `python3` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
+- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` through Python `urllib` (tokens/PII never logged; requires `grok` + `python3` on PATH). Plan tier from `/v1/user?include=subscription` (best-effort optional endpoints).
+- **Primary metric = plan headroom (not $)** — each vendor row shows the tightest
+  window’s **used %**, linear **→100%** ETA (or **overrun** if it hits the cap
+  before reset), **%/h** plan-burn rate, and **reset** clock. Claude/Codex
+  subscription seats are rate-limited; this is what their CLIs actually meter.
+- **API $ only when observed** — never list-price estimates, never empty “$0”
+  placeholders. Harvested into `~/.config/plinth/api-cost-log.jsonl` (deduped by
+  event id); dash sums 24h / week / month / 3 mo / 6 mo / year when events exist:
+  - **Grok:** `costUsdTicks` on `turn_completed` in `~/.grok/sessions/**/updates.jsonl` (1 USD = 10¹⁰ ticks) — same family as interactive `/usage` cost; usually dense.
+  - **Claude:** only when `total_cost_usd` appears in session transcripts (subscription seats often omit it).
+  - **Codex:** only when an explicit USD cost field appears in session logs (most ChatGPT seats have none).
+  Compact row and expand detail omit the $ strip entirely until at least one
+  positive observed amount (or a positive account OD/prepaid/credits balance)
+  exists for that vendor. Re-probes append new events only; they never invent
+  token×price spend.
+- **Token burn (per project card)** — recent tok/min + token total from the
+  transcript tail: thrash / intensity signal, not plan capacity and not $.
+Scratch temps for event/transcript parsing use the process `TMPDIR` (default
+system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
+the quota-cache directory if you need a hard quarantine. TTL ~15 min
+(`PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0`
+for smoke). Empty/unparsed usage is `parse_failed`. Plan burn projection:
+**linear from last reset** (assume 0% at window start =
+`reset_at − window_seconds`, line through current `used_pct` → time-to-100%).
+Needs a parseable next-reset clock + window length (week = 7d; Claude session =
+5h; Codex uses API `limit_window_seconds`).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
-fixture matrix, a node unit test of pure card HTML (error tone / no-review
-suppression), and a short-lived loopback HTTP check (`/`, `/api/snapshot`,
-POST 405) with process cleanup.
+fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase
+attribution fixture, NEEDS-HUMAN items/truncation, node card HTML, and a
+short-lived loopback HTTP check with process cleanup.
 
 ## When something blocks — who acts
 - `review.sh` exit 1 (CHANGES_NEEDED): normal. The model fixes, commits, re-runs.
@@ -776,6 +854,13 @@ summary is commentary. You intervene for exactly three things: infra failures
 (exit 2), guard blocks you actually intended, and merges.
 
 ## Noticed
+
+- **v4.9.0 dashboard residual:** Quota cache is fixed at
+  `/tmp/plinth-dash-quota-$UID/dash-quota.json`. Do not discover `/tmp` or that
+  directory as a project root. Serve-path scratch files use process TMPDIR.
+  Atomic cache write and non-regular target skips are best-effort; hostile
+  `id` / concurrent smoke vs live dash races remain operator hygiene.
+
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.

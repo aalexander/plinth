@@ -154,6 +154,11 @@ jobs:
           # shared/dashboard/smoke-snapshot.sh: offline fixture matrix, node
           # cardHTML unit test, and a short-lived 127.0.0.1 server (cleaned up).
           ./shared/dashboard/smoke-snapshot.sh
+      - name: Lifecycle build/harden canary (Stop + ship tripwire + next)
+        run: |
+          set -euo pipefail
+          # PLAN.md AC 1–4 + migrate/next/sticky units (no network).
+          ./.github/scripts/canary-lifecycle-build-harden.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail
@@ -616,7 +621,10 @@ jobs:
           done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
-          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
+          # review.sh attempts above leave .plinth/session/ untracked; git add -A
+          # would then classify session paths as tooling (Tier 2) and break docs=0.
+          rm -rf .plinth/session
+          tier() { git checkout -q main; rm -rf .plinth/session; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
           [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
           [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
           [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
@@ -889,10 +897,12 @@ jobs:
           RS="$GITHUB_WORKSPACE/shared/.plinth/review.sh"
 
           # ── Vendor-agnostic reviewer (reviewer_vendor = codex|claude|grok) ──
-          # Efficiency #1: the fresh AND verify prompts must instruct the reviewer to sweep the
-          # whole diff for every sibling of a defect class (prompt-only change → content assert).
+          # Efficiency #1: fresh pass enumerates siblings across the whole branch once.
+          # Verify is SCOPED (strict-delta / anti-thrash): siblings of a *new* class on the
+          # fix path only — not a full-branch SWEEP that reopens thrash. Content asserts.
           grep -q 'SWEEP the entire diff for EVERY sibling' "$RS" || { echo "::error::fresh prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
-          grep -q 'SWEEP the whole diff for EVERY sibling' "$RS" || { echo "::error::verify prompt lost the enumerate-whole-class directive (#1)"; exit 1; }
+          grep -q 'siblings of a new class OK' "$RS" || { echo "::error::verify prompt lost scoped sibling directive (#1 strict-delta)"; exit 1; }
+          grep -q 'NEW defects only on the fix diff' "$RS" || { echo "::error::verify prompt lost fix-diff-only new-defect bound"; exit 1; }
           # (The pre-v4.6 'Re-review the FULL diff' assertion is gone: v4.6 verify rounds are
           # SCOPED by design; the full-diff FALLBACK behavior is covered end-to-end by the
           # 'FALLBACK verify' fixture below, which asserts the anchor announcement and the
@@ -1331,7 +1341,9 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
             rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::(9c) review with no origin should still APPROVE (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'no resolvable' || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin"; exit 1; }
+            # mint_receipt wording: "origin remote is unset" / "receipt NOT minted" (not the older "no resolvable" phrase).
+            printf '%s' "$out" | grep -qiE "receipt NOT minted|origin. remote is unset|origin is unset" \
+              || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin (out=$(printf '%s' "$out" | tr '\n' ' ' | head -c 200))"; exit 1; }
             git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) minted a receipt with no resolvable origin — a repo:\"\" note can never verify and is worse than none"; exit 1; } || true
             git remote add origin git@github.com:canary/remint.git
             rc=0; PATH="$RM9:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
@@ -1472,12 +1484,14 @@ jobs:
           git -C "$R9D_PROJ" notes --ref=plinth-receipts add -m "$R9D_RECEIPT" "$R9D_HEAD"
           git -C "$R9D_PROJ" push -q origin refs/notes/plinth-receipts
           echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
-          # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
-          # the happy path's live re-check matches.
+          # `gh` stub for the TOCTOU re-fetch: fixed head + live origin/main of the
+          # fixture project + empty body. Resolve base via absolute -C path (step may
+          # cd into /tmp/plinth). Updates automatically when r9d_base_pin moves main.
           R9D_GHDIR="$(mktemp -d)"
           cat > "$R9D_GHDIR/gh" <<GHEOF
           #!/usr/bin/env bash
-          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          base=\$(git -C "${R9D_PROJ}" rev-parse origin/main 2>/dev/null || true)
+          printf '%s\n' "{\"sha\":\"${R9D_HEAD}\",\"base_sha\":\"\${base}\",\"body\":\"\"}"
           GHEOF
           chmod +x "$R9D_GHDIR/gh"
           # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
@@ -1497,7 +1511,8 @@ jobs:
           rc=0
           out="$(JOB_WF_REF="" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::(9d) empty job_workflow_ref did not fail"; exit 1; }
-          printf '%s' "$out" | grep -q 'job_workflow_ref' || { echo "::error::(9d) empty job_workflow_ref failure did not name job_workflow_ref"; exit 1; }
+          # Product error text uses the Actions context name job.workflow_ref (dot form).
+          printf '%s' "$out" | grep -q 'job.workflow_ref' || { echo "::error::(9d) empty job_workflow_ref failure did not name job.workflow_ref"; exit 1; }
           # 3: job_workflow_ref with NO @ref.
           rc=0
           out="$(JOB_WF_REF="norefhere" bash "$R9D_WD/step.sh" 2>&1)" || rc=$?
@@ -1875,18 +1890,30 @@ jobs:
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.
+          # Signature (v4.7.1+): also requires matching merge-base args 7/8 and uses
+          # canon_base for base spelling — extract both helpers.
           RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main resume codex" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main verify codex" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main '' codex"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main bogus codex"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED '' main main fresh codex"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh codex" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          CB="$(sed -n '/^canon_base() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          grep -q 'canon_base' <<<"$RP" || { echo "::error::resumable_prev no longer uses canon_base — update canary extraction"; exit 1; }
+          # MB: synthetic matching merge-base pair (empty fails CLOSED by design).
+          MB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          rprev() {
+            local vend="$1"; shift
+            bash -c "REVIEWER_VENDOR=$vend; $CB; $RP; resumable_prev \"\$@\"" _ "$@"
+          }
+          rprev codex CHANGES_NEEDED S1 main main fresh codex "$MB" "$MB"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          rprev codex CHANGES_NEEDED S1 main main resume codex "$MB" "$MB" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
+          rprev codex CHANGES_NEEDED S1 main main verify codex "$MB" "$MB" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main '' codex "$MB" "$MB"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main bogus codex "$MB" "$MB"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
+          rprev codex CHANGES_NEEDED '' main main fresh codex "$MB" "$MB"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 otherbase main fresh codex "$MB" "$MB" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh codex "$MB" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb && { echo "::error::a moved merge-base must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh codex '' "$MB" && { echo "::error::empty prev merge-base must fail CLOSED"; exit 1; } || true
           # v4.6 vendor guard: a mid-loop seat swap must never hand a foreign session id
           # to a different vendor's --resume; a missing recorded vendor fails CLOSED.
-          bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh ''"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
+          rprev claude CHANGES_NEEDED S1 main main fresh codex "$MB" "$MB" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh '' "$MB" "$MB"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
           # The tools-forbidden auditor must inline the WHOLE canonical spec tree
           # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
           # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.

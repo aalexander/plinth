@@ -43,16 +43,55 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth advise [--impactful] \"<question>\"       (consult a stronger model, read-only; runs in CWD)
        plinth hookprobe <grok|codex>                 (does this CLI EXECUTE wired .claude hooks? one model call)
        plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
-       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)"; exit 1; }
+       plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)
+       plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
+       plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
+       plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)
+       plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
+       plinth residual [<path>] [--bind] [--note t] [--from-findings f]
+                                                     (human residual land: draft/bind RESIDUAL.json @ HEAD)
+       plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
-if [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
+# plan may be: plan | plan --deep | plan --deep PATH | plan PATH
+PLAN_DEEP=0
+if [ "$cmd" = "plan" ]; then
+  shift
+  if [ "${1:-}" = "--deep" ]; then PLAN_DEEP=1; shift; fi
+  target="${1:-$(pwd)}"
+  if [ ! -d "$target" ]; then echo "No such directory: $target"; exit 1; fi
+elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe" ] || [ "$cmd" = "changelog-collate" ] \
    || [ "$cmd" = "dash" ] || [ "$cmd" = "dashboard" ]; then
   :  # statusline: project path optional (falls back to statusLine JSON on stdin).
      # advise: operates on the CWD; its args are the question, not a project path.
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
+elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] \
+   || [ "$cmd" = "next" ] || [ "$cmd" = "lifecycle-migrate" ] || [ "$cmd" = "residual" ]; then
+  # Lifecycle commands: project path optional (default CWD).
+  # residual may be: residual | residual PATH | residual --bind | residual PATH --bind ...
+  if [ "$cmd" = "residual" ]; then
+    shift
+    RESIDUAL_BIND=0
+    RESIDUAL_FROM=""
+    RESIDUAL_NOTE="${PLINTH_RESIDUAL_NOTE:-}"
+    target="$(pwd)"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --bind) RESIDUAL_BIND=1; shift ;;
+        --from-findings) RESIDUAL_FROM="${2:-}"; shift 2 ;;
+        --note) RESIDUAL_NOTE="${2:-}"; shift 2 ;;
+        -*) echo "plinth residual: unknown flag $1" >&2; exit 1 ;;
+        *) target="$1"; shift ;;
+      esac
+    done
+  elif [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
+    target="$(pwd)"
+  fi
+  if [ ! -d "$target" ]; then
+    echo "No such directory: $target"; exit 1
+  fi
 elif [ -z "$target" ]; then
   usage
 elif [ ! -d "$target" ]; then
@@ -1068,14 +1107,24 @@ render_frame() {
   [ -f "$transcript" ] || transcript=/dev/null
   head="$(git -C "$target" rev-parse --short HEAD 2>/dev/null || echo '-')"
   branch="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo '-')"
-  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
-  local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  slug="$(_lifecycle_slug "$target")"
+  local vfile="$target/.plinth/session/review/$slug/verdict.json"
+  if [ ! -f "$vfile" ]; then
+    slug="$(_lifecycle_slug_legacy "$target")"
+    vfile="$target/.plinth/session/review/$slug/verdict.json"
+  fi
+  [ -f "$vfile" ] || vfile=/dev/null
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
   # A round in flight: the newest request-N.json outruns verdict.json.
   local rqfile
-  rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
+  rqfile="$(_dash_latest_request "$target" "$slug")"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
+  local life_phase next_hint
+  life_phase=$(_lifecycle_read_phase "$target")
+  next_hint="$("$PLINTH_ROOT/bin/plinth" next "$target" 2>/dev/null | awk -F': ' '/^action:/{sub(/^action: /,""); print; exit}' || true)"
+  [ -n "$next_hint" ] || next_hint="(run: plinth next)"
+
   local nh="" nhn=0 nhb=0 nhf; nhf="$(needs_human_file "$target")"
   if [ -s "$nhf" ]; then
     # Open items = unchecked boxes; fall back to any non-blank line.
@@ -1133,7 +1182,8 @@ render_frame() {
   jq -rn --slurpfile ev "$EV" --slurpfile tr "$transcript" --slurpfile vd "$vfile" \
         --slurpfile us "$ufile" --slurpfile rc "$rfile" --slurpfile rq "$rqfile" \
         --arg nh "$nh" --argjson nhn "${nhn:-0}" --argjson nhb "${nhb:-0}" \
-        --arg head "$head" --arg branch "$branch" --argjson ci "$ci" '
+        --arg head "$head" --arg branch "$branch" --argjson ci "$ci" \
+        --arg life_phase "$life_phase" --arg next_hint "$next_hint" '
     # ---------- helpers ----------
     def B: "[1m";  def D: "[2m";  def R: "[0m";
     def CY: "[36m"; def GR: "[32m"; def YE: "[33m";
@@ -1209,9 +1259,9 @@ render_frame() {
     | ([range(0; 12) | . as $b | [$use[] | select(.e > $NOW - (12 - $b) * 60 and .e <= $NOW - (11 - $b) * 60) | .i + .cc + .o] | add // 0]) as $bkt
     | (($bkt | max) // 0) as $bmax
     | ($bkt | map(if $bmax == 0 then "▁" else $bars[(. / $bmax * 7) | floor] end) | join("")) as $spark
-    # ---------- signals ----------
-    | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $blocks
-    | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $releases
+    # ---------- signals (active SID only — $sev is already SID-scoped) ----------
+    | ([$sev[] | select(.event == "guard_block")] | length) as $blocks
+    | ([$sev[] | select(.event == "gate_release")] | length) as $releases
     | ([$sev[] | select(.event == "PreCompact")] | length) as $compacts
     | ([$sev[] | select(.event == "SubagentStop")] | length) as $subs
     | (([$sev[] | select(.event == "UserPromptSubmit") | .detail // ""
@@ -1267,7 +1317,9 @@ render_frame() {
 
     | ($V.model // null) as $rmodel
     | B + CY + " ◤ PLINTH WATCH " + R + B + ($task[0:58]) + R + "\n"
-    + D + "   " + $branch + " @ " + $head + " · session " + (($NOW - $t0) | hum_t) + R + "\n"
+    + D + "   " + $branch + " @ " + $head + " · session " + (($NOW - $t0) | hum_t)
+      + " · phase " + $life_phase + R + "\n"
+    + B + " next     " + R + ($next_hint[0:72]) + "\n"
     + B + " models   " + R + "driver " + CY + $model + R
       + "  ·  reviewer " + CY + ($rmodel // "—") + R
       + (if $rmodel == null then D + " (no review yet)" + R else "" end) + "\n"
@@ -1310,7 +1362,7 @@ run_smoke() {
   [ $# -ge 1 ] || usage
   local br rslug rdir ts log start end rc=0
   br="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-  rslug="$(printf '%s' "$br" | tr '/ ' '--')"
+  rslug="$(printf '%s' "$br" | sed 's/\//%2F/g; s/ /%20/g')"
   rdir="$target/.plinth/session/run/$rslug"
   mkdir -p "$rdir"
   [ -f "$target/.plinth/session/.gitignore" ] || printf '*\n' > "$target/.plinth/session/.gitignore"
@@ -1346,8 +1398,12 @@ statusline_render() {
   local head vfile
   head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
   local sslug nh=""
-  sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
-  vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  sslug_enc="$(printf '%s' "$sslug" | sed 's/\//%2F/g; s/ /%20/g')"
+  sslug_leg="$(printf '%s' "$sslug" | tr '/ ' '--')"
+  vfile="$dir/.plinth/session/review/${sslug_enc}/verdict.json"
+  [ -f "$vfile" ] || vfile="$dir/.plinth/session/review/${sslug_leg}/verdict.json"
+  [ -f "$vfile" ] || vfile=/dev/null
   local nhblk="" nhf; nhf="$(needs_human_file "$dir")"
   if [ -s "$nhf" ]; then
     nh="$(grep -cE '^- \[ \]' "$nhf" 2>/dev/null || echo 1)"
@@ -1381,8 +1437,8 @@ statusline_render() {
          elif $V.verdict == "APPROVED" then "APPROVED (stale)"
          elif $V.verdict == "UNBOUND" then "UNBOUND r\($V.round)"
          else "CHANGES r\($V.round)" end) as $rv
-      | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
-      | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
+      | ([$sev[] | select(.event == "guard_block")] | length) as $b
+      | ([$sev[] | select(.event == "gate_release")] | length) as $r
       | "◆ " + $cur.s + " " + (($NOW - $cur.e) | hum_t) + " · " + $rv
         + (if $nh != "" and $nh != "0" then " · ⏸ HUMAN×" + $nh else "" end)
         + (if $b > 0 then " · guard⛔\($b)" else "" end)
@@ -1412,8 +1468,11 @@ watch_project() {
   if [ "$opt" = "--once" ]; then capture_tty_size; render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
   local wslug VD
-  wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
-  VD="$target/.plinth/session/review/${wslug:-detached}/verdict.json"
+  wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  wslug_enc="$(printf '%s' "$wslug" | sed 's/\//%2F/g; s/ /%20/g')"
+  wslug_leg="$(printf '%s' "$wslug" | tr '/ ' '--')"
+  VD="$target/.plinth/session/review/${wslug_enc}/verdict.json"
+  [ -f "$VD" ] || VD="$target/.plinth/session/review/${wslug_leg}/verdict.json"
   # mtime+size stamp, BSD then GNU stat.
   fstamp() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
   # Alt screen + hidden cursor; restore on exit. Clear once at startup only.
@@ -1979,6 +2038,20 @@ _dash_latest_request() {
   done | sort -n -k1,1 | tail -1 | cut -f2-
 }
 
+# Newest findings-N.json under a review session dir (basename numeric N only).
+_latest_findings_json() {
+  local fdir="$1" f bn n
+  [ -d "$fdir" ] || return 0
+  for f in "$fdir"/findings-*.json; do
+    [ -f "$f" ] || continue
+    bn="${f##*/}"
+    n="${bn#findings-}"
+    n="${n%.json}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$n" "$f"
+  done | sort -n -k1,1 | tail -1 | cut -f2-
+}
+
 # Bounds for per-poll work. Session identity streams at most the last N event
 # lines (O(N) time / O(unique SIDs in window) mem). Transcript burn uses a tail.
 _DASH_EV_MAX_LINES=10000
@@ -1999,7 +2072,11 @@ snapshot_one_project() {
   # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
   branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [ -z "$branch" ]; then branch="detached"; fi
-  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+  slug="$(_lifecycle_slug "$dir")"
+  if [ ! -f "$dir/.plinth/session/review/$slug/verdict.json" ] \
+     && [ ! -d "$dir/.plinth/session/review/$slug" ]; then
+    slug="$(_lifecycle_slug_legacy "$dir")"
+  fi
 
   local vfile="$dir/.plinth/session/review/$slug/verdict.json"
   local verdict_file_bad=false
@@ -2041,8 +2118,12 @@ snapshot_one_project() {
     fi
   fi
 
-  local nhn=0 nhb=0 nhf raw
+  local nhn=0 nhb=0 nhf raw nh_items_json='{"items":[],"truncated":false}' nh_source=".plinth/NEEDS-HUMAN.md"
   nhf="$(needs_human_file "$dir")"
+  case "$nhf" in
+    */.plinth/NEEDS-HUMAN.md) nh_source=".plinth/NEEDS-HUMAN.md" ;;
+    */NEEDS-HUMAN.md) nh_source="NEEDS-HUMAN.md" ;;
+  esac
   if [ -s "$nhf" ]; then
     raw="$(open_items "$nhf")"
     # Open = unchecked boxes only. Empty open_items means the queue is clear —
@@ -2050,15 +2131,82 @@ snapshot_one_project() {
     if [ -n "$raw" ]; then
       nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
       nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+      # Drill-down list for the wallboard (cap 50; full queue via `plinth queue`).
+      # Avoid printf|head SIGPIPE under pipefail: materialize then slice in jq.
+      nh_items_json="$(printf '%s\n' "$raw" | jq -Rsc --argjson open "$nhn" '
+        split("\n")
+        | map(select(length > 0))
+        | . as $all
+        | ($all[:50]) as $items
+        | {items: ($items | map({text: ., blocking: startswith("[BLOCKING]")})),
+           truncated: (($items | length) < $open)}
+      ' 2>/dev/null || echo '{"items":[],"truncated":true}')"
     fi
     case "$nhn" in ''|*[!0-9]*) nhn=0 ;; esac
     case "$nhb" in ''|*[!0-9]*) nhb=0 ;; esac
+    # If open_items ran but jq packaging failed, still expose empty list.
+    case "$nh_items_json" in
+      '{'*) ;;
+      *) nh_items_json='{"items":[],"truncated":false}' ;;
+    esac
   fi
+  # Unpack packaged items for the card JSON (open/blocking stay top-level).
+  local nh_items_arr nh_trunc
+  nh_items_arr="$(jq -c '.items // []' <<<"$nh_items_json" 2>/dev/null || echo '[]')"
+  # JSON boolean for --argjson (not the strings "true"/"false").
+  nh_trunc="$(jq -c '.truncated // false' <<<"$nh_items_json" 2>/dev/null || echo false)"
+  case "$nh_trunc" in true|false) ;; *) nh_trunc=false ;; esac
+
+  # Config seat labels (always present when set) — models row must not depend only
+  # on a live Claude transcript, which leaves feedless drivers looking "stuck".
+  local cfgf="$dir/.plinth/config"
+  local seat_reviewer_vendor="" seat_reviewer_t1="" seat_reviewer_t2=""
+  local seat_audit_vendor="" seat_audit_model="" seat_advisor_vendor=""
+  local seat_advisor_model="" seat_advisor_max=""
+  if [ -f "$cfgf" ]; then
+    seat_reviewer_vendor="$(sed -n 's/^reviewer_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_reviewer_t1="$(sed -n 's/^reviewer_model_tier1[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_reviewer_t2="$(sed -n 's/^reviewer_model_tier2[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_audit_vendor="$(sed -n 's/^audit_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_audit_model="$(sed -n 's/^audit_model[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_vendor="$(sed -n 's/^advisor_vendor[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_model="$(sed -n 's/^advisor_model[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+    seat_advisor_max="$(sed -n 's/^advisor_model_max[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
+  fi
+
+  # Lifecycle phase via shared reader (encoded + legacy phase files — not review slug).
+  local life_phase
+  life_phase="$(_lifecycle_read_phase "$dir")"
+  case "$life_phase" in build|harden) ;; *) life_phase=harden ;; esac
+  local plan_present=false handoff_present=false plan_review_present=false
+  [ -f "$dir/PLAN.md" ] && plan_present=true
+  [ -f "$dir/HANDOFF.md" ] && handoff_present=true
+  [ -f "$dir/PLAN-REVIEW.md" ] && plan_review_present=true
+  local handoff_age=null
+  if [ -f "$dir/HANDOFF.md" ]; then
+    local hm
+    hm="$(_dash_mtime "$dir/HANDOFF.md")"
+    case "$hm" in ''|*[!0-9]*) ;; *)
+      handoff_age=$((NOW - hm))
+      [ "$handoff_age" -ge 0 ] 2>/dev/null || handoff_age=0
+    ;; esac
+  fi
+  local dual_degraded=false
+  if [ -f "$dir/.plinth/session/review/$slug/dual-degraded.json" ] \
+     || { [ -f "$vfile" ] && [ "$vfile" != /dev/null ] && jq -e '.dual_first_pass == "DEGRADED"' "$vfile" >/dev/null 2>&1; }; then
+    dual_degraded=true
+  fi
+  local next_action=""
+  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || next_action=""
 
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
   # fell off the window, session_secs is null rather than a fabricated age.
+  # Phase seconds: attribute inter-event gaps on the active SID to a coarse stage
+  # (coding / research / reviewing / advising / ci / shell / planning / other).
   local sid="" session_t0="" task="" transcript_path=""
+  local phases_json='{}'
+  local live_now_json=null live_evidence_json=null live_signals_json='{}'
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
     local meta_out meta_rc=0 ev_tmp=""
@@ -2067,42 +2215,137 @@ snapshot_one_project() {
       events_parse_failed=true
     else
       tail -n "$_DASH_EV_MAX_LINES" "$EV_RAW" > "$ev_tmp" 2>/dev/null || : > "$ev_tmp"
-      meta_out="$(jq -nr '
+      meta_out="$(jq -nr --argjson now "$NOW" '
         # Event names actually produced by Plinth hooks + pulse passthrough.
         def known_event:
           . == "SessionStart" or . == "UserPromptSubmit" or . == "PostToolUse"
           or . == "PreToolUse" or . == "Stop" or . == "SubagentStop"
           or . == "PreCompact" or . == "guard_block" or . == "gate_release"
-          or . == "unknown";
-        reduce inputs as $e ({cur:null, by:{}};
+          or . == "build_defer" or . == "handoff_snapshot" or . == "phase_corrupt"
+          or . == "phase_migrate" or . == "unknown";
+        def phase_of($tool; $detail):
+          if $tool == null or $tool == "" then "other"
+          elif $tool == "Edit" or $tool == "Write" or $tool == "NotebookEdit"
+               or $tool == "MultiEdit" then "coding"
+          elif $tool == "Read" or $tool == "Grep" or $tool == "Glob"
+               or $tool == "WebSearch" or $tool == "WebFetch" then "research"
+          elif $tool == "TodoWrite" or $tool == "TodoRead" or $tool == "EnterPlanMode"
+               or $tool == "ExitPlanMode" then "planning"
+          elif $tool == "Bash" or $tool == "bash" then
+            (($detail // "") as $d
+             | if ($d | test("review\\.sh|plinth/review|/\\.plinth/review")) then "reviewing"
+               elif ($d | test("plinth[ ]+advise")) then "advising"
+               elif ($d | test("\\bgh\\b|canary|ci\\.yml|\\bact\\b|workflow")) then "ci"
+               else "shell" end)
+          else "other" end;
+        # Same VERIFY detector as plinth watch (test runners only — not review.sh).
+        def is_verify_bash($detail):
+          ($detail // "")
+          | test("(^|[;&|(\\s])(pytest|go test|cargo (test|nextest|check)|npm (test|run test)|yarn test|pnpm test|python3? -m (pytest|unittest)|make (test|check)|mix test|rspec|jest|vitest|tox|swift test)");
+        def clipd($s; $n):
+          if $s == null then null
+          elif ($s|type) != "string" then null
+          elif ($s|length) > $n then $s[0:$n]
+          else $s end;
+        # Phase timing (active SID only) — EVENT-GAP HEURISTIC, not instrumented
+        # tool wall clocks (pulse often has PostToolUse without PreToolUse):
+        # - PostToolUse: gap since previous same-SID event is attributed to that
+        #   tool class (completion stamp only).
+        # - PreToolUse: gap is idle/previous; then phase becomes the new tool.
+        # - Other events: gap accrues to last_phase; UserPromptSubmit -> planning.
+        # Gaps >=3600s are dropped (session pause).
+        # Also tracks last PostToolUse (now), last VERIFY Bash (evidence), signals.
+        reduce inputs as $e (
+          {cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
-          # Every object needs a known string event name (incl. sid-less / empty {}).
           elif ($e.event == null) or (($e.event | type) != "string")
                or (($e.event | known_event) | not) then error("bad_event_name")
           elif ($e.sid != null) and (($e.sid | type) != "string") then error("bad_event_sid")
           elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
           elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
-          elif ($e.sid == null) then .
+          elif ($e.sid == null) then
+            # Null-SID events are not attributed to a card (legacy guard omitted sid;
+            # current guard.sh records session_id when the harness provides it).
+            .
           else
             (if .by[$e.sid] == null then
-               .by[$e.sid] = {t0: null, task: null, tr: null}
+               .by[$e.sid] = {t0:null, task:null, tr:null, phases:{},
+                              last_epoch:null, last_phase:"other",
+                              last_post:null, last_verify:null,
+                              signals:{guard_blocks:0, gate_releases:0,
+                                       compactions:0, subagents:0}}
              else . end)
             | .cur = $e.sid
-            # Keep the first SessionStart in the window (resume re-emits SessionStart).
+            | .by[$e.sid] as $S
             | if ($e.event == "SessionStart") and ($e.epoch != null)
-                 and (.by[$e.sid].t0 == null)
+                 and ($S.t0 == null)
               then .by[$e.sid].t0 = $e.epoch else . end
             | if ($e.event == "UserPromptSubmit")
                 and (($e.detail // "") | length > 0)
                 and ((($e.detail // "") | test("^\\s*<")) | not)
               then .by[$e.sid].task = $e.detail else . end
             | if ($e.transcript != null) then .by[$e.sid].tr = $e.transcript else . end
+            | (
+                if $S.last_epoch != null and ($e.epoch != null)
+                   and ($e.epoch >= $S.last_epoch)
+                   and (($e.epoch - $S.last_epoch) < 3600)
+                then
+                  (if $e.event == "PostToolUse"
+                   then phase_of($e.tool; $e.detail)
+                   else $S.last_phase end) as $ph
+                  | .by[$e.sid].phases[$ph] =
+                      ((.by[$e.sid].phases[$ph] // 0) + ($e.epoch - $S.last_epoch))
+                else . end
+              )
+            | if $e.epoch != null then .by[$e.sid].last_epoch = $e.epoch else . end
+            | if $e.event == "PostToolUse"
+              then .by[$e.sid].last_phase = phase_of($e.tool; $e.detail)
+                   | .by[$e.sid].last_post = {
+                       tool: ($e.tool // null),
+                       detail: clipd($e.detail; 80),
+                       rc: (if ($e.rc|type) == "number" then $e.rc else null end),
+                       epoch: $e.epoch
+                     }
+                   | if ($e.tool == "Bash" or $e.tool == "bash")
+                        and is_verify_bash($e.detail)
+                     then .by[$e.sid].last_verify = {
+                       cmd: clipd($e.detail; 80),
+                       rc: (if ($e.rc|type) == "number" then $e.rc else null end),
+                       epoch: $e.epoch
+                     }
+                     else . end
+              elif $e.event == "PreToolUse"
+              then .by[$e.sid].last_phase = phase_of($e.tool; $e.detail)
+              elif $e.event == "UserPromptSubmit"
+              then .by[$e.sid].last_phase = "planning"
+              elif $e.event == "guard_block"
+              then .by[$e.sid].signals.guard_blocks =
+                     ((.by[$e.sid].signals.guard_blocks // 0) + 1)
+              elif $e.event == "gate_release"
+              then .by[$e.sid].signals.gate_releases =
+                     ((.by[$e.sid].signals.gate_releases // 0) + 1)
+              elif $e.event == "PreCompact"
+              then .by[$e.sid].signals.compactions =
+                     ((.by[$e.sid].signals.compactions // 0) + 1)
+              elif $e.event == "SubagentStop"
+              then .by[$e.sid].signals.subagents =
+                     ((.by[$e.sid].signals.subagents // 0) + 1)
+              else . end
           end
         )
-        # Empty or sid-less feed is healthy-but-empty, not a render failure.
-        | if .cur == null then {sid:null, t0:null, task:null, tr:null}
-          else ((.by[.cur] // {t0:null, task:null, tr:null}) + {sid: .cur})
+        | if .cur == null then
+            {sid:null, t0:null, task:null, tr:null, phases:{},
+             now:null, evidence:null,
+             signals:{guard_blocks:0, gate_releases:0, compactions:0, subagents:0}}
+          else
+            ((.by[.cur] // {}) as $S
+             | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
+                phases:($S.phases // {}),
+                now:($S.last_post // null),
+                evidence:($S.last_verify // null),
+                signals:($S.signals // {guard_blocks:0, gate_releases:0,
+                                        compactions:0, subagents:0})})
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
@@ -2114,19 +2357,145 @@ snapshot_one_project() {
         session_t0="$(printf '%s' "$meta_out" | jq -r '.t0 // empty')"
         task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
         transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
+        phases_json="$(printf '%s' "$meta_out" | jq -c '.phases // {}' 2>/dev/null || echo '{}')"
+        # Session live signals (watch parity: now / evidence / guard counts).
+        live_now_json="$(printf '%s' "$meta_out" | jq -c '.now // null' 2>/dev/null || echo null)"
+        live_evidence_json="$(printf '%s' "$meta_out" | jq -c '.evidence // null' 2>/dev/null || echo null)"
+        live_signals_json="$(printf '%s' "$meta_out" | jq -c '.signals // {}' 2>/dev/null || echo '{}')"
+        # Drop non-human / agent-system prompts (reviewer specs, READ-ONLY blocks, …)
+        if [ -n "$task" ]; then
+          case "$task" in
+            "You are "*|"# "*|READ-ONLY*|*"independent design reviewer"*|*"adversarial reviewer"*|*"Do not edit"*|*"do not implement"*|*"READ-ONLY"*)
+              task="" ;;
+          esac
+          # Pipefail-safe: no printf|grep|head pipelines (SIGPIPE → 141 under set -e).
+          if [ -n "$task" ]; then
+            case "$task" in
+              *$'\n'*) task="${task%%$'\n'*}"; task="${task//$'\r'/}"
+                [ "${#task}" -gt 160 ] && task="" ;;
+            esac
+          fi
+          if [ -n "$task" ] && [ "${#task}" -gt 200 ]; then
+            task="${task:0:197}…"
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  # Separate review-round wall time (request-N → findings-N mtimes). NOT folded into
+  # phases.reviewing (that would double-count Bash review.sh event gaps).
+  local review_round_secs=0
+  local rev_dir="$dir/.plinth/session/review/$slug"
+  if [ -d "$rev_dir" ]; then
+    local n rqff fnd t0 t1
+    for fnd in "$rev_dir"/findings-*.json; do
+      [ -f "$fnd" ] || continue
+      n="${fnd##*/findings-}"
+      n="${n%.json}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      rqff="$rev_dir/request-$n.json"
+      [ -f "$rqff" ] || continue
+      t0="$(_dash_mtime "$rqff")"
+      t1="$(_dash_mtime "$fnd")"
+      case "$t0" in ''|*[!0-9]*) continue ;; esac
+      case "$t1" in ''|*[!0-9]*) continue ;; esac
+      if [ "$t1" -ge "$t0" ] 2>/dev/null; then
+        review_round_secs=$((review_round_secs + t1 - t0))
+      fi
+    done
+  fi
+
+  # Open findings for CHANGES click-through (latest findings-N for verdict round).
+  local findings_items='[]' findings_summary='' findings_open=0 findings_trunc=false
+  if [ -d "$rev_dir" ] && [ -f "$vfile" ] && [ "$vfile" != /dev/null ] \
+     && [ "$verdict_file_bad" != true ]; then
+    local fround fpath
+    fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
+    case "$fround" in ''|*[!0-9]*) fround="" ;; esac
+    if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
+      fpath="$rev_dir/findings-$fround.json"
+    else
+      # Fall back to highest-numbered findings-N.json
+      fpath=""
+      local cand maxn=-1
+      for cand in "$rev_dir"/findings-*.json; do
+        [ -f "$cand" ] || continue
+        n="${cand##*/findings-}"
+        n="${n%.json}"
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        if [ "$n" -gt "$maxn" ] 2>/dev/null; then
+          maxn="$n"
+          fpath="$cand"
+        fi
+      done
+    fi
+    if [ -n "$fpath" ] && [ -f "$fpath" ]; then
+      local fparsed
+      fparsed="$(jq -c '
+        def clip:
+          if type != "string" then ""
+          elif length > 280 then .[0:277] + "…"
+          else . end;
+        (.summary // null) as $sum
+        | [(.findings // [])[]
+           | select((.status // "open") != "resolved")
+           | {
+               severity: (.severity // "major"),
+               status: (.status // "open"),
+               file: (if (.file // null) == null then "" else (.file|tostring) end),
+               line: (if (.line|type) == "number" then .line else 0 end),
+               text: ((.description // "") | clip)
+             }] as $all
+        | {
+            summary: (if $sum == null then null else ($sum|tostring|clip) end),
+            open: ($all|length),
+            truncated: (($all|length) > 25),
+            items: $all[0:25]
+          }
+      ' "$fpath" 2>/dev/null || true)"
+      if [ -n "$fparsed" ]; then
+        findings_items="$(printf '%s' "$fparsed" | jq -c '.items // []' 2>/dev/null || echo '[]')"
+        findings_summary="$(printf '%s' "$fparsed" | jq -r '.summary // empty' 2>/dev/null || true)"
+        findings_open="$(printf '%s' "$fparsed" | jq -r '.open // 0' 2>/dev/null || echo 0)"
+        case "$findings_open" in ''|*[!0-9]*) findings_open=0 ;; esac
+        if printf '%s' "$fparsed" | jq -e '.truncated == true' >/dev/null 2>&1; then
+          findings_trunc=true
+        fi
       fi
     fi
   fi
 
   # Malformed events or present-but-non-object verdict → error card.
+  # Keep independently available fields (seats, phases, review_round_secs, NH).
   if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
     jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" \
       --argjson feedless "$feedless" --argjson nhn "$nhn" --argjson nhb "$nhb" \
-      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+      --arg life_phase "$life_phase" \
+      --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+      --argjson plan_review_present "$plan_review_present" \
+      --argjson handoff_age "${handoff_age:-null}" \
+      --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
+      --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
+      --arg nh_source "$nh_source" \
+      --argjson phases "$phases_json" --argjson review_round_secs "$review_round_secs" \
+      --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
+      --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
+      --arg seat_am "${seat_audit_model:-}" --arg seat_advv "${seat_advisor_vendor:-}" \
+      --arg seat_advm "${seat_advisor_model:-}" --arg seat_advx "${seat_advisor_max:-}" \
+      'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
+      {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb},
-        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
+        phases:($phases // {}),
+        review_round_secs:$review_round_secs,
+        models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
+          seats:{reviewer_vendor:nonempty($seat_rv),reviewer_tier1:nonempty($seat_rt1),
+                 reviewer_tier2:nonempty($seat_rt2),audit_vendor:nonempty($seat_av),
+                 audit_model:nonempty($seat_am),advisor_vendor:nonempty($seat_advv),
+                 advisor_model:nonempty($seat_advm),advisor_model_max:nonempty($seat_advx)}},
+        quota:{available:false,note:"Vendor plan remaining quota/reset is polled separately (CLI /usage|/status cache)"}}'
     return 0
   fi
 
@@ -2165,8 +2534,32 @@ snapshot_one_project() {
         --argjson activity_ago "${activity_ago:-null}" \
         --argjson session_secs "${session_secs_json:-null}" \
         --argjson nhn "$nhn" --argjson nhb "$nhb" \
+        --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" \
+        --arg nh_source "$nh_source" \
+        --argjson phases "$phases_json" \
+        --argjson review_round_secs "$review_round_secs" \
+        --arg seat_rv "${seat_reviewer_vendor:-}" \
+        --arg seat_rt1 "${seat_reviewer_t1:-}" \
+        --arg seat_rt2 "${seat_reviewer_t2:-}" \
+        --arg seat_av "${seat_audit_vendor:-}" \
+        --arg seat_am "${seat_audit_model:-}" \
+        --arg seat_advv "${seat_advisor_vendor:-}" \
+        --arg seat_advm "${seat_advisor_model:-}" \
+        --arg seat_advx "${seat_advisor_max:-}" \
         --argjson has_last_error "$has_last_error" \
-        --argjson rq_round_from_name "$rq_round_from_name" '
+        --argjson rq_round_from_name "$rq_round_from_name" \
+        --arg life_phase "$life_phase" \
+        --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+        --argjson plan_review_present "$plan_review_present" \
+        --argjson handoff_age "${handoff_age:-null}" \
+        --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
+        --argjson findings_items "$findings_items" \
+        --arg findings_summary "${findings_summary:-}" \
+        --argjson findings_open "$findings_open" \
+        --argjson findings_trunc "$findings_trunc" \
+        --argjson live_now "${live_now_json:-null}" \
+        --argjson live_evidence "${live_evidence_json:-null}" \
+        --argjson live_signals "${live_signals_json:-"{}"}" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2178,6 +2571,7 @@ snapshot_one_project() {
       ($s | type == "string") and ($s | test("^[0-9a-fA-F]{7,64}$"));
     def round_ok($r):
       ($r | type == "number") and ($r == ($r | floor)) and ($r >= 0);
+    def nonempty($s): if ($s | type) == "string" and ($s | length) > 0 then $s else null end;
     ($vd[0] // null) as $V0
     # Protocol-shape guard: present verdict.json needs enum + hex sha + round.
     | (if $V0 == null then null
@@ -2214,6 +2608,10 @@ snapshot_one_project() {
     | (if ($use | length) == 0 then null
        else ([$use[] | toksum] | add // 0) end) as $tok
     | (($use | map(.m) | map(select(. != null)) | .[-1]) // null) as $driver_model
+    # Live reviewer from verdict only (request-N.json has no model/vendor field).
+    # Config seats are separate under models.seats for first-round / feedless.
+    | (($V.model // null)) as $rev_model
+    | (($V.vendor // null) // null) as $rev_vendor
     | {
         path: $path,
         name: $name,
@@ -2225,10 +2623,48 @@ snapshot_one_project() {
         session_secs: $session_secs,
         activity_secs_ago: (if $activity_ago == null then null else $activity_ago end),
         model_driver: $driver_model,
-        model_reviewer: ($V.model // null),
+        model_reviewer: $rev_model,
+        models: {
+          live: {
+            driver: $driver_model,
+            reviewer: $rev_model,
+            reviewer_vendor: $rev_vendor
+          },
+          seats: {
+            reviewer_vendor: nonempty($seat_rv),
+            reviewer_tier1: nonempty($seat_rt1),
+            reviewer_tier2: nonempty($seat_rt2),
+            audit_vendor: nonempty($seat_av),
+            audit_model: nonempty($seat_am),
+            advisor_vendor: nonempty($seat_advv),
+            advisor_model: nonempty($seat_advm),
+            advisor_model_max: nonempty($seat_advx)
+          }
+        },
         tokens_total: $tok,
         tokens_window: "recent_transcript_tail",
         burn_per_min: $burn,
+        phases: ($phases // {}),
+        review_round_secs: $review_round_secs,
+        # Watch-parity session signals (from events tail; null when feedless).
+        now: (if $live_now == null then null
+              else ($live_now + {
+                secs_ago: (if ($live_now.epoch|type) == "number"
+                           then ($now - $live_now.epoch) else null end)
+              }) end),
+        evidence: (if $live_evidence == null then null
+                   else ($live_evidence + {
+                     secs_ago: (if ($live_evidence.epoch|type) == "number"
+                                then ($now - $live_evidence.epoch) else null end)
+                   }) end),
+        signals: (if ($live_signals|type) == "object" then {
+                    guard_blocks: ($live_signals.guard_blocks // 0),
+                    gate_releases: ($live_signals.gate_releases // 0),
+                    compactions: ($live_signals.compactions // 0),
+                    subagents: ($live_signals.subagents // 0)
+                  } else {
+                    guard_blocks:0, gate_releases:0, compactions:0, subagents:0
+                  } end),
         review: (if $V == null and ($running | not) and ($has_last_error | not) then null
                  elif $V == null and $has_last_error then {
                    verdict: null, round: ($RQ.round // null), sha7: null,
@@ -2243,27 +2679,1537 @@ snapshot_one_project() {
           running: $running,
           mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
           tier: ($V.risk.tier // null),
-          last_error: $has_last_error
+          last_error: $has_last_error,
+          summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
+          findings_open: $findings_open,
+          findings_truncated: $findings_trunc,
+          findings: $findings_items
         } end),
-        needs_human: { open: $nhn, blocking: $nhb },
+        needs_human: {
+          open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc,
+          source: $nh_source
+        },
+        lifecycle: {
+          phase: $life_phase,
+          plan: $plan_present,
+          plan_review: $plan_review_present,
+          handoff: $handoff_present,
+          handoff_age_secs: $handoff_age,
+          dual_degraded: $dual_degraded,
+          next: (if $next_action == "" then null else $next_action end)
+        },
         quota: {
           available: false,
-          note: "Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"
+          note: "Per-project burn only; vendor plan quota is top-level (CLI /usage cache)"
         }
       }
   ' 2>/dev/null || jq -nc --arg path "$dir" --arg name "$(basename "$dir")" \
       --arg head "$head" --arg branch "$branch" --argjson feedless "$feedless" \
       --argjson nhn "$nhn" --argjson nhb "$nhb" \
-      '{path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
+      --arg life_phase "$life_phase" \
+      --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
+      --argjson plan_review_present "$plan_review_present" \
+      --argjson handoff_age "${handoff_age:-null}" \
+      --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
+      --argjson nh_items "$nh_items_arr" --argjson nh_trunc "$nh_trunc" --arg nh_source "$nh_source" \
+      --argjson phases "$phases_json" --argjson review_round_secs "$review_round_secs" \
+      --arg seat_rv "${seat_reviewer_vendor:-}" --arg seat_rt1 "${seat_reviewer_t1:-}" \
+      --arg seat_rt2 "${seat_reviewer_t2:-}" --arg seat_av "${seat_audit_vendor:-}" \
+      --arg seat_am "${seat_audit_model:-}" --arg seat_advv "${seat_advisor_vendor:-}" \
+      --arg seat_advm "${seat_advisor_model:-}" --arg seat_advx "${seat_advisor_max:-}" \
+      'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
+      {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
-        needs_human:{open:$nhn,blocking:$nhb},
-        quota:{available:false,note:"Vendor plan remaining quota/reset is unavailable without vendor APIs — observed burn only"}}'
+        lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age,
+                   dual_degraded:$dual_degraded,next:($next_action|if .=="" then null else . end)},
+        needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
+        phases:($phases // {}), review_round_secs:$review_round_secs,
+        models:{live:{driver:null,reviewer:null,reviewer_vendor:null},
+          seats:{reviewer_vendor:nonempty($seat_rv),reviewer_tier1:nonempty($seat_rt1),
+                 reviewer_tier2:nonempty($seat_rt2),audit_vendor:nonempty($seat_av),
+                 audit_model:nonempty($seat_am),advisor_vendor:nonempty($seat_advv),
+                 advisor_model:nonempty($seat_advm),advisor_model_max:nonempty($seat_advx)}},
+        quota:{available:false,note:"Per-project burn only; vendor plan quota is top-level (CLI /usage cache)"}}'
   [ -n "$tr_tmp" ] && rm -f "$tr_tmp"
   return 0
 }
 
+# Vendor plan quota (overall weekly) via official CLIs — NOT scraped web UIs.
+# Offline by default: plain `plinth dash --snapshot` only READs the cache
+# (or returns skipped/offline). Live CLI probes run only for the internal
+# `dash --snapshot-with-quota` command used by the HTTP serve child.
+# Cache: fixed absolute /tmp/plinth-dash-quota-$UID/dash-quota.json
+# (ignores TMPDIR/HOME/PLINTH_DASH_QUOTA_CACHE). HONEST residual: if a
+# discovered project root is exactly that path or /tmp itself, the cache
+# collides — operators should not discover /tmp as a Plinth project.
+# Claude: `claude -p /usage --output-format json` with a hard timeout.
+_DASH_QUOTA_TTL="${PLINTH_DASH_QUOTA_TTL:-900}"
+_DASH_QUOTA_TIMEOUT="${PLINTH_DASH_QUOTA_TIMEOUT:-25}"
+_DASH_QUOTA_ALLOW_PROBE=0
+
+_dash_quota_cache_path() {
+  printf '%s\n' "/tmp/plinth-dash-quota-$(id -u 2>/dev/null || echo 0)/dash-quota.json"
+}
+
+_dash_quota_read_cache() {
+  # Exactly one JSON object document; multi-doc / non-object → miss.
+  local cache="$1"
+  [ -f "$cache" ] || return 1
+  jq -s -ce 'if length == 1 and (.[0] | type) == "object" then .[0] else empty end' \
+    "$cache" 2>/dev/null
+}
+
+_dash_quota_probe() {
+  # Prints one JSON object on stdout. Never fails the snapshot (always 0).
+  local now ttl=$_DASH_QUOTA_TTL cache
+  cache="$(_dash_quota_cache_path)"
+  now="$(date +%s)"
+  case "$ttl" in ''|*[!0-9]*) ttl=900 ;; esac
+  if [ "${PLINTH_DASH_QUOTA:-1}" = "0" ]; then
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, skipped:true,
+        note:"quota probes disabled (PLINTH_DASH_QUOTA=0)", vendors:[]}'
+    return 0
+  fi
+  # Offline / public --snapshot: never spawn vendor CLIs — cache only.
+  # Probes require the internal --snapshot-with-quota path (serve child).
+  if [ "${_DASH_QUOTA_ALLOW_PROBE:-0}" != "1" ]; then
+    if _dash_quota_read_cache "$cache"; then
+      return 0
+    fi
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, offline:true,
+        note:"quota cache empty — HTTP serve refreshes via CLI ~15m",
+        vendors:[]}'
+    return 0
+  fi
+  # Serve-mode: use cache when fresh.
+  if [ -f "$cache" ]; then
+    local age refreshed body
+    body="$(_dash_quota_read_cache "$cache" || true)"
+    if [ -n "$body" ]; then
+      refreshed="$(printf '%s' "$body" | jq -r '.refreshed_at // 0' 2>/dev/null || echo 0)"
+      case "$refreshed" in ''|*[!0-9]*) refreshed=0 ;; esac
+      age=$((now - refreshed))
+      if [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$ttl" ] 2>/dev/null; then
+        printf '%s\n' "$body"
+        return 0
+      fi
+    fi
+  fi
+
+  local vendors_tmp
+  vendors_tmp="$(mktemp)" || {
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, note:"mktemp failed", vendors:[]}'
+    return 0
+  }
+  : > "$vendors_tmp"
+
+  # ── Claude: headless /usage (hard timeout; never hang the wallboard) ──
+  if command -v claude >/dev/null 2>&1; then
+    local cl_out cl_rc=0 cl_to="$_DASH_QUOTA_TIMEOUT"
+    case "$cl_to" in ''|*[!0-9]*) cl_to=25 ;; esac
+    # Empty cwd: never inherit a project checkout's hooks/settings into the probe.
+    cl_out="$(python3 -c '
+import os, subprocess, sys, tempfile
+to = int(sys.argv[1])
+try:
+    with tempfile.TemporaryDirectory(prefix="plinth-quota-", dir="/tmp") as d:
+        d = os.path.realpath(d)
+        p = subprocess.run(
+            ["claude", "-p", "/usage", "--output-format", "json"],
+            capture_output=True, text=True, timeout=to, cwd=d,
+            env={**os.environ, "CLAUDE_PROJECT_DIR": d, "TMPDIR": d},
+        )
+        sys.stdout.write(p.stdout or "")
+        sys.exit(p.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except Exception:
+    sys.exit(1)
+' "$cl_to" 2>/dev/null)" || cl_rc=$?
+    if [ "$cl_rc" -eq 124 ]; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"claude",available:false,error:"cli_timeout",probed_at:$now}' >> "$vendors_tmp"
+    elif [ "$cl_rc" -eq 0 ] && [ -z "$cl_out" ]; then
+      # Empty stdout is parse_failed (not cli_failed) — promised empty/unparsed path.
+      jq -nc --argjson now "$now" \
+        '{vendor:"claude",available:false,error:"parse_failed",probed_at:$now}' >> "$vendors_tmp"
+    elif [ "$cl_rc" -eq 0 ]; then
+      printf '%s' "$cl_out" | jq -c --argjson now "$now" '
+        (.result // "") as $t
+        | [ ($t
+            | capture("(?m)^Current session:\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | {window:"session", used_pct:(.pct|tonumber), reset_text:.reset,
+               window_seconds:18000}),
+            ($t
+            | capture("(?m)^Current week \\(all models\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | {window:"week_all_models", used_pct:(.pct|tonumber), reset_text:.reset,
+               window_seconds:604800}),
+            ($t
+            | capture("(?m)^Current week \\((?<label>[^)]+)\\):\\s*(?<pct>\\d+)% used · resets (?<reset>.+)$")? // empty
+            | select(.label != "all models")
+            | {window:("week_"+(.label|ascii_downcase|gsub(" ";"_"))), used_pct:(.pct|tonumber),
+               reset_text:.reset, window_seconds:604800})
+          ] as $wins
+        | if ($wins | length) == 0 then
+            {vendor:"claude", available:false, error:"parse_failed", probed_at:$now}
+          else
+            {vendor:"claude", available:true, windows:$wins, probed_at:$now}
+          end
+      ' >> "$vendors_tmp" 2>/dev/null || \
+        jq -nc --argjson now "$now" \
+          '{vendor:"claude",available:false,error:"parse_failed",probed_at:$now}' >> "$vendors_tmp"
+    else
+      jq -nc --argjson now "$now" \
+        '{vendor:"claude",available:false,error:"cli_failed",probed_at:$now}' >> "$vendors_tmp"
+    fi
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"claude",available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
+  fi
+
+  # ── Codex: ChatGPT wham/usage via ~/.codex/auth.json (Python urllib). Tokens never logged.
+  # Gated on `codex` on PATH so restricted-PATH smoke never hits the network.
+  if command -v codex >/dev/null 2>&1; then
+    local cx_auth="${HOME}/.codex/auth.json" cx_to="$_DASH_QUOTA_TIMEOUT" cx_out cx_rc=0
+    case "$cx_to" in ''|*[!0-9]*) cx_to=25 ;; esac
+    if [ ! -f "$cx_auth" ]; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"codex",available:false,error:"auth_missing",
+          note:"Run codex login (ChatGPT) — need ~/.codex/auth.json",probed_at:$now}' \
+        >> "$vendors_tmp"
+    elif ! command -v python3 >/dev/null 2>&1; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"codex",available:false,error:"python3_missing",probed_at:$now}' \
+        >> "$vendors_tmp"
+    else
+      cx_out="$(python3 -c '
+import json, subprocess, sys
+from datetime import datetime, timezone
+
+auth_path, to_s = sys.argv[1], int(sys.argv[2])
+try:
+    with open(auth_path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+except Exception:
+    sys.exit(3)
+tokens = auth.get("tokens") if isinstance(auth, dict) else None
+if not isinstance(tokens, dict):
+    sys.exit(2)
+access = tokens.get("access_token")
+if not access or not isinstance(access, str):
+    sys.exit(2)
+account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else ""
+# urllib keeps the bearer out of process argv. Disable redirects at the
+# HTTPRedirectHandler layer (order 500) — subclassing HTTPErrorProcessor alone
+# does not stop the default redirect handler from re-sending Authorization.
+import urllib.error
+import urllib.request
+headers = {
+    "Authorization": "Bearer " + access,
+    "Accept": "application/json",
+}
+if account_id:
+    headers["ChatGPT-Account-Id"] = account_id
+req = urllib.request.Request(
+    "https://chatgpt.com/backend-api/wham/usage",
+    headers=headers,
+    method="GET",
+)
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # raise HTTPError; never follow (bearer must not leave host)
+_opener = urllib.request.build_opener(_NoRedirect)
+try:
+    resp = _opener.open(req, timeout=to_s)
+    code = getattr(resp, "status", None) or resp.getcode()
+    if code is not None and int(code) >= 400:
+        sys.exit(4)
+    body = resp.read().decode("utf-8", errors="replace")
+except urllib.error.HTTPError:
+    sys.exit(4)
+except Exception as e:
+    if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+        sys.exit(124)
+    sys.exit(1)
+try:
+    d = json.loads(body or "")
+except Exception:
+    sys.exit(5)
+if not isinstance(d, dict):
+    sys.exit(5)
+rl = d.get("rate_limit") if isinstance(d.get("rate_limit"), dict) else {}
+pw = rl.get("primary_window") if isinstance(rl.get("primary_window"), dict) else {}
+used = pw.get("used_percent")
+if used is None:
+    sys.exit(5)
+try:
+    used_pct = int(used)
+except (TypeError, ValueError):
+    sys.exit(5)
+reset_at = pw.get("reset_at")
+reset_text = None
+if reset_at is not None:
+    try:
+        reset_text = datetime.fromtimestamp(int(reset_at), tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+    except Exception:
+        reset_text = str(reset_at)
+def win_name(secs, fallback="primary"):
+    """Classify rate-limit windows by length: session ≤6h, day ≤2d, week ≤8d, else month."""
+    if secs is None:
+        return fallback
+    try:
+        s = int(secs)
+    except Exception:
+        return fallback
+    if s <= 6 * 3600:
+        return "session"
+    if s <= 2 * 86400:
+        return "day"
+    if s <= 8 * 86400:
+        return "week"
+    return "month"
+
+def window_from(pw, fallback_name="primary"):
+    if not isinstance(pw, dict) or pw.get("used_percent") is None:
+        return None
+    try:
+        pct = int(pw["used_percent"])
+    except (TypeError, ValueError):
+        return None
+    try:
+        secs = int(pw.get("limit_window_seconds") or 0) or None
+    except Exception:
+        secs = None
+    ra = pw.get("reset_at")
+    rt = None
+    if ra is not None:
+        try:
+            ra = int(ra)
+            rt = datetime.fromtimestamp(ra, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            ra = None
+    name = win_name(secs, fallback_name)
+    ent = {"window": name, "used_pct": pct, "reset_text": rt}
+    if ra is not None:
+        ent["reset_at"] = ra
+    if secs:
+        ent["window_seconds"] = secs
+    return ent
+
+windows = []
+w0 = window_from(pw, "primary")
+if w0:
+    windows.append(w0)
+sw = rl.get("secondary_window")
+w1 = window_from(sw if isinstance(sw, dict) else None, "secondary")
+if w1:
+    windows.append(w1)
+# Extra product meters (Spark, etc.) — only short/session-ish ones surface as session.
+for add in d.get("additional_rate_limits") or []:
+    if not isinstance(add, dict):
+        continue
+    arl = add.get("rate_limit") if isinstance(add.get("rate_limit"), dict) else None
+    if not arl:
+        continue
+    ap = arl.get("primary_window") if isinstance(arl.get("primary_window"), dict) else None
+    ent = window_from(ap, "extra")
+    if not ent:
+        continue
+    # Prefer naming after the product when not a clear session/week.
+    label = add.get("limit_name") or add.get("metered_feature")
+    if ent["window"] in ("primary", "extra", "secondary") and isinstance(label, str) and label:
+        ent["window"] = "extra_" + "".join(
+            ch.lower() if ch.isalnum() else "_" for ch in label
+        )[:40]
+    # De-dupe identical window name+pct+reset
+    if not any(
+        x.get("window") == ent.get("window")
+        and x.get("used_pct") == ent.get("used_pct")
+        and x.get("reset_at") == ent.get("reset_at")
+        for x in windows
+    ):
+        windows.append(ent)
+
+if not windows:
+    sys.exit(5)
+plan = d.get("plan_type") if isinstance(d.get("plan_type"), str) else None
+# Dollar-ish fields from the plan API (often 0 on pure subscription).
+spend = {"currency": "USD"}
+credits = d.get("credits") if isinstance(d.get("credits"), dict) else {}
+try:
+    bal = credits.get("balance")
+    if bal is not None and str(bal).strip() != "":
+        spend["credits_balance_usd"] = float(bal)
+except Exception:
+    pass
+sc = d.get("spend_control") if isinstance(d.get("spend_control"), dict) else {}
+if sc.get("individual_limit") is not None:
+    try:
+        spend["spend_limit_usd"] = float(sc["individual_limit"])
+    except Exception:
+        pass
+# Local Codex rate_limits from newest session (often exposes 5h session % missing from wham).
+try:
+    import os, time
+    from pathlib import Path
+    root = Path.home() / ".codex" / "sessions"
+    newest = None
+    newest_m = 0
+    if root.is_dir():
+        for f in root.rglob("*.jsonl"):
+            try:
+                m = f.stat().st_mtime
+            except Exception:
+                continue
+            if m > newest_m:
+                newest_m = m
+                newest = f
+    if newest is not None and (time.time() - newest_m) < 7 * 86400:
+        # Walk from end for latest token_count with rate_limits
+        lines = newest.read_text(errors="ignore").splitlines()
+        for line in reversed(lines[-400:]):
+            if "token_count" not in line or "rate_limits" not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            payload = rec.get("payload") if isinstance(rec, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            rl2 = payload.get("rate_limits") if isinstance(payload.get("rate_limits"), dict) else None
+            if not rl2:
+                continue
+            for key, fallback in (("primary", "session"), ("secondary", "week")):
+                blk = rl2.get(key)
+                if not isinstance(blk, dict) or blk.get("used_percent") is None:
+                    continue
+                try:
+                    pct = int(blk["used_percent"])
+                except Exception:
+                    continue
+                mins = blk.get("window_minutes")
+                try:
+                    secs = int(mins) * 60 if mins is not None else None
+                except Exception:
+                    secs = None
+                name = win_name(secs, fallback)
+                ent = {"window": name, "used_pct": max(0, min(100, pct))}
+                if secs:
+                    ent["window_seconds"] = secs
+                ra = blk.get("resets_at")
+                if ra is not None:
+                    try:
+                        ra = int(ra)
+                        ent["reset_at"] = ra
+                        ent["reset_text"] = datetime.fromtimestamp(
+                            ra, tz=timezone.utc
+                        ).strftime("%Y-%m-%d %H:%M UTC")
+                    except Exception:
+                        pass
+                # Prefer API windows; fill session if missing.
+                if name == "session" and not any(w.get("window") == "session" for w in windows):
+                    windows.insert(0, ent)
+                elif name in ("week", "day", "month") and not any(
+                    w.get("window") == name for w in windows
+                ):
+                    windows.append(ent)
+            break
+except Exception:
+    pass
+out = {"vendor": "codex", "available": True, "windows": windows}
+if plan:
+    out["plan_type"] = plan
+if len(spend) > 1:
+    out["spend"] = spend
+# Never emit tokens, email, user_id, or raw API body.
+print(json.dumps(out, separators=(",", ":")))
+' "$cx_auth" "$cx_to" 2>/dev/null)" || cx_rc=$?
+      case "$cx_rc" in
+        0)
+          if [ -n "$cx_out" ]; then
+            printf '%s' "$cx_out" | jq -c --argjson now "$now" '. + {probed_at:$now}' \
+              >> "$vendors_tmp" 2>/dev/null || \
+              jq -nc --argjson now "$now" \
+                '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+                >> "$vendors_tmp"
+          else
+            jq -nc --argjson now "$now" \
+              '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+              >> "$vendors_tmp"
+          fi
+          ;;
+        2)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"auth_missing",
+              note:"codex auth has no access_token — re-run codex login",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        3)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"auth_unreadable",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        4)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"http_failed",
+              note:"ChatGPT wham/usage rejected request (re-login if expired)",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        5)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"parse_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        124)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"cli_timeout",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        *)
+          jq -nc --argjson now "$now" \
+            '{vendor:"codex",available:false,error:"probe_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+      esac
+    fi
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"codex",available:false,error:"cli_missing",probed_at:$now}' \
+      >> "$vendors_tmp"
+  fi
+
+  # ── Grok: cli-chat-proxy billing via ~/.grok/auth.json OIDC (Python urllib). Never log tokens/PII.
+  # Gated on `grok` on PATH so restricted-PATH smoke never hits the network.
+  if command -v grok >/dev/null 2>&1; then
+    local gk_auth="${HOME}/.grok/auth.json" gk_to="$_DASH_QUOTA_TIMEOUT" gk_out gk_rc=0
+    case "$gk_to" in ''|*[!0-9]*) gk_to=25 ;; esac
+    if [ ! -f "$gk_auth" ]; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"grok",available:false,error:"auth_missing",
+          note:"Run grok login — need ~/.grok/auth.json",probed_at:$now}' \
+        >> "$vendors_tmp"
+    elif ! command -v python3 >/dev/null 2>&1; then
+      jq -nc --argjson now "$now" \
+        '{vendor:"grok",available:false,error:"python3_missing",probed_at:$now}' \
+        >> "$vendors_tmp"
+    else
+      gk_out="$(python3 -c '
+import json, subprocess, sys
+from datetime import datetime, timezone
+
+auth_path, to_s = sys.argv[1], int(sys.argv[2])
+try:
+    with open(auth_path, "r", encoding="utf-8") as f:
+        auth = json.load(f)
+except Exception:
+    sys.exit(3)
+if not isinstance(auth, dict) or not auth:
+    sys.exit(2)
+# OIDC entries keyed by issuer::client_id; pick the first with a key/token.
+token = None
+plan_hint = None
+for _k, entry in auth.items():
+    if not isinstance(entry, dict):
+        continue
+    cand = entry.get("key") or entry.get("access_token")
+    if isinstance(cand, str) and cand:
+        token = cand
+        break
+if not token:
+    sys.exit(2)
+
+def curl_json(url, required=True):
+    """HTTP GET with bearer in urllib headers (never on argv). No redirects
+    (override HTTPRedirectHandler — default would re-send Authorization).
+    required=False: return None on any failure."""
+    import urllib.error
+    import urllib.request
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        resp = urllib.request.build_opener(_NoRedirect).open(req, timeout=to_s)
+        code = getattr(resp, "status", None) or resp.getcode()
+        if code is not None and int(code) >= 400:
+            if not required:
+                return None
+            raise SystemExit(4)
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "")
+    except SystemExit:
+        raise
+    except json.JSONDecodeError:
+        if not required:
+            return None
+        raise SystemExit(5)
+    except urllib.error.HTTPError:
+        if not required:
+            return None
+        raise SystemExit(4)
+    except Exception as e:
+        if not required:
+            return None
+        if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+            raise SystemExit(124)
+        raise SystemExit(1)
+
+def num_val(obj, *keys):
+    cur = obj
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    if isinstance(cur, dict) and "val" in cur:
+        cur = cur.get("val")
+    if isinstance(cur, (int, float)):
+        return float(cur)
+    return None
+
+def parse_iso(s):
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        s2 = s.replace("Z", "+00:00")
+        return int(datetime.fromisoformat(s2).timestamp())
+    except Exception:
+        return None
+
+def cfg_of(payload):
+    if isinstance(payload, dict) and isinstance(payload.get("config"), dict):
+        return payload["config"]
+    return None
+
+# Default payload: monthly allotment (required). Credits/user are best-effort.
+try:
+    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing", required=True)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+cfg = cfg_of(bill)
+if not isinstance(cfg, dict):
+    sys.exit(5)
+
+# Best-effort: never let optional endpoints abort the monthly billing row.
+credits = curl_json(
+    "https://cli-chat-proxy.grok.com/v1/billing?format=credits", required=False
+)
+credits_cfg = cfg_of(credits) if isinstance(credits, dict) else None
+
+windows = []
+
+# Weekly credit pool (operational burn) — format=credits.
+if isinstance(credits_cfg, dict):
+    credit_pct = num_val(credits_cfg, "creditUsagePercent")
+    if credit_pct is None and isinstance(credits_cfg.get("creditUsagePercent"), (int, float)):
+        credit_pct = float(credits_cfg["creditUsagePercent"])
+    if credit_pct is not None:
+        cp = max(0, min(100, int(round(credit_pct))))
+        w = {"window": "week_credits", "used_pct": cp}
+        period = credits_cfg.get("currentPeriod")
+        start_at = end_at = None
+        if isinstance(period, dict):
+            start_at = parse_iso(period.get("start"))
+            end_at = parse_iso(period.get("end"))
+        if end_at is None:
+            end_at = parse_iso(credits_cfg.get("billingPeriodEnd"))
+        if start_at is None:
+            start_at = parse_iso(credits_cfg.get("billingPeriodStart"))
+        if end_at is not None:
+            w["reset_at"] = end_at
+            w["reset_text"] = datetime.fromtimestamp(end_at, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+        if start_at is not None and end_at is not None and end_at > start_at:
+            w["window_seconds"] = end_at - start_at
+        else:
+            w["window_seconds"] = 604800
+        windows.append(w)
+
+# Monthly allotment from default billing.
+used = num_val(cfg, "used")
+limit = num_val(cfg, "monthlyLimit")
+start_at = parse_iso(cfg.get("billingPeriodStart"))
+end_at = parse_iso(cfg.get("billingPeriodEnd"))
+if used is not None and limit is not None and limit > 0:
+    used_pct = max(0, min(100, int(round(100.0 * used / limit))))
+    win = {"window": "month", "used_pct": used_pct}
+    if end_at is not None:
+        win["reset_at"] = end_at
+        win["reset_text"] = datetime.fromtimestamp(end_at, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+    if start_at is not None and end_at is not None and end_at > start_at:
+        win["window_seconds"] = end_at - start_at
+    else:
+        win["window_seconds"] = 30 * 86400
+    windows.append(win)
+
+if not windows:
+    sys.exit(5)
+
+# Plan tier from user endpoint (best-effort; never aborts monthly windows).
+plan = None
+user = curl_json(
+    "https://cli-chat-proxy.grok.com/v1/user?include=subscription", required=False
+)
+if isinstance(user, dict) and isinstance(user.get("subscriptionTier"), str):
+    plan = user["subscriptionTier"]
+
+# Billing-only $ fields here; cumulative API cost periods filled in post-pass
+# (shared scanner: Grok costUsdTicks + structured Claude/Codex total_cost only).
+spend = {"currency": "USD"}
+od_used = num_val(credits_cfg or {}, "onDemandUsed")
+if od_used is None:
+    od_used = num_val(cfg, "onDemandUsed")
+od_cap = num_val(credits_cfg or {}, "onDemandCap")
+if od_cap is None:
+    od_cap = num_val(cfg, "onDemandCap")
+prepaid = num_val(credits_cfg or {}, "prepaidBalance")
+if prepaid is None:
+    prepaid = num_val(cfg, "prepaidBalance")
+if od_used is not None:
+    spend["on_demand_usd"] = round(float(od_used), 2)
+if od_cap is not None:
+    spend["on_demand_cap_usd"] = round(float(od_cap), 2)
+if prepaid is not None:
+    spend["prepaid_usd"] = round(float(prepaid), 2)
+if len(spend) > 1:
+    spend["source"] = "billing"
+
+out = {"vendor": "grok", "available": True, "windows": windows}
+if plan:
+    out["plan_type"] = plan
+if len(spend) > 1:
+    out["spend"] = spend
+# Never emit tokens, email, user ids, or raw bodies.
+print(json.dumps(out, separators=(",", ":")))
+' "$gk_auth" "$gk_to" 2>/dev/null)" || gk_rc=$?
+      case "$gk_rc" in
+        0)
+          if [ -n "$gk_out" ]; then
+            printf '%s' "$gk_out" | jq -c --argjson now "$now" '. + {probed_at:$now}' \
+              >> "$vendors_tmp" 2>/dev/null || \
+              jq -nc --argjson now "$now" \
+                '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+                >> "$vendors_tmp"
+          else
+            jq -nc --argjson now "$now" \
+              '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+              >> "$vendors_tmp"
+          fi
+          ;;
+        2)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"auth_missing",
+              note:"grok auth has no OIDC token — re-run grok login",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        3)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"auth_unreadable",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        4)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"http_failed",
+              note:"cli-chat-proxy billing rejected request (re-login if expired)",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        5)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"parse_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        124)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"cli_timeout",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+        *)
+          jq -nc --argjson now "$now" \
+            '{vendor:"grok",available:false,error:"probe_failed",probed_at:$now}' \
+            >> "$vendors_tmp"
+          ;;
+      esac
+    fi
+  else
+    jq -nc --argjson now "$now" \
+      '{vendor:"grok",available:false,error:"cli_missing",probed_at:$now}' \
+      >> "$vendors_tmp"
+  fi
+
+  # Parse Claude-style reset_text → reset_at so linear-from-reset works without multi-sample history.
+  # Mutates vendors_tmp in place (NDJSON of vendor objects). Best-effort; never fails the probe.
+  python3 -c '
+import json, re, sys
+from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
+
+path, now_s = sys.argv[1], int(sys.argv[2])
+try:
+    lines = open(path, "r", encoding="utf-8").read().splitlines()
+except Exception:
+    sys.exit(0)
+
+def parse_reset(text, now_ts):
+    if not text or not isinstance(text, str):
+        return None
+    text = text.strip()
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", text)
+    if m:
+        body, tzname = m.group(1).strip(), m.group(2).strip()
+    else:
+        body, tzname = text, "UTC"
+    tz = timezone.utc
+    if ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(tzname)
+        except Exception:
+            tz = timezone.utc
+    body_n = re.sub(r"\s+", " ", body)
+    now_dt = datetime.fromtimestamp(now_ts, tz=tz)
+    dt = None
+    has_year = False
+    # Prefer formats with year (codex-style); Claude uses "Jul 30 at 9am".
+    candidates = [
+        ("%Y-%m-%d %H:%M UTC", True),
+        ("%Y-%m-%d %H:%M", True),
+        ("%b %d at %I:%M%p", False),
+        ("%b %d at %I%p", False),
+        ("%b %d at %H:%M", False),
+    ]
+    for fmt, yflag in candidates:
+        try:
+            raw = body_n
+            if fmt.endswith("%p"):
+                raw = re.sub(r"\b([ap])m\b", lambda mm: mm.group(1).upper() + "M", raw, flags=re.I)
+            dt = datetime.strptime(raw, fmt)
+            has_year = yflag
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return None
+    if not has_year:
+        dt = dt.replace(year=now_dt.year)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    ts = int(dt.timestamp())
+    # Reset times are in the future within the window; if already past, try next year.
+    if not has_year and ts < now_ts - 3600:
+        try:
+            dt = dt.replace(year=dt.year + 1)
+            ts = int(dt.timestamp())
+        except Exception:
+            pass
+    return ts
+
+def default_window_seconds(name):
+    if not name:
+        return None
+    if name == "session":
+        return 18000  # Claude 5h session
+    if name.startswith("week") or name in ("primary", "week"):
+        return 604800
+    return None
+
+out_lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        out_lines.append(line)
+        continue
+    if not isinstance(obj, dict) or obj.get("available") is not True:
+        out_lines.append(json.dumps(obj, separators=(",", ":")))
+        continue
+    wins = obj.get("windows")
+    if isinstance(wins, list):
+        new_wins = []
+        for w in wins:
+            if not isinstance(w, dict):
+                new_wins.append(w)
+                continue
+            w = dict(w)
+            if w.get("window_seconds") is None:
+                ws = default_window_seconds(w.get("window"))
+                if ws is not None:
+                    w["window_seconds"] = ws
+            if w.get("reset_at") is None and w.get("reset_text"):
+                ra = parse_reset(w.get("reset_text"), now_s)
+                if ra is not None:
+                    w["reset_at"] = ra
+            new_wins.append(w)
+        obj["windows"] = new_wins
+    out_lines.append(json.dumps(obj, separators=(",", ":")))
+try:
+    open(path, "w", encoding="utf-8").write("\n".join(out_lines) + ("\n" if out_lines else ""))
+except Exception:
+    pass
+' "$vendors_tmp" "$now" 2>/dev/null || true
+
+  # Observed API $ only — no list-price extrapolation. Harvest real cost events into
+  # an append-only log (~/.config/plinth/api-cost-log.jsonl), then sum periods.
+  # Mutates vendors_tmp. Best-effort; never fails the probe.
+  python3 -c '
+import json, os, sys, time
+from pathlib import Path
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+now_ts = time.time()
+period_days = (
+    ("24h", 1),
+    ("7d", 7),
+    ("30d", 30),
+    ("90d", 90),
+    ("180d", 180),
+    ("365d", 365),
+)
+cuts = {lab: now_ts - d * 86400 for lab, d in period_days}
+cut_year = cuts["365d"]
+
+# Durable cumulative log (not /tmp — must survive reboot for year windows).
+log_dir = Path.home() / ".config" / "plinth"
+log_path = log_dir / "api-cost-log.jsonl"
+TICKS = 10_000_000_000  # Grok: 1 USD = 1e10 ticks
+
+def ensure_log():
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+    return True
+
+def load_seen():
+    """Return (id_set, content_key_set) for upgrade-safe dedupe.
+    content keys: (vendor, usd, session_or_file, line) extracted from known id
+    shapes so a format change cannot re-append the same event.
+    """
+    seen = set()
+    content = set()
+    if not log_path.is_file():
+        return seen, content
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                i = rec.get("id")
+                if isinstance(i, str) and i:
+                    seen.add(i)
+                    ck = _content_key_from_id(i, rec.get("vendor"), rec.get("usd"))
+                    if ck:
+                        content.add(ck)
+    except Exception:
+        pass
+    return seen, content
+
+def _content_key_from_id(i, v, usd):
+    if not isinstance(i, str) or not isinstance(v, str) or not isinstance(usd, (int, float)):
+        return None
+    parts = i.split(":")
+    # grok:<eventId> | grok:sid:prompt:ticks
+    if parts and parts[0] == "grok":
+        if len(parts) == 2:
+            return (v, round(float(usd), 6), parts[1], "")
+        if len(parts) >= 4:
+            return (v, round(float(usd), 6), parts[1], parts[2])
+    # claude:sid:lineno:usd | codex:file:lineno:usd (+ legacy longer forms)
+    sess, lineno = "", ""
+    if len(parts) >= 4:
+        sess, lineno = parts[1], parts[2]
+    elif len(parts) >= 3:
+        sess, lineno = parts[1], parts[2]
+    return (v, round(float(usd), 6), sess, str(lineno))
+
+def append_entries(entries):
+    if not entries or not ensure_log():
+        return 0
+    n = 0
+    try:
+        # Exclusive lock across dashboard processes so load_seen→append is atomic.
+        with log_path.open("a", encoding="utf-8") as f:
+            try:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+            # Re-load seen under the lock so concurrent harvests do not double-append.
+            seen_now, content_now = load_seen()
+            for e in entries:
+                eid = e.get("id") if isinstance(e, dict) else None
+                if isinstance(eid, str) and eid in seen_now:
+                    continue
+                ck = _content_key_from_id(
+                    e.get("id") if isinstance(e, dict) else None,
+                    e.get("vendor") if isinstance(e, dict) else None,
+                    e.get("usd") if isinstance(e, dict) else None,
+                )
+                if ck is not None and ck in content_now:
+                    continue
+                f.write(json.dumps(e, separators=(",", ":")) + "\n")
+                n += 1
+                if isinstance(eid, str):
+                    seen_now.add(eid)
+                if ck is not None:
+                    content_now.add(ck)
+            # Flush while still holding the lock; unlock on close (do not unlock early).
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+    except Exception:
+        return 0
+    return n
+
+def parse_ts(val, fallback):
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str) and len(val) >= 19:
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+    return float(fallback)
+
+# ── Harvest OBSERVED costs only (no token*price extrapolation) ──
+def harvest_grok(seen):
+    """Server costUsdTicks on turn_completed — same family as /usage cost."""
+    root = Path.home() / ".grok" / "sessions"
+    if not root.is_dir():
+        return []
+    out = []
+    for f in root.rglob("updates.jsonl"):
+        try:
+            mtime = f.stat().st_mtime
+        except Exception:
+            continue
+        if mtime < cut_year:
+            continue
+        try:
+            for line in f.open(errors="ignore"):
+                if "costUsdTicks" not in line or "turn_completed" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+                upd = params.get("update") if isinstance(params.get("update"), dict) else {}
+                if upd.get("sessionUpdate") != "turn_completed":
+                    continue
+                usage = upd.get("usage") if isinstance(upd.get("usage"), dict) else {}
+                raw = usage.get("costUsdTicks")
+                if raw is None:
+                    continue
+                try:
+                    ticks = int(raw)
+                except Exception:
+                    continue
+                if ticks <= 0:
+                    continue
+                usd = ticks / TICKS
+                ts = parse_ts(rec.get("timestamp"), mtime)
+                if ts < cut_year:
+                    continue
+                # Stable id for dedupe
+                eid = None
+                meta = rec.get("_meta") if isinstance(rec.get("_meta"), dict) else {}
+                if isinstance(meta.get("eventId"), str) and meta["eventId"]:
+                    eid = "grok:" + meta["eventId"]
+                else:
+                    sid = params.get("sessionId") or ""
+                    pid = upd.get("prompt_id") or ""
+                    eid = "grok:%s:%s:%s" % (sid, pid, ticks)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append({
+                    "t": int(ts),
+                    "vendor": "grok",
+                    "usd": round(usd, 6),
+                    "id": eid,
+                    "src": "costUsdTicks",
+                })
+        except Exception:
+            continue
+    return out
+
+def harvest_claude(seen):
+    """Only structured result/assistant total_cost_usd (never free-text or token*price)."""
+    root = Path.home() / ".claude" / "projects"
+    if not root.is_dir():
+        return []
+    out = []
+    cands = []
+    for f in root.rglob("*.jsonl"):
+        try:
+            m = f.stat().st_mtime
+        except Exception:
+            continue
+        if m < cut_year:
+            continue
+        try:
+            if f.stat().st_size > 80_000_000:
+                continue
+        except Exception:
+            continue
+        cands.append((m, f))
+    cands.sort(reverse=True)
+    for mtime, f in cands[:500]:
+        try:
+            for lineno, line in enumerate(f.open(errors="ignore"), 1):
+                if "total_cost_usd" not in line:
+                    continue
+                # Structured JSON only — ignore tool_result strings / prompt echoes.
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rtype = rec.get("type")
+                usd = None
+                if rtype == "result" and isinstance(rec.get("total_cost_usd"), (int, float)):
+                    usd = float(rec["total_cost_usd"])
+                elif rtype == "assistant":
+                    msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+                    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                    if isinstance(usage.get("total_cost_usd"), (int, float)):
+                        usd = float(usage["total_cost_usd"])
+                    elif isinstance(rec.get("total_cost_usd"), (int, float)):
+                        usd = float(rec["total_cost_usd"])
+                else:
+                    continue
+                if usd is None or usd <= 0:
+                    continue
+                ts = parse_ts(rec.get("timestamp"), mtime)
+                if ts < cut_year:
+                    continue
+                sid = rec.get("session_id") or rec.get("sessionId") or f.name
+                # Stable per-event id: session + line + usd (line anchors event;
+                # content_seen migrates legacy ids with same session+usd+line).
+                eid = "claude:%s:%s:%.6f" % (sid, lineno, usd)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append({
+                    "t": int(ts),
+                    "vendor": "claude",
+                    "usd": round(usd, 6),
+                    "id": eid,
+                    "src": "total_cost_usd",
+                })
+        except Exception:
+            continue
+    return out
+
+def harvest_codex(seen):
+    """Codex: only numeric cost on known event payload types (never free-text)."""
+    root = Path.home() / ".codex" / "sessions"
+    if not root.is_dir():
+        return []
+    out = []
+    cands = []
+    for f in root.rglob("*.jsonl"):
+        try:
+            m = f.stat().st_mtime
+        except Exception:
+            continue
+        if m < cut_year:
+            continue
+        cands.append((m, f))
+    cands.sort(reverse=True)
+    cost_keys = ("total_cost_usd", "cost_usd", "costUsd")
+    for mtime, f in cands[:400]:
+        try:
+            for lineno, line in enumerate(f.open(errors="ignore"), 1):
+                if "cost" not in line.lower() and "usd" not in line.lower():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rtype = rec.get("type")
+                if rtype not in ("event_msg", "turn_context", "session_meta", "response_item"):
+                    continue
+                payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+                usd = None
+                for k in cost_keys:
+                    if isinstance(payload.get(k), (int, float)):
+                        usd = float(payload[k])
+                        break
+                    if isinstance(rec.get(k), (int, float)):
+                        usd = float(rec[k])
+                        break
+                if usd is None or usd <= 0:
+                    continue
+                ts = parse_ts(rec.get("timestamp"), mtime)
+                if ts < cut_year:
+                    continue
+                eid = "codex:%s:%s:%.6f" % (f.name, lineno, usd)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append({
+                    "t": int(ts),
+                    "vendor": "codex",
+                    "usd": round(usd, 6),
+                    "id": eid,
+                    "src": "session_cost",
+                })
+        except Exception:
+            continue
+    return out
+
+def sum_log_by_vendor():
+    """Sum cumulative log into period buckets per vendor."""
+    by_v = {}
+    oldest = {}
+    n_entries = 0
+    if not log_path.is_file():
+        return by_v, oldest, 0
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                v = rec.get("vendor")
+                usd = rec.get("usd")
+                t = rec.get("t")
+                if not isinstance(v, str) or not isinstance(usd, (int, float)):
+                    continue
+                try:
+                    t = float(t)
+                except Exception:
+                    continue
+                if v not in by_v:
+                    by_v[v] = {lab: 0.0 for lab, _ in period_days}
+                    oldest[v] = t
+                if t < oldest[v]:
+                    oldest[v] = t
+                for lab, cut in cuts.items():
+                    if t >= cut:
+                        by_v[v][lab] += float(usd)
+                n_entries += 1
+    except Exception:
+        pass
+    return by_v, oldest, n_entries
+
+# 1) Harvest new observed costs (harvesters dedupe by id via seen; we also
+# block re-append when a content-key matches a legacy log row under a new id).
+seen, content_seen = load_seen()
+
+def _content_key(e):
+    if not isinstance(e, dict):
+        return None
+    return _content_key_from_id(e.get("id"), e.get("vendor"), e.get("usd"))
+
+new_entries = []
+for harvester in (harvest_grok, harvest_claude, harvest_codex):
+    try:
+        # harvester mutates seen for ids it emits; filter content-key dups here.
+        for e in harvester(seen):
+            ck = _content_key(e)
+            if ck is not None and ck in content_seen:
+                continue
+            if ck is not None:
+                content_seen.add(ck)
+            new_entries.append(e)
+    except Exception:
+        pass
+appended = append_entries(new_entries)
+
+# 2) Sum log for period display.
+sums, oldest_map, n_log = sum_log_by_vendor()
+
+def spend_from_log(vendor):
+    """Return observed API $ periods only when at least one bucket is > 0.
+    Claude/Codex seats often have no events — omit spend entirely rather than
+    inventing $0 placeholders (plan % is the primary metric for those seats).
+    """
+    if vendor not in sums:
+        return None
+    local = {lab: round(sums[vendor][lab], 2) for lab, _ in period_days}
+    if not any(v > 0 for v in local.values()):
+        return None
+    out = {
+        "currency": "USD",
+        "kind": "api_cost",
+        "pricing": "observed",
+        "local_usd": local,
+        "local_24h_usd": local["24h"],
+        "local_7d_usd": local["7d"],
+        "local_30d_usd": local["30d"],
+        "local_90d_usd": local["90d"],
+        "local_180d_usd": local["180d"],
+        "local_365d_usd": local["365d"],
+        "log_entries": n_log,
+        "log_path": str(log_path),
+        "source": "api-cost-log",
+        "note": "Observed API cost only (cumulative log; not subscription; no extrapolation)",
+    }
+    if vendor in oldest_map:
+        out["local_history_days"] = max(
+            0, int(round((now_ts - oldest_map[vendor]) / 86400))
+        )
+    if appended:
+        out["log_appended"] = appended
+    return out
+
+try:
+    lines = open(path, "r", encoding="utf-8").read().splitlines()
+except Exception:
+    sys.exit(0)
+
+out_lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        out_lines.append(line)
+        continue
+    if not isinstance(obj, dict):
+        out_lines.append(line)
+        continue
+    # Attach observed api-cost-log spend even when the live quota probe failed
+    # (available:false) — history must not disappear on a transient CLI/auth error.
+    vendor = obj.get("vendor")
+    api_spend = spend_from_log(vendor) if isinstance(vendor, str) else None
+    prev = obj.get("spend") if isinstance(obj.get("spend"), dict) else {}
+    if api_spend:
+        merged = dict(prev)
+        for k, v in api_spend.items():
+            if k in ("on_demand_usd", "on_demand_cap_usd", "prepaid_usd",
+                     "credits_balance_usd", "spend_limit_usd") and k in prev:
+                continue
+            merged[k] = v
+        src_bits = []
+        if prev.get("source"):
+            src_bits.append(str(prev["source"]))
+        if "api-cost-log" not in src_bits:
+            src_bits.append("api-cost-log")
+        merged["source"] = "+".join(src_bits)
+        merged["kind"] = "api_cost"
+        obj["spend"] = merged
+    out_lines.append(json.dumps(obj, separators=(",", ":")))
+
+try:
+    open(path, "w", encoding="utf-8").write("\n".join(out_lines) + ("\n" if out_lines else ""))
+except Exception:
+    pass
+' "$vendors_tmp" 2>/dev/null || true
+
+  # Assemble: enrich EACH available vendor with linear-from-reset burn projection;
+  # overall = claude week_all_models when present.
+  # History samples are per-vendor: {t, vendor, window, used_pct, reset_text} (observability only).
+  local history_in='[]' cached_body
+  if cached_body="$(_dash_quota_read_cache "$cache")"; then
+    history_in="$(printf '%s' "$cached_body" | jq -c '.history // []' 2>/dev/null || echo '[]')"
+  fi
+  local assembled
+  assembled="$(jq -nc --slurpfile v "$vendors_tmp" --argjson now "$now" --argjson hist "$history_in" '
+    def is_session_win:
+      (.window // "") == "session"
+      or ((.window_seconds // 0) > 0 and (.window_seconds // 0) <= 21600);
+    def is_plan_win:
+      (.window // "" | test("week|month|all_models|^primary$"))
+      or ((.window_seconds // 0) > 21600);
+    def primary_window:
+      # Prefer weekly all-models; else first plan window; else first with used_pct.
+      (.windows // []) as $w
+      | ([$w[] | select(.window=="week_all_models" and (.used_pct!=null))][0] // null) as $wk
+      | if $wk != null then $wk
+        else
+          ([$w[] | select(.used_pct != null and is_plan_win)][0]
+           // [$w[] | select(.used_pct != null)][0] // null)
+        end;
+    def session_window:
+      (.windows // []) as $w
+      | ([$w[] | select(.used_pct != null and is_session_win)][0] // null);
+    # Linear extrapolation from last reset: assume 0% at (reset_at - window_seconds).
+    def rate_from_reset($pct; $reset_at; $win_secs):
+      if $pct == null or $reset_at == null or $win_secs == null then null
+      elif ($win_secs | type) != "number" or $win_secs <= 0 then null
+      else
+        ($reset_at - $win_secs) as $start
+        | ($now - $start) as $elapsed
+        | if $elapsed <= 0 then null
+          elif $pct <= 0 then {rate_pct_per_s: 0}
+          else {rate_pct_per_s: ($pct / $elapsed)}
+          end
+      end;
+    def enrich_one_window:
+      . as $w
+      | ($w.used_pct) as $pct
+      | ($w.reset_text // null) as $reset
+      | ($w.window // "unknown") as $win
+      | ($w.reset_at // null) as $ra
+      | ($w.window_seconds // null) as $ws
+      | rate_from_reset($pct; $ra; $ws) as $rate
+      | (if $rate == null then null
+         elif $pct >= 100 then $now
+         elif ($rate.rate_pct_per_s // 0) <= 0 then null
+         else ($now + (((100 - $pct) / $rate.rate_pct_per_s) | floor)) end) as $proj100
+      | (if $rate == null or ($rate.rate_pct_per_s // 0) <= 0 then null
+         else ((($rate.rate_pct_per_s * 3600 * 100) | floor) / 100) end) as $rph
+      | (if $proj100 != null and $ra != null and $pct < 100 and $proj100 < $ra
+         then true else false end) as $overrun
+      | {
+          window: $win,
+          used_pct: $pct,
+          remaining_pct: (if $pct == null then null else (100 - $pct) end),
+          reset_text: $reset,
+          reset_at: $ra,
+          window_seconds: $ws,
+          projected_100pct_at: $proj100,
+          rate_pct_per_hour: $rph,
+          overrun_risk: $overrun,
+          kind: (if ($w | is_session_win) then "session"
+                 elif ($w | is_plan_win) then "plan"
+                 else "other" end)
+        };
+    def enrich:
+      if .available != true then .
+      else
+        ((.windows // []) | map(select(.used_pct != null) | enrich_one_window)) as $wd
+        | (primary_window | if . == null then null else enrich_one_window end) as $pw
+        | (session_window | if . == null then null else enrich_one_window end) as $sw
+        | if $pw == null and ($wd | length) == 0 then .
+          else
+            . + {
+              windows_detail: $wd,
+              session: $sw,
+              plan: $pw,
+              used_pct: ($pw.used_pct // $sw.used_pct // null),
+              remaining_pct: ($pw.remaining_pct // $sw.remaining_pct // null),
+              primary_window: ($pw.window // $sw.window // null),
+              reset_text: ($pw.reset_text // $sw.reset_text // null),
+              reset_at: ($pw.reset_at // $sw.reset_at // null),
+              window_seconds: ($pw.window_seconds // $sw.window_seconds // null),
+              projected_100pct_at: ($pw.projected_100pct_at // null),
+              rate_pct_per_hour: ($pw.rate_pct_per_hour // null),
+              overrun_risk: ($pw.overrun_risk // false)
+            }
+          end
+      end;
+    ($v[0:] | map(select(type=="object"))) as $vendors0
+    # Normalize history: accept legacy {t, week_all_models_pct, reset_text} as claude.
+    | ([ $hist[]
+         | if .vendor != null then .
+           elif .week_all_models_pct != null then
+             {t:.t, vendor:"claude", window:"week_all_models",
+              used_pct:.week_all_models_pct, reset_text:(.reset_text // null)}
+           else empty end
+       ]) as $hist_norm
+    | ($vendors0 | map(enrich)) as $vendors
+    # Append history samples for plan + session windows (sparkline fuel).
+    | ($hist_norm + [
+         $vendors[]
+         | select(.available==true)
+         | . as $v
+         | (
+             (if $v.plan != null and $v.plan.used_pct != null then
+                {t:$now, vendor:$v.vendor, window:($v.plan.window // "plan"),
+                 used_pct:$v.plan.used_pct, reset_text:($v.plan.reset_text // null)}
+              else empty end),
+             (if $v.session != null and $v.session.used_pct != null then
+                {t:$now, vendor:$v.vendor, window:($v.session.window // "session"),
+                 used_pct:$v.session.used_pct, reset_text:($v.session.reset_text // null)}
+              else empty end)
+           )
+       ] | .[-120:]) as $hist2
+    | ([$vendors[] | select(.vendor=="claude" and .available==true and .plan != null)][0] // null) as $cl
+    | (if $cl != null and $cl.plan != null then
+          ($cl.plan + {vendor:"claude"})
+        elif $cl != null then {
+          vendor: "claude",
+          window: ($cl.primary_window // "week_all_models"),
+          used_pct: $cl.used_pct,
+          remaining_pct: $cl.remaining_pct,
+          reset_text: $cl.reset_text,
+          reset_at: $cl.reset_at,
+          projected_100pct_at: $cl.projected_100pct_at,
+          rate_pct_per_hour: $cl.rate_pct_per_hour,
+          overrun_risk: ($cl.overrun_risk // false)
+        } else null end) as $overall
+    | {
+        available: ([$vendors[] | select(.available==true)] | length > 0),
+        refreshed_at: $now,
+        overall: $overall,
+        vendors: $vendors,
+        history: $hist2,
+        note: "claude: -p /usage; codex: wham/usage; grok: billing+credits. Primary: plan % + linear →100% from last reset. API $ only when observed in ~/.config/plinth/api-cost-log.jsonl (no extrapolation)."
+      }
+  ' 2>/dev/null)" || assembled=""
+  rm -f "$vendors_tmp"
+  if [ -z "$assembled" ]; then
+    jq -nc --argjson now "$now" \
+      '{available:false, refreshed_at:$now, note:"quota assemble failed", vendors:[]}'
+    return 0
+  fi
+  # Persist cache atomically (best-effort). Create parent only if missing and a
+  # directory; if the target path is already a directory, skip write.
+  local parent
+  parent="$(dirname "$cache")"
+  if [ -e "$cache" ] && [ ! -f "$cache" ]; then
+    printf '%s\n' "$assembled"
+    return 0
+  fi
+  if [ ! -d "$parent" ]; then
+    mkdir -p "$parent" 2>/dev/null || true
+  fi
+  [ -d "$parent" ] || { printf '%s\n' "$assembled"; return 0; }
+  local tmpc
+  tmpc="$(mktemp "$parent/dash-quota.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$tmpc" ]; then
+    printf '%s\n' "$assembled" > "$tmpc" 2>/dev/null \
+      && mv -f "$tmpc" "$cache" 2>/dev/null \
+      || rm -f "$tmpc" 2>/dev/null || true
+  fi
+  printf '%s\n' "$assembled"
+}
+
 build_dashboard_snapshot() {
-  local roots tmp dir projects_json discovery
+  local roots tmp dir projects_json discovery quota_json
   tmp="$(mktemp)" || { echo "plinth dash: mktemp failed" >&2; exit 1; }
   : > "$tmp"
   roots="$(discover_dashboard_projects | sort -u)"
@@ -2288,14 +4234,17 @@ build_dashboard_snapshot() {
   else
     discovery="default:~/Dev/*/.plinth/config"
   fi
+  # Quota probe is independent of project cards; failures stay inside the object.
+  quota_json="$(_dash_quota_probe 2>/dev/null || true)"
+  [ -n "$quota_json" ] || quota_json='{"available":false,"note":"quota probe unavailable","vendors":[]}'
   if [ -n "$top_err" ]; then
     jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
-       --arg discovery "$discovery" --arg error "$top_err" \
-       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error}'
+       --arg discovery "$discovery" --arg error "$top_err" --argjson quota "$quota_json" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, error:$error, quota:$quota}'
   else
     jq -nc --argjson projects "$projects_json" --argjson generated_at "$(date +%s)" \
-       --arg discovery "$discovery" \
-       '{generated_at:$generated_at, discovery:$discovery, projects:$projects}'
+       --arg discovery "$discovery" --argjson quota "$quota_json" \
+       '{generated_at:$generated_at, discovery:$discovery, projects:$projects, quota:$quota}'
   fi
 }
 
@@ -2306,6 +4255,8 @@ run_dashboard() {
     arg="$1"; shift
     case "$arg" in
       --snapshot) mode=snapshot ;;
+      # Internal: HTTP serve child only. Not a public operator flag.
+      --snapshot-with-quota) mode=snapshot_quota ;;
       --port)
         port="${1:-}"
         [ -n "$port" ] || { echo "plinth dash: --port needs a number" >&2; exit 1; }
@@ -2316,7 +4267,14 @@ run_dashboard() {
     esac
   done
 
-  if [ "$mode" = snapshot ]; then
+  if [ "$mode" = snapshot ] || [ "$mode" = snapshot_quota ]; then
+    # Public --snapshot is always offline. Probe only via --snapshot-with-quota
+    # (serve child). Env vars cannot enable probes on --snapshot.
+    if [ "$mode" = snapshot_quota ]; then
+      _DASH_QUOTA_ALLOW_PROBE=1
+    else
+      _DASH_QUOTA_ALLOW_PROBE=0
+    fi
     build_dashboard_snapshot
     exit 0
   fi
@@ -2341,6 +4299,7 @@ run_dashboard() {
   echo "plinth dash: http://127.0.0.1:${port}/  (loopback only · ctrl-c to quit)"
   echo "  discovery: $(if [ -n "${PLINTH_DASH_ROOTS:-}" ]; then echo "PLINTH_DASH_ROOTS"; elif [ -f "$HOME/.config/plinth/dashboard-projects" ]; then echo "~/.config/plinth/dashboard-projects"; else echo "~/Dev/*/.plinth/config"; fi)"
   # Env passed explicitly so the child inherits roots/config the same way.
+  # Serve child re-invokes `dash --snapshot-with-quota` (not public --snapshot).
   PLINTH_BIN="$self" PLINTH_DASH_HTML="$html" \
   PLINTH_DASH_ROOTS="${PLINTH_DASH_ROOTS:-}" \
   python3 - "$port" <<'PY'
@@ -2405,7 +4364,8 @@ def _snapshot_bytes():
             return 500, _snap_err
         try:
             proc = subprocess.run(
-                [SNAP_BIN, "dash", "--snapshot"],
+                # Internal flag: may refresh vendor quota; public --snapshot cannot.
+                [SNAP_BIN, "dash", "--snapshot-with-quota"],
                 env=CHILD_ENV,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -2494,6 +4454,996 @@ finally:
 PY
 }
 
+# ── Lifecycle: default build, ship-time harden, handoff ─────────────────────
+# Phase is branch-keyed session state (agents cannot write .plinth/session/).
+# Missing phase file => build (Stop does not force review). harden => Stop
+# requires APPROVED@HEAD. Ship gate always requires APPROVED@HEAD.
+
+# Branch slug for session files. Encode / and space distinctly so feat/a-b ≠ feat/a/b.
+# Legacy readers also try tr '/ ' '--' via _lifecycle_phase_file_legacy.
+_lifecycle_slug() {
+  local b
+  # Detached HEAD → "detached" (matches dashboard smoke / statusline contract).
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
+  printf '%s' "$b" | sed 's/\//%2F/g; s/ /%20/g'
+}
+_lifecycle_slug_legacy() {
+  local b
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
+  printf '%s' "$b" | tr '/ ' '--'
+}
+
+# Resolve review session dir: prefer a directory that actually has verdict.json
+# (encoded first, then legacy). Empty encoded dirs must not mask legacy verdicts.
+_lifecycle_review_dir() {
+  local root="$1" enc leg
+  enc="$root/.plinth/session/review/$(_lifecycle_slug "$root")"
+  leg="$root/.plinth/session/review/$(_lifecycle_slug_legacy "$root")"
+  if [ -f "$enc/verdict.json" ]; then printf '%s' "$enc"
+  elif [ -f "$leg/verdict.json" ]; then printf '%s' "$leg"
+  elif [ -d "$enc" ]; then printf '%s' "$enc"
+  elif [ -d "$leg" ]; then printf '%s' "$leg"
+  else printf '%s' "$enc"
+  fi
+}
+_lifecycle_verdict_file() {
+  local d
+  d="$(_lifecycle_review_dir "$1")"
+  printf '%s' "$d/verdict.json"
+}
+
+_lifecycle_phase_file() {
+  local root="$1" slug
+  slug=$(_lifecycle_slug "$root")
+  printf '%s' "$root/.plinth/session/phase-$slug.json"
+}
+_lifecycle_phase_file_legacy() {
+  local root="$1" slug
+  slug=$(_lifecycle_slug_legacy "$root")
+  printf '%s' "$root/.plinth/session/phase-$slug.json"
+}
+
+_lifecycle_read_phase() {
+  # Missing file => build (default). Corrupt / unknown phase => harden (fail closed:
+  # Stop requires APPROVED rather than silently deferring review).
+  # Prefer encoded slug; fall back to legacy tr '/ ' '--' for older session files.
+  local f p root="$1"
+  f=$(_lifecycle_phase_file "$root")
+  if [ ! -f "$f" ]; then
+    f=$(_lifecycle_phase_file_legacy "$root")
+  fi
+  if [ ! -f "$f" ]; then
+    echo build
+    return 0
+  fi
+  p=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+  case "$p" in
+    build|harden) echo "$p" ;;
+    *) echo harden ;;
+  esac
+}
+
+_lifecycle_write_phase() {
+  local root="$1" phase="$2" f dir slug head ts
+  slug=$(_lifecycle_slug "$root")
+  dir="$root/.plinth/session"
+  mkdir -p "$dir"
+  f="$dir/phase-$slug.json"
+  head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -n --arg p "$phase" --arg b "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" \
+    --arg slug "$slug" --arg head "$head" --arg ts "$ts" --arg who "${USER:-unknown}" \
+    '{phase:$p, branch:$b, slug:$slug, head:$head, updated_at:$ts, by:$who}' > "$f"
+}
+
+run_phase_status() {
+  local root="${1:-$target}" p f
+  p=$(_lifecycle_read_phase "$root")
+  f=$(_lifecycle_phase_file "$root")
+  [ -f "$f" ] || f=$(_lifecycle_phase_file_legacy "$root")
+  echo "project: $root"
+  echo "branch:  $(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  echo "phase:   $p"
+  if [ -f "$f" ]; then
+    echo "state:   $f"
+    jq -c . "$f" 2>/dev/null || true
+  else
+    echo "state:   (absent — default build)"
+  fi
+  if [ "$p" = "harden" ]; then
+    echo "stop:    requires APPROVED@HEAD (run ./.plinth/review.sh)"
+  else
+    echo "stop:    build_defer (no forced review); ship still needs APPROVED@HEAD"
+  fi
+  echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  handoff: $([ -f "$root/HANDOFF.md" ] && echo yes || echo no)"
+}
+
+# Classify handoff: milestone (optional compact advice) vs checkpoint (keep cooking).
+# NEVER waits for human/compaction — notify and return immediately.
+_handoff_kind() {
+  case "${1:-manual}" in
+    enter-harden|enter-build|plan-deep|review-approved|approved|manual-milestone)
+      echo milestone ;;
+    *) echo checkpoint ;;
+  esac
+}
+
+# Write HANDOFF.md. Args: root, optional reason, optional next_hint.
+# Auto snapshots preserve prior ## Next / ## Done when present.
+# Always continues immediately (max automation). context_advice is advisory only.
+_write_handoff() {
+  local root="$1" reason="${2:-manual}" next_hint="${3:-}"
+  local out head branch phase slug vfile verdict vsha goal next done_block ts kind advice
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  phase=$(_lifecycle_read_phase "$root")
+  slug=$(_lifecycle_slug "$root")
+  vfile="$(_lifecycle_verdict_file "$root")"
+  verdict="none"; vsha=""
+  if [ -f "$vfile" ]; then
+    verdict=$(jq -r '.verdict // "none"' "$vfile" 2>/dev/null || echo none)
+    vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null | head -c 12)
+  fi
+  goal="(edit: one paragraph of what this branch ships)"
+  if [ -f "$root/PLAN.md" ]; then
+    # Full Problem section — collapse to one paragraph. Avoid SIGPIPE under
+    # pipefail (large sections + head -c) by reading into a var first.
+    local graw
+    graw=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p' "$root/PLAN.md" 2>/dev/null || true)
+    if [ -n "$graw" ]; then
+      goal=$(printf '%s' "$graw" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')
+      [ "${#goal}" -gt 500 ] && goal="${goal:0:500}"
+    fi
+    [ -n "$goal" ] || goal="(edit: one paragraph of what this branch ships)"
+  fi
+  out="$root/HANDOFF.md"
+  done_block="- (edit: bullets of what is already committed)"
+  next="1. (edit: next concrete step)"$'\n'"2. …"
+  # Operator freeform sections preserved across refresh (not only Done/Next).
+  local goal_body="" evidence_body="" risks_body="" extra_sections="" restart_body=""
+  if [ -f "$out" ]; then
+    local _hd _hn _hg _he _hr _hx _raw
+    _hd=$(mktemp) _hn=$(mktemp) _hg=$(mktemp) _he=$(mktemp) _hr=$(mktemp) _hx=$(mktemp)
+    # Archive PRE-overwrite so freeform text is recoverable.
+    local sdir_pre arch_pre
+    sdir_pre="$root/.plinth/session"
+    mkdir -p "$sdir_pre"
+    arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM.md"
+    cp "$out" "$arch_pre" 2>/dev/null || true
+    # Exact reserved headings only — "## Next release" etc. stay operator freeform.
+    awk '/^## Done[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
+    awk '/^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
+    awk '/^## Goal[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hg" || true
+    awk '/^## Evidence[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_he" || true
+    awk '/^## Risks( \/ Noticed)?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hr" || true
+    # Unrecognized ## sections (exact reserved names only)
+    awk '
+      /^## / {
+        title=$0
+        if (title ~ /^## (Goal|Done|Evidence)[[:space:]]*$/ \
+            || title ~ /^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/ \
+            || title ~ /^## Restart prompt[[:space:]]*$/ \
+            || title ~ /^## Risks( \/ Noticed)?[[:space:]]*$/) { p=0; next }
+        p=1; print title; next
+      }
+      p { print }
+    ' "$out" 2>/dev/null > "$_hx" || true
+    _read_sec() {
+      local f="$1"
+      [ -s "$f" ] || return 1
+      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$f" 2>/dev/null) \
+        || _raw=$(cat "$f"; printf '\n<<PLINTH_EOF>>')
+      _raw=${_raw%$'\n<<PLINTH_EOF>>'}
+      _raw=${_raw%<<PLINTH_EOF>>}
+      printf '%s' "$_raw"
+    }
+    if [ -s "$_hd" ]; then done_block=$(_read_sec "$_hd"); fi
+    if [ -s "$_hn" ]; then next=$(_read_sec "$_hn"); fi
+    if [ -s "$_hg" ]; then
+      goal_body=$(_read_sec "$_hg")
+      # Keep freeform unless every non-empty line is still a scaffold (edit: ...) line.
+      if printf '%s\n' "$goal_body" | grep -vE '^[[:space:]]*$|^\(edit' | grep -q .; then
+        goal="$goal_body"
+      fi
+    fi
+    if [ -s "$_he" ]; then evidence_body=$(_read_sec "$_he"); fi
+    if [ -s "$_hr" ]; then risks_body=$(_read_sec "$_hr"); fi
+    if [ -s "$_hx" ]; then extra_sections=$(_read_sec "$_hx"); fi
+    rm -f "$_hd" "$_hn" "$_hg" "$_he" "$_hr" "$_hx"
+  fi
+  # Insert a phase-aware first Next line. Only drop exact known auto-generated
+  # lifecycle hints (not arbitrary operator text containing "review.sh" etc.).
+  _handoff_is_auto_lifecycle() {
+    case "$1" in
+      "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."|\
+      "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)"|\
+      "continue build (or plinth harden when product ready)"|\
+      "continue build (or plinth harden when product ready)."|\
+      "Continue implementation; plinth harden when product is ready to ship."|\
+      "Continue implementation; plinth harden when product is ready to ship"|\
+      "open PR (APPROVED@HEAD)"|\
+      "open PR (APPROVED@HEAD) — or re-run review if HEAD moved"|\
+      "re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"|\
+      "run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"|\
+      "fix review finding, commit, re-run ./.plinth/review.sh"|\
+      "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."|\
+      "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
+        return 0 ;;
+    esac
+    # Residual: never pattern-match Fix […] (operators and generated share shape).
+    # Exact allowlist only for known auto lifecycle strings (see CHANGELOG residual).
+    return 1
+  }
+  _handoff_set_primary_next() {
+    local hint="$1" cur="$2" line stripped out="" started=0
+    [ -n "$hint" ] || { printf '%s' "$cur"; return; }
+    while IFS= read -r line || [ -n "$line" ]; do
+      # Preserve blank separators (including leading) and original formatting.
+      if [ -z "${line// }" ]; then
+        if [ "$started" = 0 ]; then
+          out=$'\n'
+          started=1
+        else
+          out="${out}"$'\n'
+        fi
+        continue
+      fi
+      stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
+      [ -n "$stripped" ] || continue
+      [ "$stripped" = "$hint" ] && continue
+      if _handoff_is_auto_lifecycle "$stripped"; then
+        continue
+      fi
+      if [ "$started" = 0 ]; then
+        out="${line}"
+        started=1
+      else
+        out="${out}"$'\n'"${line}"
+      fi
+    done <<< "$cur"
+    if [ "$started" = 1 ]; then
+      printf '1. %s\n%s' "$hint" "$out"
+    else
+      printf '1. %s' "$hint"
+    fi
+  }
+  # Default primary action from current phase when no explicit hint (e.g. review-approved).
+  if [ -z "$next_hint" ] && [ -z "${PLINTH_HANDOFF_NEXT:-}" ]; then
+    local full_head
+    full_head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+    case "$phase" in
+      harden)
+        if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ] && [ -n "$full_head" ] \
+           && { [ "$vsha" = "$full_head" ] || [ "$vsha" = "${full_head:0:${#vsha}}" ]; }; then
+          next_hint="open PR (APPROVED@HEAD)"
+        elif [ "$verdict" = "APPROVED" ]; then
+          next_hint="re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"
+        else
+          next_hint="Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
+        fi
+        ;;
+      build)
+        next_hint="Continue implementation; plinth harden when product is ready to ship."
+        ;;
+    esac
+  fi
+  if [ -n "${PLINTH_HANDOFF_NEXT:-}" ] || [ -n "$next_hint" ]; then
+    local _hp _hint_use
+    _hint_use="${PLINTH_HANDOFF_NEXT:-$next_hint}"
+    _hp=$(mktemp)
+    # Sentinel so trailing blanks from the helper survive command substitution.
+    { _handoff_set_primary_next "$_hint_use" "$next"; printf '\n<<PLINTH_EOF>>'; } > "$_hp"
+    _raw=$(cat "$_hp")
+    rm -f "$_hp"
+    next=${_raw%$'\n<<PLINTH_EOF>>'}
+    next=${next%<<PLINTH_EOF>>}
+  fi
+  kind=$(_handoff_kind "$reason")
+  if [ "$kind" = "milestone" ]; then
+    advice="optional_fresh_session — NOT required; do not wait. Keep working unless human-blocked."
+  else
+    advice="keep_cooking — checkpoint only; do not compact/clear mid-loop."
+  fi
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # Normalize section bodies to end with exactly one newline so the template
+  # does not accumulate blanks on every refresh.
+  if command -v python3 >/dev/null 2>&1; then
+    done_block=$(printf '%s' "$done_block" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+    next=$(printf '%s' "$next" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+    goal=$(printf '%s' "$goal" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+  fi
+  # shellcheck disable=SC2154
+  {
+    printf '%s\n' "# Handoff — \`${branch}\` @ ${head}" "" \
+      "Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}" "" \
+      "context_advice: ${advice}" "" \
+      "## Goal"
+    printf '%s' "$goal"
+    printf '%s\n' "" "## Done"
+    printf '%s' "$done_block"
+    printf '%s\n' "" "## Next (ordered)"
+    printf '%s' "$next"
+    printf '%s\n' "" "## Restart prompt" \
+      "> Read HANDOFF.md and continue from ## Next." \
+      "> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD)." \
+      "> Advisor: \`plinth advise\` anytime." \
+      "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
+      "" "## Evidence"
+    # Single Live snapshot. Strip only our auto Live: lines and exact template
+    # bullets we generate — never delete operator freeform (even if it starts HEAD:).
+    live_line="- Live: phase=${phase} reason=${reason} verdict=${verdict}${vsha:+ @ $vsha} HEAD=\`${head}\` branch=\`${branch}\`"
+    if [ -n "$evidence_body" ]; then
+      printf '%s\n' "$evidence_body" | grep -vE '^- Live: phase=' \
+        | grep -vE '^- Lifecycle phase: (build|harden)$' \
+        | grep -vE '^- Snapshot reason: ' \
+        | grep -vE '^- Review verdict: ' \
+        | grep -vE '^- PLAN\.md: (present|absent)$' \
+        | grep -vE '^- PLAN-REVIEW\.md: (present|absent)$' \
+        | grep -vE '^- HEAD: `[^`]+` on `' || true
+    fi
+    printf '%s\n' "$live_line"
+    printf '%s\n' "" "## Risks / Noticed"
+    if [ -n "$risks_body" ]; then
+      printf '%s' "$risks_body"
+      case "$risks_body" in *$'\n') ;; *) printf '\n' ;; esac
+    else
+      printf '%s\n' "- (edit)"
+    fi
+    if [ -n "$extra_sections" ]; then
+      printf '\n%s' "$extra_sections"
+      case "$extra_sections" in *$'\n') ;; *) printf '\n' ;; esac
+    fi
+  } > "$out"
+  local arch sdir
+  sdir="$root/.plinth/session"
+  mkdir -p "$sdir"
+  # Post-write snapshot (pre-write already archived when prior file existed).
+  arch="$sdir/handoff-${slug}-$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM.md"
+  cp "$out" "$arch" 2>/dev/null || true
+  # Non-blocking notification event for watch/dash (never waits).
+  { jq -cn --arg reason "$reason" --arg kind "$kind" --arg advice "$advice" --arg head "$head" \
+      '{ts:(now|todate),epoch:(now|floor),event:"handoff_snapshot",sid:null,tool:null,
+        detail:("reason="+$reason+" kind="+$kind+" advice="+$advice),head:$head}' \
+      >> "$sdir/events.jsonl"; } 2>/dev/null || true
+  echo "Wrote $out (snapshot: $reason / $kind)"
+  echo "NOTIFY: handoff ${kind} — ${advice}"
+  echo "Automation: continuing immediately (no wait for compact/human)."
+}
+
+run_harden() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth harden: not a git repo: $root" >&2; exit 1; }
+  case "$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" in
+    main|master|HEAD)
+      echo "plinth harden: refuse on base/detached branch — use a feature branch" >&2
+      exit 1 ;;
+  esac
+  _lifecycle_write_phase "$root" harden
+  # Invalidate any prior BUILD APPROVED@HEAD in BOTH encoded and legacy review
+  # dirs — harden requires a new review under HARDEN rigor. Same HEAD must not
+  # ship on a BUILD verdict (guard falls back across both paths).
+  local vf pv demoted=0
+  for vf in \
+    "$root/.plinth/session/review/$(_lifecycle_slug "$root")/verdict.json" \
+    "$root/.plinth/session/review/$(_lifecycle_slug_legacy "$root")/verdict.json"
+  do
+    [ -f "$vf" ] || continue
+    pv=$(jq -r '.review_phase // .risk.review_phase // empty' "$vf" 2>/dev/null || true)
+    # Missing review_phase = pre-v5 / BUILD-era — always invalidate on harden.
+    if [ "$pv" != "hardening" ]; then
+      jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '.verdict = "UNBOUND" | .unbound_reason = "plinth harden invalidated non-HARDEN approval — re-run review" | .ts = $ts' \
+        "$vf" > "$vf.tmp" 2>/dev/null && mv "$vf.tmp" "$vf" \
+        || rm -f "$vf"
+      demoted=1
+    fi
+  done
+  [ "$demoted" = 1 ] && echo "  Prior non-HARDEN verdict demoted to UNBOUND — re-run ./.plinth/review.sh under harden."
+  _write_handoff "$root" "enter-harden" "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
+  echo "Plinth phase → HARDEN (ship prep)."
+  echo "  Stop gate now requires APPROVED@HEAD."
+  echo "  Run:  (cd \"$root\" && ./.plinth/review.sh)"
+  echo "  When done shipping prep without ship: plinth build \"$root\""
+  echo "  Ship still blocked until APPROVED@HEAD (unchanged)."
+}
+
+run_build_phase() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth build: not a git repo: $root" >&2; exit 1; }
+  _lifecycle_write_phase "$root" build
+  _write_handoff "$root" "enter-build" "Continue implementation; plinth harden when product is ready to ship."
+  echo "Plinth phase → BUILD (default)."
+  echo "  Stop gate allows end-of-turn without APPROVED (build_defer)."
+  echo "  PR/merge still requires APPROVED@HEAD — run plinth harden when ready to ship."
+}
+
+run_handoff() {
+  local root="${1:-$target}" reason="${PLINTH_HANDOFF_REASON:-manual}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth handoff: not a git repo: $root" >&2; exit 1; }
+  _write_handoff "$root" "$reason" ""
+}
+
+# Scaffold or ensure PLAN.md (light). --deep also runs multi-agent critique → PLAN-REVIEW.md.
+_plan_scaffold() {
+  local root="$1" f="$1/PLAN.md"
+  if [ -f "$f" ]; then
+    echo "PLAN.md already present — not overwriting ($f)"
+    return 0
+  fi
+  cat > "$f" <<'EOF'
+# Product plan
+product_rev: 1
+
+## Problem
+(What user pain / opportunity?)
+
+## Users / context
+(Who is this for? Constraints?)
+
+## Non-goals
+- …
+
+## Acceptance criteria
+(Testable — Given/When/Then or checklist)
+
+## Risks / trust boundaries
+(Auth, data, fail-open, deploy?)
+
+## Open tradeoffs (with agent recommendation each)
+1. … — **rec:** …
+
+## Ratification
+- by:
+- at:
+- notes: (human product decisions)
+EOF
+  echo "Wrote $f (light scaffold). Fill AC, then build — or: plinth plan --deep"
+}
+
+# One plan-review seat via a vendor CLI (read-only). Prints body to stdout.
+_plan_seat_call() {
+  local vendor="$1" model="$2" role="$3" plan_body="$4"
+  local prompt margs=() unavail
+  unavail="(seat $role unavailable: $vendor CLI missing or failed)"
+  prompt="You are an independent PLAN REVIEWER (role: $role), not the author and not the driver.
+Read-only. Do not implement. Critique the PRODUCT PLAN only.
+
+Role focus:
+- security_ops: trust boundaries, fail-open, secrets, auth, deploy/rollback gaps
+- completeness: testable AC, non-goals, demo/done definition, scope holes
+- delete_simplify: question every requirement; cut non-load-bearing scope; overbuild
+
+Output markdown EXACTLY in this shape (bullets must start with \"- \"):
+### Seat: $role
+#### Blockers
+- … (or a single line: - none)
+#### Questions for human
+- … (or: - none)
+#### Nits
+- … (or: - none)
+#### One-line verdict
+…
+
+Also append a fenced JSON block (for machine merge):
+\`\`\`json
+{\"seat\":\"$role\",\"blockers\":[\"...\"],\"questions\":[\"...\"],\"nits\":[\"...\"],\"verdict\":\"...\"}
+\`\`\`
+Use empty arrays when none.
+
+PLAN:
+$plan_body"
+  case "$vendor" in
+    claude)
+      [ -n "$model" ] && margs=(--model "$model")
+      printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" 2>/dev/null || echo "$unavail"
+      ;;
+    codex)
+      [ -n "$model" ] && margs=(-m "$model")
+      printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
+        --sandbox read-only - 2>/dev/null || echo "$unavail"
+      ;;
+    grok)
+      [ -n "$model" ] && margs=(-m "$model")
+      grok -p "$prompt" --sandbox read-only \
+        --rules 'You are a read-only plan reviewer. Advise only — never implement.' \
+        ${margs[@]+"${margs[@]}"} 2>/dev/null || echo "$unavail"
+      ;;
+    *)
+      echo "(seat $role: unsupported vendor '$vendor')"
+      ;;
+  esac
+}
+
+run_plan() {
+  local root="$1" deep="${2:-0}"
+  local cfg planf body ts
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth plan: not a git repo: $root" >&2; exit 1; }
+  _plan_scaffold "$root"
+  planf="$root/PLAN.md"
+  [ -f "$planf" ] || { echo "plinth plan: PLAN.md missing after scaffold" >&2; exit 1; }
+
+  if [ "$deep" != 1 ]; then
+    echo "Plan depth: light (scaffold only)."
+    echo "  Edit $planf — fill Problem, AC, risks."
+    echo "  New product / fuzzy scope: plinth plan --deep \"$root\""
+    echo "  Then build; when ready to ship: plinth harden && ./.plinth/review.sh"
+    return 0
+  fi
+
+  # Deep: parallel independent seats (best-effort vendors from project config).
+  cfg="$root/.plinth/config"
+  # Missing config must not abort under pipefail — defaults apply.
+  aval() {
+    [ -f "$cfg" ] || { printf ''; return 0; }
+    sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1 || true
+  }
+  local rv am av rm amodel
+  rv="$(aval reviewer_vendor)"; [ -n "$rv" ] || rv=codex
+  av="$(aval audit_vendor)"; [ -n "$av" ] || av=claude
+  rm="$(aval reviewer_model_tier2)"; [ -n "$rm" ] || rm="$(aval reviewer_model_tier1)"
+  amodel="$(aval audit_model)"
+  # Third seat: advisor vendor if distinct, else same as primary with different role.
+  local tv tm
+  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv="$rv"
+  tm="$(aval advisor_model_max)"; [ -n "$tm" ] || tm="$(aval advisor_model)"
+
+  body="$(cat "$planf")"
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local d1 d2 d3 o1 o2 o3
+  d1="$(mktemp)"; d2="$(mktemp)"; d3="$(mktemp)"
+  o1="$(mktemp)"; o2="$(mktemp)"; o3="$(mktemp)"
+  trap 'rm -f "$d1" "$d2" "$d3" "$o1" "$o2" "$o3"' RETURN
+
+  echo "plinth plan --deep: launching 3 independent seats (parallel)…" >&2
+  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" 2>"$d1" ) &
+  local p1=$!
+  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" 2>"$d2" ) &
+  local p2=$!
+  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" 2>"$d3" ) &
+  local p3=$!
+  wait "$p1" "$p2" "$p3" || true
+
+  local out="$root/PLAN-REVIEW.md" merge_json="$root/.plinth/session/plan-review-merge.json"
+  mkdir -p "$root/.plinth/session"
+  # Structured merge: extract JSON fences if present, else scrape markdown #### Blockers bullets.
+  python3 - "$o1" "$o2" "$o3" "$merge_json" <<'PY'
+import json, re, sys
+paths, outj = sys.argv[1:4], sys.argv[4]
+roles_default = ["security_ops", "completeness", "delete_simplify"]
+seats = []
+for i, p in enumerate(paths):
+    text = open(p, encoding="utf-8", errors="replace").read()
+    role = roles_default[i]
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.S)
+    data = None
+    if m:
+        try:
+            data = json.loads(m.group(1))
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        def section(name):
+            mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
+            if not mm:
+                return []
+            body = mm.group(1)
+            items = []
+            for line in body.splitlines():
+                line = line.strip()
+                if line.startswith("- "):
+                    item = line[2:].strip()
+                    if item and item.lower() not in ("none", "n/a", "…", "..."):
+                        items.append(item)
+            return items
+        data = {
+            "seat": role,
+            "blockers": section("Blockers"),
+            "questions": section("Questions for human"),
+            "nits": section("Nits"),
+            "verdict": "",
+            "raw_ok": False,
+        }
+    else:
+        data.setdefault("seat", role)
+        for k in ("blockers", "questions", "nits"):
+            if not isinstance(data.get(k), list):
+                data[k] = []
+        data["raw_ok"] = True
+    seats.append(data)
+
+def norm(s):
+    return re.sub(r"\s+", " ", s.strip().lower())[:120]
+
+blockers, questions, nits = [], [], []
+seen_b, seen_q, seen_n = set(), set(), set()
+for s in seats:
+    seat = s.get("seat") or "?"
+    for b in s.get("blockers") or []:
+        k = norm(str(b))
+        if k and k not in seen_b:
+            seen_b.add(k)
+            blockers.append({"text": str(b), "seats": [seat], "security": seat == "security_ops"})
+        elif k in seen_b:
+            for x in blockers:
+                if norm(x["text"]) == k and seat not in x["seats"]:
+                    x["seats"].append(seat)
+    for q in s.get("questions") or []:
+        k = norm(str(q))
+        if k and k not in seen_q:
+            seen_q.add(k)
+            questions.append({"text": str(q), "seats": [seat]})
+        elif k in seen_q:
+            for x in questions:
+                if norm(x["text"]) == k and seat not in x["seats"]:
+                    x["seats"].append(seat)
+    for n in s.get("nits") or []:
+        k = norm(str(n))
+        if k and k not in seen_n:
+            seen_n.add(k)
+            nits.append({"text": str(n), "seats": [seat]})
+
+# majority: 2+ seats listed same blocker
+for b in blockers:
+    b["label"] = "majority_blocker" if len(b["seats"]) >= 2 else "minority_blocker"
+    if b.get("security"):
+        b["label"] = "security_" + b["label"]
+
+merge = {
+    "seats": seats,
+    "blockers": blockers,
+    "questions": questions,
+    "nits": nits,
+    "open_blocker_count": len(blockers),
+    "open_question_count": len(questions),
+}
+with open(outj, "w", encoding="utf-8") as f:
+    json.dump(merge, f, indent=2)
+print(json.dumps({"blockers": len(blockers), "questions": len(questions), "nits": len(nits)}))
+PY
+
+  local merge_stats
+  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []))' 2>/dev/null || echo "0 0 0")
+
+  {
+    echo "# Plan review — deep (structured merge)"
+    echo
+    echo "Updated: $ts"
+    echo "Seats: security_ops ($rv${rm:+ /$rm}) · completeness ($av${amodel:+ /$amodel}) · delete_simplify ($tv${tm:+ /$tm})"
+    echo "Machine merge: \`.plinth/session/plan-review-merge.json\`"
+    echo
+    echo "Human: resolve **Merged blockers** and **Questions** before treating the plan as ratified."
+    echo "Labels are advisory (majority = 2+ seats); you adjudicate. Security-tagged items stay visible even if minority."
+    echo
+    echo "## Merged blockers (checklist)"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+bs = d.get("blockers") or []
+if not bs:
+    print("- [ ] _(none extracted — read raw seats below)_")
+else:
+    for b in bs:
+        seats = ",".join(b.get("seats") or [])
+        lab = b.get("label") or "blocker"
+        print(f"- [ ] **[{lab}]** {b.get('text','')} _(seats: {seats})_")
+PY
+    echo
+    echo "## Merged questions for human"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+qs = d.get("questions") or []
+if not qs:
+    print("- [ ] _(none)_")
+else:
+    for q in qs:
+        seats = ",".join(q.get("seats") or [])
+        print(f"- [ ] {q.get('text','')} _(seats: {seats})_")
+PY
+    echo
+    echo "## Merged nits (non-blocking)"
+    echo
+    python3 - "$merge_json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ns = d.get("nits") or []
+if not ns:
+    print("- _(none)_")
+else:
+    for n in ns:
+        print(f"- {n.get('text','')}")
+PY
+    echo
+    echo "---"
+    echo
+    echo "## Raw: security_ops"
+    echo
+    cat "$o1"
+    echo
+    echo "---"
+    echo
+    echo "## Raw: completeness"
+    echo
+    cat "$o2"
+    echo
+    echo "---"
+    echo
+    echo "## Raw: delete_simplify"
+    echo
+    cat "$o3"
+    echo
+    echo "---"
+    echo
+    echo "## Human adjudication"
+    echo "- [ ] All merged blockers addressed or dismissed with reason"
+    echo "- [ ] Product tradeoffs decided"
+    echo "- [ ] PLAN.md updated (bump product_rev if AC/scope changed)"
+  } > "$out"
+
+  echo "Wrote $out (merged blockers/questions; stats: $merge_stats)"
+  # Security-tagged majority blockers → NEEDS-HUMAN [BLOCKING] so plinth next stops that path.
+  local nhf
+  nhf="$(needs_human_file "$root")"
+  mkdir -p "$(dirname "$nhf")"
+  python3 - "$merge_json" "$nhf" <<'PY' 2>/dev/null || true
+import json, sys, os
+merge, nhf = sys.argv[1], sys.argv[2]
+d = json.load(open(merge))
+items = []
+for b in d.get("blockers") or []:
+    lab = b.get("label") or ""
+    if "security" in lab or (b.get("security") and "majority" in lab):
+        items.append(f"- [ ] [BLOCKING] plan-review: {b.get('text','')}")
+    elif "majority" in lab:
+        items.append(f"- [ ] plan-review: {b.get('text','')}")
+if not items:
+    sys.exit(0)
+existing = open(nhf, encoding="utf-8").read() if os.path.isfile(nhf) else "# NEEDS-HUMAN\n\n"
+for it in items:
+    if it[6:] not in existing:  # rough dedupe on text after checkbox
+        existing = existing.rstrip() + "\n" + it + "\n"
+open(nhf, "w", encoding="utf-8").write(existing)
+print(f"NEEDS-HUMAN: appended {len(items)} plan-review item(s)")
+PY
+  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
+  echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  echo "Or: plinth next \"$root\""
+}
+
+# Single next action for autonomous drivers. Exit: 0=action, 2=human-blocked, 3=done.
+run_next() {
+  local root="${1:-$target}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth next: not a git repo: $root" >&2; exit 1; }
+  local slug phase vfile verdict vsha head nhf
+  slug=$(_lifecycle_slug "$root")
+  phase=$(_lifecycle_read_phase "$root")
+  head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "?")
+  vfile="$(_lifecycle_verdict_file "$root")"
+  verdict=""; vsha=""
+  if [ -f "$vfile" ]; then
+    verdict=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
+    vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || true)
+  fi
+  nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
+  local blocking=""
+  if [ -n "$nhf" ] && [ -s "$nhf" ]; then
+    blocking=$(open_items "$nhf" 2>/dev/null | grep '^\[BLOCKING\]' | head -1 || true)
+  fi
+  if [ -n "$blocking" ]; then
+    echo "status: human_blocked"
+    echo "action: resolve NEEDS-HUMAN blocking item"
+    echo "detail: $blocking"
+    echo "phase: $phase"
+    exit 2
+  fi
+
+  # Open plan-review blockers (unchecked checklist)
+  if [ -f "$root/PLAN-REVIEW.md" ]; then
+    local pb
+    pb=$(grep -E '^- \[ \] \*\*\[.*blocker' "$root/PLAN-REVIEW.md" 2>/dev/null | head -1 || true)
+    if [ -z "$pb" ]; then
+      pb=$(grep -E '^- \[ \] \*\*\[' "$root/PLAN-REVIEW.md" 2>/dev/null | head -1 || true)
+    fi
+    if [ -n "$pb" ]; then
+      echo "status: work"
+      echo "action: resolve plan-review blocker (human if product tradeoff)"
+      echo "detail: $pb"
+      echo "hint: edit PLAN.md / check off PLAN-REVIEW.md; then plinth next"
+      exit 0
+    fi
+  fi
+
+  # Harden path: open review findings
+  if [ "$phase" = "harden" ]; then
+    local full
+    full=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+    if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ] && [ -n "$full" ] && [ "$vsha" = "$full" ]; then
+      echo "status: work"
+      echo "action: open PR (APPROVED@HEAD)"
+      echo "detail: gh pr create — ship gate satisfied at $head"
+      exit 0
+    fi
+    # Stale APPROVED (or APPROVED with missing sha) — ship gate unsatisfied; re-review.
+    if [ "$verdict" = "APPROVED" ]; then
+      echo "status: work"
+      echo "action: re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"
+      echo "detail: phase=harden head=$head verdict_sha=${vsha:-none} HEAD=$full"
+      exit 0
+    fi
+    # Check latest findings for open majors (basename numeric N — not full-path sort)
+    local fdir latest
+    fdir="$(_lifecycle_review_dir "$root")"
+    latest=$(_latest_findings_json "$fdir")
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      local openf
+      openf=$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+        | if . then "[\(.severity)] \(.file):\(.line) — \(.description[0:120])" else empty end' "$latest" 2>/dev/null || true)
+      if [ -n "$openf" ]; then
+        echo "status: work"
+        echo "action: fix review finding, commit, re-run ./.plinth/review.sh"
+        echo "detail: $openf"
+        exit 0
+      fi
+    fi
+    if [ "$verdict" != "APPROVED" ]; then
+      echo "status: work"
+      echo "action: run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"
+      echo "detail: phase=harden head=$head verdict=${verdict:-none}"
+      exit 0
+    fi
+  fi
+
+  # BUILD: open review majors still route (checkpoint mid-loop), not only harden.
+  if [ "$phase" != "harden" ]; then
+    local fdir latest openf
+    fdir="$(_lifecycle_review_dir "$root")"
+    latest=$(_latest_findings_json "$fdir")
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      openf=$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+        | if . then "[\(.severity)] \(.file):\(.line) — \(.description[0:120])" else empty end' "$latest" 2>/dev/null || true)
+      if [ -n "$openf" ]; then
+        echo "status: work"
+        echo "action: fix review finding, commit, re-run ./.plinth/review.sh"
+        echo "detail: phase=build $openf"
+        exit 0
+      fi
+    fi
+  fi
+
+  # HANDOFF ## Next first actionable line
+  if [ -f "$root/HANDOFF.md" ]; then
+    local nxt
+    nxt=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$root/HANDOFF.md" \
+      | sed -n 's/^[[:space:]]*[0-9]*[.)]*[[:space:]]*//p; s/^-[[:space:]]*//p' \
+      | grep -v '^$' | grep -viE '^\(edit|^\.\.\.|^…' | head -1 || true)
+    if [ -n "$nxt" ]; then
+      echo "status: work"
+      echo "action: $nxt"
+      echo "detail: from HANDOFF.md ## Next (phase=$phase)"
+      exit 0
+    fi
+  fi
+
+  # Nothing left in Next / NH / open review majors — done (both phases).
+  echo "status: done"
+  echo "action: none"
+  echo "detail: no open next / blocking items detected (phase=$phase head=$head)"
+  exit 3
+}
+
+# On plinth update: migrate open review loops → harden phase; corrupt phase → fail closed harden.
+# Always scans phase-*.json (even with no review/ dir) plus every review slug.
+migrate_lifecycle_phases() {
+  local root="$1" sdir revdir
+  sdir="$root/.plinth/session"
+  [ -d "$sdir" ] || return 0
+  local phasef slug d vfile v base
+  # 1) All phase files — corrupt / unknown → harden (no review dir required).
+  for phasef in "$sdir"/phase-*.json; do
+    [ -f "$phasef" ] || continue
+    base=$(basename "$phasef")
+    slug=${base#phase-}; slug=${slug%.json}
+    if ! jq -e '.phase == "build" or .phase == "harden"' "$phasef" >/dev/null 2>&1; then
+      echo "  lifecycle migrate: corrupt $base → harden (fail closed)"
+      jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:"corrupt_phase"}' > "$phasef"
+    fi
+  done
+  # 2) Open review verdicts → ensure harden phase.
+  revdir="$sdir/review"
+  [ -d "$revdir" ] || return 0
+  for d in "$revdir"/*/; do
+    [ -d "$d" ] || continue
+    slug=$(basename "$d")
+    phasef="$sdir/phase-$slug.json"
+    vfile="$d/verdict.json"
+    [ -f "$vfile" ] || continue
+    v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
+    case "$v" in
+      CHANGES_NEEDED|UNBOUND)
+        if [ ! -f "$phasef" ] || [ "$(jq -r '.phase // empty' "$phasef" 2>/dev/null)" != "harden" ]; then
+          echo "  lifecycle migrate: $slug verdict=$v → phase harden"
+          jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg v "$v" \
+            '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:("open_review_"+$v)}' > "$phasef"
+        fi
+        ;;
+    esac
+  done
+}
+
+# ── Residual land (human-adjudicated ship without model APPROVED@HEAD) ──────
+# File: .plinth/RESIDUAL.json  schema plinth.residual/v1
+# Ship when bound=true and residual.sha is ancestor of HEAD and only residual-
+# allowed paths changed since residual.sha (RESIDUAL.json, HANDOFF, NEEDS-HUMAN).
+residual_path() { printf '%s' "${1:-.}/.plinth/RESIDUAL.json"; }
+
+# Exit 0 if residual authorizes shipping HEAD of $1.
+residual_ship_ok() {
+  local root="${1:-.}" rf rsha bound
+  rf="$(residual_path "$root")"
+  [ -f "$rf" ] || return 1
+  bound="$(jq -r '.bound // false' "$rf" 2>/dev/null || echo false)"
+  rsha="$(jq -r '.sha // empty' "$rf" 2>/dev/null || true)"
+  [ "$bound" = "true" ] || return 1
+  [ -n "$rsha" ] || return 1
+  git -C "$root" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$root" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null || return 1
+  # Product must not change after residual bind (only residual hygiene files).
+  local changed
+  changed="$(git -C "$root" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+  if [ -n "$changed" ]; then
+    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# run_residual <root> <bind 0|1> <from-findings-path-or-empty> <note>
+run_residual() {
+  local root="$1" bind="${2:-0}" fromf="${3:-}" note="${4:-}"
+  local sha rf slug fdir latest findings_json ts who
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth residual: not a git repo: $root" >&2; exit 1; }
+  sha="$(git -C "$root" rev-parse HEAD)"
+  rf="$(residual_path "$root")"
+  mkdir -p "$root/.plinth"
+  who="${USER:-unknown}"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [ -n "$note" ] || note="${PLINTH_RESIDUAL_NOTE:-human residual land}"
+  findings_json='[]'
+  if [ -n "$fromf" ] && [ -f "$fromf" ]; then
+    findings_json="$(jq -c '[.findings[]? | select(.status=="open") | {severity,file,line,description,id}]' "$fromf" 2>/dev/null || echo '[]')"
+  else
+    fdir="$(_lifecycle_review_dir "$root")"
+    latest="$(_latest_findings_json "$fdir")"
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      findings_json="$(jq -c '[.findings[]? | select(.status=="open") | {severity,file,line,description,id}]' "$latest" 2>/dev/null || echo '[]')"
+    elif [ -f "$rf" ]; then
+      findings_json="$(jq -c '.findings // []' "$rf" 2>/dev/null || echo '[]')"
+    fi
+  fi
+  case "$findings_json" in ''|null) findings_json='[]' ;; esac
+  if [ "$bind" = 1 ]; then
+    jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
+      '{schema:"plinth.residual/v1", bound:true, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
+    echo "Wrote $rf (BOUND residual for $sha)."
+    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL/HANDOFF/NEEDS-HUMAN change after."
+  else
+    jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
+      '{schema:"plinth.residual/v1", bound:false, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
+    echo "Wrote $rf (DRAFT — not shippable). Review findings, then: plinth residual --bind --note \"...\""
+  fi
+  local n
+  n="$(jq '(.findings // []) | length' "$rf" 2>/dev/null || echo 0)"
+  echo "  open items recorded: $n"
+  echo "  note: $note"
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -2503,6 +5453,17 @@ case "$cmd" in
   smoke) run_smoke "$@" ;;
   watch) watch_project ;;
   dash|dashboard) run_dashboard "$@" ;;
+  harden) run_harden "$target" ;;
+  build) run_build_phase "$target" ;;
+  phase) run_phase_status "$target" ;;
+  handoff) run_handoff "$target" ;;
+  plan) run_plan "$target" "$PLAN_DEEP" ;;
+  next) run_next "$target" ;;
+  residual) run_residual "$target" "${RESIDUAL_BIND:-0}" "${RESIDUAL_FROM:-}" "${RESIDUAL_NOTE:-}" ;;
+  lifecycle-migrate)
+    migrate_lifecycle_phases "$target"
+    echo "plinth lifecycle-migrate: done for $target"
+    ;;
   init)
     preflight_reserved_lanes
     copy_templates_if_absent
@@ -2526,6 +5487,7 @@ case "$cmd" in
     copy_shared
     ensure_protected_paths
     migrate_needs_human
+    migrate_lifecycle_phases "$target"
     # Tier-2 cross-vendor audit needs audit_vendor; init sets it but existing
     # configs are preserved, so remind upgraded projects (MANUAL.md points here).
     # The audit only runs when audit_vendor DIFFERS from the primary reviewer_vendor,

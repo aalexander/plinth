@@ -35,6 +35,18 @@ mk_git() {
 # ── Fixture A: active session + verdict + NEEDS-HUMAN open + events ──────────
 A="$FIX/alpha"
 mk_git "$A"
+# Config seats must surface even when no live transcript model exists.
+printf '%s\n' \
+  'spec_path = SPEC.md' \
+  'reviewer_vendor = codex' \
+  'reviewer_model_tier1 = gpt-t1' \
+  'reviewer_model_tier2 = gpt-t2' \
+  'audit_vendor = claude' \
+  'audit_model = opus' \
+  'advisor_vendor = claude' \
+  'advisor_model = fable' \
+  'advisor_model_max = fable-max' \
+  > "$A/.plinth/config"
 git -C "$A" checkout -qb feat/dash
 echo x > "$A/f.txt"
 git -C "$A" add -A
@@ -43,11 +55,36 @@ HEAD="$(git -C "$A" rev-parse --short HEAD)"
 FULL="$(git -C "$A" rev-parse HEAD)"
 
 NOW="$(date +%s)"
-jq -nc --argjson epoch "$NOW" \
+# Active-SID phase chain (event-gap heuristic):
+# SessionStart → +10s UserPromptSubmit (gap → other) → +30s Edit (coding) →
+# +20s Read (research) → other-sid noise → +30s advise Bash (advising).
+jq -nc --argjson epoch "$((NOW - 100))" \
   '{ts:"2026-01-01T00:00:00Z",epoch:$epoch,event:"SessionStart",sid:"sid-smoke",transcript:null,tool:null,detail:null,rc:null}' \
   > "$A/.plinth/session/events.jsonl"
-jq -nc --argjson epoch "$((NOW - 10))" \
+jq -nc --argjson epoch "$((NOW - 90))" \
   '{ts:"2026-01-01T00:00:10Z",epoch:$epoch,event:"UserPromptSubmit",sid:"sid-smoke",transcript:null,tool:null,detail:"smoke dashboard task",rc:null}' \
+  >> "$A/.plinth/session/events.jsonl"
+jq -nc --argjson epoch "$((NOW - 60))" \
+  '{ts:"2026-01-01T00:00:40Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Edit",detail:"f.txt",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+jq -nc --argjson epoch "$((NOW - 40))" \
+  '{ts:"2026-01-01T00:01:00Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Read",detail:"f.txt",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+# VERIFY-class evidence (test runner) + guard signal
+jq -nc --argjson epoch "$((NOW - 35))" \
+  '{ts:"2026-01-01T00:01:05Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"pytest -q",rc:1}' \
+  >> "$A/.plinth/session/events.jsonl"
+# Guard with session_id (current guard.sh) counts on the active SID card.
+jq -nc --argjson epoch "$((NOW - 32))" \
+  '{ts:"2026-01-01T00:01:08Z",epoch:$epoch,event:"guard_block",sid:"sid-smoke",transcript:null,tool:null,detail:"protected path",rc:null}' \
+  >> "$A/.plinth/session/events.jsonl"
+# Noise SID must not pollute active phases
+jq -nc --argjson epoch "$((NOW - 30))" \
+  '{ts:"2026-01-01T00:01:10Z",epoch:$epoch,event:"PostToolUse",sid:"other-sid",transcript:null,tool:"Bash",detail:"gh pr view",rc:0}' \
+  >> "$A/.plinth/session/events.jsonl"
+# Return to active SID — latest "now" tool
+jq -nc --argjson epoch "$((NOW - 10))" \
+  '{ts:"2026-01-01T00:01:30Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"./plinth advise x",rc:0}' \
   >> "$A/.plinth/session/events.jsonl"
 
 mkdir -p "$A/.plinth/session/review/feat-dash"
@@ -538,6 +575,35 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
+# Never hit live vendor CLIs in smoke (quota is optional / cached separately).
+export PLINTH_DASH_QUOTA=0
+# Quota cache is /tmp/plinth-dash-quota-$UID/ (product fixed path)
+QHOME="$FIX/qhome"
+mkdir -p "$QHOME/.config/plinth"
+export HOME="$QHOME"
+# Live product cache path with backup/restore (best-effort; exclusive via mkdir lock).
+QCACHE="/tmp/plinth-dash-quota-$(id -u)/dash-quota.json"
+QLOCK="/tmp/plinth-dash-quota-$(id -u)/.smoke.lock.d"
+mkdir -p "$(dirname "$QCACHE")"
+# Portable exclusive lock (mkdir is atomic); wait up to ~30s.
+_lock_i=0
+while ! mkdir "$QLOCK" 2>/dev/null; do
+  _lock_i=$((_lock_i+1))
+  [ "$_lock_i" -lt 60 ] || { echo "smoke-snapshot: could not acquire quota cache lock" >&2; exit 1; }
+  sleep 0.5
+done
+QBAK="$FIX/operator-quota.bak"
+[ -f "$QCACHE" ] && cp -p "$QCACHE" "$QBAK" || true
+export TMPDIR="$FIX/tmp"
+mkdir -p "$TMPDIR"
+_quota_cleanup() {
+  if [ -f "$QBAK" ]; then mv -f "$QBAK" "$QCACHE"
+  else rm -f "$QCACHE"
+  fi
+  rmdir "$QLOCK" 2>/dev/null || true
+  cleanup
+}
+trap _quota_cleanup EXIT
 export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L4:$L5:$L6:$L7:$L8:$L9:$L10:$L11:$L12:$L13:$L14:$L15:$L16"
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
@@ -563,6 +629,13 @@ EXPECTED_N=43
 [ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
+# Top-level vendor quota: smoke disables probes; snapshot never spawns CLIs.
+jq -e '
+  .quota != null
+  and .quota.available == false
+  and (.quota.skipped == true or .quota.offline == true)
+' "$OUT" >/dev/null
+
 # Alpha assertions
 jq -e --arg head "$HEAD" '
   .projects[] | select(.name == "alpha")
@@ -571,6 +644,10 @@ jq -e --arg head "$HEAD" '
   and .feedless == false
   and .needs_human.open == 2
   and .needs_human.blocking == 1
+  and (.needs_human.items | type == "array")
+  and (.needs_human.items | length) == 2
+  and (.needs_human.items | map(select(.blocking == true)) | length) == 1
+  and .needs_human.truncated == false
   and .review.verdict == "CHANGES_NEEDED"
   and .review.round == 2
   and .review.stale == false
@@ -578,12 +655,464 @@ jq -e --arg head "$HEAD" '
   and .task == "smoke dashboard task"
   and .quota.available == false
   and (.quota.note | type == "string")
+  and (.models.live | type == "object")
+  and (.models.seats | type == "object")
+  and .models.seats.reviewer_vendor == "codex"
+  and .models.seats.reviewer_tier1 == "gpt-t1"
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .models.seats.audit_vendor == "claude"
+  and .models.seats.audit_model == "opus"
+  and .models.seats.advisor_vendor == "claude"
+  and .models.seats.advisor_model == "fable"
+  and .models.seats.advisor_model_max == "fable-max"
+  # Live reviewer from verdict.model only (request has no model; not seat fallback).
+  and .models.live.reviewer == "gpt-test"
+  and .model_reviewer == "gpt-test"
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
+  and (.phases | type == "object")
+  # Event-gap: Edit 30s, Read 20s; pytest 5s shell; guard 3s (same last_phase
+  # shell); advise 22s (32→10). other-sid ignored.
+  and .phases.coding == 30
+  and .phases.research == 20
+  and .phases.advising == 22
+  and ((.phases.shell // 0) == 8)
+  and ((.phases.ci // 0) == 0)
+  and (.review_round_secs | type == "number")
+  and ((.phases.other // 0) == 10)
+  # Watch-parity session live fields (guard_block with session SID)
+  and .now != null
+  and .now.tool == "Bash"
+  and (.now.detail | test("plinth advise"))
+  and .evidence != null
+  and (.evidence.cmd | test("pytest"))
+  and .evidence.rc == 1
+  and .signals.guard_blocks == 1
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0
   and .activity_secs_ago < 120
   and (.error == null or .error == "")
 ' "$OUT" >/dev/null
+
+# Quota: offline snapshot reads cache; probe path parses CLI with fake claude.
+NOWQ="$(date +%s)"
+jq -nc --argjson now "$NOWQ" '{
+  available:true, refreshed_at:$now,
+  overall:{vendor:"claude",window:"week_all_models",used_pct:80,remaining_pct:20,
+           reset_text:"Jul 30 at 9am",projected_100pct_at:($now+14400),rate_pct_per_hour:5},
+  vendors:[{vendor:"claude",available:true,windows:[{window:"week_all_models",used_pct:80,reset_text:"Jul 30"}]}],
+  history:[{t:($now-7200),week_all_models_pct:70},{t:$now,week_all_models_pct:80}]
+}' > "$QCACHE"
+QOUT="$FIX/quota-out.json"
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot > "$QOUT"
+jq -e '
+  .quota.available == true
+  and .quota.overall.used_pct == 80
+  and .quota.overall.projected_100pct_at != null
+  and (.quota.offline != true)
+' "$QOUT" >/dev/null
+# Snapshot must stay offline with empty cache (no CLI spawn)
+rm -f "$QCACHE"
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.offline == true' >/dev/null
+# Live probe: fake claude records argv/cwd; asserts isolation contract
+QBIN="$FIX/qbin"; mkdir -p "$QBIN"
+QREC="$FIX/claude-rec.json"
+cat > "$QBIN/claude" <<C
+#!/usr/bin/env python3
+import json, os, sys
+cwd = os.getcwd()
+entries = [e for e in os.listdir(cwd) if e not in (".", "..")]
+rec = {
+  "argv": sys.argv,
+  "cwd": cwd,
+  "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR"),
+  "TMPDIR": os.environ.get("TMPDIR"),
+  "cwd_empty": len(entries) == 0,
+  "cwd_entries": entries[:20],
+}
+open("$QREC", "w").write(json.dumps(rec))
+print(json.dumps({"result":
+"Current session: 3% used · resets Jul 27 at 11:20am (America/Puerto_Rico)\n"
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+QHIST="$QCACHE"
+jq -nc --argjson now "$NOWQ" '{
+  available:false, refreshed_at:($now-10000),
+  history:[{t:($now-7200),week_all_models_pct:70,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"},{t:($now-3600),week_all_models_pct:75,reset_text:"Jul 30 at 9am (America/Puerto_Rico)"}],
+  vendors:[]
+}' > "$QHIST"
+QPROBE="$HOME/.config/plinth/quota-probe.json"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota > "$QPROBE"
+# Linear-from-reset: 80% used, week window (7d), next reset parseable from fixture text.
+# rate = 80 / elapsed_since_window_start; proj delta = (20/80)*elapsed = elapsed/4.
+jq -e '
+  .quota.available == true
+  and .quota.overall.used_pct == 80
+  and (.quota.overall.rate_pct_per_hour | type == "number")
+  and .quota.overall.rate_pct_per_hour > 0
+  and (.quota.overall.projected_100pct_at | type == "number")
+  and .quota.overall.projected_100pct_at > .quota.refreshed_at
+  and ([.quota.vendors[] | select(.vendor=="claude" and .available==true)] | length) == 1
+  # Grok is probed when on PATH; restricted smoke PATH yields cli_missing, not a live plan row.
+  and ([.quota.vendors[] | select(.vendor=="grok" and .available==true)] | length) == 0
+' "$QPROBE" >/dev/null
+# Cross-check projection math against the same reset parse the probe uses.
+python3 - "$QPROBE" <<'PY'
+import json, re, sys, time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+q = json.load(open(sys.argv[1]))["quota"]
+now = q["refreshed_at"]
+o = q["overall"]
+assert o["used_pct"] == 80
+# Fixture: "Jul 30 at 9am (America/Puerto_Rico)"
+tz = ZoneInfo("America/Puerto_Rico")
+reset = datetime(datetime.fromtimestamp(now, tz=tz).year, 7, 30, 9, 0, tzinfo=tz)
+ra = int(reset.timestamp())
+if ra < now - 3600:
+    reset = reset.replace(year=reset.year + 1)
+    ra = int(reset.timestamp())
+elapsed = now - (ra - 604800)
+assert elapsed > 0, elapsed
+exp_rate_h = (80 / elapsed) * 3600
+exp_proj = now + int((20 / (80 / elapsed)))
+got_rate = o["rate_pct_per_hour"]
+got_proj = o["projected_100pct_at"]
+# Tolerate 0.2 %/h and 5s clock skew from floor/int
+if abs(got_rate - exp_rate_h) > 0.25:
+    raise SystemExit(f"rate mismatch got={got_rate} exp≈{exp_rate_h}")
+if abs(got_proj - exp_proj) > 5:
+    raise SystemExit(f"proj mismatch got={got_proj} exp≈{exp_proj}")
+print("linear-from-reset ok", got_rate, got_proj - now)
+PY
+# Isolation + argv contract from the recording claude
+jq -e '
+  (.argv | .[1:] == ["-p", "/usage", "--output-format", "json"])
+  and (.cwd | type == "string" and test("^/tmp/plinth-quota-|^/private/tmp/plinth-quota-"))
+  and (.CLAUDE_PROJECT_DIR | type == "string" and test("plinth-quota-"))
+  and ((.cwd | sub("^/private";"")) == (.CLAUDE_PROJECT_DIR | sub("^/private";"")))
+  and .cwd_empty == true
+  and (.TMPDIR == .cwd or .TMPDIR == null)
+' "$QREC" >/dev/null \
+  || { echo "smoke-snapshot: claude probe argv/cwd isolation failed: $(cat "$QREC")" >&2; exit 1; }
+
+# Offline/disabled modes must not create the cache parent if absent
+rm -rf "/tmp/plinth-dash-quota-$(id -u)"
+PLINTH_DASH_QUOTA=0 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
+[ ! -e "/tmp/plinth-dash-quota-$(id -u)" ] || { echo "smoke-snapshot: QUOTA=0 created cache parent" >&2; exit 1; }
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot >/dev/null
+[ ! -e "/tmp/plinth-dash-quota-$(id -u)" ] || { echo "smoke-snapshot: offline snapshot created cache parent" >&2; exit 1; }
+mkdir -p "$(dirname "$QCACHE")"
+# PLINTH_DASH_QUOTA_CACHE ignored
+printf '%s\n' '{"seed":true}' > "$FIX/should-not-create.json"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA_CACHE="$FIX/should-not-create.json" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota >/dev/null
+jq -e '.seed == true' "$FIX/should-not-create.json" >/dev/null \
+  || { echo "smoke-snapshot: QUOTA_CACHE override was written" >&2; exit 1; }
+# Multi-document cache: offline miss + serve-mode re-probe succeeds and rewrites cache
+printf '%s\n' '{"available":true,"refreshed_at":1}' '{"available":false}' \
+  > "$QCACHE"
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.offline == true' >/dev/null
+# reinstall successful claude for serve-mode refresh
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":"Current week (all models): 42% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 42' >/dev/null
+jq -e '.overall.used_pct == 42' "$QCACHE" >/dev/null
+# Cache must not live under any discovered project root
+case "$QCACHE" in "$B"/*|"$A"/*) echo "smoke-snapshot: cache under project" >&2; exit 1 ;; esac
+
+# object/scalar multi-doc is also a miss
+printf '%s\n' '{"available":true,"refreshed_at":1}' 'null' > "$QCACHE"
+PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot \
+  | jq -e '.quota.offline == true' >/dev/null
+# Multi-document cache is treated as miss (offline / re-probe), not crash
+printf '%s\n' '{"available":true,"refreshed_at":1}' '{"available":false}' \
+  > "$QCACHE"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=900 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot | jq -e '.quota.offline == true or .quota.skipped == true or .quota.available == false' >/dev/null
+# Fixed cache path only — never PLINTH_DASH_QUOTA_CACHE into a project
+# (override is ignored by product; default is always $QCACHE)
+
+# parse_failed: successful CLI, unmatchable text
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":"no usage numbers here"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
+# parse_failed: empty stdout
+cat > "$QBIN/claude" <<'C'
+#!/bin/sh
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="parse_failed")] | length == 1' >/dev/null
+# CLI timeout → cli_timeout
+cat > "$QBIN/claude" <<'C'
+#!/bin/sh
+sleep 30
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_QUOTA_TIMEOUT=1 PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '[.quota.vendors[] | select(.vendor=="claude" and .error=="cli_timeout")] | length == 1' >/dev/null
+# Offline snapshot must NOT spawn claude (sentinel file)
+SENT="$FIX/claude-called"
+rm -f "$SENT"
+cat > "$QBIN/claude" <<C
+#!/bin/sh
+echo called > "$SENT"
+exit 0
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot >/dev/null
+[ ! -f "$SENT" ] || { echo "smoke-snapshot: offline snapshot spawned claude" >&2; exit 1; }
+
+# Public --snapshot cannot be forced online via legacy/env knobs
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_PROBE=1 PLINTH_DASH_SERVE_CHILD=1 \
+  _DASH_QUOTA_ALLOW_PROBE=1 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot >/dev/null
+[ ! -f "$SENT" ] || { echo "smoke-snapshot: public --snapshot spawned claude under env force" >&2; exit 1; }
+
+# Legacy root NEEDS-HUMAN.md source label
+LEGNH="$FIX/legacy-nh"
+mk_git "$LEGNH"
+printf '%s\n' '- [ ] legacy open item' > "$LEGNH/NEEDS-HUMAN.md"
+export PLINTH_DASH_ROOTS="$LEGNH"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "legacy-nh")
+  | .needs_human.open == 1
+  and .needs_human.source == "NEEDS-HUMAN.md"
+' >/dev/null
+# >50 open items → truncated=true, items length 50
+T50="$FIX/tau-nh50"
+mk_git "$T50"
+{
+  echo '# Queue'
+  i=1
+  while [ "$i" -le 55 ]; do
+    echo "- [ ] item number $i"
+    i=$((i + 1))
+  done
+} > "$T50/.plinth/NEEDS-HUMAN.md"
+export PLINTH_DASH_ROOTS="$T50"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "tau-nh50")
+  | .needs_human.open == 55
+  and .needs_human.truncated == true
+  and (.needs_human.items | length) == 50
+' >/dev/null
+# CI classification + PreToolUse + large gap drop + planning + reviewing
+PH2="$FIX/phi-phases"
+mk_git "$PH2"
+git -C "$PH2" checkout -qb feat/ph
+echo p > "$PH2/p.txt"; git -C "$PH2" add -A; git -C "$PH2" commit -qm w
+NOWP="$(date +%s)"
+mkdir -p "$PH2/.plinth/session"
+{
+  jq -nc --argjson e "$((NOWP-4000))" '{epoch:$e,event:"SessionStart",sid:"s1",tool:null,detail:null}'
+  # gap 4000s should drop (>=3600)
+  jq -nc --argjson e "$((NOWP-100))" '{epoch:$e,event:"UserPromptSubmit",sid:"s1",tool:null,detail:"plan it"}'
+  jq -nc --argjson e "$((NOWP-90))" '{epoch:$e,event:"PreToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1"}'
+  jq -nc --argjson e "$((NOWP-70))" '{epoch:$e,event:"PostToolUse",sid:"s1",tool:"Bash",detail:"gh pr view 1",rc:0}'
+  jq -nc --argjson e "$((NOWP-40))" '{epoch:$e,event:"PostToolUse",sid:"s1",tool:"Bash",detail:"./.plinth/review.sh",rc:0}'
+} > "$PH2/.plinth/session/events.jsonl"
+export PLINTH_DASH_ROOTS="$PH2"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "phi-phases")
+  | ((.phases.other // 0) == 0)   # 4000s gap dropped
+  and (.phases.planning == 10)    # prompt→PreToolUse
+  and (.phases.ci == 20)          # Pre→Post Bash gh
+  and (.phases.reviewing == 30)   # PostToolUse review.sh gap 70→40
+' >/dev/null
+# shell stage (plain Bash, not review/advise/gh)
+SHP="$FIX/shell-phase"
+mk_git "$SHP"
+git -C "$SHP" checkout -qb feat/sh
+echo s > "$SHP/s.txt"; git -C "$SHP" add -A; git -C "$SHP" commit -qm w
+NOWS="$(date +%s)"
+mkdir -p "$SHP/.plinth/session"
+{
+  jq -nc --argjson e "$((NOWS-40))" '{epoch:$e,event:"SessionStart",sid:"s",tool:null,detail:null}'
+  jq -nc --argjson e "$((NOWS-10))" '{epoch:$e,event:"PostToolUse",sid:"s",tool:"Bash",detail:"ls -la",rc:0}'
+} > "$SHP/.plinth/session/events.jsonl"
+export PLINTH_DASH_ROOTS="$SHP"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "shell-phase") | .phases.shell == 30
+' >/dev/null
+# Reinstall successful weekly-usage claude (prior sentinel was empty stdout).
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+# History multi-sample is observability only — projection is linear-from-reset on
+# the current probe window (not history pairs). Fixture has parseable week reset → project.
+QLEG="$QCACHE"
+jq -nc --argjson now "$NOWQ" '{
+  available:false, refreshed_at:($now-10000),
+  history:[
+    {t:($now-7200),week_all_models_pct:10},
+    {t:($now-3600),week_all_models_pct:20}
+  ], vendors:[]
+}' > "$QLEG"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 80
+    and (.quota.overall.projected_100pct_at | type == "number")
+    and (.quota.history | length) >= 1
+    and .quota.history[-1].reset_text != null
+  ' >/dev/null
+# Prior-week history must not block projection when the live window has a new reset.
+QXR="$QCACHE"
+jq -nc --argjson now "$NOWQ" '{
+  available:false, refreshed_at:($now-10000),
+  history:[
+    {t:($now-7200),week_all_models_pct:10,reset_text:"Jul 23 at 9am (America/Puerto_Rico)"},
+    {t:($now-3600),week_all_models_pct:20,reset_text:"Jul 23 at 9am (America/Puerto_Rico)"}
+  ], vendors:[]
+}' > "$QXR"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 \
+  PLINTH_DASH_ROOTS="$B" "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 80
+    and (.quota.overall.projected_100pct_at | type == "number")
+    and (.quota.history|length) >= 1
+  ' >/dev/null
+# Unparseable reset → no projection (linear-from-reset needs a clock).
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 55% used · resets sometime soon\n"}))
+C
+chmod +x "$QBIN/claude"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota \
+  | jq -e '
+    .quota.available == true
+    and .quota.overall.used_pct == 55
+    and .quota.overall.projected_100pct_at == null
+    and .quota.overall.rate_pct_per_hour == null
+  ' >/dev/null
+# Restore parseable fixture for later smoke steps that expect 80%
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 80% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+# Public --snapshot is always offline; only serve uses --snapshot-with-quota.
+
+# review_round_secs: sum of request→findings mtimes across rounds
+RR="$FIX/rho-review-secs"
+mk_git "$RR"
+git -C "$RR" checkout -qb feat/rr
+echo z > "$RR/z.txt"; git -C "$RR" add -A; git -C "$RR" commit -qm w
+mkdir -p "$RR/.plinth/session/review/feat-rr"
+printf '{"round":1,"mode":"fresh"}\n' > "$RR/.plinth/session/review/feat-rr/request-1.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[]}\n' \
+  > "$RR/.plinth/session/review/feat-rr/findings-1.json"
+printf '{"round":2,"mode":"resume"}\n' > "$RR/.plinth/session/review/feat-rr/request-2.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"y","findings":[]}\n' \
+  > "$RR/.plinth/session/review/feat-rr/findings-2.json"
+python3 - <<PY
+import os, time
+base = time.time()
+# round1: 12s, round2: 8s → sum ~20s
+os.utime("$RR/.plinth/session/review/feat-rr/request-1.json", (base-30, base-30))
+os.utime("$RR/.plinth/session/review/feat-rr/findings-1.json", (base-18, base-18))
+os.utime("$RR/.plinth/session/review/feat-rr/request-2.json", (base-10, base-10))
+os.utime("$RR/.plinth/session/review/feat-rr/findings-2.json", (base-2, base-2))
+PY
+export PLINTH_DASH_ROOTS="$RR"
+RROUT="$FIX/rr.json"
+"$PLINTH" dash --snapshot > "$RROUT"
+jq -e '
+  .projects[] | select(.name == "rho-review-secs")
+  | .review_round_secs >= 18
+  and .review_round_secs <= 22
+  and ((.phases.reviewing // 0) == 0)
+' "$RROUT" >/dev/null
+# Fresh cache TTL suppresses CLI on --snapshot-with-quota
+true
+SENT2="$FIX/claude-ttl-called"; rm -f "$SENT2"
+cat > "$QBIN/claude" <<C
+#!/bin/sh
+echo called > "$SENT2"
+exit 0
+C
+chmod +x "$QBIN/claude"
+NOWQ2="$(date +%s)"
+jq -nc --argjson now "$NOWQ2" '{
+  available:true, refreshed_at:$now,
+  overall:{vendor:"claude",window:"week_all_models",used_pct:50,remaining_pct:50,
+           reset_text:"Jul 30",projected_100pct_at:null,rate_pct_per_hour:null},
+  vendors:[{vendor:"claude",available:true,windows:[{window:"week_all_models",used_pct:50,reset_text:"Jul 30"}]}],
+  history:[{t:$now,week_all_models_pct:50,reset_text:"Jul 30"}]
+}' > "$QCACHE"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=900 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 50' >/dev/null
+[ ! -f "$SENT2" ] || { echo "smoke-snapshot: fresh TTL still invoked claude" >&2; exit 1; }
+# Successful probe persists refreshed history to the cache file
+cat > "$QBIN/claude" <<'C'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"result":
+"Current week (all models): 55% used · resets Jul 30 at 9am (America/Puerto_Rico)\n"}))
+C
+chmod +x "$QBIN/claude"
+PCACHE="$QCACHE"
+rm -f "$PCACHE"
+PATH="$QBIN:/usr/bin:/bin" \
+  PLINTH_DASH_QUOTA=1 PLINTH_DASH_QUOTA_TTL=0 PLINTH_DASH_ROOTS="$B" \
+  "$PLINTH" dash --snapshot-with-quota | jq -e '.quota.overall.used_pct == 55' >/dev/null
+[ -f "$PCACHE" ] || { echo "smoke-snapshot: probe did not persist cache file" >&2; exit 1; }
+jq -e '
+  .overall.used_pct == 55
+  and (.history | length) >= 1
+  and (
+    (.history[-1].week_all_models_pct == 55)
+    or (.history[-1].used_pct == 55
+        and (.history[-1].window == "week_all_models"
+             or .history[-1].window == null))
+  )
+  and (.history[-1].reset_text != null)
+' "$PCACHE" >/dev/null
 
 # Beta feedless
 jq -e '
@@ -593,6 +1122,54 @@ jq -e '
   and .activity_secs_ago == null
   and .quota.available == false
 ' "$OUT" >/dev/null
+
+# Error-card constructor retains seats/phases/review_round_secs when only verdict is bad
+EC="$FIX/err-keep"
+mk_git "$EC"
+git -C "$EC" checkout -qb feat/ek
+echo e > "$EC/e.txt"; git -C "$EC" add -A; git -C "$EC" commit -qm w
+printf '%s\n' 'spec_path = SPEC.md' 'reviewer_vendor = codex' 'reviewer_model_tier2 = gpt-t2' \
+  'audit_vendor = claude' 'audit_model = opus' > "$EC/.plinth/config"
+NOWE="$(date +%s)"
+mkdir -p "$EC/.plinth/session/review/feat-ek"
+# valid events → phases accrue; malformed verdict → error card
+{
+  jq -nc --argjson e "$((NOWE-60))" '{epoch:$e,event:"SessionStart",sid:"s",tool:null,detail:null}'
+  jq -nc --argjson e "$((NOWE-30))" '{epoch:$e,event:"PostToolUse",sid:"s",tool:"Edit",detail:"e.txt",rc:0}'
+} > "$EC/.plinth/session/events.jsonl"
+printf 'not-json\n' > "$EC/.plinth/session/review/feat-ek/verdict.json"
+printf '{"round":1,"mode":"fresh"}\n' > "$EC/.plinth/session/review/feat-ek/request-1.json"
+printf '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[]}\n' \
+  > "$EC/.plinth/session/review/feat-ek/findings-1.json"
+python3 - <<PY
+import os, time
+b=time.time()
+os.utime("$EC/.plinth/session/review/feat-ek/request-1.json", (b-15, b-15))
+os.utime("$EC/.plinth/session/review/feat-ek/findings-1.json", (b, b))
+PY
+export PLINTH_DASH_ROOTS="$EC"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "err-keep")
+  | .error == "snapshot_render_failed"
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .models.seats.audit_model == "opus"
+  and .phases.coding == 30
+  and .review_round_secs >= 10
+  and .review_round_secs <= 20
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
+' >/dev/null
+# jq-fallback constructor: parseable JSON object that fails protocol shape
+# (verdict enum invalid) — still retains seats/phases/review_round_secs/source.
+printf '{"verdict":"NOT_A_REAL_VERDICT","sha":"abcdef0","round":1}\n' \
+  > "$EC/.plinth/session/review/feat-ek/verdict.json"
+"$PLINTH" dash --snapshot | jq -e '
+  .projects[] | select(.name == "err-keep")
+  | .error == "snapshot_render_failed"
+  and .models.seats.reviewer_tier2 == "gpt-t2"
+  and .phases.coding == 30
+  and .review_round_secs >= 10
+  and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
+' >/dev/null
 
 # Detached HEAD finds verdict under "detached"
 jq -e '
@@ -664,13 +1241,15 @@ jq -e '
   and .review == null
 ' "$OUT" >/dev/null
 
-# Long session within window: task + ~10000s session
-jq -e --argjson now "$NOW" --argjson t0 "$J_T0" '
+# Long session within window: task + ~10000s session (tolerate smoke wall-clock)
+_ks_got="$(jq -c '.projects[] | select(.name == "kappa-long") | {task,session_secs}' "$OUT")"
+jq -e --argjson now "$NOW" --argjson t0 "$J_T0" --argjson gen "$(jq -r .generated_at "$OUT")" '
   .projects[] | select(.name == "kappa-long")
   | .task == "long session task"
   and .session_secs != null
-  and (((.session_secs - ($now - $t0)) | if . < 0 then -. else . end) <= 5)
-' "$OUT" >/dev/null
+  and (((.session_secs - ($gen - $t0)) | if . < 0 then -. else . end) <= 30)
+' "$OUT" >/dev/null \
+  || { echo "smoke-snapshot: kappa-long session_secs mismatch gen=$(jq -r .generated_at "$OUT") t0=$J_T0 got=$_ks_got" >&2; exit 1; }
 
 # Cap boundary: SessionStart outside 10k window → session_secs null (not fabricated)
 jq -e '
@@ -1009,7 +1588,17 @@ const m = html.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/i);
 if (!m) { console.error("no script block"); process.exit(2); }
 const elsById = Object.create(null);
 const el = (id) => {
-  const o = { textContent: "", className: "", innerHTML: "", style: { display: "", cssText: "" } };
+  const o = {
+    textContent: "", className: "", innerHTML: "",
+    style: { display: "", cssText: "" },
+    classList: { add() {}, remove() {}, contains() { return false; } },
+    _listeners: {},
+    addEventListener(type, fn) { o._listeners[type] = o._listeners[type] || []; o._listeners[type].push(fn); },
+    removeEventListener() {},
+    getAttribute(name) { return o._attrs && o._attrs[name] || null; },
+    setAttribute(name, v) { o._attrs = o._attrs || {}; o._attrs[name] = v; },
+    closest() { return null; },
+  };
   // Honor real selectors used by the UI: .card after successful render.
   o.querySelector = (sel) => {
     if (sel === ".card" && typeof o.innerHTML === "string" && o.innerHTML.includes("class=\"card")) {
@@ -1064,6 +1653,13 @@ const sandbox = {
     // Unknown IDs return null so production create/insert path runs for #poll-error.
     getElementById: (id) => (Object.prototype.hasOwnProperty.call(elsById, id) ? elsById[id] : null),
     createElement: () => el(),
+    _listeners: {},
+    addEventListener(type, fn) {
+      // `this` is the document stub (do not close over an unbound `document`).
+      this._listeners = this._listeners || {};
+      this._listeners[type] = this._listeners[type] || [];
+      this._listeners[type].push(fn);
+    },
     querySelector: (sel) => {
       if (sel === "header") {
         return {
@@ -1079,7 +1675,9 @@ const sandbox = {
   },
 };
 // Pre-seed only the IDs present in the static HTML (not poll-error).
-["grid", "live-dot", "live-label", "gen-ago", "discovery", "count"].forEach((id) => { elsById[id] = el(id); });
+["grid", "live-dot", "live-label", "gen-ago", "discovery", "count",
+ "quota-bar", "nh-modal", "nh-panel", "nh-title", "nh-sub", "nh-list", "nh-close"
+].forEach((id) => { elsById[id] = el(id); });
 sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 vm.createContext(sandbox);
@@ -1142,6 +1740,8 @@ setTimeout(() => {
   }
   resolvers[1]();
   setTimeout(() => {
+    // setTimeout runs outside the vm context — bind DOM stubs explicitly.
+    const document = sandbox.document;
     // Error card
     const errProj = {
       error: "snapshot_render_failed",
@@ -1166,8 +1766,8 @@ setTimeout(() => {
       console.error("error card must not show 'no review'");
       process.exit(1);
     }
-    if (!htmlCard.includes("NEEDS-HUMAN ×1")) {
-      console.error("error card must still show NEEDS-HUMAN");
+    if (!htmlCard.includes("HUMAN ×1")) {
+      console.error("error card must still show HUMAN chip");
       process.exit(1);
     }
     // Full field card: branch/head/review/burn/task
@@ -1175,18 +1775,442 @@ setTimeout(() => {
       name: "alpha", path: "/tmp/alpha", branch: "feat/dash", head: "abc1234",
       feedless: false, task: "do the thing", burn_per_min: 12, tokens_total: 1500,
       model_driver: "claude-test", model_reviewer: "gpt-test",
-      needs_human: { open: 0, blocking: 0 },
+      models: {
+        live: { driver: "claude-test", reviewer: "gpt-test", reviewer_vendor: "codex" },
+        seats: {
+          reviewer_vendor: "codex", reviewer_tier1: "gpt-t1", reviewer_tier2: "gpt-t2",
+          audit_vendor: "claude", audit_model: "opus",
+          advisor_vendor: "claude", advisor_model: "fable", advisor_model_max: "fable-max"
+        }
+      },
+      phases: { coding: 120, reviewing: 60, research: 30 },
+      review_round_secs: 42,
+      needs_human: { open: 0, blocking: 0, items: [], truncated: false },
       review: { verdict: "CHANGES_NEEDED", round: 2, sha7: "abc1234",
                 stale: false, running: false, mode: "fresh", tier: 1 },
       activity_secs_ago: 5, session_secs: 60,
     };
     const fullHtml = api.cardHTML(full);
     for (const needle of [
-      "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
-      "12/min", "1.5k recent", "r2",
+      "feat/dash", "abc1234", "CHANGES", "do the thing",
+      "12/min", "1.5k tok", "r2", "claude-test", "gpt-test",
+      "coding", "reviewing", "fable-max", "gpt-t2", "gpt-t1",
+      "wall 42s", "models-grid", "mrole",
+      "driver", "review", "audit", "advise", "opus", "fable",
+      'data-changes="/tmp/alpha"',
+      'data-copy-path="/tmp/alpha/.plinth/session"',
+      ">session</button>",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
+        process.exit(1);
+      }
+    }
+    // Structured models block — not the old dense live|seats line
+    if (fullHtml.includes("live drv") || fullHtml.includes("seats rev")) {
+      console.error("cardHTML still using dense models line:", fullHtml.match(/models[\s\S]{0,200}/));
+      process.exit(1);
+    }
+    if (typeof api.modelsLine === "function") {
+      const ml = api.modelsLine(full);
+      if (!ml.includes("driver:") || !ml.includes("claude-test") || !ml.includes("review:")) {
+        console.error("modelsLine plain text degraded:", ml);
+        process.exit(1);
+      }
+    }
+    // HUMAN drill-down chip carries data-human
+    const nhOnly = {
+      name: "h", path: "/tmp/h", branch: "main", head: "abc",
+      feedless: true, review: null,
+      needs_human: {
+        open: 2, blocking: 1, truncated: false,
+        items: [{ text: "[BLOCKING] fix me", blocking: true },
+                { text: "later", blocking: false }]
+      }
+    };
+    const nhHtml = api.cardHTML(nhOnly);
+    if (!nhHtml.includes('data-human="/tmp/h"') || !nhHtml.includes("HUMAN ×2") ||
+        !nhHtml.includes('<button type="button"')) {
+      console.error("HUMAN chip missing button/data-human:", nhHtml.slice(0, 300));
+      process.exit(1);
+    }
+    // Modal path: require seams (no silent skip)
+    if (typeof api.openNeedsHuman !== "function" || typeof api.closeNeedsHuman !== "function"
+        || typeof api.seedProjects !== "function") {
+      console.error("missing openNeedsHuman/closeNeedsHuman/seedProjects seams");
+      process.exit(1);
+    }
+    {
+      const modal = elsById["nh-modal"];
+      let open = false;
+      modal.classList = {
+        add(c) { if (c === "open") open = true; },
+        remove(c) { if (c === "open") open = false; },
+        contains(c) { return c === "open" ? open : false; },
+      };
+      api.seedProjects([{
+        name: "h2", path: "/tmp/h2", branch: "main", head: "abc",
+        feedless: true, review: null,
+        needs_human: {
+          open: 51, blocking: 1, truncated: true,
+          source: "NEEDS-HUMAN.md",
+          items: [{ text: "[BLOCKING] fix <me>", blocking: true },
+                  { text: "later", blocking: false }]
+        }
+      }]);
+      // Boot-time listeners were registered on pre-seeded nodes / document.
+      const closeFns = (elsById["nh-close"]._listeners && elsById["nh-close"]._listeners.click) || [];
+      const escFns = (document._listeners && document._listeners.keydown) || [];
+      const modalFns = (modal._listeners && modal._listeners.click) || [];
+      if (!closeFns.length) {
+        console.error("nh-close click listener not registered at boot");
+        process.exit(1);
+      }
+      if (!escFns.length) {
+        console.error("document keydown (Escape) listener not registered at boot");
+        process.exit(1);
+      }
+      api.openNeedsHuman("/tmp/h2");
+      const listHtml = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!listHtml.includes("blocking") || !listHtml.includes("fix &lt;me&gt;")
+          || !listHtml.includes("truncated") || !listHtml.includes("plinth queue")) {
+        console.error("openNeedsHuman list missing blocking/escape/truncation:", listHtml);
+        process.exit(1);
+      }
+      const subHtml = (elsById["nh-sub"] && elsById["nh-sub"].textContent) || "";
+      // Must render the supplied legacy source exactly — not the hard-coded fallback.
+      if (!subHtml.includes("HUMAN") && !subHtml.includes(" · NEEDS-HUMAN.md")) {
+        // title is HUMAN — name; sub still mentions source path
+        if (!subHtml.includes("NEEDS-HUMAN.md")) {
+          console.error("human modal sub must mention source:", subHtml);
+          process.exit(1);
+        }
+      }
+      if (subHtml.includes(".plinth/NEEDS-HUMAN.md")) {
+        console.error("nh-sub must show legacy source only:", subHtml);
+        process.exit(1);
+      }
+      if (!modal.classList.contains("open")) {
+        console.error("openNeedsHuman did not open modal");
+        process.exit(1);
+      }
+      // Close button listener
+      closeFns[0]({ target: elsById["nh-close"] });
+      if (modal.classList.contains("open")) {
+        console.error("Close button listener did not close modal");
+        process.exit(1);
+      }
+      // Escape
+      api.openNeedsHuman("/tmp/h2");
+      escFns[0]({ key: "Escape" });
+      if (modal.classList.contains("open")) {
+        console.error("Escape listener did not close modal");
+        process.exit(1);
+      }
+      // Backdrop click (target === modal) — required, not optional
+      if (!modalFns.length) {
+        console.error("modal backdrop click listener not registered at boot");
+        process.exit(1);
+      }
+      api.openNeedsHuman("/tmp/h2");
+      modalFns[0]({ target: modal });
+      if (modal.classList.contains("open")) {
+        console.error("backdrop click did not close modal");
+        process.exit(1);
+      }
+      // Grid chip click wiring
+      const gridFns = (elsById["grid"]._listeners && elsById["grid"]._listeners.click) || [];
+      if (!gridFns.length) {
+        console.error("grid click listener not registered for HUMAN chips");
+        process.exit(1);
+      }
+      api.seedProjects([{
+        name: "h2", path: "/tmp/h2", branch: "main", head: "abc",
+        feedless: true, review: null,
+        needs_human: {
+          open: 1, blocking: 0, truncated: false,
+          items: [{ text: "from chip", blocking: false }]
+        }
+      }]);
+      const chip = {
+        closest: (sel) => sel === "[data-human]" || sel === "[data-nh]"
+          ? { getAttribute: (a) => (a === "data-human" || a === "data-nh") ? "/tmp/h2" : null }
+          : null
+      };
+      gridFns[0]({ target: chip });
+      if (!modal.classList.contains("open")) {
+        console.error("chip click path did not open modal");
+        process.exit(1);
+      }
+      const chipList = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!chipList.includes("from chip")) {
+        console.error("chip click did not render items:", chipList);
+        process.exit(1);
+      }
+      // CHANGES chip opens findings
+      if (typeof api.openChanges !== "function") {
+        console.error("missing openChanges seam");
+        process.exit(1);
+      }
+      api.seedProjects([{
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        feedless: false,
+        needs_human: { open: 0, blocking: 0, items: [] },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, sha7: "deadbee", stale: false,
+          findings_open: 2, findings_truncated: false,
+          summary: "two open issues",
+          findings: [
+            { severity: "blocker", file: "a.go", line: 10, text: "broken auth" },
+            { severity: "minor", file: "b.go", line: 0, text: "typo" }
+          ]
+        }
+      }]);
+      const chChip = {
+        closest: (sel) => sel === "[data-changes]"
+          ? { getAttribute: () => "/tmp/c1" } : null
+      };
+      api.closeNeedsHuman();
+      gridFns[0]({ target: chChip });
+      if (!modal.classList.contains("open")) {
+        console.error("CHANGES chip did not open modal");
+        process.exit(1);
+      }
+      const chTitle = (elsById["nh-title"] && elsById["nh-title"].textContent) || "";
+      const chList = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!chTitle.includes("CHANGES") || !chList.includes("broken auth") ||
+          !chList.includes("[blocker]")) {
+        console.error("CHANGES modal missing findings:", chTitle, chList.slice(0, 300));
+        process.exit(1);
+      }
+      const chHtml = api.cardHTML(api.__nope || {
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        needs_human: { open: 0 },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, findings_open: 2, findings: []
+        }
+      });
+      // cardHTML uses the object passed in
+      const chCard = api.cardHTML({
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        needs_human: { open: 0, blocking: 0 },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, findings_open: 2,
+          findings: [{ severity: "blocker", text: "x" }]
+        }
+      });
+      if (!chCard.includes("CHANGES ×2") || !chCard.includes('data-changes="/tmp/c1"')) {
+        console.error("CHANGES chip should be clickable with count:", chCard.slice(0, 400));
+        process.exit(1);
+      }
+    }
+    // renderQuota available + unavailable (require seam)
+    if (typeof api.renderQuota !== "function") {
+      console.error("missing renderQuota seam");
+      process.exit(1);
+    }
+    {
+      const resetAt = Math.floor(Date.now() / 1000) + 86400 * 3; // ~3d out
+      const nowSec = Math.floor(Date.now() / 1000);
+      // Week 80% is more constrained than session 12% → front line shows week.
+      api.renderQuota({
+        available: true, refreshed_at: nowSec,
+        vendors: [
+          {
+            vendor: "claude", available: true, plan_type: "pro",
+            windows_detail: [
+              { window: "week_all_models", used_pct: 80, remaining_pct: 20,
+                reset_at: resetAt, projected_100pct_at: nowSec + 3600,
+                rate_pct_per_hour: 5, overrun_risk: true, kind: "plan" },
+              { window: "session", used_pct: 12, remaining_pct: 88,
+                reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
+                rate_pct_per_hour: 2, overrun_risk: false, kind: "session" }
+            ]
+          },
+          {
+            vendor: "codex", available: true,
+            windows_detail: [
+              { window: "week", used_pct: 4, remaining_pct: 96,
+                reset_at: resetAt + 86400, kind: "plan", rate_pct_per_hour: 0.4 }
+            ]
+          },
+          {
+            vendor: "grok", available: true, plan_type: "SuperGrokPro",
+            windows_detail: [
+              { window: "week_credits", used_pct: 20, remaining_pct: 80,
+                reset_at: resetAt, kind: "plan", rate_pct_per_hour: 0.1, overrun_risk: true },
+              { window: "month", used_pct: 17, remaining_pct: 83,
+                reset_at: resetAt + 86400 * 5, kind: "plan" }
+            ]
+          }
+        ]
+      });
+      const qb = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      // Compact: exactly 3 vendor lines; tightest window chip; no expanded session % yet.
+      const rowCount = (qb.match(/data-qvendor=/g) || []).length;
+      if (rowCount !== 3) {
+        console.error("renderQuota expected 3 vendor lines, got", rowCount, qb);
+        process.exit(1);
+      }
+      if (!qb.includes("CLAUDE") || !qb.includes("CODEX") || !qb.includes("GROK")) {
+        console.error("renderQuota missing vendor labels:", qb);
+        process.exit(1);
+      }
+      if (!qb.includes("80%") || !qb.includes(">week<") && !qb.includes(">week</")) {
+        // chip text is "week"
+        if (!qb.includes("week") || !qb.includes("80%")) {
+          console.error("renderQuota missing tightest claude week 80%:", qb);
+          process.exit(1);
+        }
+      }
+      if (qb.includes("12%") && !qb.includes("data-qdetail")) {
+        console.error("session 12% should not show until expanded:", qb);
+        process.exit(1);
+      }
+      if (!qb.includes("overrun")) {
+        console.error("renderQuota missing overrun chip:", qb);
+        process.exit(1);
+      }
+      // Plan headroom is primary: overrun chip (claude) or →100% ETA (codex has rate only).
+      // No invented API $ on compact rows when spend is absent.
+      if (qb.includes("API $") || qb.includes("no observed") || qb.includes("no dollar")) {
+        console.error("compact quota must not show empty API $ placeholders:", qb);
+        process.exit(1);
+      }
+      if (qb.includes("$") && !qb.includes("%")) {
+        console.error("unexpected bare $ without plan %:", qb);
+        process.exit(1);
+      }
+      // Expand claude → detail shows session + weekday reset; still no empty $
+      if (typeof api.toggleQuotaVendor !== "function") {
+        console.error("missing toggleQuotaVendor seam");
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("claude");
+      const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      const weekday = new Date(resetAt * 1000).toLocaleString(undefined, { weekday: "long" });
+      if (!qb2.includes("12%") || !qb2.includes("data-qdetail") || !qb2.includes(weekday)) {
+        console.error("expanded claude detail missing session/weekday:", qb2);
+        process.exit(1);
+      }
+      if (qb2.includes("API $") || qb2.includes("no observed") || qb2.includes("no dollar")) {
+        console.error("claude expand without spend must omit API $ strip:", qb2);
+        process.exit(1);
+      }
+      // →100% detail line present for the projected window
+      if (!qb2.includes("→100%") && !qb2.includes("100%")) {
+        console.error("expanded detail should surface plan →100% projection:", qb2.slice(0, 600));
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("claude"); // collapse
+      // Observed $ only when spend present (Grok-style log totals)
+      api.renderQuota({
+        available: true, refreshed_at: nowSec,
+        vendors: [{
+          vendor: "grok", available: true,
+          windows_detail: [
+            { window: "week_credits", used_pct: 20, remaining_pct: 80,
+              reset_at: resetAt, kind: "plan", rate_pct_per_hour: 0.1,
+              projected_100pct_at: nowSec + 7200 }
+          ],
+          spend: {
+            currency: "USD", kind: "api_cost", pricing: "observed",
+            local_usd: { "24h": 1.25, "7d": 12.5, "30d": 40 },
+            local_7d_usd: 12.5, local_24h_usd: 1.25, local_30d_usd: 40,
+            source: "api-cost-log"
+          }
+        }]
+      });
+      const qb$ = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb$.includes("$12.5/wk") && !qb$.includes("$12.50/wk")) {
+        // formatUsd: 12.5 → $12.5
+        if (!qb$.includes("/wk") || !qb$.includes("12.5")) {
+          console.error("observed spend should surface compact $/wk:", qb$);
+          process.exit(1);
+        }
+      }
+      if (!qb$.includes("→100%")) {
+        console.error("compact row should lead with plan →100% ETA when not overrun:", qb$);
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("grok");
+      const qb$d = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb$d.includes("API $") || !qb$d.includes("week")) {
+        console.error("expanded grok with observed spend should show API $ detail:", qb$d.slice(0, 800));
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("grok"); // collapse
+      // attention sort + filter seams
+      if (typeof api.attentionScore !== "function" || typeof api.sortProjects !== "function") {
+        console.error("missing attentionScore/sortProjects seams");
+        process.exit(1);
+      }
+      const sorted = api.sortProjects([
+        { name: "z-idle", needs_human: { open: 0, blocking: 0 }, review: { verdict: "APPROVED" } },
+        { name: "a-block", needs_human: { open: 1, blocking: 1 }, review: null },
+        { name: "m-run", needs_human: { open: 0, blocking: 0 }, review: { running: true } }
+      ]);
+      if (!sorted.length || sorted[0].name !== "a-block" || sorted[1].name !== "m-run") {
+        console.error("attention sort order wrong:", sorted.map(function (p) { return p.name; }));
+        process.exit(1);
+      }
+      // active = recent pulse / running review — not mere open NH
+      if (typeof api.isRecentlyActive !== "function" || typeof api.matchesFilter !== "function") {
+        console.error("missing isRecentlyActive/matchesFilter seams");
+        process.exit(1);
+      }
+      const live = { name: "live", activity_secs_ago: 30, needs_human: { open: 0 }, review: null };
+      const coldNh = { name: "cold-nh", activity_secs_ago: 99999, needs_human: { open: 3 }, review: null };
+      const cold = { name: "cold", activity_secs_ago: 99999, needs_human: { open: 0 }, review: { verdict: "APPROVED" } };
+      if (!api.isRecentlyActive(live) || api.isRecentlyActive(coldNh) || api.isRecentlyActive(cold)) {
+        console.error("isRecentlyActive wrong", {
+          live: api.isRecentlyActive(live), coldNh: api.isRecentlyActive(coldNh), cold: api.isRecentlyActive(cold)
+        });
+        process.exit(1);
+      }
+      if (!api.matchesFilter(live, "active") || api.matchesFilter(coldNh, "active") ||
+          api.matchesFilter(cold, "active")) {
+        console.error("active filter wrong");
+        process.exit(1);
+      }
+      if (!api.matchesFilter(coldNh, "human") || api.matchesFilter(live, "human")) {
+        console.error("human filter wrong");
+        process.exit(1);
+      }
+      // back-compat alias
+      if (!api.matchesFilter(coldNh, "nh")) {
+        console.error("nh alias for human filter broken");
+        process.exit(1);
+      }
+      if (api.cardTone(live) !== "active") {
+        console.error("live card tone should be active, got", api.cardTone(live));
+        process.exit(1);
+      }
+      if (api.cardTone(cold) !== "ok" && api.cardTone(cold) !== "idle") {
+        // APPROVED + cold → ok
+        console.error("cold approved tone unexpected", api.cardTone(cold));
+        process.exit(1);
+      }
+      if (api.cardTone({ review: { verdict: "APPROVED" }, activity_secs_ago: null }) !== "ok") {
+        console.error("approved tone wrong");
+        process.exit(1);
+      }
+      api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });
+      const qbUnavail = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qbUnavail.includes("unavailable")) {
+        console.error("renderQuota unavailable missing text:", qbUnavail);
+        process.exit(1);
+      }
+      // Malformed vendors must not throw (Array.isArray guard)
+      try {
+        api.renderQuota({ available: false, note: "bad", vendors: {} });
+      } catch (e) {
+        console.error("renderQuota crashed on vendors:{}", e);
+        process.exit(1);
+      }
+      const qb3 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb3.includes("unavailable")) {
+        console.error("renderQuota vendors:{} missing unavailable:", qb3);
         process.exit(1);
       }
     }
@@ -1210,7 +2234,7 @@ setTimeout(() => {
       console.error("UNBOUND card missing yellow UNBOUND chip:", ubHtml.slice(0, 200));
       process.exit(1);
     }
-    // Healthy idle: no review chip present, tone idle
+    // Healthy idle: no review row/chips, tone idle
     const idle = {
       name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
       feedless: true, review: null, needs_human: { open: 0, blocking: 0 },
@@ -1220,8 +2244,9 @@ setTimeout(() => {
       process.exit(1);
     }
     const idleHtml = api.cardHTML(idle);
-    if (!idleHtml.includes("no review")) {
-      console.error("idle card should show no review");
+    if (idleHtml.includes("<dt>review</dt>") || idleHtml.includes("APPROVED") ||
+        idleHtml.includes("CHANGES") || idleHtml.includes("RUNNING")) {
+      console.error("idle card should omit review row/chips:", idleHtml.slice(0, 300));
       process.exit(1);
     }
     // last_error chip (infra failure presentation)
@@ -1231,8 +2256,9 @@ setTimeout(() => {
       review: { last_error: true, running: false, round: 1, verdict: null },
     };
     const errHtml = api.cardHTML(errRev);
-    if (!errHtml.includes("review infra error")) {
-      console.error("last_error card missing infra-error chip");
+    // Chip label is compact "review err" (was longer "review infra error").
+    if (!errHtml.includes("review err") && !errHtml.includes("infra error")) {
+      console.error("last_error card missing review-error chip:", errHtml.slice(0, 300));
       process.exit(1);
     }
     if (!errHtml.includes('class="card bad"')) {
@@ -1443,8 +2469,22 @@ for try in 18734 18735 18736 18737 18738 18739 18740; do
   fi
   break
 done
+# Serve-mode must re-invoke dash --snapshot-with-quota (not public --snapshot).
+# Observe via WRAP argv.
+PROBE_SEEN="$FIX/probe-seen"
+: > "$PROBE_SEEN"
+cat > "$WRAP" <<WRAP
+#!/usr/bin/env bash
+printf '1\n' >> "$COUNT_FILE"
+# Record argv so we can assert the serve child used --snapshot-with-quota.
+printf '%s\n' "\$*" >> "$PROBE_SEEN"
+sleep 0.4
+exec "$PLINTH" "\$@"
+WRAP
+chmod +x "$WRAP"
 if command -v setsid >/dev/null 2>&1; then
   setsid env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    PLINTH_DASH_QUOTA=0 \
     "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
@@ -1458,6 +2498,7 @@ if command -v setsid >/dev/null 2>&1; then
   }
 else
   env PLINTH_DASH_SNAPSHOT_BIN="$WRAP" PLINTH_DASH_ROOTS="$A:$I" \
+    PLINTH_DASH_QUOTA=0 \
     "$PLINTH" dash --port "$SRV_PORT" >"$FIX/srv.out" 2>"$FIX/srv.err" &
   SRV_PID=$!
   srv_cleanup() {
@@ -1472,7 +2513,7 @@ else
     fi
   }
 fi
-trap 'srv_cleanup; cleanup' EXIT
+trap 'srv_cleanup; _quota_cleanup' EXIT
 ready=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if curl -sf "http://127.0.0.1:${SRV_PORT}/api/snapshot" >/dev/null 2>&1; then
@@ -1513,9 +2554,16 @@ jq -e '
         | .error == "snapshot_render_failed"
         and .needs_human.open == 1] | any)
 ' "$FIX/api.json" >/dev/null
-# Static UI
-curl -sf "http://127.0.0.1:${SRV_PORT}/" | grep -q 'Plinth dashboard' \
+# Static UI (no curl|grep -q: under pipefail grep early-exit SIGPIPEs curl → false fail)
+UI_BODY="$FIX/ui-body.html"
+curl -sf --max-time 10 "http://127.0.0.1:${SRV_PORT}/" > "$UI_BODY" \
+  || { echo "smoke-snapshot: / curl failed" >&2; exit 1; }
+grep -q 'Plinth dashboard' "$UI_BODY" \
   || { echo "smoke-snapshot: / did not serve the UI" >&2; exit 1; }
+# Serve path auto-enables snapshot-with-quota on the snapshot child
+# (even when PLINTH_DASH_QUOTA=0 so no real CLI is spawned).
+grep -q 'snapshot-with-quota' "$PROBE_SEEN" \
+  || { echo "smoke-snapshot: serve child did not use --snapshot-with-quota (got: $(cat "$PROBE_SEEN"))" >&2; exit 1; }
 # Read-only
 post_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${SRV_PORT}/" || true)"
 [ "$post_code" = "405" ] || { echo "smoke-snapshot: POST should be 405, got $post_code" >&2; exit 1; }
@@ -1595,6 +2643,6 @@ if command -v lsof >/dev/null 2>&1; then
     exit 1
   fi
 fi
-trap cleanup EXIT
+trap _quota_cleanup EXIT
 
 echo "smoke-snapshot: OK"

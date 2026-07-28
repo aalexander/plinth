@@ -79,6 +79,236 @@
   .meta .dot.err { background: var(--red); box-shadow: 0 0 8px var(--red); }
   .meta .dot.spin { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.35; } }
+  #quota-bar {
+    position: sticky;
+    top: 52px;
+    z-index: 9;
+    padding: 0.4rem 1.5rem 0.45rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(22, 27, 34, 0.94);
+    backdrop-filter: blur(8px);
+    font-family: var(--font);
+    font-size: 0.7rem;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+  }
+  /* One line per vendor: label · window · pct · meter · meta */
+  #quota-bar .qrow {
+    display: grid;
+    grid-template-columns: 5.25rem 3.6rem 7.5rem minmax(7rem, 12rem) minmax(0, 1fr) 1.1rem;
+    column-gap: 0.55rem;
+    align-items: center;
+  }
+  #quota-bar .qrow.btn {
+    cursor: pointer;
+    border-radius: 6px;
+    margin: 0 -0.35rem;
+    padding: 0.12rem 0.35rem;
+    border: 1px solid transparent;
+  }
+  #quota-bar .qrow.btn:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--border);
+  }
+  #quota-bar .qrow.btn.open {
+    background: rgba(57, 210, 192, 0.06);
+    border-color: rgba(57, 210, 192, 0.25);
+  }
+  #quota-bar .qrow.plain {
+    display: flex;
+    grid-template-columns: none;
+    gap: 0.6rem;
+  }
+  #quota-bar .qlabel {
+    color: var(--cyan); font-weight: 600; letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  #quota-bar .qwin {
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.02rem 0.4rem;
+    text-align: center;
+    white-space: nowrap;
+  }
+  #quota-bar .qwin.sess {
+    color: var(--purple);
+    border-color: rgba(163, 113, 247, 0.35);
+  }
+  #quota-bar .qwin.hot {
+    color: var(--red);
+    border-color: rgba(248, 81, 73, 0.4);
+  }
+  #quota-bar .qstat {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  #quota-bar .qpct { color: var(--text); font-weight: 600; }
+  #quota-bar .qpct.warn { color: var(--yellow); }
+  #quota-bar .qpct.hot { color: var(--red); }
+  #quota-bar .dim { color: var(--muted); }
+  #quota-bar .qmeta {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.45rem 0.65rem;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #quota-bar .qmeta > span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #quota-bar .chip-over {
+    color: var(--red);
+    background: var(--red-bg);
+    border: 1px solid rgba(248,81,73,0.35);
+    border-radius: 999px;
+    padding: 0.02rem 0.4rem;
+    font-size: 0.62rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  #quota-bar .qspend {
+    color: var(--green);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  #quota-bar .qproj {
+    color: var(--cyan);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  #quota-bar .qchev {
+    color: var(--dim);
+    font-size: 0.65rem;
+    text-align: center;
+  }
+  #quota-bar .qrow.open .qchev { color: var(--cyan); }
+  #quota-bar .qdetail {
+    display: none;
+    margin: 0 0.1rem 0.15rem 5.25rem;
+    padding: 0.4rem 0.55rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(13, 17, 23, 0.65);
+    font-size: 0.66rem;
+  }
+  #quota-bar .qdetail.open { display: block; }
+  #quota-bar .qdetail .drow {
+    display: grid;
+    grid-template-columns: 4.2rem 6.5rem minmax(0, 1fr);
+    gap: 0.35rem 0.6rem;
+    align-items: baseline;
+    padding: 0.15rem 0;
+  }
+  #quota-bar .qdetail .dlab {
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 0.6rem;
+  }
+  #quota-bar .qdetail .dval { color: var(--text); font-variant-numeric: tabular-nums; }
+  #quota-bar .qdetail .dmeta {
+    color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem;
+  }
+  #quota-bar .qdetail .dhead {
+    color: var(--dim);
+    margin-bottom: 0.25rem;
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem;
+  }
+  #quota-bar .spark { display: inline-block; vertical-align: middle; }
+  #quota-bar .spark svg { display: block; }
+  #quota-bar .qfoot {
+    font-size: 0.6rem;
+    color: var(--dim);
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem;
+  }
+  #quota-bar .qmeter {
+    width: 100%;
+    height: 6px;
+    background: #21262d;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  #quota-bar .qmeter > i {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, var(--cyan), var(--purple));
+    border-radius: 999px;
+  }
+  #quota-bar .qmeter.warn > i { background: linear-gradient(90deg, var(--cyan), var(--yellow)); }
+  #quota-bar .qmeter.hot > i { background: linear-gradient(90deg, var(--yellow), var(--red)); }
+  @media (max-width: 820px) {
+    #quota-bar .qrow {
+      grid-template-columns: 4.8rem 3.2rem 6.2rem minmax(5rem, 1fr) 1rem;
+    }
+    #quota-bar .qmeta { display: none; }
+    #quota-bar .qdetail { margin-left: 0; }
+  }
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 0.35rem;
+    padding: 0.55rem 1.5rem 0;
+    font-family: var(--font);
+  }
+  .filters button {
+    font: inherit;
+    font-size: 0.68rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    cursor: pointer;
+  }
+  .filters button:hover { color: var(--text); border-color: #484f58; }
+  .filters button.on {
+    color: var(--cyan);
+    border-color: rgba(57, 210, 192, 0.45);
+    background: var(--cyan-bg);
+  }
+  .name.btn {
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+    padding: 0;
+    text-align: left;
+  }
+  .name.btn:hover { color: var(--cyan); }
+  .toast {
+    position: fixed;
+    bottom: 1.25rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-card-hi);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 0.75rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 8px;
+    z-index: 60;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .toast.show { opacity: 1; }
   main {
     padding: 1.25rem 1.5rem 2.5rem;
     display: grid;
@@ -124,6 +354,8 @@
   .card.bad::before { background: var(--red); }
   .card.idle::before { background: var(--dim); }
   .card.human::before { background: var(--orange); }
+  .card.active::before { background: var(--cyan); }
+  .card.active { border-color: rgba(57, 210, 192, 0.35); }
   .card:hover { background: var(--bg-card-hi); border-color: #484f58; }
   .row {
     display: flex;
@@ -158,12 +390,18 @@
     background: transparent;
     white-space: nowrap;
   }
+  .chip.btn {
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip.btn:hover { border-color: var(--orange); color: var(--orange); }
   .chip.green { color: var(--green); background: var(--green-bg); border-color: rgba(63,185,80,0.35); }
   .chip.red { color: var(--red); background: var(--red-bg); border-color: rgba(248,81,73,0.35); }
   .chip.yellow { color: var(--yellow); background: var(--yellow-bg); border-color: rgba(210,153,34,0.35); }
   .chip.cyan { color: var(--cyan); background: var(--cyan-bg); border-color: rgba(57,210,192,0.3); }
   .chip.orange { color: var(--orange); background: rgba(240,136,62,0.12); border-color: rgba(240,136,62,0.35); }
   .chip.purple { color: var(--purple); background: rgba(163,113,247,0.12); border-color: rgba(163,113,247,0.3); }
+  .chip.dim { color: var(--dim); border-color: var(--border); opacity: 0.85; }
   .kv {
     display: grid;
     grid-template-columns: 5.5rem 1fr;
@@ -188,7 +426,119 @@
     white-space: nowrap;
   }
   .kv dd.muted { color: var(--muted); }
-  .kv dd.task { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .kv dd.warn { color: var(--yellow); }
+  .kv dd.task, .kv dd.wrap { white-space: normal; line-height: 1.35; color: var(--muted); }
+  .kv dd.models { white-space: normal; overflow: visible; text-overflow: unset; }
+  .models-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    min-width: 0;
+  }
+  .models-grid .mrow {
+    display: grid;
+    grid-template-columns: 3.6rem minmax(0, 1fr);
+    column-gap: 0.45rem;
+    align-items: baseline;
+    font-family: var(--font);
+    font-size: 0.72rem;
+    line-height: 1.3;
+  }
+  .models-grid .mrole {
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 0.62rem;
+  }
+  .models-grid .mval {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .models-grid .mval .vendor {
+    color: var(--cyan);
+    font-weight: 600;
+  }
+  .models-grid .mval .sep { color: var(--dim); margin: 0 0.2rem; }
+  .models-grid .mextra {
+    grid-column: 2;
+    color: var(--dim);
+    font-size: 0.65rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .models-grid .mtag {
+    display: inline-block;
+    margin-left: 0.35rem;
+    font-size: 0.58rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 0.35rem;
+    vertical-align: middle;
+  }
+  .models-grid .mtag.live {
+    color: var(--cyan);
+    border-color: rgba(57, 210, 192, 0.35);
+  }
+  .headline {
+    font-family: var(--font);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: var(--text);
+    margin: 0.1rem 0 0.15rem;
+  }
+  .headline .lbl {
+    font-size: 0.65rem;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 0.4rem;
+  }
+  .submeta {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+  }
+  .prompt-line {
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .phases {
+    display: flex;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #21262d;
+    border: 1px solid var(--border);
+  }
+  .phases > i { display: block; height: 100%; min-width: 0; }
+  .phases .p-coding { background: var(--cyan); }
+  .phases .p-research { background: var(--purple); }
+  .phases .p-reviewing { background: var(--yellow); }
+  .phases .p-advising { background: var(--orange); }
+  .phases .p-ci { background: var(--red); }
+  .phases .p-planning { background: #58a6ff; }
+  .phases .p-shell { background: #6e7681; }
+  .phases .p-other { background: #484f58; }
+  .phase-legend {
+    font-family: var(--font);
+    font-size: 0.62rem;
+    color: var(--dim);
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem;
+  }
   .footer-note {
     margin-top: auto;
     padding-top: 0.4rem;
@@ -204,6 +554,67 @@
     color: var(--dim);
     text-align: center;
   }
+  /* NEEDS-HUMAN modal */
+  #nh-modal {
+    display: none;
+    position: fixed; inset: 0;
+    z-index: 50;
+    background: rgba(1, 4, 9, 0.72);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  #nh-modal.open { display: flex; }
+  #nh-panel {
+    width: min(560px, 100%);
+    max-height: min(80vh, 720px);
+    overflow: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.45);
+    padding: 1.1rem 1.2rem 1rem;
+  }
+  #nh-panel h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1rem;
+    font-family: var(--font);
+    color: var(--orange);
+  }
+  #nh-panel .sub {
+    font-family: var(--font);
+    font-size: 0.7rem;
+    color: var(--dim);
+    margin-bottom: 0.85rem;
+  }
+  #nh-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+  #nh-list li {
+    font-family: var(--font);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    padding: 0.55rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    background: rgba(13,17,23,0.5);
+  }
+  #nh-list li.blocking {
+    border-color: rgba(248,81,73,0.4);
+    color: #ffb4af;
+  }
+  #nh-close {
+    margin-top: 0.9rem;
+    font-family: var(--font);
+    font-size: 0.75rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  #nh-close:hover { color: var(--text); border-color: #484f58; }
 </style>
 </head>
 <body>
@@ -216,13 +627,29 @@
     <span id="count">—</span>
   </div>
 </header>
+<div id="quota-bar"><div class="qrow"><span class="qlabel">QUOTA</span><span>loading…</span></div></div>
+<div class="filters" id="filters" role="toolbar" aria-label="Project filter">
+  <button type="button" data-filter="all" class="on">all</button>
+  <button type="button" data-filter="active">active</button>
+  <button type="button" data-filter="human">human</button>
+  <button type="button" data-filter="review">review</button>
+</div>
 <main id="grid">
   <div class="empty">Loading snapshot…</div>
 </main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <footer>
-  Local-only · 127.0.0.1 · read-only · vendor plan quota unknown ·
+  Local-only · 127.0.0.1 · may probe CLI /usage → /tmp/plinth-dash-quota-$UID cache ·
   <code style="color:var(--muted)">plinth watch</code> stays the TTY dashboard
 </footer>
+<div id="nh-modal" role="dialog" aria-modal="true" aria-labelledby="nh-title">
+  <div id="nh-panel">
+    <h2 id="nh-title">HUMAN</h2>
+    <div class="sub" id="nh-sub"></div>
+    <ul id="nh-list"></ul>
+    <button type="button" id="nh-close">Close</button>
+  </div>
+</div>
 <script>
 (function () {
   const grid = document.getElementById("grid");
@@ -231,7 +658,20 @@
   const genAgo = document.getElementById("gen-ago");
   const discoveryEl = document.getElementById("discovery");
   const countEl = document.getElementById("count");
+  const quotaBar = document.getElementById("quota-bar");
+  const filtersEl = document.getElementById("filters");
+  const toastEl = document.getElementById("toast");
+  const nhModal = document.getElementById("nh-modal");
+  const nhTitle = document.getElementById("nh-title");
+  const nhSub = document.getElementById("nh-sub");
+  const nhList = document.getElementById("nh-list");
   let lastGen = null;
+  let lastQuota = null;
+  let lastProjects = [];
+  let projectFilter = "all";
+  let projectsByPath = {};
+  let toastTimer = null;
+  let expandedQuotaVendor = null; // click-to-expand detail panel
   // Sticky diagnostic under the header when a later poll fails after cards exist.
   let errBanner = document.getElementById("poll-error");
   if (!errBanner) {
@@ -249,7 +689,13 @@
     secs = Math.floor(secs);
     if (secs < 60) return secs + "s";
     if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
-    return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+    // Under a day: hours + minutes. At ≥24h prefer days (not 53h).
+    if (secs < 86400) {
+      return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+    }
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    return h > 0 ? (d + "d " + h + "h") : (d + "d");
   }
   function humK(n) {
     if (n == null) return "—";
@@ -262,102 +708,981 @@
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
       .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+  function whenLocal(epoch, opts) {
+    if (epoch == null || Number.isNaN(epoch)) return null;
+    try {
+      const o = opts || {};
+      return new Date(epoch * 1000).toLocaleString(undefined, {
+        weekday: o.weekday || "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      });
+    } catch (_) { return null; }
+  }
+
+  /** Prefer epoch reset_at → "Thursday, Jul 30, 9:00 AM (in 2d 4h)"; else raw reset_text. */
+  function formatReset(v) {
+    if (v == null) return null;
+    const epoch = typeof v === "number" ? v : v.reset_at;
+    if (epoch != null && !Number.isNaN(Number(epoch))) {
+      const when = whenLocal(Number(epoch), { weekday: "long" });
+      if (!when) return null;
+      const left = Number(epoch) - Math.floor(Date.now() / 1000);
+      if (left > 0) return when + " (in " + hum(left) + ")";
+      if (left > -3600) return when + " (soon)";
+      return when;
+    }
+    const raw = typeof v === "object" ? v.reset_text : null;
+    return raw ? String(raw) : null;
+  }
+
+  // "Active" = driver pulse within the last hour (or a review still running).
+  const ACTIVE_SECS = 3600;
+
+  function isRecentlyActive(p) {
+    if (!p) return false;
+    if (p.review && p.review.running) return true;
+    if (p.activity_secs_ago != null && p.activity_secs_ago >= 0 &&
+        p.activity_secs_ago < ACTIVE_SECS) {
+      return true;
+    }
+    // Hot burn without a fresh activity stamp still counts as live work.
+    if (p.burn_per_min != null && p.burn_per_min >= 10 &&
+        p.activity_secs_ago != null && p.activity_secs_ago < ACTIVE_SECS * 2) {
+      return true;
+    }
+    return false;
+  }
 
   function cardTone(p) {
     if (p.error) return "bad";
     const r = p.review;
     if (r && r.last_error) return "bad";
     if (p.needs_human && p.needs_human.open > 0) return "human";
-    if (!r) return p.feedless ? "idle" : "idle";
-    if (r.running) return "warn";
-    if (r.stale) return "bad";
-    if (r.verdict === "APPROVED") return "ok";
-    if (r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND") return "warn";
+    if (r && r.running) return "warn";
+    if (r && r.stale) return "bad";
+    // Live work beats idle/approved chrome — a session mid-build is "active".
+    if (isRecentlyActive(p)) return "active";
+    if (r && r.verdict === "APPROVED") return "ok";
+    if (r && (r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND")) return "warn";
     return "idle";
+  }
+
+  const PHASE_ORDER = ["coding", "research", "reviewing", "advising", "ci", "planning", "shell", "other"];
+  const PHASE_CLASS = {
+    coding: "p-coding", research: "p-research", reviewing: "p-reviewing",
+    advising: "p-advising", ci: "p-ci", planning: "p-planning",
+    shell: "p-shell", other: "p-other"
+  };
+
+  function phaseBar(phases) {
+    if (!phases || typeof phases !== "object") return "";
+    let total = 0;
+    const parts = [];
+    for (const k of PHASE_ORDER) {
+      const v = Number(phases[k] || 0);
+      if (v > 0) { total += v; parts.push([k, v]); }
+    }
+    // include unknown keys
+    for (const k of Object.keys(phases)) {
+      if (PHASE_ORDER.indexOf(k) >= 0) continue;
+      const v = Number(phases[k] || 0);
+      if (v > 0) { total += v; parts.push([k, v]); }
+    }
+    if (total <= 0) return "";
+    const segs = parts.map(([k, v]) => {
+      const pct = Math.max(2, Math.round((v / total) * 100));
+      const cls = PHASE_CLASS[k] || "p-other";
+      return '<i class="' + cls + '" style="width:' + pct + '%" title="' +
+        esc(k) + ': ' + hum(v) + '"></i>';
+    }).join("");
+    const legend = parts
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, v]) => esc(k) + " " + hum(v))
+      .join(" · ");
+    return (
+      '<div class="phases">' + segs + "</div>" +
+      '<div class="phase-legend">' + legend + " · Σ " + hum(total) + "</div>"
+    );
+  }
+
+  function modelParts(p) {
+    const m = p.models || {};
+    const live = m.live || {};
+    const seats = m.seats || {};
+    const rows = [];
+
+    function push(role, vendor, model, opts) {
+      opts = opts || {};
+      if (!vendor && !model && !opts.extra) return;
+      rows.push({
+        role: role,
+        vendor: vendor || null,
+        model: model || null,
+        extra: opts.extra || null,
+        live: !!opts.live
+      });
+    }
+
+    const drv = p.model_driver || live.driver || null;
+    if (drv) push("driver", null, drv, { live: true });
+
+    const revLiveModel = p.model_reviewer || live.reviewer || null;
+    const revLiveVendor = live.reviewer_vendor || null;
+    const revSeatVendor = seats.reviewer_vendor || null;
+    const t1 = seats.reviewer_tier1 || null;
+    const t2 = seats.reviewer_tier2 || null;
+    const revVendor = revLiveVendor || revSeatVendor;
+    const revModel = revLiveModel || t2 || t1;
+    let revExtra = null;
+    if (t1 && t2 && t1 !== t2) {
+      revExtra = "t1 " + t1 + " · t2 " + t2;
+    } else if (!revLiveModel && t1 && t2 && t1 === t2) {
+      // single configured model — no extra line needed
+    }
+    if (revVendor || revModel || revExtra) {
+      push("review", revVendor, revModel, {
+        live: !!(revLiveModel || revLiveVendor),
+        extra: revExtra
+      });
+    }
+
+    if (seats.audit_vendor || seats.audit_model) {
+      push("audit", seats.audit_vendor || null, seats.audit_model || null);
+    }
+
+    if (seats.advisor_vendor || seats.advisor_model || seats.advisor_model_max) {
+      let advExtra = null;
+      if (seats.advisor_model_max &&
+          seats.advisor_model_max !== seats.advisor_model) {
+        advExtra = "max " + seats.advisor_model_max;
+      }
+      push(
+        "advise",
+        seats.advisor_vendor || null,
+        seats.advisor_model || null,
+        { extra: advExtra }
+      );
+    }
+    return rows;
+  }
+
+  /** Plain-text fallback (TTY-style / smoke). */
+  function modelsLine(p) {
+    const rows = modelParts(p);
+    if (!rows.length) return "—";
+    return rows.map(function (r) {
+      const bits = [r.role + ":"];
+      if (r.vendor) bits.push(r.vendor);
+      if (r.model) bits.push(r.model);
+      if (r.live) bits.push("(live)");
+      let s = bits.join(" ");
+      if (r.extra) s += " [" + r.extra + "]";
+      return s;
+    }).join(" · ");
+  }
+
+  /** Structured HTML for the card — role / vendor · model grid. */
+  function modelsHTML(p) {
+    const rows = modelParts(p);
+    if (!rows.length) return "";
+    return (
+      '<div class="models-grid">' +
+      rows.map(function (r) {
+        const val = [];
+        if (r.vendor) {
+          val.push('<span class="vendor">' + esc(r.vendor) + "</span>");
+        }
+        if (r.vendor && r.model) val.push('<span class="sep">·</span>');
+        if (r.model) val.push("<span>" + esc(r.model) + "</span>");
+        if (!r.vendor && !r.model) val.push('<span class="dim">—</span>');
+        if (r.live) val.push('<span class="mtag live">live</span>');
+        return (
+          '<div class="mrow">' +
+            '<span class="mrole">' + esc(r.role) + "</span>" +
+            '<span class="mval">' + val.join("") + "</span>" +
+            (r.extra
+              ? '<span class="mextra">' + esc(r.extra) + "</span>"
+              : "") +
+          "</div>"
+        );
+      }).join("") +
+      "</div>"
+    );
+  }
+
+  // Drop agent/system/reviewer prompts that leaked into UserPromptSubmit.
+  function cleanPrompt(raw) {
+    if (raw == null || raw === "") return null;
+    let t = String(raw).replace(/\r/g, "").trim();
+    if (!t) return null;
+    const first = t.split(/\n/)[0].trim();
+    // Prefer first line if multi-line dump
+    if (t.indexOf("\n") >= 0) t = first;
+    if (t.length > 160) t = t.slice(0, 157) + "…";
+    const low = t.toLowerCase();
+    if (/^you are (an |a )/.test(low)) return null;
+    if (/read-only|do not edit|do not implement|adversarial reviewer|design reviewer|independent plan reviewer/.test(low)) return null;
+    if (/^#{1,3}\s/.test(t)) return null;
+    if (/^status:\s|^action:\s/i.test(t)) return null;
+    // Tiny noise prompts
+    if (t.length < 4) return null;
+    return t;
+  }
+
+  function isGenericNext(s) {
+    if (!s) return true;
+    const t = String(s).toLowerCase();
+    return /continue build \(or plinth harden/.test(t)
+      || t === "none"
+      || t === "—"
+      || /^fill handoff/.test(t);
   }
 
   // Pure card builder — exercised by smoke via globalThis.__plinthDash (no DOM).
   function cardHTML(p) {
     const tone = cardTone(p);
+    const life = p.lifecycle || {};
     const chips = [];
     if (p.error) chips.push('<span class="chip red">error: ' + esc(p.error) + "</span>");
-    if (p.feedless) chips.push('<span class="chip">feedless</span>');
+    if (p.feedless) chips.push('<span class="chip" title="No hook pulse feed">feedless</span>');
     if (p.needs_human && p.needs_human.open > 0) {
       const blk = p.needs_human.blocking > 0
         ? " · " + p.needs_human.blocking + " blocking" : "";
-      chips.push('<span class="chip orange">NEEDS-HUMAN ×' + p.needs_human.open + blk + "</span>");
+      chips.push(
+        '<button type="button" class="chip orange btn" data-human="' + esc(p.path) +
+        '" title="Show items waiting on a human">HUMAN ×' +
+        p.needs_human.open + blk + "</button>"
+      );
     }
     const r = p.review;
     if (r) {
       if (r.running) {
-        chips.push('<span class="chip yellow">round ' + esc(r.round) + " RUNNING</span>");
+        chips.push('<span class="chip yellow">r' + esc(r.round) + " run</span>");
       } else if (r.last_error) {
-        chips.push('<span class="chip red">review infra error</span>');
+        chips.push('<span class="chip red">review err</span>');
       } else if (r.verdict === "APPROVED") {
         chips.push('<span class="chip green">APPROVED</span>');
       } else if (r.verdict === "CHANGES_NEEDED") {
-        chips.push('<span class="chip yellow">CHANGES_NEEDED</span>');
+        const nOpen = r.findings_open != null
+          ? r.findings_open
+          : (Array.isArray(r.findings) ? r.findings.length : null);
+        const nLab = nOpen != null ? (" ×" + nOpen) : "";
+        chips.push(
+          '<button type="button" class="chip yellow btn" data-changes="' + esc(p.path) +
+          '" title="Show open review findings">CHANGES' + nLab + "</button>"
+        );
       } else if (r.verdict === "UNBOUND") {
         chips.push('<span class="chip yellow">UNBOUND</span>');
       } else if (r.verdict) {
         chips.push('<span class="chip">' + esc(r.verdict) + "</span>");
       }
-      if (r.stale) chips.push('<span class="chip red">stale ≠ HEAD</span>');
-      if (r.round != null && !r.running) chips.push('<span class="chip">r' + esc(r.round) + "</span>");
-    } else if (!p.error) {
-      chips.push('<span class="chip">no review</span>');
+      if (r.stale) chips.push('<span class="chip red">stale</span>');
+      if (r.round != null && !r.running && r.verdict) {
+        chips.push('<span class="chip dim">r' + esc(r.round) + "</span>");
+      }
     }
-    if (p.burn_per_min != null) {
+    // Only non-default lifecycle signals (BUILD is default — omit)
+    if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
+    if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
+    if (isRecentlyActive(p) && !(r && r.running)) {
+      chips.push('<span class="chip cyan" title="Driver activity within the last hour">active</span>');
+    }
+    if (p.burn_per_min != null && p.burn_per_min >= 50) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
+    }
+    const sig = p.signals || {};
+    if (sig.guard_blocks != null && Number(sig.guard_blocks) > 0) {
+      chips.push(
+        '<span class="chip red" title="Guard blocks this session (protected path / ship tripwire)">' +
+          "guard ×" + esc(String(sig.guard_blocks)) + "</span>"
+      );
+    }
+    if (sig.gate_releases != null && Number(sig.gate_releases) > 0) {
+      chips.push(
+        '<span class="chip red" title="Session gate releases — unreviewed work may have escaped">' +
+          "gate rel ×" + esc(String(sig.gate_releases)) + "</span>"
+      );
+    }
+    // Always-on utility: copy project .plinth/session (events, review, phase).
+    // Browsers block file:// opens from http://127.0.0.1 — same copy pattern as the name.
+    if (p.path) {
+      const sessDir = String(p.path).replace(/\/+$/, "") + "/.plinth/session";
+      chips.push(
+        '<button type="button" class="chip dim btn" data-copy-path="' + esc(sessDir) +
+        '" title="Copy session folder path (events / review / phase): ' +
+        esc(sessDir) + '">session</button>'
+      );
     }
 
     const activity = p.activity_secs_ago == null
-      ? (p.feedless ? "no pulse feed" : "—")
+      ? (p.feedless ? "no feed" : "—")
       : hum(p.activity_secs_ago) + " ago";
-    const session = p.session_secs == null ? "—" : hum(p.session_secs);
-    const task = p.task ? esc(p.task) : '<span class="muted">—</span>';
-    const revDetail = r
-      ? (r.verdict || (r.running ? "running" : "—")) +
-        (r.sha7 ? " @" + esc(r.sha7) : "") +
-        (r.mode ? " · " + esc(r.mode) : "") +
-        (r.tier != null ? " · tier " + r.tier : "")
-      : "none on this branch";
-    const models = [
-      p.model_driver ? "drv " + p.model_driver : null,
-      p.model_reviewer ? "rev " + p.model_reviewer : null,
-    ].filter(Boolean).join(" · ") || "—";
-    const tokens = p.tokens_total != null
-      ? humK(p.tokens_total) + " recent" + (p.tokens_window ? " (tail)" : "")
-      : "unknown";
+    const session = p.session_secs == null ? null : hum(p.session_secs);
+    const prompt = cleanPrompt(p.task);
+    let next = life.next ? String(life.next).replace(/\s+/g, " ").trim() : null;
+    if (isGenericNext(next)) next = null;
+    if (next && next.length > 140) next = next.slice(0, 137) + "…";
+
+    // Headline: prefer concrete next; else cleaned human prompt; else review state
+    let headline = next;
+    let headlineLbl = "next";
+    if (!headline && prompt) {
+      headline = prompt;
+      headlineLbl = "prompt";
+    }
+    if (!headline && r && r.running) {
+      headline = "Review round " + r.round + " running";
+      headlineLbl = "status";
+    }
+    if (!headline && r && r.stale) {
+      headline = "Review stale vs HEAD — re-run review";
+      headlineLbl = "status";
+    }
+
+    const revBits = [];
+    if (r) {
+      if (r.sha7) revBits.push("@" + r.sha7);
+      if (r.mode) revBits.push(r.mode);
+      if (r.tier != null) revBits.push("t" + r.tier);
+      if (p.review_round_secs != null && p.review_round_secs > 0) {
+        revBits.push("wall " + hum(p.review_round_secs));
+      }
+    }
+    const modelsHtml = modelsHTML(p);
+    const burnBits = [];
+    if (p.burn_per_min != null) burnBits.push(humK(p.burn_per_min) + "/min");
+    if (p.tokens_total != null) burnBits.push(humK(p.tokens_total) + " tok");
+    const phases = phaseBar(p.phases);
+
+    // Watch-parity: last tool (now) + last VERIFY-class test (evidence).
+    function liveLine(obj, kind) {
+      if (!obj || typeof obj !== "object") return null;
+      const bits = [];
+      if (kind === "now") {
+        if (obj.tool) bits.push(String(obj.tool));
+        if (obj.detail) bits.push(String(obj.detail).slice(0, 56));
+      } else {
+        if (obj.cmd) bits.push(String(obj.cmd).slice(0, 56));
+        else if (obj.detail) bits.push(String(obj.detail).slice(0, 56));
+      }
+      if (obj.rc != null) {
+        bits.push(obj.rc === 0 ? "exit 0" : ("exit " + obj.rc));
+      }
+      if (obj.secs_ago != null && !Number.isNaN(Number(obj.secs_ago))) {
+        bits.push(hum(Math.max(0, Number(obj.secs_ago))) + " ago");
+      }
+      return bits.length ? bits.join(" · ") : null;
+    }
+    const nowLine = liveLine(p.now, "now");
+    const evLine = liveLine(p.evidence, "evidence");
+    const sigBits = [];
+    if (sig.compactions != null && Number(sig.compactions) > 0) {
+      sigBits.push("compact ×" + sig.compactions);
+    }
+    if (sig.subagents != null && Number(sig.subagents) > 0) {
+      sigBits.push("sub ×" + sig.subagents);
+    }
+
+    const sub = [
+      esc(p.branch) + " @" + esc(p.head),
+      activity,
+      session ? ("sess " + session) : null,
+      life.plan ? "plan" : null,
+      life.plan_review ? "plan-review" : null,
+    ].filter(Boolean).join(" · ");
+
+    // Show cleaned prompt only if headline is next (avoid duplicating same text)
+    const showPrompt = prompt && next && prompt.toLowerCase() !== next.toLowerCase()
+      && prompt.slice(0, 40).toLowerCase() !== next.slice(0, 40).toLowerCase();
+
+    const evCls = (p.evidence && p.evidence.rc != null && p.evidence.rc !== 0)
+      ? " class=\"warn\"" : "";
 
     return (
-      '<article class="card ' + tone + '">' +
-        '<div class="row"><div class="name" title="' + esc(p.path) + '">' + esc(p.name) + "</div></div>" +
-        '<div class="path" title="' + esc(p.path) + '">' + esc(p.path) + "</div>" +
-        '<div class="chips">' + chips.join("") + "</div>" +
+      '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
+        '<div class="row">' +
+          '<button type="button" class="name btn" data-copy-path="' + esc(p.path) +
+            '" title="Click to copy path: ' + esc(p.path) + '">' + esc(p.name) + "</button>" +
+        "</div>" +
+        '<div class="submeta" title="' + esc(p.path) + '">' + sub + "</div>" +
+        (chips.length ? '<div class="chips">' + chips.join("") + "</div>" : "") +
+        (headline
+          ? '<div class="headline"><span class="lbl">' + esc(headlineLbl) + "</span>" +
+            esc(headline) + "</div>"
+          : "") +
+        (showPrompt ? '<div class="prompt-line" title="Last human-looking prompt">' + esc(prompt) + "</div>" : "") +
         '<dl class="kv">' +
-          "<dt>branch</dt><dd>" + esc(p.branch) + " @ " + esc(p.head) + "</dd>" +
-          "<dt>activity</dt><dd>" + esc(activity) + "</dd>" +
-          "<dt>session</dt><dd>" + esc(session) + "</dd>" +
-          "<dt>review</dt><dd>" + esc(revDetail) + "</dd>" +
-          "<dt>models</dt><dd class=\"muted\">" + esc(models) + "</dd>" +
-          "<dt>burn</dt><dd class=\"muted\">" +
-            (p.burn_per_min != null ? humK(p.burn_per_min) + "/min · " : "") +
-            tokens + " · quota unknown</dd>" +
-          "<dt>task</dt><dd class=\"task\">" + task + "</dd>" +
+          (r || p.error
+            ? "<dt>review</dt><dd>" +
+              esc(r ? (r.verdict || (r.running ? "running" : "—")) : "—") +
+              (revBits.length ? ' <span class="muted">' + esc(revBits.join(" · ")) + "</span>" : "") +
+              "</dd>"
+            : "") +
+          (modelsHtml
+            ? '<dt>models</dt><dd class="models">' + modelsHtml + "</dd>"
+            : "") +
+          (nowLine
+            ? '<dt title="Last PostToolUse (what the driver is doing)">now</dt>' +
+              '<dd class="muted" title="Last tool activity">' + esc(nowLine) + "</dd>"
+            : "") +
+          (evLine
+            ? '<dt title="Last test-runner command this session (Rule 10 evidence)">evid</dt>' +
+              "<dd" + evCls + ' title="Last VERIFY-class Bash">' + esc(evLine) + "</dd>"
+            : "") +
+          (burnBits.length
+            ? "<dt title=\"Token burn — thrash / intensity (not plan $)\">tok</dt>" +
+              "<dd class=\"muted\" title=\"Token burn — thrash / intensity (not plan $)\">" +
+              esc(burnBits.join(" · ")) + "</dd>"
+            : "") +
+          (sigBits.length
+            ? '<dt title="Session signals (compactions / subagents)">sig</dt>' +
+              '<dd class="muted">' + esc(sigBits.join(" · ")) + "</dd>"
+            : "") +
         "</dl>" +
-        '<div class="footer-note">quota/reset: unavailable without vendor APIs</div>' +
+        (phases ? '<div>' + phases + "</div>" : "") +
       "</article>"
     );
   }
 
-  function render(data) {
-    lastGen = data.generated_at;
-    discoveryEl.textContent = data.discovery || "—";
-    const projects = data.projects || [];
-    countEl.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s");
+  function shortWindowName(w) {
+    const win = (w && w.window) || "";
+    if (win === "session" || (w && w.kind === "session")) return "sess";
+    if (win === "week_all_models" || win === "week" || win === "week_credits" || /^week_/.test(win)) {
+      return "week";
+    }
+    if (win === "month") return "month";
+    if (win === "day") return "day";
+    if (w && w.kind === "plan") return "plan";
+    return win ? String(win).slice(0, 8) : "plan";
+  }
 
-    if (!projects.length) {
+  function vendorWindows(v) {
+    const details = Array.isArray(v.windows_detail) ? v.windows_detail.slice() : [];
+    if (!details.length) {
+      if (v.plan && v.plan.used_pct != null) details.push(Object.assign({ kind: "plan" }, v.plan));
+      if (v.session && v.session.used_pct != null) {
+        details.push(Object.assign({ kind: "session" }, v.session));
+      }
+      if (!details.length && v.used_pct != null) {
+        details.push({
+          window: v.primary_window || "plan",
+          used_pct: v.used_pct,
+          remaining_pct: v.remaining_pct,
+          reset_text: v.reset_text,
+          reset_at: v.reset_at,
+          projected_100pct_at: v.projected_100pct_at,
+          rate_pct_per_hour: v.rate_pct_per_hour,
+          overrun_risk: v.overrun_risk,
+          kind: "plan"
+        });
+      }
+    }
+    // De-dupe by window+pct
+    const seen = {};
+    return details.filter(function (d) {
+      if (!d || d.used_pct == null) return false;
+      const k = (d.window || "") + ":" + d.used_pct + ":" + (d.kind || "");
+      if (seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  }
+
+  /** Most constrained window = highest used_pct (ties: session over plan). */
+  function tightestWindow(wins) {
+    if (!wins || !wins.length) return null;
+    return wins.slice().sort(function (a, b) {
+      const pa = Number(a.used_pct) || 0;
+      const pb = Number(b.used_pct) || 0;
+      if (pb !== pa) return pb - pa;
+      const sa = a.kind === "session" || a.window === "session" ? 1 : 0;
+      const sb = b.kind === "session" || b.window === "session" ? 1 : 0;
+      return sb - sa;
+    })[0];
+  }
+
+  function sparklineSVG(points, w, h) {
+    if (!points || points.length < 2) return "";
+    const vals = points.map(function (p) { return Number(p.used_pct); }).filter(function (n) {
+      return !Number.isNaN(n);
+    });
+    if (vals.length < 2) return "";
+    const min = Math.min.apply(null, vals);
+    const max = Math.max.apply(null, vals);
+    const span = Math.max(1, max - min);
+    const step = (w - 2) / (vals.length - 1);
+    const coords = vals.map(function (v, i) {
+      const x = 1 + i * step;
+      const y = h - 1 - ((v - min) / span) * (h - 2);
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    const last = vals[vals.length - 1];
+    const hot = last >= 90 ? "var(--red)" : last >= 70 ? "var(--yellow)" : "var(--cyan)";
+    return (
+      '<span class="spark" title="24h plan % (' + vals.length + " samples, " +
+        min + "→" + max + '%)">' +
+        '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h +
+        '" aria-hidden="true">' +
+        '<polyline fill="none" stroke="' + hot + '" stroke-width="1.5" points="' +
+        coords + '"/></svg></span>'
+    );
+  }
+
+  function historySeries(q, vendor, windowName) {
+    const hist = (q && Array.isArray(q.history)) ? q.history : [];
+    const now = Math.floor(Date.now() / 1000);
+    const cut = now - 86400;
+    return hist
+      .filter(function (h) {
+        return h && h.vendor === vendor && h.used_pct != null &&
+          (windowName == null || h.window === windowName ||
+            (windowName === "plan" && h.window && !/session/.test(h.window))) &&
+          h.t != null && h.t >= cut;
+      })
+      .sort(function (a, b) { return a.t - b.t; });
+  }
+
+  function formatProjection(v) {
+    if (v == null || v.projected_100pct_at == null) {
+      if (v && v.used_pct != null && v.used_pct > 0 && v.rate_pct_per_hour == null) {
+        return "no reset clock";
+      }
+      return null;
+    }
+    const when = whenLocal(v.projected_100pct_at, { weekday: "long" });
+    const left = v.projected_100pct_at - Math.floor(Date.now() / 1000);
+    return (when || ("@" + v.projected_100pct_at)) +
+      (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
+  }
+
+  /** Compact plan-headroom chip: primary story for Claude/Codex (not $). */
+  function formatProjectionShort(v) {
+    if (v == null || v.projected_100pct_at == null) return null;
+    const left = Number(v.projected_100pct_at) - Math.floor(Date.now() / 1000);
+    if (Number.isNaN(left)) return null;
+    if (left <= 0) return "→100% now";
+    return "→100% in " + hum(left);
+  }
+
+  function formatUsd(n) {
+    if (n == null || Number.isNaN(Number(n))) return null;
+    const v = Number(n);
+    const abs = Math.abs(v);
+    const s = abs >= 100 ? v.toFixed(0) : abs >= 10 ? v.toFixed(1) : v.toFixed(2);
+    return "$" + s;
+  }
+
+  function localUsdMap(sp) {
+    if (!sp || typeof sp !== "object") return {};
+    if (sp.local_usd && typeof sp.local_usd === "object") return sp.local_usd;
+    // Legacy flat keys
+    const m = {};
+    if (sp.local_24h_usd != null) m["24h"] = sp.local_24h_usd;
+    if (sp.local_7d_usd != null) m["7d"] = sp.local_7d_usd;
+    if (sp.local_30d_usd != null) m["30d"] = sp.local_30d_usd;
+    if (sp.local_90d_usd != null) m["90d"] = sp.local_90d_usd;
+    if (sp.local_180d_usd != null) m["180d"] = sp.local_180d_usd;
+    if (sp.local_365d_usd != null) m["365d"] = sp.local_365d_usd;
+    return m;
+  }
+
+  /**
+   * True when the vendor emitted real dollars (observed log and/or account
+   * balance fields). Empty spend must not invent a $ story for Claude/Codex.
+   */
+  function hasObservedSpend(sp) {
+    if (!sp || typeof sp !== "object") return false;
+    const loc = localUsdMap(sp);
+    const keys = Object.keys(loc);
+    for (let i = 0; i < keys.length; i++) {
+      if (loc[keys[i]] != null && Number(loc[keys[i]]) > 0) return true;
+    }
+    if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) return true;
+    if (sp.prepaid_usd != null && Number(sp.prepaid_usd) > 0) return true;
+    if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) return true;
+    return false;
+  }
+
+  /** Best single dollar figure for the compact row — only when observed. */
+  function spendFront(sp) {
+    if (!hasObservedSpend(sp)) return null;
+    const loc = localUsdMap(sp);
+    // Prefer week cumulative from observed API-cost log.
+    if (loc["7d"] != null && Number(loc["7d"]) > 0) {
+      return {
+        text: formatUsd(loc["7d"]) + "/wk",
+        title: "Observed API cost · past week · cumulative log (this machine; ≠ subscription)"
+      };
+    }
+    if (loc["24h"] != null && Number(loc["24h"]) > 0) {
+      return {
+        text: formatUsd(loc["24h"]) + "/24h",
+        title: "Observed API cost · past 24h · cumulative log"
+      };
+    }
+    if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) {
+      return { text: formatUsd(sp.on_demand_usd) + " OD", title: "On-demand spend" };
+    }
+    if (sp.prepaid_usd != null && Number(sp.prepaid_usd) > 0) {
+      return { text: formatUsd(sp.prepaid_usd) + " prepaid", title: "Prepaid balance" };
+    }
+    if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) {
+      return { text: formatUsd(sp.credits_balance_usd) + " cr", title: "Credits balance" };
+    }
+    return null;
+  }
+
+  /** Dollar rows only when the vendor shows real $ — never empty placeholders. */
+  function spendDetailHTML(sp) {
+    if (!hasObservedSpend(sp)) return "";
+    const rows = [];
+    function add(lab, val, tip) {
+      if (val == null || !(Number(val) > 0)) return;
+      const t = formatUsd(val);
+      if (t == null) return;
+      rows.push(
+        '<div class="drow" title="' + esc(tip || "") + '">' +
+          '<span class="dlab">' + esc(lab) + "</span>" +
+          '<span class="dval">' + esc(t) + "</span>" +
+          '<span class="dmeta dim">' + esc(tip || "") + "</span>" +
+        "</div>"
+      );
+    }
+    rows.push(
+      '<div class="drow">' +
+        '<span class="dlab">API $</span>' +
+        '<span class="dval dim">observed only (≠ subscription; no extrapolation)</span>' +
+        '<span class="dmeta dim">' +
+          esc(sp.log_path || sp.source || "") +
+        "</span>" +
+      "</div>"
+    );
+    const loc = localUsdMap(sp);
+    const periods = [
+      ["24h", "24h", "sum of logged API cost events · past 24 hours"],
+      ["7d", "week", "sum of logged API cost events · past 7 days"],
+      ["30d", "month", "sum of logged API cost events · past 30 days"],
+      ["90d", "3 mo", "sum of logged API cost events · past 90 days"],
+      ["180d", "6 mo", "sum of logged API cost events · past 180 days"],
+      ["365d", "year", "sum of logged API cost events · past 365 days"]
+    ];
+    let hasLocal = false;
+    periods.forEach(function (row) {
+      if (loc[row[0]] != null && Number(loc[row[0]]) > 0) {
+        hasLocal = true;
+        add(row[1], loc[row[0]], row[2]);
+      }
+    });
+    if (hasLocal && sp.local_history_days != null) {
+      rows.push(
+        '<div class="drow" title="Oldest logged cost event age">' +
+          '<span class="dlab">hist</span>' +
+          '<span class="dval dim">' + esc(String(sp.local_history_days)) + "d in log</span>" +
+          '<span class="dmeta dim">' +
+            (sp.log_entries != null ? esc(String(sp.log_entries) + " entries") : "") +
+          "</span>" +
+        "</div>"
+      );
+    }
+    add("on-dem", sp.on_demand_usd, "account on-demand (subscription overage)");
+    if (sp.on_demand_cap_usd != null) {
+      add("OD cap", sp.on_demand_cap_usd, "on-demand monthly cap");
+    }
+    add("prepaid", sp.prepaid_usd, "prepaid credit balance");
+    add("credits", sp.credits_balance_usd, "plan credits balance");
+    if (sp.spend_limit_usd != null) add("limit", sp.spend_limit_usd, "spend control limit");
+    // Header alone is not useful — require at least one numeric row.
+    if (rows.length <= 1) return "";
+    return rows.join("");
+  }
+
+  function formatResetShort(v) {
+    if (v == null || v.reset_at == null || Number.isNaN(Number(v.reset_at))) {
+      return v && v.reset_text ? String(v.reset_text).slice(0, 24) : null;
+    }
+    try {
+      const left = Number(v.reset_at) - Math.floor(Date.now() / 1000);
+      const day = new Date(Number(v.reset_at) * 1000).toLocaleString(undefined, {
+        weekday: "short", hour: "numeric", minute: "2-digit"
+      });
+      if (left > 0) return day + " · in " + hum(left);
+      return day;
+    } catch (_) {
+      return formatReset(v);
+    }
+  }
+
+  function vendorDetailHTML(q, v, wins) {
+    const head = [];
+    if (v.plan_type) {
+      head.push('<span>' + esc("plan " + v.plan_type) + "</span>");
+    }
+    head.push('<span class="dim">click row to collapse</span>');
+    // Sparkline for the primary plan window only — never mix session+week samples.
+    const planWin = (v.plan && v.plan.window) ||
+      (wins || []).map(function (w) { return w.window; })
+        .filter(function (n) { return n && !/session/.test(n); })[0] ||
+      null;
+    const series = historySeries(q, v.vendor, planWin || "plan");
+    const spark = sparklineSVG(series, 72, 18);
+    if (spark) head.push(spark); // trusted SVG HTML from sparklineSVG — do not esc()
+    const rows = wins.map(function (w) {
+      const name = shortWindowName(w);
+      const p = Number(w.used_pct);
+      const rem = w.remaining_pct != null ? w.remaining_pct : (100 - p);
+      const cls = p >= 90 ? "hot" : p >= 70 ? "warn" : "";
+      const meta = [
+        formatReset(w) ? "reset " + formatReset(w) : null,
+        formatProjection(w) ? "→100% " + formatProjection(w) : null,
+        w.rate_pct_per_hour != null ? w.rate_pct_per_hour + "%/h" : null,
+        w.overrun_risk ? "overrun risk" : null,
+        w.window_seconds != null ? "window " + hum(w.window_seconds) : null
+      ].filter(Boolean).map(function (t) { return "<span>" + esc(t) + "</span>"; }).join("");
+      return (
+        '<div class="drow">' +
+          '<span class="dlab">' + esc(name) + "</span>" +
+          '<span class="dval"><span class="qpct ' + cls + '">' + esc(String(p)) +
+          "%</span> <span class=\"dim\">(" + esc(String(rem)) + "% left)</span></span>" +
+          '<span class="dmeta">' + meta + "</span>" +
+        "</div>"
+      );
+    }).join("");
+    // Primary story = plan windows (% + →100% + reset). API $ only if observed.
+    const spendHtml = hasObservedSpend(v.spend) ? spendDetailHTML(v.spend) : "";
+    return (
+      '<div class="qdetail open" data-qdetail="' + esc(v.vendor) + '">' +
+        '<div class="dhead">' + head.join("") + "</div>" +
+        (rows || '<div class="dim">no window detail</div>') +
+        spendHtml +
+      "</div>"
+    );
+  }
+
+  function renderQuota(q) {
+    lastQuota = q || null;
+    if (!quotaBar) return;
+    if (!q || q.skipped) {
+      quotaBar.innerHTML =
+        '<div class="qrow plain"><span class="qlabel">QUOTA</span>' +
+        "<span>probes disabled</span></div>";
+      return;
+    }
+    const age = q.refreshed_at != null
+      ? hum(Math.max(0, Math.floor(Date.now() / 1000) - q.refreshed_at)) + " ago"
+      : "—";
+    const vendors = Array.isArray(q.vendors) ? q.vendors : [];
+    const preferred = ["claude", "codex", "grok"];
+    const ordered = preferred
+      .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
+      .filter(Boolean)
+      .concat(vendors.filter(function (v) { return preferred.indexOf(v.vendor) < 0; }));
+
+    let live = ordered.filter(function (v) {
+      return v && v.available && (v.plan || v.session || v.used_pct != null ||
+        (Array.isArray(v.windows_detail) && v.windows_detail.length));
+    });
+    if (!live.length && q.overall && q.overall.used_pct != null) {
+      live = [{
+        vendor: q.overall.vendor || "primary",
+        available: true,
+        plan: q.overall,
+        session: null,
+        plan_type: q.overall.plan_type
+      }];
+    }
+
+    if (!live.length) {
+      const note = (q.note || "vendor plan unknown").slice(0, 140);
+      quotaBar.innerHTML =
+        '<div class="qrow plain"><span class="qlabel">QUOTA</span>' +
+        "<span>unavailable</span>" +
+        '<span class="dim" title="' + esc(q.note || "") + '">' + esc(note) + "</span>" +
+        '<span class="dim">polled ' + esc(age) + "</span></div>";
+      return;
+    }
+
+    // Front page: at most one line each for claude/codex/grok (preferred order).
+    live = live.slice(0, 3);
+
+    // If expanded vendor dropped out of live set, collapse.
+    if (expandedQuotaVendor && !live.some(function (v) { return v.vendor === expandedQuotaVendor; })) {
+      expandedQuotaVendor = null;
+    }
+
+    const parts = [];
+    live.forEach(function (v, idx) {
+      const wins = vendorWindows(v);
+      const tight = tightestWindow(wins);
+      const open = expandedQuotaVendor === v.vendor;
+      const p = tight ? Number(tight.used_pct) : null;
+      const rem = tight && tight.remaining_pct != null ? tight.remaining_pct
+        : (p != null ? 100 - p : null);
+      const cls = p == null ? "" : p >= 90 ? "hot" : p >= 70 ? "warn" : "";
+      const meterCls = p == null ? "qmeter" : p >= 90 ? "qmeter hot" : p >= 70 ? "qmeter warn" : "qmeter";
+      const winName = shortWindowName(tight);
+      const winCls = "qwin" +
+        (winName === "sess" ? " sess" : "") +
+        (p != null && p >= 90 ? " hot" : "");
+      const pctHtml = p == null
+        ? '<span class="dim">—</span>'
+        : '<span class="qpct ' + cls + '">' + esc(String(p)) + "%</span>" +
+          (rem != null ? ' <span class="dim">(' + esc(String(rem)) + "%)</span>" : "");
+      const meter = p == null
+        ? '<div class="qmeter" aria-hidden="true"></div>'
+        : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
+      // Primary: plan headroom (→100% / overrun / %/h / reset). $ only if observed.
+      const metaBits = [];
+      if (tight) {
+        if (tight.overrun_risk) {
+          metaBits.push('<span class="chip-over" title="Hits 100% before reset at current plan burn">overrun</span>');
+        } else {
+          const proj = formatProjectionShort(tight);
+          if (proj) {
+            metaBits.push(
+              '<span class="qproj" title="Linear plan % burn from last reset → 100%">' +
+                esc(proj) + "</span>"
+            );
+          }
+        }
+        if (tight.rate_pct_per_hour != null) {
+          metaBits.push(
+            '<span class="dim" title="Plan % burn rate (linear from last reset)">' +
+              esc(String(tight.rate_pct_per_hour)) + "%/h</span>"
+          );
+        }
+        const rs = formatResetShort(tight);
+        if (rs) metaBits.push('<span title="window reset">↻ ' + esc(rs) + "</span>");
+      }
+      const front$ = spendFront(v.spend);
+      if (front$) {
+        metaBits.push(
+          '<span class="qspend" title="' + esc(front$.title || "observed API $") + '">' +
+            esc(front$.text) + "</span>"
+        );
+      }
+      if (idx === 0) metaBits.push('<span class="dim">polled ' + esc(age) + "</span>");
+      const nWin = wins.length;
+      const title = "Click for " + (v.vendor || "") + " detail (" + nWin +
+        " window" + (nWin === 1 ? "" : "s") + "; showing most constrained)";
+      parts.push(
+        '<div class="qrow btn' + (open ? " open" : "") + '" role="button" tabindex="0"' +
+          ' data-qvendor="' + esc(v.vendor) + '" title="' + esc(title) + '"' +
+          ' aria-expanded="' + (open ? "true" : "false") + '">' +
+          '<span class="qlabel">' + esc((v.vendor || "?").toUpperCase()) + "</span>" +
+          '<span class="' + winCls + '">' + esc(winName) + "</span>" +
+          '<span class="qstat">' + pctHtml + "</span>" +
+          meter +
+          '<span class="qmeta">' + metaBits.join("") + "</span>" +
+          '<span class="qchev" aria-hidden="true">' + (open ? "▾" : "▸") + "</span>" +
+        "</div>" +
+        (open ? vendorDetailHTML(q, v, wins) : "")
+      );
+    });
+
+    quotaBar.innerHTML = parts.join("") ||
+      '<div class="qrow plain"><span class="qlabel">QUOTA</span><span>no vendor data</span></div>';
+  }
+
+  function toggleQuotaVendor(name) {
+    if (!name) return;
+    expandedQuotaVendor = expandedQuotaVendor === name ? null : name;
+    if (lastQuota) renderQuota(lastQuota);
+  }
+
+  function attentionScore(p) {
+    if (!p) return 0;
+    let s = 0;
+    const nh = p.needs_human || {};
+    if (nh.blocking > 0) s += 1000 + nh.blocking * 10;
+    else if (nh.open > 0) s += 500 + nh.open;
+    const r = p.review || {};
+    if (r.last_error) s += 450;
+    if (r.stale) s += 400;
+    if (r.running) s += 300;
+    if (r.verdict === "CHANGES_NEEDED") s += 220;
+    if (r.verdict === "UNBOUND") s += 200;
+    if (p.error) s += 480;
+    const sigA = p.signals || {};
+    if (sigA.guard_blocks != null && Number(sigA.guard_blocks) > 0) {
+      s += 180 + Number(sigA.guard_blocks) * 10;
+    }
+    if (sigA.gate_releases != null && Number(sigA.gate_releases) > 0) s += 200;
+    if (p.evidence && p.evidence.rc != null && p.evidence.rc !== 0) s += 120;
+    if (p.activity_secs_ago != null && p.activity_secs_ago < 600) s += 30;
+    if (r.verdict === "APPROVED" && !r.stale) s -= 50;
+    return s;
+  }
+
+  function matchesFilter(p, f) {
+    if (f === "all" || !f) return true;
+    const r = p.review || {};
+    const nh = p.needs_human || {};
+    if (f === "human" || f === "nh") return (nh.open || 0) > 0;
+    if (f === "review") {
+      return !!(r.running || r.stale || r.last_error ||
+        r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND");
+    }
+    if (f === "active") {
+      // Live work only — human/review issues have their own chips.
+      return isRecentlyActive(p);
+    }
+    return true;
+  }
+
+  function sortProjects(list) {
+    return (list || []).slice().sort(function (a, b) {
+      const sa = attentionScore(a);
+      const sb = attentionScore(b);
+      if (sa !== sb) return sb - sa;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }
+
+  function showToast(msg) {
+    if (!toastEl) return;
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1600);
+  }
+
+  function copyPath(path) {
+    if (!path) return;
+    const done = function () { showToast("copied " + path); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path).then(done).catch(function () {
+        // fallback
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = path;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          done();
+        } catch (_) { showToast("copy failed"); }
+      });
+    } else {
+      showToast(path);
+    }
+  }
+
+  function renderGrid() {
+    if (!grid) return;
+    syncFilterButtons();
+    const projects = sortProjects(lastProjects).filter(function (p) {
+      return matchesFilter(p, projectFilter);
+    });
+    countEl.textContent =
+      projects.length + " project" + (projects.length === 1 ? "" : "s") +
+      (projectFilter !== "all" && lastProjects.length !== projects.length
+        ? " / " + lastProjects.length
+        : "");
+    if (!lastProjects.length) {
       grid.innerHTML =
         '<div class="empty">No Plinth projects found.<br><br>' +
         'Default discovery: <code>~/Dev/*/.plinth/config</code><br>' +
@@ -365,28 +1690,203 @@
         'Or set <code>PLINTH_DASH_ROOTS=path:path</code></div>';
       return;
     }
-
-    // Sort: needs-human first, then running review, then name
-    projects.sort((a, b) => {
-      const ah = (a.needs_human && a.needs_human.open) || 0;
-      const bh = (b.needs_human && b.needs_human.open) || 0;
-      if (ah !== bh) return bh - ah;
-      const ar = a.review && a.review.running ? 1 : 0;
-      const br = b.review && b.review.running ? 1 : 0;
-      if (ar !== br) return br - ar;
-      return (a.name || "").localeCompare(b.name || "");
-    });
-
+    if (!projects.length) {
+      grid.innerHTML =
+        '<div class="empty">No projects match filter <code>' +
+        esc(projectFilter) + "</code>.</div>";
+      return;
+    }
     grid.innerHTML = projects.map(cardHTML).join("");
   }
 
+  function openNeedsHuman(path) {
+    openProjectModal(path, "human");
+  }
+
+  function openChanges(path) {
+    openProjectModal(path, "changes");
+  }
+
+  function openProjectModal(path, kind) {
+    const p = projectsByPath[path];
+    if (!p) return;
+    if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
+    if (kind === "changes") {
+      const r = p.review || {};
+      const items = Array.isArray(r.findings) ? r.findings : [];
+      const openN = r.findings_open != null ? r.findings_open : items.length;
+      nhTitle.textContent = "CHANGES — " + (p.name || path);
+      nhSub.textContent =
+        openN + " open finding" + (openN === 1 ? "" : "s") +
+        (r.round != null ? " · r" + r.round : "") +
+        (r.sha7 ? " · @" + r.sha7 : "") +
+        (r.stale ? " · stale" : "") +
+        " · " + path;
+      const bits = [];
+      if (r.summary) {
+        bits.push('<li class="muted"><strong>summary:</strong> ' + esc(r.summary) + "</li>");
+      }
+      if (!items.length) {
+        bits.push('<li class="muted">(no open finding text — re-run review or open findings-N.json)</li>');
+      } else {
+        items.forEach(function (it) {
+          const sev = (it && it.severity) || "major";
+          const loc = [it.file, it.line ? ":" + it.line : ""].filter(Boolean).join("");
+          const text = (it && it.text) || "";
+          const hot = sev === "blocker" || sev === "major";
+          bits.push(
+            '<li class="' + (hot ? "blocking" : "") + '">' +
+              '<span class="dim">[' + esc(sev) + "]</span> " +
+              (loc ? "<code>" + esc(loc) + "</code> — " : "") +
+              esc(text) +
+            "</li>"
+          );
+        });
+      }
+      if (r.findings_truncated) {
+        bits.push('<li class="muted">… list truncated — see .plinth/session/review/*/findings-*.json</li>');
+      }
+      nhList.innerHTML = bits.join("");
+    } else {
+      const items = (p.needs_human && p.needs_human.items) || [];
+      nhTitle.textContent = "HUMAN — " + (p.name || path);
+      nhSub.textContent =
+        (p.needs_human && p.needs_human.open != null ? p.needs_human.open : items.length) +
+        " open · " +
+        (p.needs_human && p.needs_human.blocking ? p.needs_human.blocking : 0) +
+        " blocking · " + path +
+        " · " + (p.needs_human && p.needs_human.source
+          ? p.needs_human.source
+          : ".plinth/NEEDS-HUMAN.md");
+      if (!items.length) {
+        nhList.innerHTML = '<li class="muted">(no open item text — counts only or empty parse)</li>';
+      } else {
+        nhList.innerHTML = items.map(function (it) {
+          const text = typeof it === "string" ? it : (it.text || "");
+          const blk = typeof it === "object" && it.blocking;
+          return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
+        }).join("");
+      }
+      if (p.needs_human && p.needs_human.truncated) {
+        nhList.innerHTML +=
+          '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      }
+    }
+    nhModal.classList.add("open");
+  }
+  function closeNeedsHuman() {
+    if (nhModal) nhModal.classList.remove("open");
+  }
+  // DOM wiring is browser-only; the node smoke harness loads the script without
+  // a full document tree for pure cardHTML/cardTone tests.
+  const nhClose = document.getElementById("nh-close");
+  if (nhClose) nhClose.addEventListener("click", closeNeedsHuman);
+  if (nhModal) {
+    nhModal.addEventListener("click", function (e) {
+      if (e.target === nhModal) closeNeedsHuman();
+    });
+  }
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeNeedsHuman();
+    });
+  }
+  if (grid && typeof grid.addEventListener === "function") {
+    grid.addEventListener("click", function (e) {
+      const copyBtn = e.target && e.target.closest ? e.target.closest("[data-copy-path]") : null;
+      if (copyBtn) {
+        e.preventDefault();
+        copyPath(copyBtn.getAttribute("data-copy-path"));
+        return;
+      }
+      const ch = e.target && e.target.closest ? e.target.closest("[data-changes]") : null;
+      if (ch) {
+        openChanges(ch.getAttribute("data-changes"));
+        return;
+      }
+      const t = e.target && e.target.closest
+        ? (e.target.closest("[data-human]") || e.target.closest("[data-nh]"))
+        : null;
+      if (t) {
+        openNeedsHuman(t.getAttribute("data-human") || t.getAttribute("data-nh"));
+      }
+    });
+  }
+  function syncFilterButtons() {
+    if (!filtersEl) return;
+    const buttons = filtersEl.querySelectorAll
+      ? filtersEl.querySelectorAll("[data-filter]")
+      : [];
+    Array.prototype.forEach.call(buttons, function (b) {
+      const on = b.getAttribute("data-filter") === projectFilter;
+      if (b.classList && typeof b.classList.toggle === "function") {
+        b.classList.toggle("on", on);
+      } else if (b.className != null) {
+        b.className = String(b.className).replace(/\bon\b/g, "").trim() + (on ? " on" : "");
+      }
+    });
+  }
+  if (filtersEl && typeof filtersEl.addEventListener === "function") {
+    filtersEl.addEventListener("click", function (e) {
+      const btn = e.target && e.target.closest
+        ? e.target.closest("[data-filter]")
+        : (e.target && e.target.getAttribute && e.target.getAttribute("data-filter")
+            ? e.target : null);
+      if (!btn) return;
+      e.preventDefault();
+      projectFilter = btn.getAttribute("data-filter") || "all";
+      syncFilterButtons();
+      renderGrid();
+    });
+  }
+  if (quotaBar && typeof quotaBar.addEventListener === "function") {
+    quotaBar.addEventListener("click", function (e) {
+      const row = e.target && e.target.closest ? e.target.closest("[data-qvendor]") : null;
+      if (!row) return;
+      toggleQuotaVendor(row.getAttribute("data-qvendor"));
+    });
+    quotaBar.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const row = e.target && e.target.closest ? e.target.closest("[data-qvendor]") : null;
+      if (!row) return;
+      e.preventDefault();
+      toggleQuotaVendor(row.getAttribute("data-qvendor"));
+    });
+  }
+
+  function render(data) {
+    lastGen = data.generated_at;
+    discoveryEl.textContent = data.discovery || "—";
+    lastProjects = data.projects || [];
+    projectsByPath = {};
+    lastProjects.forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    renderQuota(data.quota);
+    renderGrid();
+  }
+
   // Smoke-test seam: pure helpers without a browser (see smoke-snapshot.sh).
-  globalThis.__plinthDash = { cardTone: cardTone, cardHTML: cardHTML, esc: esc };
+  globalThis.__plinthDash = {
+    cardTone: cardTone, cardHTML: cardHTML, esc: esc,
+    modelsLine: modelsLine, modelsHTML: modelsHTML, modelParts: modelParts,
+    phaseBar: phaseBar, renderQuota: renderQuota,
+    openNeedsHuman: openNeedsHuman, openChanges: openChanges,
+    closeNeedsHuman: closeNeedsHuman, openProjectModal: openProjectModal,
+    attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
+    isRecentlyActive: isRecentlyActive,
+    formatReset: formatReset, shortWindowName: shortWindowName, tightestWindow: tightestWindow,
+    toggleQuotaVendor: toggleQuotaVendor,
+    seedProjects: function (ps) {
+      projectsByPath = {};
+      lastProjects = ps || [];
+      (ps || []).forEach(function (p) { if (p && p.path) projectsByPath[p.path] = p; });
+    }
+  };
 
   function tickClocks() {
     if (lastGen == null) return;
     const ago = Math.floor(Date.now() / 1000) - lastGen;
     genAgo.textContent = "snap " + hum(Math.max(0, ago)) + " ago";
+    if (lastQuota) renderQuota(lastQuota);
   }
 
   // Serialize polls: never start a new fetch while one is pending. Slow
@@ -440,6 +1940,7 @@
   globalThis.__plinthDash.getPollState = function () {
     return { inFlight: pollInFlight, seq: pollSeq };
   };
+  globalThis.__plinthDash.openNeedsHuman = openNeedsHuman;
 
   poll();
   setInterval(poll, 2000);

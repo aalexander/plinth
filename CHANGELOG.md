@@ -1,5 +1,67 @@
 # Plinth changelog
 
+## v5.0.0 — Lifecycle + dashboard ops visibility — July 28, 2026
+- **Breaking (behavior):** default **BUILD** phase — Stop no longer requires
+  APPROVED@HEAD on feature branches unless harden is active. Logs `build_defer`.
+  **Ship gate unchanged** — `gh pr create|merge` still needs APPROVED@HEAD.
+- **Lifecycle CLI:** `harden` / `build` / `phase` / `handoff` / `plan` / `plan --deep` /
+  `next` / `lifecycle-migrate`. Auto-handoff; keep cooking; anti-thrash review.
+  - Corrupt/unknown phase file → **harden** (fail closed; matches Stop).
+  - `plinth next`: stale APPROVED → re-review (never “done”); blocking NH → exit 2.
+  - HANDOFF Next: phase-default primary action; strip only an exact allowlist of
+    known auto lifecycle strings. Residual: (1) operator text byte-identical to
+    an auto hint is stripped; (2) prior generated `Fix [sev]…` lines are not
+    auto-purged (operators may write the same shape) — clear ## Next manually
+    or replace via a new primary hint.
+- **Review harness (anti-thrash):** full verify contract (no byte truncate); full
+  finding ledger text; sticky base-id + open-wins ledger; dual-degraded cleared on
+  success/new loop; explicit-ID collision suffixes.
+- **HANDOFF.md out of review:** session restart ephemera is excluded from the
+  reviewed pathspec (full + incremental + audit diffs). When the **entire**
+  `base…HEAD` diff is only `HANDOFF.md`, the deterministic floor APPROVEs without
+  a model round (not “last commit is HANDOFF” on a product branch). Dirty-tree
+  refusal also exempts `HANDOFF.md` so auto-handoff does not block re-review.
+- **Threat model (binding):** cooperative driver; block external security + bugs +
+  ship integrity; do **not** file “clever driver games the instrument” as blocking.
+  Dual first-pass merge runs in **HARDEN** Tier-2 only (not BUILD).
+  `PLINTH_DUAL_PASS=0|1` overrides. Reviewer contract + thrash arithmetic updated.
+- **Review thrash limiters (posture-aligned):**
+  1. BUILD asymptotic coverage → minor; real test gaps / AC still block
+  2. Out-of-pathspec demotion **only** for thrash classes (not arbitrary majors)
+  3. Never demote external-security surfaces / text; sticky AUTO only thrash classes
+  4. HANDOFF pathspec + floor; NEEDS-HUMAN project-owned
+  5. Docs prose minor unless overclaim; never demote canonical spec tree
+  6. Same-open soft cap (`PLINTH_SAME_OPEN_CAP`, default 3)
+  7. VERSION Tier-0 only on **exact** token match to CHANGELOG top H2
+- **Product fixes:** phase slug encode (`feat/a-b` ≠ `feat/a/b`); findings round
+  sort by basename N; handoff preserves Goal/Evidence/Risks + pre-archive;
+  dash task truncate pipefail-safe; `plinth next` exit 3 when idle
+- **Dashboard ops (merged from feat/dashboard-ops-visibility):**
+  - Multi-vendor quota strip (Claude `/usage`, Codex `wham/usage`, Grok billing;
+    serve-only probe; fixed `/tmp` cache; linear plan burn →100%)
+  - **Primary metric = plan headroom** (used %, →100% ETA / overrun, %/h, reset);
+    durations ≥24h show as days. **API $ only when observed** (append-only
+    `~/.config/plinth/api-cost-log.jsonl`; structured Claude/Codex harvest only;
+    no list-price estimates; omit $ when empty)
+  - Quota probes use Python urllib (bearer not on argv; no redirects)
+  - NEEDS-HUMAN (HUMAN) + CHANGES click modals; attention sort; filters; active tone
+  - Models live vs seats grid; token burn (tok/min) as thrash signal on cards
+  - Session live fields (watch parity, **SID-scoped**): now / evidence / guard chips;
+    session path chip; phase timing bar + review_round_secs
+  - `guard_block` events record `session_id` when the harness provides it
+- **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
+- **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh` wired into
+  `plinth-canary.yml` (Stop, ship tripwire create+merge, migrate, sticky, next)
+- **Residual-binding land + hard delta scope:**
+  - `plinth residual [--bind] [--note …] [--from-findings f]` → `.plinth/RESIDUAL.json`
+    (`plinth.residual/v1`). Bound residual authorizes ship/Stop when `sha` is an
+    ancestor of HEAD and only RESIDUAL/HANDOFF/NEEDS-HUMAN changed since.
+    Same-open soft cap drafts residual automatically.
+  - BUILD **verify/resume strict delta**: new non-security majors outside the fix
+    pathspec are non-blocking (monotonic open-set). Fresh r1 still full branch.
+- **Noticed canary depth:** harvest_* e2e, dual-pass degraded merge, HANDOFF floor
+  e2e, SessionStart context, `%` slug escape, error-card lifecycle.
+
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
   `.plinth-lane.*/prompt` again (SPEC_EOF shell heredoc of the five-part spec is gone),

@@ -70,7 +70,9 @@ TEST_CONFIG='(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypre
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.
-DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$'
+# VERSION is release meta (paired with CHANGELOG) — pure VERSION/CHANGELOG bumps
+# are Tier 0 so they do not burn a model round on prose thrash.
+DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$|(^|/)VERSION$'
 
 tier=0; reasons=(); nfiles=0
 add_reason() { reasons+=("$1"); }
@@ -87,6 +89,10 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
+  # HANDOFF.md is session restart ephemera — never part of risk routing (review
+  # pathspec also excludes it). NEEDS-HUMAN stays counted (project-owned queue;
+  # a deletion must not launder to empty/Tier-0).
+  case "$path" in HANDOFF.md) continue ;; esac
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,
