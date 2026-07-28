@@ -132,8 +132,30 @@ fi
 base_tip="$(git rev-parse --verify "$baseref")" \
   || die_infra "cannot resolve tip of base ref '${baseref}'"
 
-diff="$(git diff "${base_tip}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
-[ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
+# HANDOFF.md is session restart ephemera (auto-written by plinth handoff) — never
+# part of the reviewed subject. Exclude it from the model diff so thrash on
+# Goal/Next whitespace cannot block ship.
+REVIEW_PATHSPEC=(. ':(exclude)HANDOFF.md' ':(exclude)**/HANDOFF.md')
+diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
+  || die_infra "git diff ${baseref}...HEAD failed"
+if [ -z "$diff" ]; then
+  # Only excluded paths (e.g. HANDOFF.md alone) changed — nothing to review.
+  only_ex="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null || true)"
+  if [ -n "$only_ex" ] && ! printf '%s\n' "$only_ex" | grep -Ev '(^|/)HANDOFF\.md$' >/dev/null; then
+    rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" 2>/dev/null || true
+    mkdir -p "$SDIR"
+    jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{verdict:"APPROVED", reviewer_verdict:"HANDOFF_ONLY", sha:$sha, base_ref:$base,
+        round:0, session_id:"", model:"deterministic-floor",
+        risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
+        usage:null, ts:$ts}' > "$SDIR/verdict.json"
+    rm -f "$SDIR/last-error"
+    echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
+    exit 0
+  fi
+  die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
+fi
 
 # Per-project config (.plinth/config — the driver must not edit it; it is in protected-paths,
 # so a Claude driver's guard blocks edits at the tool level; a change is otherwise reviewed as
@@ -1395,6 +1417,8 @@ Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
 metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
+OUT OF SCOPE: HANDOFF.md (session restart ephemera) is excluded from this diff
+and must not appear in findings — the harness ignores any finding against it.
 Findings on execution-gated paths whose truth depends on real libraries or
 hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
 they route to the run gate instead of blocking.
@@ -1417,7 +1441,7 @@ ${diff}${evidence}${commits}"
       "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
-      vinc="$(git diff "${vanchor}..HEAD" 2>/dev/null || true)"
+      vinc="$(git diff "${vanchor}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
     fi
     if [ -n "$vinc" ]; then
       vscope="SCOPED to the fixes: CUMULATIVE fix diff since last full read (${vanchor}).
@@ -1451,8 +1475,9 @@ ${vlabel}:
 ${vpayload}${evidence}${commits}"
   else
     # Incremental only: the thread already holds the prior full diff.
+    # Same HANDOFF pathspec as the full review diff — session ephemera stays out.
     local inc prior_ids
-    inc="$(git diff "${prev_sha}..HEAD" 2>/dev/null || true)"
+    inc="$(git diff "${prev_sha}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
     [ -n "$inc" ] || inc="$diff"
     prior_ids="$(jq -c '[.findings[] | select(.status=="open") | {id:(.id//null),file,line,severity,description}]' \
       "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
@@ -1541,9 +1566,14 @@ ${diff}"
   local blocking tamper RRAW
   # RUNTIME: findings on declared exec-gated paths don't block (dual-keyed:
   # reviewer prefix AND config path match) — they join the run gate instead.
+  # HANDOFF.md: session restart ephemera — never blocks (out of reviewed subject;
+  # also excluded from the model pathspec; this filter is defense in depth if a
+  # reviewer still cites it from sticky prior rounds).
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+    --arg href '(^|/)HANDOFF\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
+       | select((.file // "" | test($href)) | not)
        | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
      ] | length' \
     "$SDIR/findings-$r.json")"
@@ -1710,11 +1740,13 @@ $(inline_goal)
 $(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
-$(git diff "${base_tip}...HEAD")"
+$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+        --arg href '(^|/)HANDOFF\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
+           | select((.file // "" | test($href)) | not)
            | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
          ] | length' "$afind" 2>/dev/null || echo 0)"
       case "$ablk" in ''|*[!0-9]*) ablk=0 ;; esac

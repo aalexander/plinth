@@ -87,6 +87,10 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
+  # HANDOFF.md is session restart ephemera — never part of risk routing (review
+  # pathspec also excludes it). Skip without counting so HANDOFF-only noise
+  # cannot inflate tier or file count.
+  case "$path" in HANDOFF.md|*/HANDOFF.md) continue ;; esac
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,

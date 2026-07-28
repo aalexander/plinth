@@ -44,6 +44,10 @@ must discover the class one instance at a time pays a full round for each.
 
 ## Verdict policy — what blocks and what doesn't
 - Open blocker or major findings in PROJECT code: CHANGES_NEEDED.
+- **Out of scope — do not review or file findings on `HANDOFF.md`.** It is
+  session restart ephemera (`plinth handoff`), not product code. The harness
+  excludes it from the reviewed pathspec and ignores any finding against it
+  (Goal/Next whitespace must never block ship).
 - Minor findings: report them (severity "minor", status open) but they do NOT
   block. The driver must append open minors to the spec's `## Noticed` section
   before the PR; they ride to CI and the human from there.

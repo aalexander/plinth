@@ -16,6 +16,11 @@
 - **Review harness (anti-thrash):** full verify contract (no byte truncate); full
   finding ledger text; sticky base-id + open-wins ledger; dual-degraded cleared on
   success/new loop; explicit-ID collision suffixes.
+- **HANDOFF.md out of review:** session restart ephemera is excluded from the
+  reviewed pathspec (full + incremental + audit diffs), ignored in verdict
+  blocking arithmetic, skipped by risk-classify, and marked out-of-scope in the
+  reviewer contract. HANDOFF-only commits APPROVE at the deterministic floor
+  without a model round — Goal/Next whitespace cannot block ship.
 - **Dashboard ops (merged from feat/dashboard-ops-visibility):**
   - Multi-vendor quota strip (Claude `/usage`, Codex `wham/usage`, Grok billing;
     serve-only probe; fixed `/tmp` cache; linear plan burn →100%)
