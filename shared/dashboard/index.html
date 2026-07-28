@@ -1204,20 +1204,17 @@
   function spendFront(sp) {
     if (!sp || typeof sp !== "object") return null;
     const loc = localUsdMap(sp);
-    const est = sp.pricing === "list_est" ? "~" : "";
-    // Prefer week cumulative API cost on the front line.
-    if (loc["7d"] != null) {
+    // Prefer week cumulative from observed API-cost log.
+    if (loc["7d"] != null && Number(loc["7d"]) > 0) {
       return {
-        text: est + formatUsd(loc["7d"]) + "/wk",
-        title: (sp.pricing === "list_est"
-          ? "API list-price estimate (not subscription) · past week · this machine"
-          : "API-equivalent cost (not subscription) · past week · this machine")
+        text: formatUsd(loc["7d"]) + "/wk",
+        title: "Observed API cost · past week · cumulative log (this machine; ≠ subscription)"
       };
     }
-    if (loc["24h"] != null) {
+    if (loc["24h"] != null && Number(loc["24h"]) > 0) {
       return {
-        text: est + formatUsd(loc["24h"]) + "/24h",
-        title: "API cost · past 24h · this machine"
+        text: formatUsd(loc["24h"]) + "/24h",
+        title: "Observed API cost · past 24h · cumulative log"
       };
     }
     if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) {
@@ -1235,17 +1232,12 @@
   function spendDetailHTML(sp) {
     if (!sp || typeof sp !== "object") {
       return '<div class="drow"><span class="dlab">API $</span>' +
-        '<span class="dval dim">no API cost stream on this machine</span></div>';
+        '<span class="dval dim">no observed API cost logged yet</span></div>';
     }
     const rows = [];
-    const est = sp.pricing === "list_est";
     function add(lab, val, tip) {
-      let t = formatUsd(val);
+      const t = formatUsd(val);
       if (t == null) return;
-      if (est && lab !== "on-dem" && lab !== "OD cap" && lab !== "prepaid" &&
-          lab !== "credits" && lab !== "limit") {
-        t = "~" + t;
-      }
       rows.push(
         '<div class="drow" title="' + esc(tip || "") + '">' +
           '<span class="dlab">' + esc(lab) + "</span>" +
@@ -1254,26 +1246,23 @@
         "</div>"
       );
     }
-    // Header explaining what $ means
     rows.push(
       '<div class="drow">' +
         '<span class="dlab">API $</span>' +
-        '<span class="dval dim">' +
-          esc(est
-            ? "list-price estimate (≠ subscription)"
-            : "API-equivalent (≠ subscription)") +
+        '<span class="dval dim">observed only (≠ subscription; no extrapolation)</span>' +
+        '<span class="dmeta dim">' +
+          esc(sp.log_path || sp.source || "") +
         "</span>" +
-        '<span class="dmeta dim">' + esc(sp.note || sp.source || "") + "</span>" +
       "</div>"
     );
     const loc = localUsdMap(sp);
     const periods = [
-      ["24h", "24h", "cumulative API cost · past 24 hours · this machine"],
-      ["7d", "week", "cumulative API cost · past 7 days · this machine"],
-      ["30d", "month", "cumulative API cost · past 30 days · this machine"],
-      ["90d", "3 mo", "cumulative API cost · past 90 days · this machine"],
-      ["180d", "6 mo", "cumulative API cost · past 180 days · this machine"],
-      ["365d", "year", "cumulative API cost · past 365 days · this machine"]
+      ["24h", "24h", "sum of logged API cost events · past 24 hours"],
+      ["7d", "week", "sum of logged API cost events · past 7 days"],
+      ["30d", "month", "sum of logged API cost events · past 30 days"],
+      ["90d", "3 mo", "sum of logged API cost events · past 90 days"],
+      ["180d", "6 mo", "sum of logged API cost events · past 180 days"],
+      ["365d", "year", "sum of logged API cost events · past 365 days"]
     ];
     let hasLocal = false;
     periods.forEach(function (row) {
@@ -1284,10 +1273,12 @@
     });
     if (hasLocal && sp.local_history_days != null) {
       rows.push(
-        '<div class="drow" title="How far back local session files go on this machine">' +
+        '<div class="drow" title="Oldest logged cost event age">' +
           '<span class="dlab">hist</span>' +
-          '<span class="dval dim">' + esc(String(sp.local_history_days)) + "d on disk</span>" +
-          '<span class="dmeta dim">longer windows = available history only</span>' +
+          '<span class="dval dim">' + esc(String(sp.local_history_days)) + "d in log</span>" +
+          '<span class="dmeta dim">' +
+            (sp.log_entries != null ? esc(String(sp.log_entries) + " entries") : "") +
+          "</span>" +
         "</div>"
       );
     }

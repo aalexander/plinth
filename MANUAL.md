@@ -565,11 +565,11 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 - **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir (session + week).
 - **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
 - **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH). Plan tier from `/v1/user?include=subscription`.
-- **API $ (not subscription invoice)** — cumulative local API-equivalent cost for 24h / week / month / 3 mo / 6 mo / year on this machine:
-  - **Grok:** server `costUsdTicks` in `~/.grok/sessions/**/updates.jsonl` (1 USD = 10¹⁰ ticks) — same family of number `/usage` shows as cost.
-  - **Claude:** list-price **estimate** from assistant-message token usage in `~/.claude/projects/**/*.jsonl` (subscription seats usually report `costUSD: 0` in stats-cache).
-  - **Codex:** list-price **estimate** from `token_count` / `last_token_usage` in `~/.codex/sessions/**/*.jsonl`.
-  Longer windows are capped by on-disk history; UI marks estimates with `~`.
+- **API $ (not subscription invoice; no extrapolation)** — observed costs only, harvested into an append-only log at `~/.config/plinth/api-cost-log.jsonl` (deduped by event id). Dash sums that log for 24h / week / month / 3 mo / 6 mo / year:
+  - **Grok:** `costUsdTicks` on `turn_completed` in `~/.grok/sessions/**/updates.jsonl` (1 USD = 10¹⁰ ticks) — same family as interactive `/usage` cost.
+  - **Claude:** only when `total_cost_usd` appears in session transcripts (subscription seats often omit it).
+  - **Codex:** only when an explicit USD cost field appears in session logs (most ChatGPT seats have none).
+  Re-probes append new events only; they never invent token×price spend.
 Scratch temps for event/transcript parsing use the process `TMPDIR` (default
 system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
 the quota-cache directory if you need a hard quarantine. TTL ~15 min
