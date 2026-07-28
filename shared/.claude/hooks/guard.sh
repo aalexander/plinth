@@ -108,7 +108,20 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
-      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+      rph="$(jq -r '.review_phase // empty' "$vf" 2>/dev/null || echo)"
+      # When lifecycle is harden, BUILD-stamped approvals do not authorize ship.
+      phase_now=build
+      pf="$proj/.plinth/session/phase-$slug.json"
+      [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
+      if [ -f "$pf" ]; then
+        phase_now="$(jq -r '.phase // empty' "$pf" 2>/dev/null || echo build)"
+      fi
+      if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
+        if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then
+          block "$what blocked — APPROVED@HEAD was produced under BUILD but phase is HARDEN. Re-run ./.plinth/review.sh under harden."
+        fi
+        return 0
+      fi
     fi
     block "$what blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
   }
@@ -211,7 +224,19 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
-      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+      rph="$(jq -r '.review_phase // empty' "$vf" 2>/dev/null || echo)"
+      phase_now=build
+      pf="$proj/.plinth/session/phase-$slug.json"
+      [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
+      if [ -f "$pf" ]; then
+        phase_now="$(jq -r '.phase // empty' "$pf" 2>/dev/null || echo build)"
+      fi
+      if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
+        if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then
+          block "$what blocked — APPROVED@HEAD was produced under BUILD but phase is HARDEN. Re-run review under harden."
+        fi
+        return 0
+      fi
     fi
     block "$what blocked — no APPROVED review at targeted PR head ($head) for branch '$branch'. Run the merge from the checkout/worktree that holds its verdict."
   }

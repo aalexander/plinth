@@ -797,7 +797,7 @@ version_changelog_match() {
   # equality after stripping a leading v — not a free substring of the title.
   python3 -c 'import re,sys
 v,t=sys.argv[1],sys.argv[2]
-v=v.lstrip("vV")
+v=v[1:] if v[:1] in "vV" else v
 m=re.match(r"^##\s+v?([0-9][0-9A-Za-z._+-]*)", t.strip())
 sys.exit(0 if m and m.group(1)==v else 1)
 ' "$ver_txt" "$top_entry" 2>/dev/null
@@ -1296,9 +1296,9 @@ sticky_process_findings() {  # <findings-json-path>
       # Never thrash-class security or AC/test-gap findings (AUTO-STICKY must not clear them).
       | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
-        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
-        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
           then "class:sticky-ledger"
         else $d end;
     def nid:
@@ -1384,9 +1384,9 @@ sticky_process_findings() {  # <findings-json-path>
       | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
       | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
-        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
-        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
           then "class:sticky-ledger"
         else $d end;
     def base_id:
@@ -1440,9 +1440,9 @@ sticky_process_findings() {  # <findings-json-path>
       | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
       | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
-        elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
-        elif ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
           then "class:sticky-ledger"
         else $d end;
     def base_id:
@@ -1517,7 +1517,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         ((.description // "") | test("fail[- ]?open|security|auth bypass|unauthenticated|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
     def is_real_test_gap:
         ((.description // "") | test(
-          "acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested:.*(new|changed|AC|plan|deep|criterion)|named changed behavior"; "i"
+          "acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested:|named changed behavior|quota parser|malformed reset"; "i"
         ));
     def is_coverage_asymp:
         # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
@@ -1534,7 +1534,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     def is_queue_nit:
         # Only pure wording nits — never demote checked-off / deleted / lost blockers.
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
-        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
+        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checks? off|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
         and ((.description // "") | test("whitespace|wording|typo|formatting|blank line|nit"; "i"));
     # Out-of-pathspec: demote ONLY known thrash classes (never arbitrary majors).
     def is_out_of_scope_thrash:
