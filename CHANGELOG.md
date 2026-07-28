@@ -7,9 +7,13 @@
 - **Lifecycle CLI:** `harden` / `build` / `phase` / `handoff` / `plan` / `plan --deep` /
   `next` / `lifecycle-migrate`. Auto-handoff; keep cooking; anti-thrash review.
 - **Dashboard ops (merged from feat/dashboard-ops-visibility):**
-  - Quota strip (CLI /usage, serve-only probe, fixed /tmp cache, time-to-100%)
-  - NEEDS-HUMAN click modal (items + source path)
-  - Models live vs seats
+  - Multi-vendor quota strip (Claude `/usage`, Codex `wham/usage`, Grok billing;
+    serve-only probe; fixed `/tmp` cache; linear plan burn →100%)
+  - **Primary metric = plan headroom** (used %, →100% ETA / overrun, %/h, reset);
+    durations ≥24h show as days. **API $ only when observed** (append-only
+    `~/.config/plinth/api-cost-log.jsonl`; no list-price estimates; omit $ when empty)
+  - NEEDS-HUMAN (HUMAN) + CHANGES click modals; attention sort; filters; active tone
+  - Models live vs seats grid; token burn (tok/min) as thrash signal on cards
   - Phase timing bar + review_round_secs
 - **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh`
