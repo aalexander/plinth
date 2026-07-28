@@ -3593,7 +3593,13 @@ def _content_key_from_id(i, v, usd):
     if not isinstance(i, str) or not isinstance(v, str) or not isinstance(usd, (int, float)):
         return None
     parts = i.split(":")
-    # claude:sid:lineno:usd | claude:sid:lineno:idx:usd | codex:file:lineno:usd
+    # grok:<eventId> | grok:sid:prompt:ticks
+    if parts and parts[0] == "grok":
+        if len(parts) == 2:
+            return (v, round(float(usd), 6), parts[1], "")
+        if len(parts) >= 4:
+            return (v, round(float(usd), 6), parts[1], parts[2])
+    # claude:sid:lineno:usd | codex:file:lineno:usd (+ legacy longer forms)
     sess, lineno = "", ""
     if len(parts) >= 4:
         sess, lineno = parts[1], parts[2]
@@ -4487,12 +4493,23 @@ _write_handoff() {
   next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$out" ]; then
     local prev_done prev_next
-    # Preserve blank lines (no sed '/./,$!d' trim of leading blanks).
-    prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
-    prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
-    # Drop a single trailing newline only (command substitution already does).
-    [ -n "$prev_done" ] && done_block="$prev_done"
-    [ -n "$prev_next" ] && next="$prev_next"
+    # Preserve blanks: base64 round-trip so command substitution cannot strip
+    # trailing newlines from Done/Next sections.
+    if command -v base64 >/dev/null 2>&1; then
+      prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | base64 | tr -d '\n')
+      prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | base64 | tr -d '\n')
+      if [ -n "$prev_done" ]; then
+        done_block=$(printf '%s' "$prev_done" | base64 -d 2>/dev/null || printf '%s' "$prev_done" | base64 -D 2>/dev/null || true)
+      fi
+      if [ -n "$prev_next" ]; then
+        next=$(printf '%s' "$prev_next" | base64 -d 2>/dev/null || printf '%s' "$prev_next" | base64 -D 2>/dev/null || true)
+      fi
+    else
+      prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
+      prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
+      [ -n "$prev_done" ] && done_block="$prev_done"
+      [ -n "$prev_next" ] && next="$prev_next"
+    fi
   fi
   # Insert a phase-aware first Next line. Only drop exact known auto-generated
   # lifecycle hints (not arbitrary operator text containing "review.sh" etc.).
