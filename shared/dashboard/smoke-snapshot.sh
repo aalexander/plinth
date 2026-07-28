@@ -1992,6 +1992,42 @@ setTimeout(() => {
         console.error("attention sort order wrong:", sorted.map(function (p) { return p.name; }));
         process.exit(1);
       }
+      // active = recent pulse / running review — not mere open NH
+      if (typeof api.isRecentlyActive !== "function" || typeof api.matchesFilter !== "function") {
+        console.error("missing isRecentlyActive/matchesFilter seams");
+        process.exit(1);
+      }
+      const live = { name: "live", activity_secs_ago: 30, needs_human: { open: 0 }, review: null };
+      const coldNh = { name: "cold-nh", activity_secs_ago: 99999, needs_human: { open: 3 }, review: null };
+      const cold = { name: "cold", activity_secs_ago: 99999, needs_human: { open: 0 }, review: { verdict: "APPROVED" } };
+      if (!api.isRecentlyActive(live) || api.isRecentlyActive(coldNh) || api.isRecentlyActive(cold)) {
+        console.error("isRecentlyActive wrong", {
+          live: api.isRecentlyActive(live), coldNh: api.isRecentlyActive(coldNh), cold: api.isRecentlyActive(cold)
+        });
+        process.exit(1);
+      }
+      if (!api.matchesFilter(live, "active") || api.matchesFilter(coldNh, "active") ||
+          api.matchesFilter(cold, "active")) {
+        console.error("active filter wrong");
+        process.exit(1);
+      }
+      if (!api.matchesFilter(coldNh, "nh") || api.matchesFilter(live, "nh")) {
+        console.error("nh filter wrong");
+        process.exit(1);
+      }
+      if (api.cardTone(live) !== "active") {
+        console.error("live card tone should be active, got", api.cardTone(live));
+        process.exit(1);
+      }
+      if (api.cardTone(cold) !== "ok" && api.cardTone(cold) !== "idle") {
+        // APPROVED + cold → ok
+        console.error("cold approved tone unexpected", api.cardTone(cold));
+        process.exit(1);
+      }
+      if (api.cardTone({ review: { verdict: "APPROVED" }, activity_secs_ago: null }) !== "ok") {
+        console.error("approved tone wrong");
+        process.exit(1);
+      }
       api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });
       const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
       if (!qb2.includes("unavailable")) {

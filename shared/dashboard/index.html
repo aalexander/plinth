@@ -349,6 +349,8 @@
   .card.bad::before { background: var(--red); }
   .card.idle::before { background: var(--dim); }
   .card.human::before { background: var(--orange); }
+  .card.active::before { background: var(--cyan); }
+  .card.active { border-color: rgba(57, 210, 192, 0.35); }
   .card:hover { background: var(--bg-card-hi); border-color: #484f58; }
   .row {
     display: flex;
@@ -667,16 +669,35 @@
     return raw ? String(raw) : null;
   }
 
+  // "Active" = driver pulse within the last hour (or a review still running).
+  const ACTIVE_SECS = 3600;
+
+  function isRecentlyActive(p) {
+    if (!p) return false;
+    if (p.review && p.review.running) return true;
+    if (p.activity_secs_ago != null && p.activity_secs_ago >= 0 &&
+        p.activity_secs_ago < ACTIVE_SECS) {
+      return true;
+    }
+    // Hot burn without a fresh activity stamp still counts as live work.
+    if (p.burn_per_min != null && p.burn_per_min >= 10 &&
+        p.activity_secs_ago != null && p.activity_secs_ago < ACTIVE_SECS * 2) {
+      return true;
+    }
+    return false;
+  }
+
   function cardTone(p) {
     if (p.error) return "bad";
     const r = p.review;
     if (r && r.last_error) return "bad";
     if (p.needs_human && p.needs_human.open > 0) return "human";
-    if (!r) return p.feedless ? "idle" : "idle";
-    if (r.running) return "warn";
-    if (r.stale) return "bad";
-    if (r.verdict === "APPROVED") return "ok";
-    if (r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND") return "warn";
+    if (r && r.running) return "warn";
+    if (r && r.stale) return "bad";
+    // Live work beats idle/approved chrome — a session mid-build is "active".
+    if (isRecentlyActive(p)) return "active";
+    if (r && r.verdict === "APPROVED") return "ok";
+    if (r && (r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND")) return "warn";
     return "idle";
   }
 
@@ -820,6 +841,9 @@
     // Only non-default lifecycle signals (BUILD is default — omit)
     if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
     if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
+    if (isRecentlyActive(p) && !(r && r.running)) {
+      chips.push('<span class="chip cyan" title="Driver activity within the last hour">active</span>');
+    }
     if (p.burn_per_min != null && p.burn_per_min >= 50) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
@@ -1289,9 +1313,8 @@
         r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND");
     }
     if (f === "active") {
-      const recent = p.activity_secs_ago != null && p.activity_secs_ago < 3600;
-      return recent || r.running || (nh.open || 0) > 0 ||
-        r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND" || r.stale;
+      // Live work only — NH/review issues have their own chips (nh / review).
+      return isRecentlyActive(p);
     }
     return true;
   }
@@ -1336,6 +1359,7 @@
 
   function renderGrid() {
     if (!grid) return;
+    syncFilterButtons();
     const projects = sortProjects(lastProjects).filter(function (p) {
       return matchesFilter(p, projectFilter);
     });
@@ -1419,14 +1443,30 @@
       if (t) openNeedsHuman(t.getAttribute("data-nh"));
     });
   }
+  function syncFilterButtons() {
+    if (!filtersEl) return;
+    const buttons = filtersEl.querySelectorAll
+      ? filtersEl.querySelectorAll("[data-filter]")
+      : [];
+    Array.prototype.forEach.call(buttons, function (b) {
+      const on = b.getAttribute("data-filter") === projectFilter;
+      if (b.classList && typeof b.classList.toggle === "function") {
+        b.classList.toggle("on", on);
+      } else if (b.className != null) {
+        b.className = String(b.className).replace(/\bon\b/g, "").trim() + (on ? " on" : "");
+      }
+    });
+  }
   if (filtersEl && typeof filtersEl.addEventListener === "function") {
     filtersEl.addEventListener("click", function (e) {
-      const btn = e.target && e.target.closest ? e.target.closest("[data-filter]") : null;
+      const btn = e.target && e.target.closest
+        ? e.target.closest("[data-filter]")
+        : (e.target && e.target.getAttribute && e.target.getAttribute("data-filter")
+            ? e.target : null);
       if (!btn) return;
+      e.preventDefault();
       projectFilter = btn.getAttribute("data-filter") || "all";
-      Array.prototype.forEach.call(filtersEl.querySelectorAll("[data-filter]"), function (b) {
-        b.classList.toggle("on", b.getAttribute("data-filter") === projectFilter);
-      });
+      syncFilterButtons();
       renderGrid();
     });
   }
@@ -1461,6 +1501,7 @@
     modelsLine: modelsLine, phaseBar: phaseBar, renderQuota: renderQuota,
     openNeedsHuman: openNeedsHuman, closeNeedsHuman: closeNeedsHuman,
     attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
+    isRecentlyActive: isRecentlyActive,
     formatReset: formatReset, shortWindowName: shortWindowName, tightestWindow: tightestWindow,
     toggleQuotaVendor: toggleQuotaVendor,
     seedProjects: function (ps) {
