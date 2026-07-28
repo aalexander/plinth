@@ -99,10 +99,23 @@ if [ "$cnt" -ge "$maxblocks" ]; then
 fi
 
 vfile="$SDIR/review/$slug/verdict.json"
+[ -f "$vfile" ] || vfile="$SDIR/review/$slug_legacy/verdict.json"
 if [ -f "$vfile" ]; then
   v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || echo "")
   vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || echo "")
-  if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then exit 0; fi
+  rph=$(jq -r '.review_phase // empty' "$vfile" 2>/dev/null || echo "")
+  # HARDEN requires an approval produced under harden rigor (or pre-v5 missing field
+  # only if not explicitly build — BUILD-phase approvals do not satisfy Stop in harden).
+  if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
+    case "$rph" in
+      build)
+        block "HARDEN phase: APPROVED@HEAD was produced under BUILD — re-run ./.plinth/review.sh under harden (or plinth build to leave harden)."
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+  fi
 fi
 
 echo $((cnt + 1)) > "$SDIR/gate-blocks-$sid"

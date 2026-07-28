@@ -173,7 +173,8 @@ Advisor annotates only — never clears majors or sets APPROVED/phase.
 Prefer `plinth plan` / `plinth plan --deep` for large/new work; human owns
 true product ambiguity (park in NEEDS-HUMAN and continue other paths if any).
 Review anti-thrash: BUILD vs HARDENING phase; sticky ids; compact verify;
-Tier-2 dual first-pass when audit_vendor differs.
+Tier-2 dual first-pass when audit_vendor differs **and** review phase is HARDEN
+(or `PLINTH_DUAL_PASS=1`); BUILD skips dual merge by default.
 
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.

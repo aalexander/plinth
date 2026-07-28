@@ -141,10 +141,11 @@ base_tip="$(git rev-parse --verify "$baseref")" \
 # NEEDS-HUMAN.md is project-owned queue (driver must maintain it). It is NOT
 # pathspec-excluded: a deletion must remain reviewable. Findings that only nit
 # queue wording are still demoted to minor by thrash policy (see is_queue_nit).
+# Root HANDOFF.md only — nested product docs named HANDOFF.md stay in review.
 REVIEW_PATHSPEC=(.
-  ':(exclude)HANDOFF.md' ':(exclude)**/HANDOFF.md'
+  ':(exclude)HANDOFF.md'
 )
-EPHEMERA_RE='(^|/)HANDOFF\.md$'
+EPHEMERA_RE='^HANDOFF\.md$'
 diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
   || die_infra "git diff ${baseref}...HEAD failed"
 if [ -z "$diff" ]; then
@@ -1480,7 +1481,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     (lines($scope)) as $files
     | (lines($prior)) as $prior_ids
     | def is_ephemera:
-        ((.file // "") | test("(^|/)HANDOFF\\.md$"));
+        ((.file // "") == "HANDOFF.md");
     def is_canonical_spec:
         ($spec != "" and (
           (.file // "") == $spec
@@ -1889,7 +1890,7 @@ ${diff}"
   # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
   # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-    --arg href '(^|/)HANDOFF\.md$' \
+    --arg href '^HANDOFF\\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
@@ -2100,7 +2101,7 @@ $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
       thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
         "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-        --arg href '(^|/)HANDOFF\.md$' \
+        --arg href '^HANDOFF\\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select((.file // "" | test($href)) | not)

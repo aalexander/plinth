@@ -4590,16 +4590,20 @@ _write_handoff() {
     mkdir -p "$sdir_pre"
     arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%SZ).md"
     cp "$out" "$arch_pre" 2>/dev/null || true
-    awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
-    awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
-    awk '/^## Goal/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hg" || true
-    awk '/^## Evidence/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_he" || true
-    awk '/^## Risks/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hr" || true
-    # Unrecognized ## sections (not Goal/Done/Next/Restart/Evidence/Risks)
+    # Exact reserved headings only — "## Next release" etc. stay operator freeform.
+    awk '/^## Done[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
+    awk '/^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
+    awk '/^## Goal[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hg" || true
+    awk '/^## Evidence[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_he" || true
+    awk '/^## Risks( \/ Noticed)?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hr" || true
+    # Unrecognized ## sections (exact reserved names only)
     awk '
       /^## / {
         title=$0
-        if (title ~ /^## (Goal|Done|Next|Restart|Evidence|Risks)/) { p=0; next }
+        if (title ~ /^## (Goal|Done|Evidence)[[:space:]]*$/ \
+            || title ~ /^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/ \
+            || title ~ /^## Restart prompt[[:space:]]*$/ \
+            || title ~ /^## Risks( \/ Noticed)?[[:space:]]*$/) { p=0; next }
         p=1; print title; next
       }
       p { print }

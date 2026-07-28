@@ -52,13 +52,12 @@
 - **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh` wired into
   `plinth-canary.yml` (Stop, ship tripwire create+merge, migrate, sticky, next)
-- **Residual (human-adjudicated follow-up, not blocking this PR):** expanded
-  offline coverage for: cost-harvester production-path concurrency (canary uses
-  equivalent flock/reload, not full harvest_*), full dual-pass degraded merge,
-  HANDOFF-only floor e2e, same-open soft cap e2e, urllib redirect matrix,
-  percent-escape on branch slugs, error-card lifecycle object. Lifecycle canary
-  + thrash matrix + harden invalidation + plan --deep fake seats cover the load-
-  bearing ship paths. Open follow-ups rather than infinite review loop.
+- **Residual (human-adjudicated for v5.0.0 land):** further offline canaries for
+  full harvest_* producers, dual-pass degraded merge e2e, HANDOFF-only floor e2e,
+  same-open cap e2e, SessionStart additionalContext, guard session_id event,
+  percent-escape branch slugs, error-card lifecycle object. Load-bearing paths
+  covered by lifecycle canary (Stop/ship, thrash matrix, harden invalidation
+  encoded+legacy, plan --deep fake seats, VERSION helper, sticky security).
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
