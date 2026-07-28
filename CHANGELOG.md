@@ -8,9 +8,10 @@
   `next` / `lifecycle-migrate`. Auto-handoff; keep cooking; anti-thrash review.
   - Corrupt/unknown phase file → **harden** (fail closed; matches Stop).
   - `plinth next`: stale APPROVED → re-review (never “done”); blocking NH → exit 2.
-  - HANDOFF Next: phase-default primary action; strip only an exact allowlist of
-    known auto-generated lifecycle hints (never pattern-match operator text);
-    preserve operator-authored lines and original formatting.
+  - HANDOFF Next: phase-default primary action; strip exact known auto lifecycle
+    hints; on phase-enter/review-primary also drop generated
+    `Fix [sev] path:line — …` findings (paths may contain spaces). Residual:
+    operator text that is *byte-identical* to an auto hint is also stripped.
 - **Review harness (anti-thrash):** full verify contract (no byte truncate); full
   finding ledger text; sticky base-id + open-wins ledger; dual-degraded cleared on
   success/new loop; explicit-ID collision suffixes.

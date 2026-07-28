@@ -3720,7 +3720,9 @@ def harvest_claude(seen):
                 if ts < cut_year:
                     continue
                 sid = rec.get("session_id") or rec.get("sessionId") or f.name
-                eid = "claude:%s:%s:%.6f" % (sid, lineno, usd)
+                # Keep match-index slot (always 0 for structured single-value harvest)
+                # so ids stay compatible with earlier log rows (upgrade-safe).
+                eid = "claude:%s:%s:0:%.6f" % (sid, lineno, usd)
                 if eid in seen:
                     continue
                 seen.add(eid)
@@ -3780,7 +3782,7 @@ def harvest_codex(seen):
                 ts = parse_ts(rec.get("timestamp"), mtime)
                 if ts < cut_year:
                     continue
-                eid = "codex:%s:%s:%.6f" % (f.name, lineno, usd)
+                eid = "codex:%s:%s:0:%.6f" % (f.name, lineno, usd)
                 if eid in seen:
                     continue
                 seen.add(eid)
@@ -4483,11 +4485,10 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Generated Fix [sev] path:line — desc from review handoff only when review
-  # supplies PLINTH_HANDOFF_NEXT (strip prior generated findings). Never strip
-  # those shapes on plain harden/build without a new review primary.
-    if [ -n "${PLINTH_HANDOFF_NEXT:-}" ] \
-       && printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] [^ ]+:[0-9]+ — '; then
+    # Generated Fix [sev] path:line — desc: strip on review-driven or phase-enter
+  # refreshes (see _handoff_strip_fix). Paths may contain spaces.
+    if [ "${_handoff_strip_fix:-0}" = 1 ] \
+       && printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] .+:[0-9]+ — '; then
       return 0
     fi
     return 1
@@ -4515,6 +4516,13 @@ _write_handoff() {
       printf '1. %s' "$hint"
     fi
   }
+  # Strip prior generated Fix [sev] lines on phase enter / review-driven primary.
+  _handoff_strip_fix=0
+  case "$reason" in
+    enter-harden|enter-build|plan-deep|review-approved|approved) _handoff_strip_fix=1 ;;
+  esac
+  [ -n "${PLINTH_HANDOFF_NEXT:-}" ] && _handoff_strip_fix=1
+
   # Default primary action from current phase when no explicit hint (e.g. review-approved).
   if [ -z "$next_hint" ] && [ -z "${PLINTH_HANDOFF_NEXT:-}" ]; then
     local full_head
@@ -4535,11 +4543,10 @@ _write_handoff() {
         ;;
     esac
   fi
-  if [ -n "$next_hint" ]; then
-    next=$(_handoff_set_primary_next "$next_hint" "$next")
-  fi
   if [ -n "${PLINTH_HANDOFF_NEXT:-}" ]; then
     next=$(_handoff_set_primary_next "$PLINTH_HANDOFF_NEXT" "$next")
+  elif [ -n "$next_hint" ]; then
+    next=$(_handoff_set_primary_next "$next_hint" "$next")
   fi
   kind=$(_handoff_kind "$reason")
   if [ "$kind" = "milestone" ]; then
