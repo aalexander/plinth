@@ -4588,7 +4588,7 @@ _write_handoff() {
     local sdir_pre arch_pre
     sdir_pre="$root/.plinth/session"
     mkdir -p "$sdir_pre"
-    arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%SZ).md"
+    arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM.md"
     cp "$out" "$arch_pre" 2>/dev/null || true
     # Exact reserved headings only — "## Next release" etc. stay operator freeform.
     awk '/^## Done[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
@@ -4779,7 +4779,7 @@ _write_handoff() {
   sdir="$root/.plinth/session"
   mkdir -p "$sdir"
   # Post-write snapshot (pre-write already archived when prior file existed).
-  arch="$sdir/handoff-${slug}-$(date -u +%Y%m%dT%H%M%SZ).md"
+  arch="$sdir/handoff-${slug}-$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM.md"
   cp "$out" "$arch" 2>/dev/null || true
   # Non-blocking notification event for watch/dash (never waits).
   { jq -cn --arg reason "$reason" --arg kind "$kind" --arg advice "$advice" --arg head "$head" \
@@ -5274,6 +5274,23 @@ run_next() {
       echo "action: run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"
       echo "detail: phase=harden head=$head verdict=${verdict:-none}"
       exit 0
+    fi
+  fi
+
+  # BUILD: open review majors still route (checkpoint mid-loop), not only harden.
+  if [ "$phase" != "harden" ]; then
+    local fdir latest openf
+    fdir="$(_lifecycle_review_dir "$root")"
+    latest=$(_latest_findings_json "$fdir")
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      openf=$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+        | if . then "[\(.severity)] \(.file):\(.line) — \(.description[0:120])" else empty end' "$latest" 2>/dev/null || true)
+      if [ -n "$openf" ]; then
+        echo "status: work"
+        echo "action: fix review finding, commit, re-run ./.plinth/review.sh"
+        echo "detail: phase=build $openf"
+        exit 0
+      fi
     fi
   fi
 

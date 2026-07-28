@@ -156,9 +156,14 @@ if [ -z "$diff" ]; then
           "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
           "$SDIR/open-set-fp" "$SDIR/open-set-streak" 2>/dev/null || true
     mkdir -p "$SDIR"
-    jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    # Stamp review_phase from lifecycle (harden must not get BUILD-stamped floors).
+    _rph=build
+    case "$(jq -r '.phase // empty' ".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json" 2>/dev/null || true)" in
+      harden) _rph=hardening ;;
+    esac
+    jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg rph "$_rph" \
       '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
-        round:0, session_id:"", model:"deterministic-floor", review_phase:"build",
+        round:0, session_id:"", model:"deterministic-floor", review_phase:$rph,
         risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
         usage:null, ts:$ts}' > "$SDIR/verdict.json"
     rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
@@ -831,11 +836,15 @@ if [ "$RISK" = "0" ]; then
   # PR body contradicts session state. Clearing is the only consistent answer.
   rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
         "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
+  _rph=build
+  case "$(jq -r '.phase // empty' ".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json" 2>/dev/null || true)" in
+    harden) _rph=hardening ;;
+  esac
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
-        --arg mbase "$merge_base" \
+        --arg mbase "$merge_base" --arg rph "$_rph" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
-          round:0, session_id:"", model:"deterministic-floor", review_phase:"build", risk:$risk,
+          round:0, session_id:"", model:"deterministic-floor", review_phase:$rph, risk:$risk,
           diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
   mint_receipt 0
@@ -1511,8 +1520,9 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
           "acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested:.*(new|changed|AC|plan|deep|criterion)|named changed behavior"; "i"
         ));
     def is_coverage_asymp:
+        # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
         ((.description // "") | test(
-          "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|no end-to-end test covers|no production-path test|lack real (production-path )?test|no real production-path test|several (named |changed )?.*(lack|have no) real"; "i"
+          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects"; "i"
         ))
         and (is_real_test_gap | not)
         and (is_external_security | not);
