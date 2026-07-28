@@ -688,7 +688,13 @@
     secs = Math.floor(secs);
     if (secs < 60) return secs + "s";
     if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
-    return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+    // Under a day: hours + minutes. At ≥24h prefer days (not 53h).
+    if (secs < 86400) {
+      return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+    }
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    return h > 0 ? (d + "d " + h + "h") : (d + "d");
   }
   function humK(n) {
     if (n == null) return "—";
