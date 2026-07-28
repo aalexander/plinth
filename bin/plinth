@@ -2156,19 +2156,10 @@ snapshot_one_project() {
     seat_advisor_max="$(sed -n 's/^advisor_model_max[[:space:]]*=[[:space:]]*//p' "$cfgf" 2>/dev/null | head -1 | tr -d '\r')"
   fi
 
-  # Lifecycle phase + plan/handoff presence (v5).
-  # Missing file → build. Existing but corrupt/empty/unknown → harden (fail closed).
-  local life_phase="build" life_file="$dir/.plinth/session/phase-$slug.json"
-  if [ -f "$life_file" ]; then
-    if ! life_phase="$(jq -er '.phase' "$life_file" 2>/dev/null)"; then
-      life_phase=harden
-    else
-      case "$life_phase" in
-        build|harden) ;;
-        *) life_phase=harden ;;
-      esac
-    fi
-  fi
+  # Lifecycle phase via shared reader (encoded + legacy phase files — not review slug).
+  local life_phase
+  life_phase="$(_lifecycle_read_phase "$dir")"
+  case "$life_phase" in build|harden) ;; *) life_phase=harden ;; esac
   local plan_present=false handoff_present=false plan_review_present=false
   [ -f "$dir/PLAN.md" ] && plan_present=true
   [ -f "$dir/HANDOFF.md" ] && handoff_present=true
@@ -3671,9 +3662,10 @@ def append_entries(entries):
                     seen_now.add(eid)
                 if ck is not None:
                     content_now.add(ck)
+            # Flush while still holding the lock; unlock on close (do not unlock early).
+            f.flush()
             try:
-                import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                os.fsync(f.fileno())
             except Exception:
                 pass
     except Exception:
@@ -4751,20 +4743,13 @@ _write_handoff() {
       "> Advisor: \`plinth advise\` anytime." \
       "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
       "" "## Evidence"
+    # Always emit a single Live snapshot; strip prior auto-generated lifecycle bullets
+    # and Live lines so BUILD→HARDEN never leaves contradictory "phase: build" text.
+    live_line="- Live: phase=${phase} reason=${reason} verdict=${verdict}${vsha:+ @ $vsha} HEAD=\`${head}\` branch=\`${branch}\`"
     if [ -n "$evidence_body" ]; then
-      # Preserve operator evidence; refresh Live: snapshot line for phase/reason/verdict.
-      live_line="- Live: phase=${phase} reason=${reason} verdict=${verdict}${vsha:+ @ $vsha} HEAD=\`${head}\`"
-      printf '%s\n' "$evidence_body" | grep -v '^- Live: phase=' || true
-      printf '%s\n' "$live_line"
-    else
-      printf '%s\n' \
-        "- HEAD: \`${head}\` on \`${branch}\`" \
-        "- Lifecycle phase: ${phase}" \
-        "- Snapshot reason: ${reason} (${kind})" \
-        "- Review verdict: ${verdict}${vsha:+ (sha $vsha)}" \
-        "- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)" \
-        "- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)"
+      printf '%s\n' "$evidence_body" | grep -vE '^- (Live: phase=|HEAD: `|Lifecycle phase:|Snapshot reason:|Review verdict:|PLAN\.md:|PLAN-REVIEW\.md:)' || true
     fi
+    printf '%s\n' "$live_line"
     printf '%s\n' "" "## Risks / Noticed"
     if [ -n "$risks_body" ]; then
       printf '%s' "$risks_body"

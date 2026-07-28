@@ -776,24 +776,28 @@ mint_receipt() {  # mint_receipt <round>
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
+# VERSION ↔ CHANGELOG top H2 exact token match (shared with canary).
+# Exit 0 = match, 1 = mismatch/missing. Not a substring: 5.0 ≠ v5.0.0.
+version_changelog_match() {
+  local verfile="${1:-VERSION}" clfile="${2:-CHANGELOG.md}" ver_txt top_entry
+  [ -f "$verfile" ] && [ -f "$clfile" ] || return 1
+  ver_txt="$(tr -d '[:space:]' < "$verfile" 2>/dev/null || true)"
+  top_entry="$(awk '/^## /{print; exit}' "$clfile" 2>/dev/null || true)"
+  [ -n "$ver_txt" ] && [ -n "$top_entry" ] || return 1
+  python3 -c 'import re,sys
+v,t=sys.argv[1],sys.argv[2]
+sys.exit(0 if re.search(r"(^|[^0-9.])"+re.escape(v)+r"([^0-9.]|$)", t) else 1)
+' "$ver_txt" "$top_entry" 2>/dev/null
+}
+
 if [ "$RISK" = "0" ]; then
   # VERSION is Tier-0-eligible as release meta, but only when it matches the top
   # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
   if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
-    ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-    # Top H2 only; exact version token (5.0 must not match v5.0.0). Python re.escape
-    # — bash sed character-class escape was broken (empty pattern → always match).
-    top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
-    ver_ok=0
-    if [ -n "$ver_txt" ] && [ -n "$top_entry" ]; then
-      if python3 -c 'import re,sys
-v,t=sys.argv[1],sys.argv[2]
-sys.exit(0 if re.search(r"(^|[^0-9.])"+re.escape(v)+r"([^0-9.]|$)", t) else 1)
-' "$ver_txt" "$top_entry" 2>/dev/null; then
-        ver_ok=1
-      fi
-    fi
-    if [ "$ver_ok" != 1 ]; then
+    # Shared helper (also used by canary) — must stay the production path.
+    if ! version_changelog_match VERSION CHANGELOG.md; then
+      ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
+      top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
       RISK=1
       RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}" \
         '{tier:1,reasons:["VERSION does not exactly match CHANGELOG top H2 token (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"

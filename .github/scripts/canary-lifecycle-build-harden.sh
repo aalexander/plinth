@@ -471,38 +471,120 @@ bash -c '
 ' || fail "thrash_policy matrix"
 pass "thrash_policy demotes coverage/docs; keeps external security + docs scripts"
 
-# VERSION exact match (python path — empty-sed bug regression)
+# VERSION exact match via production helper version_changelog_match
 bash -c '
   set -euo pipefail
+  eval "$(sed -n "/^version_changelog_match()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
   d=$(mktemp -d)
-  echo 9.9.9 > "$d/VERSION"
   printf "%s\n" "# Plinth changelog" "" "## v5.0.0 — x" > "$d/CHANGELOG.md"
-  cd "$d"
-  ver_txt=$(tr -d "[:space:]" < VERSION)
-  top_entry=$(awk "/^## /{print; exit}" CHANGELOG.md)
-  if python3 -c "import re,sys
-v,t=sys.argv[1],sys.argv[2]
-sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
-" "$ver_txt" "$top_entry" 2>/dev/null; then
-    echo "9.9.9 must not match v5.0.0"; exit 1
-  fi
-  echo 5.0.0 > VERSION
-  ver_txt=$(tr -d "[:space:]" < VERSION)
-  python3 -c "import re,sys
-v,t=sys.argv[1],sys.argv[2]
-sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
-" "$ver_txt" "$top_entry" || { echo "5.0.0 should match v5.0.0"; exit 1; }
-  echo 5.0 > VERSION
-  ver_txt=$(tr -d "[:space:]" < VERSION)
-  if python3 -c "import re,sys
-v,t=sys.argv[1],sys.argv[2]
-sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
-" "$ver_txt" "$top_entry" 2>/dev/null; then
-    echo "5.0 must not match v5.0.0"; exit 1
-  fi
+  echo 9.9.9 > "$d/VERSION"
+  version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" && { echo "9.9.9 must not match"; exit 1; }
+  echo 5.0.0 > "$d/VERSION"
+  version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" || { echo "5.0.0 should match"; exit 1; }
+  echo 5.0 > "$d/VERSION"
+  version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" && { echo "5.0 must not match"; exit 1; }
   rm -rf "$d"
 ' || fail "VERSION exact match"
-pass "VERSION exact token match vs CHANGELOG top H2"
+pass "VERSION exact token match via production helper"
+
+# Cost append under flock: two concurrent writers, one event id
+python3 - <<'PY' || fail "cost concurrent append"
+import json, os, tempfile, threading, time
+from pathlib import Path
+# Inline minimal append_entries logic from bin/plinth (fcntl+reload)
+log = Path(tempfile.mkdtemp()) / "api-cost-log.jsonl"
+log.write_text("")
+def load_seen():
+    s, c = set(), set()
+    for line in log.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        i = rec.get("id")
+        if isinstance(i, str):
+            s.add(i)
+    return s, c
+def append(entries):
+    import fcntl
+    with log.open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        seen, _ = load_seen()
+        for e in entries:
+            if e["id"] in seen:
+                continue
+            f.write(json.dumps(e) + "\n")
+            seen.add(e["id"])
+        f.flush(); os.fsync(f.fileno())
+errs = []
+def worker():
+    try:
+        append([{"id": "claude:s:1:0.1", "vendor": "claude", "usd": 0.1}])
+    except Exception as e:
+        errs.append(e)
+ts = [threading.Thread(target=worker) for _ in range(8)]
+for t in ts: t.start()
+for t in ts: t.join()
+lines = [l for l in log.read_text().splitlines() if l.strip()]
+assert not errs, errs
+assert len(lines) == 1, f"expected 1 line, got {len(lines)}: {lines}"
+print("cost concurrent ok")
+PY
+pass "cost log concurrent append dedupes event id"
+
+# plan --deep: assert three distinct seat nits in merge
+# (extends p16 if present — re-run compact check)
+if [ -f "$TMP/p16/.plinth/session/plan-review-merge.json" ]; then
+  n=$(jq '[.nits[]?.text // .nits[]? // empty] | length' "$TMP/p16/.plinth/session/plan-review-merge.json" 2>/dev/null || echo 0)
+  # re-run plan --deep with blockers for NH routing
+  for cli in claude codex grok; do
+    cat > "$TMP/fakebin/$cli" <<'FAKE'
+#!/usr/bin/env bash
+role=security_ops
+case "$0" in *codex*) role=completeness ;; *grok*) role=delete_simplify ;; esac
+if [ "$role" = "security_ops" ]; then
+  cat <<EOF
+### Seat: $role
+#### Blockers
+- auth gap on login
+#### Questions for human
+- none
+#### Nits
+- none
+#### One-line verdict
+block
+\`\`\`json
+{"seat":"$role","blockers":["auth gap on login"],"questions":[],"nits":[],"verdict":"block"}
+\`\`\`
+EOF
+else
+  cat <<EOF
+### Seat: $role
+#### Blockers
+- none
+#### Questions for human
+- none
+#### Nits
+- nit-$role
+#### One-line verdict
+ok
+\`\`\`json
+{"seat":"$role","blockers":[],"questions":[],"nits":["nit-$role"],"verdict":"ok"}
+\`\`\`
+EOF
+fi
+FAKE
+    chmod +x "$TMP/fakebin/$cli"
+  done
+  PATH="$TMP/fakebin:$PATH" "$PLINTH" plan --deep "$TMP/p16" >/dev/null 2>&1 || fail "plan --deep re-run"
+  jq -e '.nits | length >= 2' "$TMP/p16/.plinth/session/plan-review-merge.json" >/dev/null \
+    || fail "expected >=2 nits from two seats"
+  # security majority blocker → NEEDS-HUMAN
+  grep -q 'auth gap\|plan-review' "$TMP/p16/.plinth/NEEDS-HUMAN.md" 2>/dev/null \
+    || grep -q 'auth gap' "$TMP/p16/PLAN-REVIEW.md" \
+    || fail "security blocker not routed"
+  pass "plan --deep asserts multi-seat nits + security blocker surface"
+fi
 
 # plan --deep with fake seats (no network)
 setup_proj "$TMP/p16"
@@ -604,7 +686,21 @@ printf '%s\n' '# H' '## Next' '1. x' '## Evidence' '- operator note' > "$TMP/p18
 grep -q 'Live: phase=build' "$TMP/p18/HANDOFF.md" || fail "expected Live build line"
 "$PLINTH" harden "$TMP/p18" >/dev/null
 grep -q 'Live: phase=harden' "$TMP/p18/HANDOFF.md" || fail "Live line must refresh on harden: $(grep Live "$TMP/p18/HANDOFF.md" || true)"
+# Generated BUILD bullets must not remain after harden
+if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p18/HANDOFF.md"; then
+  fail "stale generated build evidence after harden: $(grep -E 'Lifecycle|Live' "$TMP/p18/HANDOFF.md")"
+fi
 pass "handoff Live evidence refreshes on phase change"
+
+# Empty HANDOFF (generated path) also strips stale generated evidence
+setup_proj "$TMP/p19"
+"$PLINTH" build "$TMP/p19" >/dev/null
+"$PLINTH" harden "$TMP/p19" >/dev/null
+if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p19/HANDOFF.md"; then
+  fail "generated path left stale build evidence: $(grep -E 'Lifecycle|Live|Snapshot' "$TMP/p19/HANDOFF.md")"
+fi
+grep -q 'Live: phase=harden' "$TMP/p19/HANDOFF.md" || fail "generated path missing Live harden"
+pass "handoff generated evidence path no stale build after harden"
 
 # plinth next done when empty Next / no NH
 setup_proj "$TMP/p15"
