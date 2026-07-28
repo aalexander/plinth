@@ -1341,7 +1341,9 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo a > app.py; git add -A; git commit -qm w >/dev/null
             rc=0; out="$(PATH="$RM9:$PATH" ./.plinth/review.sh main 2>&1)" || rc=$?
             [ "$rc" = 0 ] || { echo "::error::(9c) review with no origin should still APPROVE (rc=$rc)"; exit 1; }
-            printf '%s' "$out" | grep -q 'no resolvable' || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin"; exit 1; }
+            # mint_receipt wording: "origin remote is unset" / "receipt NOT minted" (not the older "no resolvable" phrase).
+            printf '%s' "$out" | grep -qiE "receipt NOT minted|origin. remote is unset|origin is unset" \
+              || { echo "::error::(9c) degraded mint did not ANNOUNCE the missing origin (out=$(printf '%s' "$out" | tr '\n' ' ' | head -c 200))"; exit 1; }
             git notes --ref=plinth-receipts show HEAD >/dev/null 2>&1 && { echo "::error::(9c) minted a receipt with no resolvable origin — a repo:\"\" note can never verify and is worse than none"; exit 1; } || true
             git remote add origin git@github.com:canary/remint.git
             rc=0; PATH="$RM9:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
