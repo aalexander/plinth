@@ -3562,8 +3562,8 @@ def ensure_log():
 
 def load_seen():
     """Return (id_set, content_key_set) for upgrade-safe dedupe.
-    content keys: (vendor, rounded_usd, session_hint) so legacy line/index
-    ids still block re-harvest of the same cost event under a new id shape.
+    content keys: (vendor, usd, session_or_file, line) extracted from known id
+    shapes so a format change cannot re-append the same event.
     """
     seen = set()
     content = set()
@@ -3582,19 +3582,24 @@ def load_seen():
                 i = rec.get("id")
                 if isinstance(i, str) and i:
                     seen.add(i)
-                v = rec.get("vendor")
-                usd = rec.get("usd")
-                if isinstance(v, str) and isinstance(usd, (int, float)):
-                    # session hint: last path-ish segment of id if present
-                    hint = ""
-                    if isinstance(i, str) and ":" in i:
-                        parts = i.split(":")
-                        if len(parts) >= 2:
-                            hint = parts[1]
-                    content.add((v, round(float(usd), 6), hint))
+                    ck = _content_key_from_id(i, rec.get("vendor"), rec.get("usd"))
+                    if ck:
+                        content.add(ck)
     except Exception:
         pass
     return seen, content
+
+def _content_key_from_id(i, v, usd):
+    if not isinstance(i, str) or not isinstance(v, str) or not isinstance(usd, (int, float)):
+        return None
+    parts = i.split(":")
+    # claude:sid:lineno:usd | claude:sid:lineno:idx:usd | codex:file:lineno:usd
+    sess, lineno = "", ""
+    if len(parts) >= 4:
+        sess, lineno = parts[1], parts[2]
+    elif len(parts) >= 3:
+        sess, lineno = parts[1], parts[2]
+    return (v, round(float(usd), 6), sess, str(lineno))
 
 def append_entries(entries):
     if not entries or not ensure_log():
@@ -3857,15 +3862,7 @@ seen, content_seen = load_seen()
 def _content_key(e):
     if not isinstance(e, dict):
         return None
-    v, usd, i = e.get("vendor"), e.get("usd"), e.get("id")
-    if not isinstance(v, str) or not isinstance(usd, (int, float)):
-        return None
-    hint = ""
-    if isinstance(i, str) and ":" in i:
-        parts = i.split(":")
-        if len(parts) >= 2:
-            hint = parts[1]
-    return (v, round(float(usd), 6), hint)
+    return _content_key_from_id(e.get("id"), e.get("vendor"), e.get("usd"))
 
 new_entries = []
 for harvester in (harvest_grok, harvest_claude, harvest_codex):
@@ -4521,12 +4518,17 @@ _write_handoff() {
     return 1
   }
   _handoff_set_primary_next() {
-    local hint="$1" cur="$2" line stripped out=""
+    local hint="$1" cur="$2" line stripped out="" started=0
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
     while IFS= read -r line || [ -n "$line" ]; do
-      # Preserve blank separators and original formatting for operator content.
+      # Preserve blank separators (including leading) and original formatting.
       if [ -z "${line// }" ]; then
-        out="${out}${out:+$'\n'}${line}"
+        if [ "$started" = 0 ]; then
+          out=$'\n'
+          started=1
+        else
+          out="${out}"$'\n'
+        fi
         continue
       fi
       stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
@@ -4535,9 +4537,14 @@ _write_handoff() {
       if _handoff_is_auto_lifecycle "$stripped"; then
         continue
       fi
-      out="${out}${out:+$'\n'}${line}"
+      if [ "$started" = 0 ]; then
+        out="${line}"
+        started=1
+      else
+        out="${out}"$'\n'"${line}"
+      fi
     done <<< "$cur"
-    if [ -n "$out" ]; then
+    if [ "$started" = 1 ]; then
       printf '1. %s\n%s' "$hint" "$out"
     else
       printf '1. %s' "$hint"
