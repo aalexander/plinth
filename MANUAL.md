@@ -534,6 +534,9 @@ Each card shows project path, branch @ head, review verdict / round / stale vs
 HEAD, time since `events.jsonl` activity (when a pulse feed exists), NEEDS-HUMAN
 open/blocking counts (click the orange chip to list up to 50 open items from
 `.plinth/NEEDS-HUMAN.md`; truncated lists say so and point at `plinth queue`), a
+**session** chip that copies `<project>/.plinth/session` (events / review /
+handoff — browsers block `file://` opens from the loopback page, so click =
+copy path, same as the project name), a
 **feedless** flag when there is no event feed (typical for non-Claude drivers),
 **models** as `live` (transcript driver + verdict reviewer; request-N has no
 model field) plus `seats` (config reviewer_tier1/2, audit, advisor,

@@ -1781,6 +1781,8 @@ setTimeout(() => {
       "wall 42s", "models-grid", "mrole",
       "driver", "review", "audit", "advise", "opus", "fable",
       'data-changes="/tmp/alpha"',
+      'data-copy-path="/tmp/alpha/.plinth/session"',
+      ">session</button>",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);

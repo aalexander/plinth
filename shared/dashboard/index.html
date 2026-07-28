@@ -993,6 +993,16 @@
     if (p.burn_per_min != null && p.burn_per_min >= 50) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
+    // Always-on utility: copy project .plinth/session (events, review, handoff).
+    // Browsers block file:// opens from http://127.0.0.1 — same copy pattern as the name.
+    if (p.path) {
+      const sessDir = String(p.path).replace(/\/+$/, "") + "/.plinth/session";
+      chips.push(
+        '<button type="button" class="chip dim btn" data-copy-path="' + esc(sessDir) +
+        '" title="Copy session folder path (events / review / handoff): ' +
+        esc(sessDir) + '">session</button>'
+      );
+    }
 
     const activity = p.activity_secs_ago == null
       ? (p.feedless ? "no feed" : "—")
