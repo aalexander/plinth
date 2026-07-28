@@ -1178,11 +1178,33 @@
     return "$" + s;
   }
 
+  function localUsdMap(sp) {
+    if (!sp || typeof sp !== "object") return {};
+    if (sp.local_usd && typeof sp.local_usd === "object") return sp.local_usd;
+    // Legacy flat keys
+    const m = {};
+    if (sp.local_24h_usd != null) m["24h"] = sp.local_24h_usd;
+    if (sp.local_7d_usd != null) m["7d"] = sp.local_7d_usd;
+    if (sp.local_30d_usd != null) m["30d"] = sp.local_30d_usd;
+    if (sp.local_90d_usd != null) m["90d"] = sp.local_90d_usd;
+    if (sp.local_180d_usd != null) m["180d"] = sp.local_180d_usd;
+    if (sp.local_365d_usd != null) m["365d"] = sp.local_365d_usd;
+    return m;
+  }
+
   /** Best single dollar figure for the compact row. */
   function spendFront(sp) {
     if (!sp || typeof sp !== "object") return null;
-    if (sp.local_24h_usd != null) {
-      return { text: formatUsd(sp.local_24h_usd) + "/24h", title: "Local session cost (24h)" };
+    const loc = localUsdMap(sp);
+    // Prefer week cumulative on the front line (most useful burn signal).
+    if (loc["7d"] != null) {
+      return {
+        text: formatUsd(loc["7d"]) + "/wk",
+        title: "Local session cost · past week (this machine)"
+      };
+    }
+    if (loc["24h"] != null) {
+      return { text: formatUsd(loc["24h"]) + "/24h", title: "Local session cost (24h)" };
     }
     if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) {
       return { text: formatUsd(sp.on_demand_usd) + " OD", title: "On-demand spend" };
@@ -1193,7 +1215,6 @@
     if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) {
       return { text: formatUsd(sp.credits_balance_usd) + " cr", title: "Credits balance" };
     }
-    // Still show $0 on-demand when we know the field (subscription-only seats).
     if (sp.on_demand_usd != null) {
       return { text: "$0", title: "On-demand spend (included plan / no overage)" };
     }
@@ -1217,8 +1238,34 @@
         "</div>"
       );
     }
-    add("24h", sp.local_24h_usd, "local session burn (this machine)");
-    add("7d", sp.local_7d_usd, "local session burn (this machine)");
+    const loc = localUsdMap(sp);
+    const periods = [
+      ["24h", "24h", "cumulative local session $ · past 24 hours"],
+      ["7d", "week", "cumulative local session $ · past 7 days"],
+      ["30d", "month", "cumulative local session $ · past 30 days"],
+      ["90d", "3 mo", "cumulative local session $ · past 90 days"],
+      ["180d", "6 mo", "cumulative local session $ · past 180 days"],
+      ["365d", "year", "cumulative local session $ · past 365 days"]
+    ];
+    let hasLocal = false;
+    periods.forEach(function (row) {
+      const key = row[0];
+      const lab = row[1];
+      const tip = row[2];
+      if (loc[key] != null) {
+        hasLocal = true;
+        add(lab, loc[key], tip);
+      }
+    });
+    if (hasLocal && sp.local_history_days != null) {
+      rows.push(
+        '<div class="drow" title="How far back local session files go on this machine">' +
+          '<span class="dlab">hist</span>' +
+          '<span class="dval dim">' + esc(String(sp.local_history_days)) + "d on disk</span>" +
+          '<span class="dmeta dim">longer windows = available history only</span>' +
+        "</div>"
+      );
+    }
     add("on-dem", sp.on_demand_usd, "account on-demand spend");
     if (sp.on_demand_cap_usd != null) {
       add("OD cap", sp.on_demand_cap_usd, "on-demand monthly cap");

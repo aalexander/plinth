@@ -3162,16 +3162,28 @@ if prepaid is not None:
 if od_used is not None or prepaid is not None:
     src.append("billing")
 
-# Local rolling spend from session updates (bounded scan).
+# Local cumulative spend from session updates (this machine).
+# Periods: 24h, week, month, 3mo, 6mo, year. Single pass; mtime-prefilter to 1y.
 try:
     import time
     from pathlib import Path
     TICKS = 10_000_000_000  # 1e10 ticks per USD
     now_ts = time.time()
-    cut_24 = now_ts - 86400
-    cut_7 = now_ts - 7 * 86400
-    ticks_24 = ticks_7 = 0
+    # label -> days
+    period_days = (
+        ("24h", 1),
+        ("7d", 7),
+        ("30d", 30),
+        ("90d", 90),
+        ("180d", 180),
+        ("365d", 365),
+    )
+    cuts = {lab: now_ts - days * 86400 for lab, days in period_days}
+    cut_year = cuts["365d"]
+    tick_sums = {lab: 0 for lab, _ in period_days}
     files = 0
+    oldest_ts = None
+    newest_ts = None
     root = Path.home() / ".grok" / "sessions"
     if root.is_dir():
         candidates = []
@@ -3180,11 +3192,12 @@ try:
                 m = f.stat().st_mtime
             except Exception:
                 continue
-            if m < cut_7:
+            if m < cut_year:
                 continue
             candidates.append((m, f))
+        # Newest first; no hard cap — year of sessions is the whole tree.
         candidates.sort(reverse=True)
-        for _m, f in candidates[:120]:
+        for _m, f in candidates:
             files += 1
             try:
                 for line in f.open(errors="ignore"):
@@ -3198,28 +3211,45 @@ try:
                     if upd.get("sessionUpdate") != "turn_completed":
                         continue
                     usage = upd.get("usage") if isinstance(upd.get("usage"), dict) else {}
-                    ticks = usage.get("costUsdTicks")
-                    if ticks is None:
+                    raw_ticks = usage.get("costUsdTicks")
+                    if raw_ticks is None:
                         continue
                     try:
-                        ticks = int(ticks)
+                        tval = int(raw_ticks)
                     except Exception:
                         continue
-                    # Event time: prefer record timestamp, else file mtime
                     ts = rec.get("timestamp")
                     try:
                         ts = float(ts)
                     except Exception:
                         ts = _m
-                    if ts >= cut_7:
-                        ticks_7 += ticks
-                    if ts >= cut_24:
-                        ticks_24 += ticks
+                    if ts < cut_year:
+                        continue
+                    if oldest_ts is None or ts < oldest_ts:
+                        oldest_ts = ts
+                    if newest_ts is None or ts > newest_ts:
+                        newest_ts = ts
+                    for lab, cut in cuts.items():
+                        if ts >= cut:
+                            tick_sums[lab] += tval
             except Exception:
                 continue
-    spend["local_24h_usd"] = round(ticks_24 / TICKS, 2)
-    spend["local_7d_usd"] = round(ticks_7 / TICKS, 2)
+    local_usd = {
+        lab: round(tick_sums[lab] / TICKS, 2) for lab, _ in period_days
+    }
+    spend["local_usd"] = local_usd
+    # Back-compat keys used by older UI paths
+    spend["local_24h_usd"] = local_usd["24h"]
+    spend["local_7d_usd"] = local_usd["7d"]
+    spend["local_30d_usd"] = local_usd["30d"]
+    spend["local_90d_usd"] = local_usd["90d"]
+    spend["local_180d_usd"] = local_usd["180d"]
+    spend["local_365d_usd"] = local_usd["365d"]
     spend["local_files_scanned"] = files
+    if oldest_ts is not None:
+        spend["local_history_days"] = max(
+            0, int(round((now_ts - oldest_ts) / 86400))
+        )
     src.append("local_sessions")
 except Exception:
     pass
