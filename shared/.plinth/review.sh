@@ -156,9 +156,11 @@ if [ -z "$diff" ]; then
           "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
           "$SDIR/open-set-fp" "$SDIR/open-set-streak" 2>/dev/null || true
     mkdir -p "$SDIR"
-    # Stamp review_phase from lifecycle (harden must not get BUILD-stamped floors).
+    # Stamp review_phase from lifecycle (encoded or legacy phase file).
     _rph=build
-    case "$(jq -r '.phase // empty' ".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json" 2>/dev/null || true)" in
+    _pf=".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json"
+    [ -f "$_pf" ] || _pf=".plinth/session/phase-$(printf '%s' "$branch" | tr '/ ' '--').json"
+    case "$(jq -r '.phase // empty' "$_pf" 2>/dev/null || true)" in
       harden) _rph=hardening ;;
     esac
     jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg rph "$_rph" \
@@ -837,7 +839,9 @@ if [ "$RISK" = "0" ]; then
   rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
         "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
   _rph=build
-  case "$(jq -r '.phase // empty' ".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json" 2>/dev/null || true)" in
+  _pf=".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json"
+  [ -f "$_pf" ] || _pf=".plinth/session/phase-$(printf '%s' "$branch" | tr '/ ' '--').json"
+  case "$(jq -r '.phase // empty' "$_pf" 2>/dev/null || true)" in
     harden) _rph=hardening ;;
   esac
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \

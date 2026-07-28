@@ -114,7 +114,11 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
       pf="$proj/.plinth/session/phase-$slug.json"
       [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
       if [ -f "$pf" ]; then
-        phase_now="$(jq -r '.phase // empty' "$pf" 2>/dev/null || echo build)"
+        if ! phase_now="$(jq -er '.phase' "$pf" 2>/dev/null)"; then
+          phase_now=harden  # corrupt phase → fail closed (match Stop)
+        else
+          case "$phase_now" in build|harden) ;; *) phase_now=harden ;; esac
+        fi
       fi
       if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
         if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then
@@ -229,7 +233,11 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
       pf="$proj/.plinth/session/phase-$slug.json"
       [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
       if [ -f "$pf" ]; then
-        phase_now="$(jq -r '.phase // empty' "$pf" 2>/dev/null || echo build)"
+        if ! phase_now="$(jq -er '.phase' "$pf" 2>/dev/null)"; then
+          phase_now=harden
+        else
+          case "$phase_now" in build|harden) ;; *) phase_now=harden ;; esac
+        fi
       fi
       if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
         if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then

@@ -4455,12 +4455,15 @@ _lifecycle_slug_legacy() {
   printf '%s' "$b" | tr '/ ' '--'
 }
 
-# Resolve review session dir: prefer encoded slug, fall back to legacy (interop).
+# Resolve review session dir: prefer a directory that actually has verdict.json
+# (encoded first, then legacy). Empty encoded dirs must not mask legacy verdicts.
 _lifecycle_review_dir() {
   local root="$1" enc leg
   enc="$root/.plinth/session/review/$(_lifecycle_slug "$root")"
   leg="$root/.plinth/session/review/$(_lifecycle_slug_legacy "$root")"
-  if [ -d "$enc" ]; then printf '%s' "$enc"
+  if [ -f "$enc/verdict.json" ]; then printf '%s' "$enc"
+  elif [ -f "$leg/verdict.json" ]; then printf '%s' "$leg"
+  elif [ -d "$enc" ]; then printf '%s' "$enc"
   elif [ -d "$leg" ]; then printf '%s' "$leg"
   else printf '%s' "$enc"
   fi
@@ -4621,11 +4624,10 @@ _write_handoff() {
     if [ -s "$_hn" ]; then next=$(_read_sec "$_hn"); fi
     if [ -s "$_hg" ]; then
       goal_body=$(_read_sec "$_hg")
-      # Keep operator Goal unless it is still the placeholder.
-      case "$goal_body" in
-        "(edit:"*|"(edit)"*) goal_body="" ;;
-        *) goal="$goal_body" ;;
-      esac
+      # Keep freeform unless every non-empty line is still a scaffold (edit: ...) line.
+      if printf '%s\n' "$goal_body" | grep -vE '^[[:space:]]*$|^\(edit' | grep -q .; then
+        goal="$goal_body"
+      fi
     fi
     if [ -s "$_he" ]; then evidence_body=$(_read_sec "$_he"); fi
     if [ -s "$_hr" ]; then risks_body=$(_read_sec "$_hr"); fi
