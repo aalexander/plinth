@@ -1196,15 +1196,21 @@
   function spendFront(sp) {
     if (!sp || typeof sp !== "object") return null;
     const loc = localUsdMap(sp);
-    // Prefer week cumulative on the front line (most useful burn signal).
+    const est = sp.pricing === "list_est" ? "~" : "";
+    // Prefer week cumulative API cost on the front line.
     if (loc["7d"] != null) {
       return {
-        text: formatUsd(loc["7d"]) + "/wk",
-        title: "Local session cost · past week (this machine)"
+        text: est + formatUsd(loc["7d"]) + "/wk",
+        title: (sp.pricing === "list_est"
+          ? "API list-price estimate (not subscription) · past week · this machine"
+          : "API-equivalent cost (not subscription) · past week · this machine")
       };
     }
     if (loc["24h"] != null) {
-      return { text: formatUsd(loc["24h"]) + "/24h", title: "Local session cost (24h)" };
+      return {
+        text: est + formatUsd(loc["24h"]) + "/24h",
+        title: "API cost · past 24h · this machine"
+      };
     }
     if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) {
       return { text: formatUsd(sp.on_demand_usd) + " OD", title: "On-demand spend" };
@@ -1215,21 +1221,23 @@
     if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) {
       return { text: formatUsd(sp.credits_balance_usd) + " cr", title: "Credits balance" };
     }
-    if (sp.on_demand_usd != null) {
-      return { text: "$0", title: "On-demand spend (included plan / no overage)" };
-    }
     return null;
   }
 
   function spendDetailHTML(sp) {
     if (!sp || typeof sp !== "object") {
-      return '<div class="drow"><span class="dlab">spend</span>' +
-        '<span class="dval dim">no $ meter from plan API</span></div>';
+      return '<div class="drow"><span class="dlab">API $</span>' +
+        '<span class="dval dim">no API cost stream on this machine</span></div>';
     }
     const rows = [];
+    const est = sp.pricing === "list_est";
     function add(lab, val, tip) {
-      const t = formatUsd(val);
+      let t = formatUsd(val);
       if (t == null) return;
+      if (est && lab !== "on-dem" && lab !== "OD cap" && lab !== "prepaid" &&
+          lab !== "credits" && lab !== "limit") {
+        t = "~" + t;
+      }
       rows.push(
         '<div class="drow" title="' + esc(tip || "") + '">' +
           '<span class="dlab">' + esc(lab) + "</span>" +
@@ -1238,23 +1246,32 @@
         "</div>"
       );
     }
+    // Header explaining what $ means
+    rows.push(
+      '<div class="drow">' +
+        '<span class="dlab">API $</span>' +
+        '<span class="dval dim">' +
+          esc(est
+            ? "list-price estimate (≠ subscription)"
+            : "API-equivalent (≠ subscription)") +
+        "</span>" +
+        '<span class="dmeta dim">' + esc(sp.note || sp.source || "") + "</span>" +
+      "</div>"
+    );
     const loc = localUsdMap(sp);
     const periods = [
-      ["24h", "24h", "cumulative local session $ · past 24 hours"],
-      ["7d", "week", "cumulative local session $ · past 7 days"],
-      ["30d", "month", "cumulative local session $ · past 30 days"],
-      ["90d", "3 mo", "cumulative local session $ · past 90 days"],
-      ["180d", "6 mo", "cumulative local session $ · past 180 days"],
-      ["365d", "year", "cumulative local session $ · past 365 days"]
+      ["24h", "24h", "cumulative API cost · past 24 hours · this machine"],
+      ["7d", "week", "cumulative API cost · past 7 days · this machine"],
+      ["30d", "month", "cumulative API cost · past 30 days · this machine"],
+      ["90d", "3 mo", "cumulative API cost · past 90 days · this machine"],
+      ["180d", "6 mo", "cumulative API cost · past 180 days · this machine"],
+      ["365d", "year", "cumulative API cost · past 365 days · this machine"]
     ];
     let hasLocal = false;
     periods.forEach(function (row) {
-      const key = row[0];
-      const lab = row[1];
-      const tip = row[2];
-      if (loc[key] != null) {
+      if (loc[row[0]] != null) {
         hasLocal = true;
-        add(lab, loc[key], tip);
+        add(row[1], loc[row[0]], row[2]);
       }
     });
     if (hasLocal && sp.local_history_days != null) {
@@ -1266,22 +1283,16 @@
         "</div>"
       );
     }
-    add("on-dem", sp.on_demand_usd, "account on-demand spend");
+    add("on-dem", sp.on_demand_usd, "account on-demand (subscription overage)");
     if (sp.on_demand_cap_usd != null) {
       add("OD cap", sp.on_demand_cap_usd, "on-demand monthly cap");
     }
     add("prepaid", sp.prepaid_usd, "prepaid credit balance");
     add("credits", sp.credits_balance_usd, "plan credits balance");
     if (sp.spend_limit_usd != null) add("limit", sp.spend_limit_usd, "spend control limit");
-    if (!rows.length) {
-      return '<div class="drow"><span class="dlab">spend</span>' +
+    if (rows.length <= 1) {
+      return '<div class="drow"><span class="dlab">API $</span>' +
         '<span class="dval dim">no dollar fields</span></div>';
-    }
-    if (sp.source) {
-      rows.push(
-        '<div class="drow"><span class="dlab">src</span>' +
-          '<span class="dval dim">' + esc(String(sp.source)) + "</span></div>"
-      );
     }
     return rows.join("");
   }

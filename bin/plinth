@@ -3140,9 +3140,9 @@ try:
 except Exception:
     plan = None
 
-# Spend: plan on-demand/prepaid (API) + local session costUsdTicks (1 USD = 1e10 ticks).
+# Billing-only $ fields here; cumulative API cost periods filled in post-pass
+# (shared scanner: Grok costUsdTicks + Claude/Codex list-price estimates).
 spend = {"currency": "USD"}
-src = []
 od_used = num_val(credits_cfg or {}, "onDemandUsed")
 if od_used is None:
     od_used = num_val(cfg, "onDemandUsed")
@@ -3152,109 +3152,14 @@ if od_cap is None:
 prepaid = num_val(credits_cfg or {}, "prepaidBalance")
 if prepaid is None:
     prepaid = num_val(cfg, "prepaidBalance")
-# API values are dollar amounts (interactive /usage shows $).
 if od_used is not None:
     spend["on_demand_usd"] = round(float(od_used), 2)
 if od_cap is not None:
     spend["on_demand_cap_usd"] = round(float(od_cap), 2)
 if prepaid is not None:
     spend["prepaid_usd"] = round(float(prepaid), 2)
-if od_used is not None or prepaid is not None:
-    src.append("billing")
-
-# Local cumulative spend from session updates (this machine).
-# Periods: 24h, week, month, 3mo, 6mo, year. Single pass; mtime-prefilter to 1y.
-try:
-    import time
-    from pathlib import Path
-    TICKS = 10_000_000_000  # 1e10 ticks per USD
-    now_ts = time.time()
-    # label -> days
-    period_days = (
-        ("24h", 1),
-        ("7d", 7),
-        ("30d", 30),
-        ("90d", 90),
-        ("180d", 180),
-        ("365d", 365),
-    )
-    cuts = {lab: now_ts - days * 86400 for lab, days in period_days}
-    cut_year = cuts["365d"]
-    tick_sums = {lab: 0 for lab, _ in period_days}
-    files = 0
-    oldest_ts = None
-    newest_ts = None
-    root = Path.home() / ".grok" / "sessions"
-    if root.is_dir():
-        candidates = []
-        for f in root.rglob("updates.jsonl"):
-            try:
-                m = f.stat().st_mtime
-            except Exception:
-                continue
-            if m < cut_year:
-                continue
-            candidates.append((m, f))
-        # Newest first; no hard cap — year of sessions is the whole tree.
-        candidates.sort(reverse=True)
-        for _m, f in candidates:
-            files += 1
-            try:
-                for line in f.open(errors="ignore"):
-                    if "costUsdTicks" not in line or "turn_completed" not in line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except Exception:
-                        continue
-                    upd = (rec.get("params") or {}).get("update") or {}
-                    if upd.get("sessionUpdate") != "turn_completed":
-                        continue
-                    usage = upd.get("usage") if isinstance(upd.get("usage"), dict) else {}
-                    raw_ticks = usage.get("costUsdTicks")
-                    if raw_ticks is None:
-                        continue
-                    try:
-                        tval = int(raw_ticks)
-                    except Exception:
-                        continue
-                    ts = rec.get("timestamp")
-                    try:
-                        ts = float(ts)
-                    except Exception:
-                        ts = _m
-                    if ts < cut_year:
-                        continue
-                    if oldest_ts is None or ts < oldest_ts:
-                        oldest_ts = ts
-                    if newest_ts is None or ts > newest_ts:
-                        newest_ts = ts
-                    for lab, cut in cuts.items():
-                        if ts >= cut:
-                            tick_sums[lab] += tval
-            except Exception:
-                continue
-    local_usd = {
-        lab: round(tick_sums[lab] / TICKS, 2) for lab, _ in period_days
-    }
-    spend["local_usd"] = local_usd
-    # Back-compat keys used by older UI paths
-    spend["local_24h_usd"] = local_usd["24h"]
-    spend["local_7d_usd"] = local_usd["7d"]
-    spend["local_30d_usd"] = local_usd["30d"]
-    spend["local_90d_usd"] = local_usd["90d"]
-    spend["local_180d_usd"] = local_usd["180d"]
-    spend["local_365d_usd"] = local_usd["365d"]
-    spend["local_files_scanned"] = files
-    if oldest_ts is not None:
-        spend["local_history_days"] = max(
-            0, int(round((now_ts - oldest_ts) / 86400))
-        )
-    src.append("local_sessions")
-except Exception:
-    pass
-if src:
-    spend["source"] = "+".join(src)
+if len(spend) > 1:
+    spend["source"] = "billing"
 
 out = {"vendor": "grok", "available": True, "windows": windows}
 if plan:
@@ -3433,6 +3338,345 @@ try:
 except Exception:
     pass
 ' "$vendors_tmp" "$now" 2>/dev/null || true
+
+  # API-equivalent $ cost (not subscription invoice): Grok server ticks; Claude/Codex
+  # list-price estimates from local token logs. Mutates vendors_tmp. Best-effort.
+  python3 -c '
+import json, sys, time
+from pathlib import Path
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+now_ts = time.time()
+period_days = (
+    ("24h", 1),
+    ("7d", 7),
+    ("30d", 30),
+    ("90d", 90),
+    ("180d", 180),
+    ("365d", 365),
+)
+cuts = {lab: now_ts - d * 86400 for lab, d in period_days}
+
+def empty_sums():
+    return {lab: 0.0 for lab, _ in period_days}
+
+def finalize(usd_sums, files, oldest, source, pricing, note=None):
+    local = {lab: round(usd_sums[lab], 2) for lab, _ in period_days}
+    out = {
+        "currency": "USD",
+        "kind": "api_cost",
+        "pricing": pricing,  # server | list_est
+        "local_usd": local,
+        "local_24h_usd": local["24h"],
+        "local_7d_usd": local["7d"],
+        "local_30d_usd": local["30d"],
+        "local_90d_usd": local["90d"],
+        "local_180d_usd": local["180d"],
+        "local_365d_usd": local["365d"],
+        "local_files_scanned": files,
+        "source": source,
+    }
+    if oldest is not None:
+        out["local_history_days"] = max(0, int(round((now_ts - oldest) / 86400)))
+    if note:
+        out["note"] = note
+    return out
+
+def add_usd(sums, ts, usd):
+    if usd <= 0 or ts is None:
+        return
+    for lab, cut in cuts.items():
+        if ts >= cut:
+            sums[lab] += usd
+
+# ── Grok: server-reported API cost via costUsdTicks (1e10 ticks = $1) ──
+def scan_grok():
+    TICKS = 10_000_000_000
+    sums = empty_sums()
+    files = 0
+    oldest = None
+    root = Path.home() / ".grok" / "sessions"
+    if not root.is_dir():
+        return None
+    cands = []
+    for f in root.rglob("updates.jsonl"):
+        try:
+            m = f.stat().st_mtime
+        except Exception:
+            continue
+        if m < cuts["365d"]:
+            continue
+        cands.append((m, f))
+    cands.sort(reverse=True)
+    for mtime, f in cands:
+        files += 1
+        try:
+            for line in f.open(errors="ignore"):
+                if "costUsdTicks" not in line or "turn_completed" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                upd = (rec.get("params") or {}).get("update") or {}
+                if upd.get("sessionUpdate") != "turn_completed":
+                    continue
+                usage = upd.get("usage") if isinstance(upd.get("usage"), dict) else {}
+                raw = usage.get("costUsdTicks")
+                if raw is None:
+                    continue
+                try:
+                    ticks = int(raw)
+                except Exception:
+                    continue
+                ts = rec.get("timestamp")
+                try:
+                    ts = float(ts)
+                except Exception:
+                    ts = mtime
+                if ts < cuts["365d"]:
+                    continue
+                if oldest is None or ts < oldest:
+                    oldest = ts
+                add_usd(sums, ts, ticks / TICKS)
+        except Exception:
+            continue
+    return finalize(
+        sums, files, oldest,
+        source="local_sessions",
+        pricing="server",
+        note="API-equivalent cost from costUsdTicks (not subscription invoice)",
+    )
+
+# ── Claude: list-price estimate from assistant message token usage ──
+def claude_rates(model):
+    m = (model or "").lower()
+    # $/MTok — public list-ish rates for estimation only
+    if "opus" in m:
+        return 15.0, 75.0, 1.5, 18.75  # in, out, cache_read, cache_create
+    # sonnet / fable / default
+    return 3.0, 15.0, 0.30, 3.75
+
+def scan_claude():
+    sums = empty_sums()
+    files = 0
+    oldest = None
+    root = Path.home() / ".claude" / "projects"
+    if not root.is_dir():
+        return None
+    cands = []
+    for f in root.rglob("*.jsonl"):
+        try:
+            m = f.stat().st_mtime
+        except Exception:
+            continue
+        if m < cuts["365d"]:
+            continue
+        # skip huge one-off dumps
+        try:
+            if f.stat().st_size > 80_000_000:
+                continue
+        except Exception:
+            continue
+        cands.append((m, f))
+    cands.sort(reverse=True)
+    # Cap files to keep probe snappy
+    for mtime, f in cands[:400]:
+        files += 1
+        try:
+            for line in f.open(errors="ignore"):
+                # No single-quotes allowed in this bash-quoted python -c block.
+                if "assistant" not in line or "usage" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+                usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+                if not usage:
+                    continue
+                model = msg.get("model") or rec.get("model") or ""
+                rin, rout, rcr, rcc = claude_rates(model)
+                try:
+                    tin = int(usage.get("input_tokens") or 0)
+                    tout = int(usage.get("output_tokens") or 0)
+                    tcr = int(usage.get("cache_read_input_tokens") or 0)
+                    tcc = int(usage.get("cache_creation_input_tokens") or 0)
+                except Exception:
+                    continue
+                usd = (tin * rin + tout * rout + tcr * rcr + tcc * rcc) / 1_000_000.0
+                if usd <= 0:
+                    continue
+                ts = rec.get("timestamp")
+                if isinstance(ts, str) and len(ts) >= 19:
+                    try:
+                        ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        ts = mtime
+                else:
+                    try:
+                        ts = float(ts)
+                    except Exception:
+                        ts = mtime
+                if ts < cuts["365d"]:
+                    continue
+                if oldest is None or ts < oldest:
+                    oldest = ts
+                add_usd(sums, ts, usd)
+        except Exception:
+            continue
+    return finalize(
+        sums, files, oldest,
+        source="local_sessions",
+        pricing="list_est",
+        note="API list-price estimate from assistant tokens (not subscription invoice)",
+    )
+
+# ── Codex: list-price estimate from last_token_usage deltas ──
+def scan_codex():
+    # Rough GPT-class coding rates $/MTok
+    R_IN, R_OUT, R_CACHE = 1.25, 10.0, 0.125
+    sums = empty_sums()
+    files = 0
+    oldest = None
+    root = Path.home() / ".codex" / "sessions"
+    if not root.is_dir():
+        return None
+    cands = []
+    for f in root.rglob("*.jsonl"):
+        try:
+            m = f.stat().st_mtime
+        except Exception:
+            continue
+        if m < cuts["365d"]:
+            continue
+        cands.append((m, f))
+    cands.sort(reverse=True)
+    for mtime, f in cands[:800]:
+        files += 1
+        try:
+            for line in f.open(errors="ignore"):
+                if "token_count" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                # Shape: {type: event_msg, payload: {type: token_count, info: {...}}}
+                payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+                if rec.get("type") == "token_count":
+                    # older flat shape
+                    info = payload.get("info") if isinstance(payload.get("info"), dict) else payload
+                    if not isinstance(info, dict):
+                        info = {}
+                    u = info.get("last_token_usage")
+                elif payload.get("type") == "token_count":
+                    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                    u = info.get("last_token_usage")
+                else:
+                    continue
+                if not isinstance(u, dict):
+                    continue
+                try:
+                    tin = int(u.get("input_tokens") or 0)
+                    tout = int(u.get("output_tokens") or 0)
+                    tcache = int(u.get("cached_input_tokens") or 0)
+                except Exception:
+                    continue
+                # cached tokens are a subset of input in some schemas — charge cache rate on cache, full on non-cache
+                non_cache = max(0, tin - tcache)
+                usd = (non_cache * R_IN + tcache * R_CACHE + tout * R_OUT) / 1_000_000.0
+                if usd <= 0:
+                    continue
+                ts = rec.get("timestamp")
+                if isinstance(ts, str) and len(ts) >= 19:
+                    try:
+                        ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        ts = mtime
+                else:
+                    try:
+                        ts = float(ts)
+                    except Exception:
+                        ts = mtime
+                if ts < cuts["365d"]:
+                    continue
+                if oldest is None or ts < oldest:
+                    oldest = ts
+                add_usd(sums, ts, usd)
+        except Exception:
+            continue
+    return finalize(
+        sums, files, oldest,
+        source="local_sessions",
+        pricing="list_est",
+        note="API list-price estimate from token_count deltas (not ChatGPT subscription invoice)",
+    )
+
+scanners = {
+    "grok": scan_grok,
+    "claude": scan_claude,
+    "codex": scan_codex,
+}
+
+try:
+    lines = open(path, "r", encoding="utf-8").read().splitlines()
+except Exception:
+    sys.exit(0)
+
+out_lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        out_lines.append(line)
+        continue
+    if not isinstance(obj, dict) or obj.get("available") is not True:
+        out_lines.append(json.dumps(obj, separators=(",", ":")))
+        continue
+    vendor = obj.get("vendor")
+    scan = scanners.get(vendor)
+    if not scan:
+        out_lines.append(json.dumps(obj, separators=(",", ":")))
+        continue
+    try:
+        api_spend = scan()
+    except Exception:
+        api_spend = None
+    if not api_spend:
+        out_lines.append(json.dumps(obj, separators=(",", ":")))
+        continue
+    # Merge: keep billing on-demand/prepaid from probe; prefer API-cost periods from scan.
+    prev = obj.get("spend") if isinstance(obj.get("spend"), dict) else {}
+    merged = dict(prev)
+    for k, v in api_spend.items():
+        if k in ("on_demand_usd", "on_demand_cap_usd", "prepaid_usd", "credits_balance_usd",
+                 "spend_limit_usd") and k in prev:
+            continue  # keep billing fields from probe
+        merged[k] = v
+    # Compose source string
+    src_bits = []
+    if prev.get("source"):
+        src_bits.append(str(prev["source"]))
+    if api_spend.get("source") and api_spend.get("source") not in src_bits:
+        src_bits.append(api_spend["source"])
+    if src_bits:
+        merged["source"] = "+".join(src_bits)
+    # Mark clearly for UI
+    merged["kind"] = "api_cost"
+    obj["spend"] = merged
+    out_lines.append(json.dumps(obj, separators=(",", ":")))
+
+try:
+    open(path, "w", encoding="utf-8").write("\n".join(out_lines) + ("\n" if out_lines else ""))
+except Exception:
+    pass
+' "$vendors_tmp" 2>/dev/null || true
 
   # Assemble: enrich EACH available vendor with linear-from-reset burn projection;
   # overall = claude week_all_models when present.
