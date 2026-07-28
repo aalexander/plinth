@@ -101,8 +101,10 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
     case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: PR-from-base is moot; not gated
     head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
-    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
+    slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
     vf="$proj/.plinth/session/review/$slug/verdict.json"
+    [ -f "$vf" ] || vf="$proj/.plinth/session/review/$slug_legacy/verdict.json"
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
@@ -201,9 +203,11 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
 
     branch="$resolved_branch"
     head="$resolved_sha"
-    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
+    slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
     # Verdict lives in the worktree that ran the review; do not search other worktrees.
     vf="$proj/.plinth/session/review/$slug/verdict.json"
+    [ -f "$vf" ] || vf="$proj/.plinth/session/review/$slug_legacy/verdict.json"
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"

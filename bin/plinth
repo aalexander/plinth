@@ -1344,7 +1344,7 @@ run_smoke() {
   [ $# -ge 1 ] || usage
   local br rslug rdir ts log start end rc=0
   br="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-  rslug="$(printf '%s' "$br" | tr '/ ' '--')"
+  rslug="$(printf '%s' "$br" | sed 's/\//%2F/g; s/ /%20/g')"
   rdir="$target/.plinth/session/run/$rslug"
   mkdir -p "$rdir"
   [ -f "$target/.plinth/session/.gitignore" ] || printf '*\n' > "$target/.plinth/session/.gitignore"
@@ -1380,8 +1380,12 @@ statusline_render() {
   local head vfile
   head="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '-')"
   local sslug nh=""
-  sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
-  vfile="$dir/.plinth/session/review/${sslug:-detached}/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  sslug="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  sslug_enc="$(printf '%s' "$sslug" | sed 's/\//%2F/g; s/ /%20/g')"
+  sslug_leg="$(printf '%s' "$sslug" | tr '/ ' '--')"
+  vfile="$dir/.plinth/session/review/${sslug_enc}/verdict.json"
+  [ -f "$vfile" ] || vfile="$dir/.plinth/session/review/${sslug_leg}/verdict.json"
+  [ -f "$vfile" ] || vfile=/dev/null
   local nhblk="" nhf; nhf="$(needs_human_file "$dir")"
   if [ -s "$nhf" ]; then
     nh="$(grep -cE '^- \[ \]' "$nhf" 2>/dev/null || echo 1)"
@@ -1446,8 +1450,11 @@ watch_project() {
   if [ "$opt" = "--once" ]; then capture_tty_size; render_frame; exit 0; fi
   local EV="$target/.plinth/session/events.jsonl"
   local wslug VD
-  wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
-  VD="$target/.plinth/session/review/${wslug:-detached}/verdict.json"
+  wslug="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  wslug_enc="$(printf '%s' "$wslug" | sed 's/\//%2F/g; s/ /%20/g')"
+  wslug_leg="$(printf '%s' "$wslug" | tr '/ ' '--')"
+  VD="$target/.plinth/session/review/${wslug_enc}/verdict.json"
+  [ -f "$VD" ] || VD="$target/.plinth/session/review/${wslug_leg}/verdict.json"
   # mtime+size stamp, BSD then GNU stat.
   fstamp() { stat -f '%m %z' "$1" 2>/dev/null || stat -c '%Y %s' "$1" 2>/dev/null || echo 0; }
   # Alt screen + hidden cursor; restore on exit. Clear once at startup only.
@@ -4454,6 +4461,22 @@ _lifecycle_slug_legacy() {
   printf '%s' "$b" | tr '/ ' '--'
 }
 
+# Resolve review session dir: prefer encoded slug, fall back to legacy (interop).
+_lifecycle_review_dir() {
+  local root="$1" enc leg
+  enc="$root/.plinth/session/review/$(_lifecycle_slug "$root")"
+  leg="$root/.plinth/session/review/$(_lifecycle_slug_legacy "$root")"
+  if [ -d "$enc" ]; then printf '%s' "$enc"
+  elif [ -d "$leg" ]; then printf '%s' "$leg"
+  else printf '%s' "$enc"
+  fi
+}
+_lifecycle_verdict_file() {
+  local d
+  d="$(_lifecycle_review_dir "$1")"
+  printf '%s' "$d/verdict.json"
+}
+
 _lifecycle_phase_file() {
   local root="$1" slug
   slug=$(_lifecycle_slug "$root")
@@ -4540,7 +4563,7 @@ _write_handoff() {
   branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
   phase=$(_lifecycle_read_phase "$root")
   slug=$(_lifecycle_slug "$root")
-  vfile="$root/.plinth/session/review/$slug/verdict.json"
+  vfile="$(_lifecycle_verdict_file "$root")"
   verdict="none"; vsha=""
   if [ -f "$vfile" ]; then
     verdict=$(jq -r '.verdict // "none"' "$vfile" 2>/dev/null || echo none)
@@ -4729,13 +4752,10 @@ _write_handoff() {
       "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
       "" "## Evidence"
     if [ -n "$evidence_body" ]; then
-      printf '%s' "$evidence_body"
-      case "$evidence_body" in *$'\n') ;; *) printf '\n' ;; esac
-      # Append live HEAD line only if not already present (avoid infinite duplicates).
-      if ! printf '%s' "$evidence_body" | grep -qF "HEAD: \`${head}\`"; then
-        printf '%s\n' "- HEAD: \`${head}\` on \`${branch}\` (refresh ${ts})" \
-          "- Lifecycle phase: ${phase} · Snapshot: ${reason} (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}"
-      fi
+      # Preserve operator evidence; refresh Live: snapshot line for phase/reason/verdict.
+      live_line="- Live: phase=${phase} reason=${reason} verdict=${verdict}${vsha:+ @ $vsha} HEAD=\`${head}\`"
+      printf '%s\n' "$evidence_body" | grep -v '^- Live: phase=' || true
+      printf '%s\n' "$live_line"
     else
       printf '%s\n' \
         "- HEAD: \`${head}\` on \`${branch}\`" \
@@ -5160,7 +5180,7 @@ run_next() {
   slug=$(_lifecycle_slug "$root")
   phase=$(_lifecycle_read_phase "$root")
   head=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "?")
-  vfile="$root/.plinth/session/review/$slug/verdict.json"
+  vfile="$(_lifecycle_verdict_file "$root")"
   verdict=""; vsha=""
   if [ -f "$vfile" ]; then
     verdict=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
@@ -5214,7 +5234,7 @@ run_next() {
     fi
     # Check latest findings for open majors (basename numeric N — not full-path sort)
     local fdir latest
-    fdir="$root/.plinth/session/review/$slug"
+    fdir="$(_lifecycle_review_dir "$root")"
     latest=$(_latest_findings_json "$fdir")
     if [ -n "$latest" ] && [ -f "$latest" ]; then
       local openf

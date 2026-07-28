@@ -1258,7 +1258,7 @@ sticky_process_findings() {  # <findings-json-path>
     # Class-stable fingerprints for paraphrased thrash classes (no severity —
     # major→minor demotion must not mint a new id).
     def is_real_test_gap_desc:
-      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
+      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
@@ -1346,7 +1346,7 @@ sticky_process_findings() {  # <findings-json-path>
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def is_real_test_gap_desc:
-      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
+      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
@@ -1401,7 +1401,7 @@ sticky_process_findings() {  # <findings-json-path>
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def is_real_test_gap_desc:
-      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
+      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap

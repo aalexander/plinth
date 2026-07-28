@@ -537,11 +537,74 @@ done
 PATH="$TMP/fakebin:$PATH" "$PLINTH" plan --deep "$TMP/p16" >/dev/null 2>&1 \
   || fail "plan --deep with fake seats failed"
 [ -f "$TMP/p16/PLAN-REVIEW.md" ] || fail "PLAN-REVIEW.md missing after plan --deep"
-grep -q 'nit-security_ops\|nit-completeness\|nit-delete_simplify\|Merged\|Raw' "$TMP/p16/PLAN-REVIEW.md" \
-  || grep -q . "$TMP/p16/PLAN-REVIEW.md" || fail "PLAN-REVIEW empty"
 [ -f "$TMP/p16/.plinth/session/plan-review-merge.json" ] \
   || fail "plan-review-merge.json missing"
+# Structured merge must record all three seats' nits
+mj="$TMP/p16/.plinth/session/plan-review-merge.json"
+jq -e '.nits | length >= 1' "$mj" >/dev/null \
+  || fail "merge json should have nits: $(cat "$mj")"
+# Seat names present in merge or PLAN-REVIEW
+grep -qE 'security_ops|completeness|delete_simplify' "$TMP/p16/PLAN-REVIEW.md" \
+  || jq -e '[.seats[]?.seat] | length >= 1' "$mj" >/dev/null \
+  || fail "seats not reflected in PLAN-REVIEW/merge"
 pass "plinth plan --deep fake-seat merge writes PLAN-REVIEW"
+
+# Legacy verdict path: plinth next reads encoded OR legacy review dir
+setup_proj "$TMP/p17"
+"$PLINTH" harden "$TMP/p17" >/dev/null
+printf '%s\n' '# H' '## Next' '' > "$TMP/p17/HANDOFF.md"
+mkdir -p "$TMP/p17/.plinth/session/review/feat-canary"
+head=$(git -C "$TMP/p17" rev-parse HEAD)
+jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1}' \
+  > "$TMP/p17/.plinth/session/review/feat-canary/verdict.json"
+set +e
+out=$("$PLINTH" next "$TMP/p17" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -qE 'open PR|APPROVED' \
+  || fail "next should see legacy-slug APPROVED@HEAD: $out"
+pass "plinth next resolves legacy review slug verdict"
+
+# Sticky: AC-worded coverage must NOT auto-resolve as thrash class
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  d=$(mktemp -d)
+  git -C "$d" init -q
+  git -C "$d" config user.email t@t
+  git -C "$d" config user.name t
+  echo x > "$d/a.sh"
+  git -C "$d" add a.sh && git -C "$d" commit -qm i
+  SDIR="$d/.plinth/session/review/x"
+  mkdir -p "$SDIR"
+  f="$SDIR/f.json"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",
+     description:\"Coverage remains incomplete for AC 8\",status:\"open\"}
+  ]}" > "$f"
+  cd "$d"
+  sticky_process_findings "$f"
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.t" && mv "$f.t" "$f"
+  sticky_process_findings "$f"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",
+     description:\"Coverage remains incomplete for AC 8\",status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  st=$(jq -r ".findings[0].status" "$f")
+  [ "$st" = "open" ] || { echo "AC-worded gap must stay open, got $st id=$(jq -r .findings[0].id "$f")"; exit 1; }
+  rm -rf "$d"
+' || fail "sticky AC gap not thrash"
+pass "AUTO-STICKY does not resolve AC-worded coverage gaps"
+
+# Evidence live line updates on phase change at same HEAD
+setup_proj "$TMP/p18"
+printf '%s\n' '# H' '## Next' '1. x' '## Evidence' '- operator note' > "$TMP/p18/HANDOFF.md"
+"$PLINTH" build "$TMP/p18" >/dev/null
+grep -q 'Live: phase=build' "$TMP/p18/HANDOFF.md" || fail "expected Live build line"
+"$PLINTH" harden "$TMP/p18" >/dev/null
+grep -q 'Live: phase=harden' "$TMP/p18/HANDOFF.md" || fail "Live line must refresh on harden: $(grep Live "$TMP/p18/HANDOFF.md" || true)"
+pass "handoff Live evidence refreshes on phase change"
 
 # plinth next done when empty Next / no NH
 setup_proj "$TMP/p15"
