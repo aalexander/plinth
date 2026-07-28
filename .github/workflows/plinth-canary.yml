@@ -1484,12 +1484,14 @@ jobs:
           git -C "$R9D_PROJ" notes --ref=plinth-receipts add -m "$R9D_RECEIPT" "$R9D_HEAD"
           git -C "$R9D_PROJ" push -q origin refs/notes/plinth-receipts
           echo '{"pull_request":{"body":""}}' > "$R9D_PROJ/event.json"
-          # `gh` stub for the TOCTOU re-fetch: same head + empty body as the fixture, so
-          # the happy path's live re-check matches.
+          # `gh` stub for the TOCTOU re-fetch: fixed head + live origin/main of the
+          # fixture project + empty body. Resolve base via absolute -C path (step may
+          # cd into /tmp/plinth). Updates automatically when r9d_base_pin moves main.
           R9D_GHDIR="$(mktemp -d)"
           cat > "$R9D_GHDIR/gh" <<GHEOF
           #!/usr/bin/env bash
-          echo '{"sha":"'"$R9D_HEAD"'","body":""}'
+          base=\$(git -C "${R9D_PROJ}" rev-parse origin/main 2>/dev/null || true)
+          printf '%s\n' "{\"sha\":\"${R9D_HEAD}\",\"base_sha\":\"\${base}\",\"body\":\"\"}"
           GHEOF
           chmod +x "$R9D_GHDIR/gh"
           # 1: HAPPY PATH — the extracted script must verify a real receipt end to end.
