@@ -541,8 +541,11 @@ copy path, same as the project name), a
 **models** as `live` (transcript driver + verdict reviewer; request-N has no
 model field) plus `seats` (config reviewer_tier1/2, audit, advisor,
 advisor_model_max — never labeled as live), **phase timing** for the **active
-SID only** in the events tail (see below), and **observed** driver burn when a
-Claude transcript is reachable.
+SID only** in the events tail (see below), **observed** driver burn when a
+Claude transcript is reachable, and watch-parity session live fields from the
+same events tail: **now** (last PostToolUse), **evidence** (last VERIFY-class
+test runner Bash + exit code), **signals** (guard blocks / gate releases as
+chips; compactions / subagents as a sig line).
 
 **Phase timing (bottleneck heuristic, not instrumented tool clocks):**
 - Scope: active session id only (latest SID in the 10k-line events tail).

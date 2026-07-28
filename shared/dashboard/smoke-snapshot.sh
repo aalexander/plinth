@@ -70,11 +70,18 @@ jq -nc --argjson epoch "$((NOW - 60))" \
 jq -nc --argjson epoch "$((NOW - 40))" \
   '{ts:"2026-01-01T00:01:00Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Read",detail:"f.txt",rc:0}' \
   >> "$A/.plinth/session/events.jsonl"
+# VERIFY-class evidence (test runner) + guard signal
+jq -nc --argjson epoch "$((NOW - 35))" \
+  '{ts:"2026-01-01T00:01:05Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"pytest -q",rc:1}' \
+  >> "$A/.plinth/session/events.jsonl"
+jq -nc --argjson epoch "$((NOW - 32))" \
+  '{ts:"2026-01-01T00:01:08Z",epoch:$epoch,event:"guard_block",sid:"sid-smoke",transcript:null,tool:null,detail:"protected path",rc:null}' \
+  >> "$A/.plinth/session/events.jsonl"
 # Noise SID must not pollute active phases
 jq -nc --argjson epoch "$((NOW - 30))" \
   '{ts:"2026-01-01T00:01:10Z",epoch:$epoch,event:"PostToolUse",sid:"other-sid",transcript:null,tool:"Bash",detail:"gh pr view",rc:0}' \
   >> "$A/.plinth/session/events.jsonl"
-# Return to active SID
+# Return to active SID — latest "now" tool
 jq -nc --argjson epoch "$((NOW - 10))" \
   '{ts:"2026-01-01T00:01:30Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"./plinth advise x",rc:0}' \
   >> "$A/.plinth/session/events.jsonl"
@@ -662,14 +669,23 @@ jq -e --arg head "$HEAD" '
   and .model_reviewer == "gpt-test"
   and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
   and (.phases | type == "object")
-  # Event-gap heuristic: Edit 30s (90→60), Read 20s (60→40); other-sid ignored;
-  # return-to-active Bash advise credits the gap since last same-SID event (30s).
+  # Event-gap: Edit 30s, Read 20s; pytest 5s shell + guard 3s shell; advise 22s;
+  # other-sid ignored. UserPrompt gap 10s → other.
   and .phases.coding == 30
   and .phases.research == 20
-  and .phases.advising == 30
+  and .phases.advising == 22
+  and ((.phases.shell // 0) == 8)
   and ((.phases.ci // 0) == 0)
   and (.review_round_secs | type == "number")
   and ((.phases.other // 0) == 10)
+  # Watch-parity session live fields
+  and .now != null
+  and .now.tool == "Bash"
+  and (.now.detail | test("plinth advise"))
+  and .evidence != null
+  and (.evidence.cmd | test("pytest"))
+  and .evidence.rc == 1
+  and .signals.guard_blocks == 1
   and (.activity_secs_ago != null)
   and (.activity_secs_ago | type == "number")
   and .activity_secs_ago >= 0

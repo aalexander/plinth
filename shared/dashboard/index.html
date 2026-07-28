@@ -426,6 +426,7 @@
     white-space: nowrap;
   }
   .kv dd.muted { color: var(--muted); }
+  .kv dd.warn { color: var(--yellow); }
   .kv dd.task, .kv dd.wrap { white-space: normal; line-height: 1.35; color: var(--muted); }
   .kv dd.models { white-space: normal; overflow: visible; text-overflow: unset; }
   .models-grid {
@@ -993,6 +994,19 @@
     if (p.burn_per_min != null && p.burn_per_min >= 50) {
       chips.push('<span class="chip cyan">' + humK(p.burn_per_min) + "/min</span>");
     }
+    const sig = p.signals || {};
+    if (sig.guard_blocks != null && Number(sig.guard_blocks) > 0) {
+      chips.push(
+        '<span class="chip red" title="Guard blocks this session (protected path / ship tripwire)">' +
+          "guard ×" + esc(String(sig.guard_blocks)) + "</span>"
+      );
+    }
+    if (sig.gate_releases != null && Number(sig.gate_releases) > 0) {
+      chips.push(
+        '<span class="chip red" title="Session gate releases — unreviewed work may have escaped">' +
+          "gate rel ×" + esc(String(sig.gate_releases)) + "</span>"
+      );
+    }
     // Always-on utility: copy project .plinth/session (events, review, handoff).
     // Browsers block file:// opens from http://127.0.0.1 — same copy pattern as the name.
     if (p.path) {
@@ -1044,6 +1058,35 @@
     if (p.tokens_total != null) burnBits.push(humK(p.tokens_total) + " tok");
     const phases = phaseBar(p.phases);
 
+    // Watch-parity: last tool (now) + last VERIFY-class test (evidence).
+    function liveLine(obj, kind) {
+      if (!obj || typeof obj !== "object") return null;
+      const bits = [];
+      if (kind === "now") {
+        if (obj.tool) bits.push(String(obj.tool));
+        if (obj.detail) bits.push(String(obj.detail).slice(0, 56));
+      } else {
+        if (obj.cmd) bits.push(String(obj.cmd).slice(0, 56));
+        else if (obj.detail) bits.push(String(obj.detail).slice(0, 56));
+      }
+      if (obj.rc != null) {
+        bits.push(obj.rc === 0 ? "exit 0" : ("exit " + obj.rc));
+      }
+      if (obj.secs_ago != null && !Number.isNaN(Number(obj.secs_ago))) {
+        bits.push(hum(Math.max(0, Number(obj.secs_ago))) + " ago");
+      }
+      return bits.length ? bits.join(" · ") : null;
+    }
+    const nowLine = liveLine(p.now, "now");
+    const evLine = liveLine(p.evidence, "evidence");
+    const sigBits = [];
+    if (sig.compactions != null && Number(sig.compactions) > 0) {
+      sigBits.push("compact ×" + sig.compactions);
+    }
+    if (sig.subagents != null && Number(sig.subagents) > 0) {
+      sigBits.push("sub ×" + sig.subagents);
+    }
+
     const sub = [
       esc(p.branch) + " @" + esc(p.head),
       activity,
@@ -1055,6 +1098,9 @@
     // Show cleaned prompt only if headline is next (avoid duplicating same text)
     const showPrompt = prompt && next && prompt.toLowerCase() !== next.toLowerCase()
       && prompt.slice(0, 40).toLowerCase() !== next.slice(0, 40).toLowerCase();
+
+    const evCls = (p.evidence && p.evidence.rc != null && p.evidence.rc !== 0)
+      ? " class=\"warn\"" : "";
 
     return (
       '<article class="card ' + tone + '" data-path="' + esc(p.path) + '">' +
@@ -1079,10 +1125,22 @@
           (modelsHtml
             ? '<dt>models</dt><dd class="models">' + modelsHtml + "</dd>"
             : "") +
+          (nowLine
+            ? '<dt title="Last PostToolUse (what the driver is doing)">now</dt>' +
+              '<dd class="muted" title="Last tool activity">' + esc(nowLine) + "</dd>"
+            : "") +
+          (evLine
+            ? '<dt title="Last test-runner command this session (Rule 10 evidence)">evid</dt>' +
+              "<dd" + evCls + ' title="Last VERIFY-class Bash">' + esc(evLine) + "</dd>"
+            : "") +
           (burnBits.length
             ? "<dt title=\"Token burn — thrash / intensity (not plan $)\">tok</dt>" +
               "<dd class=\"muted\" title=\"Token burn — thrash / intensity (not plan $)\">" +
               esc(burnBits.join(" · ")) + "</dd>"
+            : "") +
+          (sigBits.length
+            ? '<dt title="Session signals (compactions / subagents)">sig</dt>' +
+              '<dd class="muted">' + esc(sigBits.join(" · ")) + "</dd>"
             : "") +
         "</dl>" +
         (phases ? '<div>' + phases + "</div>" : "") +
@@ -1548,6 +1606,12 @@
     if (r.verdict === "CHANGES_NEEDED") s += 220;
     if (r.verdict === "UNBOUND") s += 200;
     if (p.error) s += 480;
+    const sigA = p.signals || {};
+    if (sigA.guard_blocks != null && Number(sigA.guard_blocks) > 0) {
+      s += 180 + Number(sigA.guard_blocks) * 10;
+    }
+    if (sigA.gate_releases != null && Number(sigA.gate_releases) > 0) s += 200;
+    if (p.evidence && p.evidence.rc != null && p.evidence.rc !== 0) s += 120;
     if (p.activity_secs_ago != null && p.activity_secs_ago < 600) s += 30;
     if (r.verdict === "APPROVED" && !r.stale) s -= 50;
     return s;

@@ -2160,6 +2160,7 @@ snapshot_one_project() {
   # (coding / research / reviewing / advising / ci / shell / planning / other).
   local sid="" session_t0="" task="" transcript_path=""
   local phases_json='{}'
+  local live_now_json=null live_evidence_json=null live_signals_json='{}'
   local events_parse_failed=false
   if [ "$feedless" -eq 0 ]; then
     local meta_out meta_rc=0 ev_tmp=""
@@ -2191,6 +2192,15 @@ snapshot_one_project() {
                elif ($d | test("\\bgh\\b|canary|ci\\.yml|\\bact\\b|workflow")) then "ci"
                else "shell" end)
           else "other" end;
+        # Same VERIFY detector as plinth watch (test runners only — not review.sh).
+        def is_verify_bash($detail):
+          ($detail // "")
+          | test("(^|[;&|(\\s])(pytest|go test|cargo (test|nextest|check)|npm (test|run test)|yarn test|pnpm test|python3? -m (pytest|unittest)|make (test|check)|mix test|rspec|jest|vitest|tox|swift test)");
+        def clipd($s; $n):
+          if $s == null then null
+          elif ($s|type) != "string" then null
+          elif ($s|length) > $n then $s[0:$n]
+          else $s end;
         # Phase timing (active SID only) — EVENT-GAP HEURISTIC, not instrumented
         # tool wall clocks (pulse often has PostToolUse without PreToolUse):
         # - PostToolUse: gap since previous same-SID event is attributed to that
@@ -2198,6 +2208,7 @@ snapshot_one_project() {
         # - PreToolUse: gap is idle/previous; then phase becomes the new tool.
         # - Other events: gap accrues to last_phase; UserPromptSubmit -> planning.
         # Gaps >=3600s are dropped (session pause).
+        # Also tracks last PostToolUse (now), last VERIFY Bash (evidence), signals.
         reduce inputs as $e (
           {cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
@@ -2211,7 +2222,10 @@ snapshot_one_project() {
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0:null, task:null, tr:null, phases:{},
-                              last_epoch:null, last_phase:"other"}
+                              last_epoch:null, last_phase:"other",
+                              last_post:null, last_verify:null,
+                              signals:{guard_blocks:0, gate_releases:0,
+                                       compactions:0, subagents:0}}
              else . end)
             | .cur = $e.sid
             | .by[$e.sid] as $S
@@ -2238,18 +2252,51 @@ snapshot_one_project() {
             | if $e.epoch != null then .by[$e.sid].last_epoch = $e.epoch else . end
             | if $e.event == "PostToolUse"
               then .by[$e.sid].last_phase = phase_of($e.tool; $e.detail)
+                   | .by[$e.sid].last_post = {
+                       tool: ($e.tool // null),
+                       detail: clipd($e.detail; 80),
+                       rc: (if ($e.rc|type) == "number" then $e.rc else null end),
+                       epoch: $e.epoch
+                     }
+                   | if ($e.tool == "Bash" or $e.tool == "bash")
+                        and is_verify_bash($e.detail)
+                     then .by[$e.sid].last_verify = {
+                       cmd: clipd($e.detail; 80),
+                       rc: (if ($e.rc|type) == "number" then $e.rc else null end),
+                       epoch: $e.epoch
+                     }
+                     else . end
               elif $e.event == "PreToolUse"
               then .by[$e.sid].last_phase = phase_of($e.tool; $e.detail)
               elif $e.event == "UserPromptSubmit"
               then .by[$e.sid].last_phase = "planning"
+              elif $e.event == "guard_block"
+              then .by[$e.sid].signals.guard_blocks =
+                     ((.by[$e.sid].signals.guard_blocks // 0) + 1)
+              elif $e.event == "gate_release"
+              then .by[$e.sid].signals.gate_releases =
+                     ((.by[$e.sid].signals.gate_releases // 0) + 1)
+              elif $e.event == "PreCompact"
+              then .by[$e.sid].signals.compactions =
+                     ((.by[$e.sid].signals.compactions // 0) + 1)
+              elif $e.event == "SubagentStop"
+              then .by[$e.sid].signals.subagents =
+                     ((.by[$e.sid].signals.subagents // 0) + 1)
               else . end
           end
         )
-        | if .cur == null then {sid:null, t0:null, task:null, tr:null, phases:{}}
+        | if .cur == null then
+            {sid:null, t0:null, task:null, tr:null, phases:{},
+             now:null, evidence:null,
+             signals:{guard_blocks:0, gate_releases:0, compactions:0, subagents:0}}
           else
             ((.by[.cur] // {}) as $S
              | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
-                phases:($S.phases // {})})
+                phases:($S.phases // {}),
+                now:($S.last_post // null),
+                evidence:($S.last_verify // null),
+                signals:($S.signals // {guard_blocks:0, gate_releases:0,
+                                        compactions:0, subagents:0})})
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
@@ -2262,6 +2309,10 @@ snapshot_one_project() {
         task="$(printf '%s' "$meta_out" | jq -r '.task // empty')"
         transcript_path="$(printf '%s' "$meta_out" | jq -r '.tr // empty')"
         phases_json="$(printf '%s' "$meta_out" | jq -c '.phases // {}' 2>/dev/null || echo '{}')"
+        # Session live signals (watch parity: now / evidence / guard counts).
+        live_now_json="$(printf '%s' "$meta_out" | jq -c '.now // null' 2>/dev/null || echo null)"
+        live_evidence_json="$(printf '%s' "$meta_out" | jq -c '.evidence // null' 2>/dev/null || echo null)"
+        live_signals_json="$(printf '%s' "$meta_out" | jq -c '.signals // {}' 2>/dev/null || echo '{}')"
         # Drop non-human / agent-system prompts (reviewer specs, READ-ONLY blocks, …)
         if [ -n "$task" ]; then
           case "$task" in
@@ -2453,7 +2504,10 @@ snapshot_one_project() {
         --argjson findings_items "$findings_items" \
         --arg findings_summary "${findings_summary:-}" \
         --argjson findings_open "$findings_open" \
-        --argjson findings_trunc "$findings_trunc" '
+        --argjson findings_trunc "$findings_trunc" \
+        --argjson live_now "${live_now_json:-null}" \
+        --argjson live_evidence "${live_evidence_json:-null}" \
+        --argjson live_signals "${live_signals_json:-"{}"}" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2540,6 +2594,25 @@ snapshot_one_project() {
         burn_per_min: $burn,
         phases: ($phases // {}),
         review_round_secs: $review_round_secs,
+        # Watch-parity session signals (from events tail; null when feedless).
+        now: (if $live_now == null then null
+              else ($live_now + {
+                secs_ago: (if ($live_now.epoch|type) == "number"
+                           then ($now - $live_now.epoch) else null end)
+              }) end),
+        evidence: (if $live_evidence == null then null
+                   else ($live_evidence + {
+                     secs_ago: (if ($live_evidence.epoch|type) == "number"
+                                then ($now - $live_evidence.epoch) else null end)
+                   }) end),
+        signals: (if ($live_signals|type) == "object" then {
+                    guard_blocks: ($live_signals.guard_blocks // 0),
+                    gate_releases: ($live_signals.gate_releases // 0),
+                    compactions: ($live_signals.compactions // 0),
+                    subagents: ($live_signals.subagents // 0)
+                  } else {
+                    guard_blocks:0, gate_releases:0, compactions:0, subagents:0
+                  } end),
         review: (if $V == null and ($running | not) and ($has_last_error | not) then null
                  elif $V == null and $has_last_error then {
                    verdict: null, round: ($RQ.round // null), sha7: null,
