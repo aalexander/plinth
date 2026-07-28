@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "bf470a93a1d39d1df46adf93ae9f332c128a6479",
+  "sha": "631942913b91f53b5087e5ab68d60bd1a0821be7",
   "by": "austin",
-  "ts": "2026-07-28T22:11:18Z",
-  "note": "v5.0.0 land: canary residual-path CI green-up",
+  "ts": "2026-07-28T22:14:38Z",
+  "note": "v5.0.0 land: canary 9d TOCTOU stub",
   "findings": [
     {
       "severity": "major",
