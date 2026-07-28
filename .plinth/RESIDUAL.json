@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "631942913b91f53b5087e5ab68d60bd1a0821be7",
+  "sha": "bcb579a2ef7a274e5c2f4d4942d751f1427fab18",
   "by": "austin",
-  "ts": "2026-07-28T22:14:38Z",
-  "note": "v5.0.0 land: canary 9d TOCTOU stub",
+  "ts": "2026-07-28T22:17:01Z",
+  "note": "v5.0.0 land: canary 9d empty-ref wording",
   "findings": [
     {
       "severity": "major",
