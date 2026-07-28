@@ -1771,12 +1771,25 @@ setTimeout(() => {
     const fullHtml = api.cardHTML(full);
     for (const needle of [
       "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
-      "12/min", "1.5k recent", "r2", "claude-test", "gpt-test",
-      "coding", "reviewing", "seats", "max=fable-max", "t2=gpt-t2",
-      "wall 42s", "review wall",
+      "12/min", "1.5k tok", "r2", "claude-test", "gpt-test",
+      "coding", "reviewing", "fable-max", "gpt-t2", "gpt-t1",
+      "wall 42s", "review wall", "models-grid", "mrole",
+      "driver", "review", "audit", "advise", "opus", "fable",
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
+        process.exit(1);
+      }
+    }
+    // Structured models block — not the old dense live|seats line
+    if (fullHtml.includes("live drv") || fullHtml.includes("seats rev")) {
+      console.error("cardHTML still using dense models line:", fullHtml.match(/models[\s\S]{0,200}/));
+      process.exit(1);
+    }
+    if (typeof api.modelsLine === "function") {
+      const ml = api.modelsLine(full);
+      if (!ml.includes("driver:") || !ml.includes("claude-test") || !ml.includes("review:")) {
+        console.error("modelsLine plain text degraded:", ml);
         process.exit(1);
       }
     }
