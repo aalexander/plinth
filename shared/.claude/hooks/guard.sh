@@ -127,7 +127,22 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
         return 0
       fi
     fi
-    block "$what blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
+    # Human residual land (plinth residual --bind): bound RESIDUAL.json at HEAD lineage.
+    if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
+      local rb rsha
+      rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
+      rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+         && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
+        local ch
+        ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+          return 0
+        fi
+      fi
+    fi
+    block "$what blocked — no APPROVED@HEAD and no bound residual for $head. Run review to APPROVED, or: plinth residual --bind && commit. (Client tripwire; CI/branch protection still apply.)"
   }
 
   # owner/repo from origin or -R/URL forms (github.com host only; no GHE olympics).
@@ -246,7 +261,20 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
         return 0
       fi
     fi
-    block "$what blocked — no APPROVED review at targeted PR head ($head) for branch '$branch'. Run the merge from the checkout/worktree that holds its verdict."
+    if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
+      local rb rsha ch
+      rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
+      rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+         && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
+        ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+          return 0
+        fi
+      fi
+    fi
+    block "$what blocked — no APPROVED/residual at targeted PR head ($head) for branch '$branch'."
   }
 
   # Parse only ordinary, directly-invoked gh forms. Unknown merge argv blocks

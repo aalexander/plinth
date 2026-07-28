@@ -28,6 +28,15 @@ canaries, pins, CI, and receipt** — not by multi-round dual-pass on
 driver-adversary stories. Report accidental ship-gate fail-opens as real bugs;
 do not invent “clever driver” majors.
 
+**Residual land:** when the loop cannot converge without thrash, a human may
+bind `.plinth/RESIDUAL.json` (`plinth residual --bind`). That authorizes ship/Stop
+for this tip without model APPROVED@HEAD, provided product files do not change
+after the residual SHA. Prefer residual over infinite rounds on canary depth.
+
+**BUILD verify/resume (strict delta):** new non-security majors outside the fix
+pathspec are non-blocking so the open set can shrink monotonically. Fresh round 1
+still sees the full branch.
+
 The project-specific reviewer rules (`.plinth/AGENTS-project.md`) also apply — they are
 blocking criteria carrying the same force as this file. Where they come from depends on
 how you were invoked:

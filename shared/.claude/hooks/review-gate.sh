@@ -117,9 +117,23 @@ if [ -f "$vfile" ]; then
     esac
   fi
 fi
+# Bound residual land (human adjudicated) — same rules as ship residual.
+if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
+  rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
+  rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
+  if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+     && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
+     && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
+    ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+    if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+      log_release "residual land bound at $rsha (HEAD $head)"
+      exit 0
+    fi
+  fi
+fi
 
 echo $((cnt + 1)) > "$SDIR/gate-blocks-$sid"
 if [ -n "$(git -C "$proj" status --porcelain 2>/dev/null)" ]; then
-  block "HARDEN phase: dirty tree + no APPROVED@HEAD. Commit/stash, then ./.plinth/review.sh until APPROVED. Or: plinth build to leave harden. Route next: plinth next (ship still needs APPROVED)."
+  block "HARDEN phase: dirty tree + no APPROVED@HEAD/residual. Commit/stash, then review or: plinth residual --bind. Or: plinth build to leave harden."
 fi
-block "HARDEN phase: no APPROVED@HEAD ($head). Run ./.plinth/review.sh until APPROVED. Or: plinth build to return to build. Next action: plinth next."
+block "HARDEN phase: no APPROVED@HEAD ($head) and no bound residual. Run review to APPROVED, or: plinth residual --bind && commit. Or: plinth build."

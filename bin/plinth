@@ -48,6 +48,8 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
        plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)
        plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
+       plinth residual [<path>] [--bind] [--note t] [--from-findings f]
+                                                     (human residual land: draft/bind RESIDUAL.json @ HEAD)
        plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit 1; }
 [ $# -ge 1 ] || usage
 cmd="$1"; target="${2:-}"; opt="${3:-}"
@@ -66,9 +68,25 @@ elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
 elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] \
-   || [ "$cmd" = "next" ] || [ "$cmd" = "lifecycle-migrate" ]; then
+   || [ "$cmd" = "next" ] || [ "$cmd" = "lifecycle-migrate" ] || [ "$cmd" = "residual" ]; then
   # Lifecycle commands: project path optional (default CWD).
-  if [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
+  # residual may be: residual | residual PATH | residual --bind | residual PATH --bind ...
+  if [ "$cmd" = "residual" ]; then
+    shift
+    RESIDUAL_BIND=0
+    RESIDUAL_FROM=""
+    RESIDUAL_NOTE="${PLINTH_RESIDUAL_NOTE:-}"
+    target="$(pwd)"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --bind) RESIDUAL_BIND=1; shift ;;
+        --from-findings) RESIDUAL_FROM="${2:-}"; shift 2 ;;
+        --note) RESIDUAL_NOTE="${2:-}"; shift 2 ;;
+        -*) echo "plinth residual: unknown flag $1" >&2; exit 1 ;;
+        *) target="$1"; shift ;;
+      esac
+    done
+  elif [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
     target="$(pwd)"
   fi
   if [ ! -d "$target" ]; then
@@ -5358,6 +5376,74 @@ migrate_lifecycle_phases() {
   done
 }
 
+# ── Residual land (human-adjudicated ship without model APPROVED@HEAD) ──────
+# File: .plinth/RESIDUAL.json  schema plinth.residual/v1
+# Ship when bound=true and residual.sha is ancestor of HEAD and only residual-
+# allowed paths changed since residual.sha (RESIDUAL.json, HANDOFF, NEEDS-HUMAN).
+residual_path() { printf '%s' "${1:-.}/.plinth/RESIDUAL.json"; }
+
+# Exit 0 if residual authorizes shipping HEAD of $1.
+residual_ship_ok() {
+  local root="${1:-.}" rf rsha bound
+  rf="$(residual_path "$root")"
+  [ -f "$rf" ] || return 1
+  bound="$(jq -r '.bound // false' "$rf" 2>/dev/null || echo false)"
+  rsha="$(jq -r '.sha // empty' "$rf" 2>/dev/null || true)"
+  [ "$bound" = "true" ] || return 1
+  [ -n "$rsha" ] || return 1
+  git -C "$root" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$root" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null || return 1
+  # Product must not change after residual bind (only residual hygiene files).
+  local changed
+  changed="$(git -C "$root" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+  if [ -n "$changed" ]; then
+    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# run_residual <root> <bind 0|1> <from-findings-path-or-empty> <note>
+run_residual() {
+  local root="$1" bind="${2:-0}" fromf="${3:-}" note="${4:-}"
+  local sha rf slug fdir latest findings_json ts who
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth residual: not a git repo: $root" >&2; exit 1; }
+  sha="$(git -C "$root" rev-parse HEAD)"
+  rf="$(residual_path "$root")"
+  mkdir -p "$root/.plinth"
+  who="${USER:-unknown}"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [ -n "$note" ] || note="${PLINTH_RESIDUAL_NOTE:-human residual land}"
+  findings_json='[]'
+  if [ -n "$fromf" ] && [ -f "$fromf" ]; then
+    findings_json="$(jq -c '[.findings[]? | select(.status=="open") | {severity,file,line,description,id}]' "$fromf" 2>/dev/null || echo '[]')"
+  else
+    fdir="$(_lifecycle_review_dir "$root")"
+    latest="$(_latest_findings_json "$fdir")"
+    if [ -n "$latest" ] && [ -f "$latest" ]; then
+      findings_json="$(jq -c '[.findings[]? | select(.status=="open") | {severity,file,line,description,id}]' "$latest" 2>/dev/null || echo '[]')"
+    elif [ -f "$rf" ]; then
+      findings_json="$(jq -c '.findings // []' "$rf" 2>/dev/null || echo '[]')"
+    fi
+  fi
+  case "$findings_json" in ''|null) findings_json='[]' ;; esac
+  if [ "$bind" = 1 ]; then
+    jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
+      '{schema:"plinth.residual/v1", bound:true, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
+    echo "Wrote $rf (BOUND residual for $sha)."
+    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL/HANDOFF/NEEDS-HUMAN change after."
+  else
+    jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
+      '{schema:"plinth.residual/v1", bound:false, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
+    echo "Wrote $rf (DRAFT — not shippable). Review findings, then: plinth residual --bind --note \"...\""
+  fi
+  local n
+  n="$(jq '(.findings // []) | length' "$rf" 2>/dev/null || echo 0)"
+  echo "  open items recorded: $n"
+  echo "  note: $note"
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
   advise) run_advise "$@" ;;
@@ -5373,6 +5459,7 @@ case "$cmd" in
   handoff) run_handoff "$target" ;;
   plan) run_plan "$target" "$PLAN_DEEP" ;;
   next) run_next "$target" ;;
+  residual) run_residual "$target" "${RESIDUAL_BIND:-0}" "${RESIDUAL_FROM:-}" "${RESIDUAL_NOTE:-}" ;;
   lifecycle-migrate)
     migrate_lifecycle_phases "$target"
     echo "plinth lifecycle-migrate: done for $target"

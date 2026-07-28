@@ -447,37 +447,38 @@ echo "$lat" | grep -q 'findings-10.json' || fail "expected findings-10, got $lat
 pass "latest findings uses basename numeric sort"
 
 # thrash_policy: demote coverage; never demote auth bypass; docs/*.py stays major
-bash -c '
-  set -euo pipefail
-  eval "$(sed -n "/^thrash_policy_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
-  f=$(mktemp)
-  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
-    {file:\"x.sh\",line:1,severity:\"major\",description:\"Coverage remains incomplete despite canary\",status:\"open\"},
-    {file:\"auth.py\",line:2,severity:\"major\",description:\"auth bypass on login route\",status:\"open\"},
-    {file:\"README.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"},
-    {file:\"docs/build.py\",line:4,severity:\"major\",description:\"crash on empty input\",status:\"open\"},
-    {file:\"CHANGELOG.md\",line:5,severity:\"major\",description:\"missing release notes for v5\",status:\"open\"},
-    {file:\"a.py\",line:6,severity:\"major\",description:\"unauthenticated access on /api\",status:\"open\"},
-    {file:\"b.sh\",line:7,severity:\"major\",description:\"Still untested: plinth plan --deep merge path\",status:\"open\"}
-  ]}" > "$f"
-  scope=$(printf "%s\n" "x.sh" "auth.py" "README.md" "docs/build.py" "CHANGELOG.md" "a.py" "b.sh")
-  thrash_policy_process_findings "$f" build "$scope" "" "MANUAL.md"
-  s0=$(jq -r ".findings[0].severity" "$f")
-  s1=$(jq -r ".findings[1].severity" "$f")
-  s2=$(jq -r ".findings[2].severity" "$f")
-  s3=$(jq -r ".findings[3].severity" "$f")
-  s4=$(jq -r ".findings[4].severity" "$f")
-  s5=$(jq -r ".findings[5].severity" "$f")
-  s6=$(jq -r ".findings[6].severity" "$f")
-  [ "$s0" = "minor" ] || { echo "coverage should demote, got $s0"; exit 1; }
-  [ "$s1" = "major" ] || { echo "auth bypass must stay major, got $s1"; exit 1; }
-  [ "$s2" = "minor" ] || { echo "README prose should demote, got $s2"; exit 1; }
-  [ "$s3" = "major" ] || { echo "docs/build.py must stay major, got $s3"; exit 1; }
-  [ "$s4" = "major" ] || { echo "CHANGELOG must stay major, got $s4"; exit 1; }
-  [ "$s5" = "major" ] || { echo "unauthenticated must stay major, got $s5"; exit 1; }
-  [ "$s6" = "major" ] || { echo "plan --deep test gap must stay major, got $s6"; exit 1; }
-  rm -f "$f"
-' || fail "thrash_policy matrix"
+THRASH_FN="$TMP/thrash_fn.sh"
+sed -n '/^thrash_policy_process_findings()/,/^review_phase_for_round()/p' \
+  "$ROOT/shared/.plinth/review.sh" | sed '$d' > "$THRASH_FN"
+# shellcheck disable=SC1090
+. "$THRASH_FN"
+f=$(mktemp)
+jq -n '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
+  {file:"x.sh",line:1,severity:"major",description:"Coverage remains incomplete despite canary",status:"open"},
+  {file:"auth.py",line:2,severity:"major",description:"auth bypass on login route",status:"open"},
+  {file:"README.md",line:3,severity:"major",description:"awkward wording in residual",status:"open"},
+  {file:"docs/build.py",line:4,severity:"major",description:"crash on empty input",status:"open"},
+  {file:"CHANGELOG.md",line:5,severity:"major",description:"missing release notes for v5",status:"open"},
+  {file:"a.py",line:6,severity:"major",description:"unauthenticated access on /api",status:"open"},
+  {file:"b.sh",line:7,severity:"major",description:"Still untested: plinth plan --deep merge path",status:"open"}
+]}' > "$f"
+scope=$(printf "%s\n" "x.sh" "auth.py" "README.md" "docs/build.py" "CHANGELOG.md" "a.py" "b.sh")
+thrash_policy_process_findings "$f" build "$scope" "" "MANUAL.md" "fresh"
+s0=$(jq -r ".findings[0].severity" "$f")
+s1=$(jq -r ".findings[1].severity" "$f")
+s2=$(jq -r ".findings[2].severity" "$f")
+s3=$(jq -r ".findings[3].severity" "$f")
+s4=$(jq -r ".findings[4].severity" "$f")
+s5=$(jq -r ".findings[5].severity" "$f")
+s6=$(jq -r ".findings[6].severity" "$f")
+[ "$s0" = "minor" ] || fail "coverage should demote, got $s0"
+[ "$s1" = "major" ] || fail "auth bypass must stay major, got $s1"
+[ "$s2" = "minor" ] || fail "README prose should demote, got $s2"
+[ "$s3" = "major" ] || fail "docs/build.py must stay major, got $s3"
+[ "$s4" = "major" ] || fail "CHANGELOG must stay major, got $s4"
+[ "$s5" = "major" ] || fail "unauthenticated must stay major, got $s5"
+[ "$s6" = "major" ] || fail "plan --deep test gap must stay major, got $s6"
+rm -f "$f"
 pass "thrash_policy demotes coverage/README; keeps security + CHANGELOG + AC gaps"
 
 # VERSION exact match via production helper version_changelog_match
@@ -713,5 +714,46 @@ set -e
 echo "$out" | grep -q 'status: done' || fail "expected done: $out"
 [ "$rc" -eq 3 ] || fail "plinth next exit 3 for done, got $rc"
 pass "plinth next done when idle"
+
+# Strict delta: verify mode demotes new non-security major outside fix pathspec
+# Reuse thrash_fn from above
+# shellcheck disable=SC1090
+. "$THRASH_FN"
+f=$(mktemp)
+jq -n '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
+  {file:"bin/plinth",line:1,severity:"major",description:"real null deref in next routing",status:"open",id:"keep"},
+  {file:"untouched/other.c",line:2,severity:"major",description:"unrelated bug inventing free roam",status:"open",id:"new1"},
+  {file:"auth.py",line:3,severity:"major",description:"auth bypass on login",status:"open",id:"sec1"}
+]}' > "$f"
+thrash_policy_process_findings "$f" build "bin/plinth" "keep" "MANUAL.md" "verify"
+s0=$(jq -r ".findings[0].severity" "$f")
+s1=$(jq -r ".findings[1].severity" "$f")
+s2=$(jq -r ".findings[2].severity" "$f")
+[ "$s0" = "major" ] || fail "ledger open must stay major, got $s0"
+[ "$s1" = "minor" ] || fail "outside delta free-roam must demote, got $s1"
+[ "$s2" = "major" ] || fail "security outside delta must stay major, got $s2"
+rm -f "$f"
+pass "BUILD verify strict delta demotes free-roam; keeps security + ledger"
+
+# residual bind authorizes ship when only residual hygiene changed
+setup_proj "$TMP/p21"
+head=$(git -C "$TMP/p21" rev-parse HEAD)
+"$PLINTH" residual "$TMP/p21" --bind --note "canary residual land" >/dev/null
+[ -f "$TMP/p21/.plinth/RESIDUAL.json" ] || fail "RESIDUAL.json missing"
+jq -e --arg s "$head" '.bound==true and .sha==$s' "$TMP/p21/.plinth/RESIDUAL.json" >/dev/null \
+  || fail "residual bind shape wrong: $(cat "$TMP/p21/.plinth/RESIDUAL.json")"
+# Commit residual alone — still valid (only RESIDUAL changed after product sha)
+git -C "$TMP/p21" add .plinth/RESIDUAL.json
+git -C "$TMP/p21" commit -qm "residual land"
+# product change after residual must invalidate
+echo z >> "$TMP/p21/f"
+git -C "$TMP/p21" add f && git -C "$TMP/p21" commit -qm "product after residual"
+# Inline residual_ship_ok check (full function body, not sed-to-first-brace)
+rf="$TMP/p21/.plinth/RESIDUAL.json"
+rsha=$(jq -r .sha "$rf")
+ch=$(git -C "$TMP/p21" diff --name-only "$rsha" HEAD)
+printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q . \
+  || fail "expected product path in residual window: $ch"
+pass "residual bind + product-change invalidates residual window"
 
 echo "canary-lifecycle-build-harden: ALL PASS"

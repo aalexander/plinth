@@ -1480,14 +1480,16 @@ sticky_process_findings() {  # <findings-json-path>
 #   1) Never demote external_security / ship_integrity / data_loss (path + text)
 #   2) BUILD asymptotic coverage → minor (Noticed), not real test gaps
 #   3) Docs prose (not canonical spec) → minor unless ship/security overclaim
-#   4) Out-of-pathspec demotion ONLY for known thrash classes (not "any major")
+#   4) Out-of-pathspec: thrash classes on fresh; VERIFY/RESUME BUILD demotes any
+#      new non-security major outside fix delta (monotonic open-set)
 #   5) HANDOFF ephemera → minor; NEEDS-HUMAN queue nits → minor (not deletions)
 # Markers: " [THRASH: …]"
-thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <prior-open-ids-nl> [spec_path]
-  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" tmp
+# mode: fresh|verify|resume
+thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids> [spec_path] [mode]
+  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" mode="${6:-fresh}" tmp
   [ -f "$f" ] || return 0
   tmp="$(mktemp)"
-  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" '
+  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" --arg mode "$mode" '
     def lines($s):
       if ($s == null or $s == "") then []
       else ($s | split("\n") | map(select(length > 0))) end;
@@ -1540,16 +1542,25 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
         and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checks? off|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
         and ((.description // "") | test("whitespace|wording|typo|formatting|blank line|nit"; "i"));
-    # Out-of-pathspec: demote ONLY known thrash classes (never arbitrary majors).
-    def is_out_of_scope_thrash:
+    # Outside fix pathspec and not a prior open id.
+    def is_outside_delta:
         (($files | length) > 0)
         and ((.file // "") != "")
         and ((.file // "") != ".")
         and (((.file // "") as $fp | ($files | index($fp)) == null))
-        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)))
-        and is_thrash_class
+        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
+    # Fresh: thrash classes only. Verify/resume BUILD: any new non-security major
+    # outside the fix delta is non-blocking (monotonic open-set convergence).
+    def is_out_of_scope_demote:
+        is_outside_delta
         and (is_external_security | not)
-        and (is_real_test_gap | not);
+        and (
+          is_thrash_class
+          or (
+            ($phase == "build")
+            and ($mode == "verify" or $mode == "resume")
+          )
+        );
     .findings |= map(
       if (.status != "open") then .
       elif (.severity != "major" and .severity != "blocker") then .
@@ -1570,10 +1581,12 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: docs prose → Noticed]")
-      elif is_out_of_scope_thrash then
+      elif is_out_of_scope_demote then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: thrash class outside fix pathspec — scoped]")
+            + (if (($mode == "verify") or ($mode == "resume"))
+               then " [THRASH: outside fix delta - scoped for monotonic BUILD]"
+               else " [THRASH: thrash class outside pathspec - scoped]" end))
       else .
       end
     )
@@ -1882,14 +1895,14 @@ ${diff}"
 
   # Deterministic thrash demotions (coverage/docs/scope/ephemera) — after dual so
   # secondary majors get the same treatment.
-  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior" "${SPEC_PATH:-}"
+  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior" "${SPEC_PATH:-}" "$m"
   validate_findings "$SDIR/findings-$r.json" \
     || die_infra "findings invalid after thrash policy — see $SDIR/findings-$r.json"
   demoted_n="$(jq '[.findings[] | select(.description | test("\\[THRASH:"))] | length' \
     "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
   case "$demoted_n" in ''|*[!0-9]*) demoted_n=0 ;; esac
   if [ "$demoted_n" -gt 0 ]; then
-    echo "Plinth review: thrash policy demoted ${demoted_n} finding(s) to minor (coverage/docs/scope/ephemera)."
+    echo "Plinth review: thrash/delta policy demoted ${demoted_n} finding(s) to minor (mode=${m}, phase=${rphase})."
   fi
 
   # Verdict arithmetic is the instrument's job, not the reviewer's judgment
@@ -2040,14 +2053,19 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
     first_open="$(jq -r --argjson n "$same_cap" '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
       | if . then "HUMAN: same open set \($n)+ rounds — adjudicate: \(.file):\(.line) — \(.description[0:80])" else empty end' \
       "$SDIR/findings-$round.json" 2>/dev/null || true)"
+    # Draft residual at HEAD for human binding (does not auto-ship; plinth residual --commit).
     if [ -x "./bin/plinth" ]; then
-      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="$first_open" \
+      PLINTH_RESIDUAL_NOTE="same-open soft cap after ${streak} rounds" \
+        ./bin/plinth residual "$PWD" --from-findings "$SDIR/findings-$round.json" 2>/dev/null || true
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="${first_open:-plinth residual; commit RESIDUAL.json; ship}" \
         ./bin/plinth handoff "$PWD" 2>/dev/null || true
     elif command -v plinth >/dev/null 2>&1; then
-      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="$first_open" \
+      PLINTH_RESIDUAL_NOTE="same-open soft cap after ${streak} rounds" \
+        plinth residual "$PWD" --from-findings "$SDIR/findings-$round.json" 2>/dev/null || true
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="${first_open:-plinth residual}" \
         plinth handoff "$PWD" 2>/dev/null || true
     fi
-    die_infra "same-open soft cap: open blocker/major id-set unchanged for ${streak} consecutive rounds (cap ${same_cap}) — the loop is not converging. Surface to the human: adjudicate residual findings, land with residual note, or re-scope. Override this run: PLINTH_SAME_OPEN_CAP=0 (disable) or PLINTH_SAME_OPEN_CAP=<n>."
+    die_infra "same-open soft cap: open set unchanged for ${streak} rounds (cap ${same_cap}). Drafted .plinth/RESIDUAL.json — human: review items, 'plinth residual --bind' (or edit + commit), then ship. Or fix and re-run. Override: PLINTH_SAME_OPEN_CAP=0."
   fi
   # Checkpoint handoff + seed ## Next from first open major (autonomous routing).
   first_open="$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
@@ -2113,7 +2131,7 @@ $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
       # Apply thrash demotions to the audit payload before counting (same policy).
       thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
-        "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}"
+        "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}" "fresh"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
         --arg href '^HANDOFF\\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))

@@ -52,12 +52,15 @@
 - **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh` wired into
   `plinth-canary.yml` (Stop, ship tripwire create+merge, migrate, sticky, next)
-- **Residual (human-adjudicated for v5.0.0 land):** further offline canaries for
-  full harvest_* producers, dual-pass degraded merge e2e, HANDOFF-only floor e2e,
-  same-open cap e2e, SessionStart additionalContext, guard session_id event,
-  percent-escape branch slugs, error-card lifecycle object. Load-bearing paths
-  covered by lifecycle canary (Stop/ship, thrash matrix, harden invalidation
-  encoded+legacy, plan --deep fake seats, VERSION helper, sticky security).
+- **Residual-binding land + hard delta scope:**
+  - `plinth residual [--bind] [--note …] [--from-findings f]` → `.plinth/RESIDUAL.json`
+    (`plinth.residual/v1`). Bound residual authorizes ship/Stop when `sha` is an
+    ancestor of HEAD and only RESIDUAL/HANDOFF/NEEDS-HUMAN changed since.
+    Same-open soft cap drafts residual automatically.
+  - BUILD **verify/resume strict delta**: new non-security majors outside the fix
+    pathspec are non-blocking (monotonic open-set). Fresh r1 still full branch.
+- **Noticed canary depth:** harvest_* e2e, dual-pass degraded merge, HANDOFF floor
+  e2e, SessionStart context, `%` slug escape, error-card lifecycle.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
