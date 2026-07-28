@@ -2127,18 +2127,18 @@ snapshot_one_project() {
   fi
 
   # Lifecycle phase + plan/handoff presence (v5).
-  # Corrupt/unknown → harden (fail closed; match Stop + _lifecycle_read_phase).
+  # Missing file → build. Existing but corrupt/empty/unknown → harden (fail closed).
   local life_phase="build" life_file="$dir/.plinth/session/phase-$slug.json"
   if [ -f "$life_file" ]; then
-    life_phase="$(jq -r '.phase // empty' "$life_file" 2>/dev/null || true)"
-  else
-    life_phase=""
+    if ! life_phase="$(jq -er '.phase' "$life_file" 2>/dev/null)"; then
+      life_phase=harden
+    else
+      case "$life_phase" in
+        build|harden) ;;
+        *) life_phase=harden ;;
+      esac
+    fi
   fi
-  case "$life_phase" in
-    build|harden) ;;
-    "") life_phase=build ;;
-    *) life_phase=harden ;;
-  esac
   local plan_present=false handoff_present=false plan_review_present=false
   [ -f "$dir/PLAN.md" ] && plan_present=true
   [ -f "$dir/HANDOFF.md" ] && handoff_present=true
@@ -2217,7 +2217,9 @@ snapshot_one_project() {
         # Gaps >=3600s are dropped (session pause).
         # Also tracks last PostToolUse (now), last VERIFY Bash (evidence), signals.
         reduce inputs as $e (
-          {cur:null, by:{}};
+          {cur:null, by:{},
+           # Production guard.sh emits guard_block with sid:null — count globally.
+           global_guard_blocks:0};
           if ($e | type) != "object" then error("bad_event_type")
           elif ($e.event == null) or (($e.event | type) != "string")
                or (($e.event | known_event) | not) then error("bad_event_name")
@@ -2225,7 +2227,11 @@ snapshot_one_project() {
           elif ($e.epoch != null) and (($e.epoch | type) != "number") then error("bad_event_epoch")
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
           elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
-          elif ($e.sid == null) then .
+          elif ($e.sid == null) then
+            # Null-SID events: still count production guard_block (guard.sh).
+            if $e.event == "guard_block"
+            then .global_guard_blocks = ((.global_guard_blocks // 0) + 1)
+            else . end
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0:null, task:null, tr:null, phases:{},
@@ -2292,18 +2298,21 @@ snapshot_one_project() {
               else . end
           end
         )
+        | (.global_guard_blocks // 0) as $gg
         | if .cur == null then
             {sid:null, t0:null, task:null, tr:null, phases:{},
              now:null, evidence:null,
-             signals:{guard_blocks:0, gate_releases:0, compactions:0, subagents:0}}
+             signals:{guard_blocks:$gg, gate_releases:0, compactions:0, subagents:0}}
           else
             ((.by[.cur] // {}) as $S
-             | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
-                phases:($S.phases // {}),
-                now:($S.last_post // null),
-                evidence:($S.last_verify // null),
-                signals:($S.signals // {guard_blocks:0, gate_releases:0,
-                                        compactions:0, subagents:0})})
+             | (($S.signals // {guard_blocks:0, gate_releases:0,
+                                compactions:0, subagents:0}) as $sig
+                | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
+                   phases:($S.phases // {}),
+                   now:($S.last_post // null),
+                   evidence:($S.last_verify // null),
+                   # Merge SID-scoped + null-SID (production) guard blocks.
+                   signals:($sig | .guard_blocks = ((.guard_blocks // 0) + $gg))}))
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
@@ -2826,7 +2835,7 @@ except Exception:
       '{vendor:"claude",available:false,error:"cli_missing",probed_at:$now}' >> "$vendors_tmp"
   fi
 
-  # ── Codex: ChatGPT wham/usage via ~/.codex/auth.json (curl). Tokens never logged.
+  # ── Codex: ChatGPT wham/usage via ~/.codex/auth.json (Python urllib). Tokens never logged.
   # Gated on `codex` on PATH so restricted-PATH smoke never hits the network.
   if command -v codex >/dev/null 2>&1; then
     local cx_auth="${HOME}/.codex/auth.json" cx_to="$_DASH_QUOTA_TIMEOUT" cx_out cx_rc=0
@@ -3131,7 +3140,7 @@ print(json.dumps(out, separators=(",", ":")))
       >> "$vendors_tmp"
   fi
 
-  # ── Grok: cli-chat-proxy billing via ~/.grok/auth.json OIDC token (curl). Never log tokens/PII.
+  # ── Grok: cli-chat-proxy billing via ~/.grok/auth.json OIDC (Python urllib). Never log tokens/PII.
   # Gated on `grok` on PATH so restricted-PATH smoke never hits the network.
   if command -v grok >/dev/null 2>&1; then
     local gk_auth="${HOME}/.grok/auth.json" gk_to="$_DASH_QUOTA_TIMEOUT" gk_out gk_rc=0
@@ -4434,28 +4443,35 @@ _write_handoff() {
     [ -n "$prev_done" ] && done_block="$prev_done"
     [ -n "$prev_next" ] && next="$prev_next"
   fi
-  # Prepend a hint only when it is not already present as any numbered/bulleted
-  # line (dedupe). Prevents harden→build→harden from stacking identical review
-  # actions that misroute `plinth next`.
-  _handoff_prepend_next() {
-    local hint="$1" cur="$2" line stripped
+  # Insert a phase-aware first Next line: drop superseded build/harden/review
+  # boilerplate so `plinth next` routes to current lifecycle state, not a stale
+  # stack. Preserve distinct operator-authored lines.
+  _handoff_set_primary_next() {
+    local hint="$1" cur="$2" line stripped out=""
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
     while IFS= read -r line; do
       stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
       [ -n "$stripped" ] || continue
-      if [ "$stripped" = "$hint" ]; then
-        printf '%s' "$cur"
-        return
-      fi
+      # Drop exact dup of the new hint
+      [ "$stripped" = "$hint" ] && continue
+      # Drop superseded lifecycle boilerplate (any phase)
+      case "$stripped" in
+        *"plinth harden"*|*"plinth build"*|*"review.sh"*|*"continue build"*|*"open PR"*|*"Fix ["*|*"fix review finding"*)
+          continue ;;
+      esac
+      out="${out}${out:+$'\n'}- ${stripped}"
     done <<< "$cur"
-    printf '1. %s\n%s' "$hint" "$cur"
+    if [ -n "$out" ]; then
+      printf '1. %s\n%s' "$hint" "$out"
+    else
+      printf '1. %s' "$hint"
+    fi
   }
   if [ -n "$next_hint" ]; then
-    next=$(_handoff_prepend_next "$next_hint" "$next")
+    next=$(_handoff_set_primary_next "$next_hint" "$next")
   fi
-  # Optional: PLINTH_HANDOFF_NEXT forces first Next line (review.sh sets from findings).
   if [ -n "${PLINTH_HANDOFF_NEXT:-}" ]; then
-    next=$(_handoff_prepend_next "$PLINTH_HANDOFF_NEXT" "$next")
+    next=$(_handoff_set_primary_next "$PLINTH_HANDOFF_NEXT" "$next")
   fi
   kind=$(_handoff_kind "$reason")
   if [ "$kind" = "milestone" ]; then

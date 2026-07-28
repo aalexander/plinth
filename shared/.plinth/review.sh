@@ -1178,19 +1178,20 @@ sticky_process_findings() {  # <findings-json-path>
   tmp="$(mktemp)"
   # Assign missing ids from FULL normalized desc (not an 80-char prefix — collisions).
   # Explicit reviewer ids are kept only when unique in this payload; collisions get a suffix.
+  # Always use base identity (file|severity|full-norm-desc) — never line-qualified
+  # ids that thrash when a sibling disappears. True text-identical siblings share
+  # one sticky id by design (anti-thrash).
   jq '
+    def strip_sticky:
+      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
-      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def nid:
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
-    .findings |= map(if (.id == null or .id == "") then . + {id: nid} else . end)
-    | (.findings | group_by(.id) | map(select(length > 1) | .[0].id) | unique) as $dups
-    | .findings |= map(
-        if (.id != null) and (.id as $i | $dups | index($i) != null) then
-          # Collision: re-key with line so siblings do not share an id.
-          .id = ((.file // "") + "|" + (.severity // "") + "|" + (.line|tostring) + "|" + normdesc | @base64)
-        else . end
-      )
+    .findings |= map(
+      if (.id == null or .id == "") then . + {id: nid}
+      else . end
+    )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Build blob map for files mentioned

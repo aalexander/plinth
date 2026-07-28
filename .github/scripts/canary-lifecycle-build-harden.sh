@@ -248,15 +248,56 @@ print("sticky unit ok")
 PY
 pass "sticky id uniqueness / AUTO-STICKY strip / fail-closed identity unit"
 
-# handoff Next dedupe across harden→build→harden
+# handoff Next: harden→build→harden keeps current-state action first, no obsolete stack
 setup_proj "$TMP/p8"
 "$PLINTH" harden "$TMP/p8" >/dev/null
 "$PLINTH" build "$TMP/p8" >/dev/null
 "$PLINTH" harden "$TMP/p8" >/dev/null
-# Count identical "Run ./.plinth/review.sh" style lines in ## Next — at most one.
 next_block=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$TMP/p8/HANDOFF.md")
+first=$(printf '%s\n' "$next_block" | sed -n '1p' | sed -E 's/^[[:space:]]*[0-9]+[.)]*[[:space:]]*//')
+printf '%s\n' "$first" | grep -qi 'review' \
+  || fail "after final harden, first Next should be review: $next_block"
+printf '%s\n' "$next_block" | grep -qi 'continue build' \
+  && fail "obsolete continue-build must be purged: $next_block"
 n_review=$(printf '%s\n' "$next_block" | grep -c 'review\.sh' || true)
 [ "$n_review" -le 1 ] || fail "handoff Next stacked review hints ($n_review): $next_block"
-pass "handoff Next dedupes repeated review hints"
+pass "handoff Next prioritizes current harden action"
+
+# Invoke production sticky_process_findings (source the function from review.sh)
+setup_proj "$TMP/p9"
+SDIR="$TMP/p9/.plinth/session/review/feat-canary"
+mkdir -p "$SDIR"
+# Minimal sticky harness: define only what sticky_process_findings needs
+export SDIR
+# shellcheck disable=SC1091
+# Extract and run sticky via a tiny wrapper that sources the function body.
+bash -c '
+  set -euo pipefail
+  SDIR="'"$SDIR"'"
+  # shellcheck source=/dev/null
+  source /dev/null
+  # Inline a call by running review.sh sticky via sed extraction
+  eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  f="$SDIR/findings-test.json"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"},
+    {file:\"a.sh\",line:2,severity:\"major\",description:\"same text\",status:\"open\"}
+  ]}" > "$f"
+  cd "'"$TMP/p9"'"
+  sticky_process_findings "$f"
+  # Both get same base id (no line thrash)
+  id1=$(jq -r ".findings[0].id" "$f")
+  id2=$(jq -r ".findings[1].id" "$f")
+  [ -n "$id1" ] && [ "$id1" = "$id2" ] || { echo "expected shared base id, got $id1 vs $id2"; exit 1; }
+  # Resolve both, re-open one, sticky should auto-resolve when blob unchanged
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  jq ".findings = [{file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  st=$(jq -r ".findings[0].status" "$f")
+  [ "$st" = "resolved" ] || { echo "expected AUTO-STICKY resolve, got $st"; jq . "$f"; exit 1; }
+  echo "sticky production ok"
+' || fail "production sticky_process_findings unit"
+pass "production sticky_process_findings (base id + AUTO-STICKY)"
 
 echo "canary-lifecycle-build-harden: ALL PASS"
