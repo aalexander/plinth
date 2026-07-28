@@ -3561,10 +3561,14 @@ def ensure_log():
     return True
 
 def load_seen():
-    """id -> True for entries already in the log (dedupe)."""
+    """Return (id_set, content_key_set) for upgrade-safe dedupe.
+    content keys: (vendor, rounded_usd, session_hint) so legacy line/index
+    ids still block re-harvest of the same cost event under a new id shape.
+    """
     seen = set()
+    content = set()
     if not log_path.is_file():
-        return seen
+        return seen, content
     try:
         with log_path.open("r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -3578,9 +3582,19 @@ def load_seen():
                 i = rec.get("id")
                 if isinstance(i, str) and i:
                     seen.add(i)
+                v = rec.get("vendor")
+                usd = rec.get("usd")
+                if isinstance(v, str) and isinstance(usd, (int, float)):
+                    # session hint: last path-ish segment of id if present
+                    hint = ""
+                    if isinstance(i, str) and ":" in i:
+                        parts = i.split(":")
+                        if len(parts) >= 2:
+                            hint = parts[1]
+                    content.add((v, round(float(usd), 6), hint))
     except Exception:
         pass
-    return seen
+    return seen, content
 
 def append_entries(entries):
     if not entries or not ensure_log():
@@ -3836,21 +3850,52 @@ def sum_log_by_vendor():
         pass
     return by_v, oldest, n_entries
 
-# 1) Harvest new observed costs into the durable log (deduped by id).
-seen = load_seen()
+# 1) Harvest new observed costs into the durable log (deduped by id + content).
+seen, content_seen = load_seen()
+
+def _remember(e):
+    """Register an entry in both id and content sets (in-memory)."""
+    if not isinstance(e, dict):
+        return
+    i = e.get("id")
+    if isinstance(i, str) and i:
+        seen.add(i)
+    v, usd = e.get("vendor"), e.get("usd")
+    if isinstance(v, str) and isinstance(usd, (int, float)):
+        hint = ""
+        if isinstance(i, str) and ":" in i:
+            parts = i.split(":")
+            if len(parts) >= 2:
+                hint = parts[1]
+        content_seen.add((v, round(float(usd), 6), hint))
+
+def _is_dup(e):
+    if not isinstance(e, dict):
+        return True
+    i = e.get("id")
+    if isinstance(i, str) and i in seen:
+        return True
+    v, usd = e.get("vendor"), e.get("usd")
+    if isinstance(v, str) and isinstance(usd, (int, float)):
+        hint = ""
+        if isinstance(i, str) and ":" in i:
+            parts = i.split(":")
+            if len(parts) >= 2:
+                hint = parts[1]
+        if (v, round(float(usd), 6), hint) in content_seen:
+            return True
+    return False
+
 new_entries = []
-try:
-    new_entries.extend(harvest_grok(seen))
-except Exception:
-    pass
-try:
-    new_entries.extend(harvest_claude(seen))
-except Exception:
-    pass
-try:
-    new_entries.extend(harvest_codex(seen))
-except Exception:
-    pass
+for harvester in (harvest_grok, harvest_claude, harvest_codex):
+    try:
+        for e in harvester(seen):
+            if _is_dup(e):
+                continue
+            _remember(e)
+            new_entries.append(e)
+    except Exception:
+        pass
 appended = append_entries(new_entries)
 
 # 2) Sum log for period display.
@@ -4461,8 +4506,10 @@ _write_handoff() {
   next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$out" ]; then
     local prev_done prev_next
-    prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
-    prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | sed '/./,$!d')
+    # Preserve blank lines (no sed '/./,$!d' trim of leading blanks).
+    prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
+    prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
+    # Drop a single trailing newline only (command substitution already does).
     [ -n "$prev_done" ] && done_block="$prev_done"
     [ -n "$prev_next" ] && next="$prev_next"
   fi

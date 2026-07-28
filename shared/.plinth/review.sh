@@ -1272,27 +1272,29 @@ sticky_process_findings() {  # <findings-json-path>
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
-  # Update ledger keyed by the finding's display id (unique after collision
-  # pass). Explicit-ID siblings stay independent; auto same-text siblings share
-  # one id and thus one sticky entry by design.
+  # Update ledger keyed by display id. Open-wins: if any row with that id is
+  # open in this payload, ledger status is open (order-independent).
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
     def strip_sticky:
       ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     ($led[0] // {}) as $L0
-    | reduce ($cur[0].findings // [])[] as $x ($L0;
+    | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
         ($x.id // empty) as $kid
         | if ($kid == null or $kid == "") then .
           else
-            .[$kid] = {
+            .led[$kid] = {
               status: $x.status,
               file: $x.file,
               blob: ($blobs[$x.file] // null),
               severity: $x.severity,
               desc_norm: ($x | normdesc)
             }
+            | if $x.status == "open" then .open[$kid] = true else . end
           end)
+    | . as $acc
+    | reduce ($acc.open | keys[]) as $k ($acc.led; .[$k].status = "open")
   ' > "$tmp" && mv "$tmp" "$ledger"
 }
 
