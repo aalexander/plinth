@@ -1227,14 +1227,14 @@ sticky_process_findings() {  # <findings-json-path>
               and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
            then .status = "resolved"
                 | .id = $bid
-                | .description = (strip_sticky
+                | .description = (($f | strip_sticky)
                     + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
-           else . end)
+           else .id = $bid end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
-  # Update ledger from current findings (store full identity for fail-closed sticky).
-  # Key by base_id (no line) so identity survives sibling collapse.
+  # Update ledger: one key per base identity. If ANY sibling is still open,
+  # ledger status is open (never let a resolved twin clobber an open twin).
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
     def strip_sticky:
       ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
@@ -1242,18 +1242,23 @@ sticky_process_findings() {  # <findings-json-path>
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def base_id:
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
-    ($led[0] // {}) as $L
-    | reduce ($cur[0].findings // [])[] as $x ($L;
+    ($led[0] // {}) as $L0
+    | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
         ($x | base_id) as $bid
-        | if ($bid != null and $bid != "") then
-            .[$bid] = {
+        | if ($bid == null or $bid == "") then .
+          else
+            .led[$bid] = {
               status: $x.status,
               file: $x.file,
               blob: ($blobs[$x.file] // null),
               severity: $x.severity,
               desc_norm: ($x | normdesc)
             }
-          else . end)
+            | if $x.status == "open" then .open[$bid] = true else . end
+          end)
+    | . as $acc
+    | reduce ($acc.open | keys[]) as $k ($acc.led;
+        .[$k].status = "open")
   ' > "$tmp" && mv "$tmp" "$ledger"
 }
 

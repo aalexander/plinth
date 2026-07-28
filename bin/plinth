@@ -2218,8 +2218,8 @@ snapshot_one_project() {
         # Also tracks last PostToolUse (now), last VERIFY Bash (evidence), signals.
         reduce inputs as $e (
           {cur:null, by:{},
-           # Production guard.sh emits guard_block with sid:null — count globally.
-           global_guard_blocks:0};
+           # Production guard.sh emits guard_block with sid:null — collect epochs.
+           global_guard_epochs:[]};
           if ($e | type) != "object" then error("bad_event_type")
           elif ($e.event == null) or (($e.event | type) != "string")
                or (($e.event | known_event) | not) then error("bad_event_name")
@@ -2228,9 +2228,9 @@ snapshot_one_project() {
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
           elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
           elif ($e.sid == null) then
-            # Null-SID events: still count production guard_block (guard.sh).
-            if $e.event == "guard_block"
-            then .global_guard_blocks = ((.global_guard_blocks // 0) + 1)
+            # Null-SID guard blocks: keep epochs; filter to active session t0 at emit.
+            if $e.event == "guard_block" and ($e.epoch != null)
+            then .global_guard_epochs += [$e.epoch]
             else . end
           else
             (if .by[$e.sid] == null then
@@ -2298,21 +2298,24 @@ snapshot_one_project() {
               else . end
           end
         )
-        | (.global_guard_blocks // 0) as $gg
+        | (.global_guard_epochs // []) as $ge
         | if .cur == null then
             {sid:null, t0:null, task:null, tr:null, phases:{},
              now:null, evidence:null,
-             signals:{guard_blocks:$gg, gate_releases:0, compactions:0, subagents:0}}
+             signals:{guard_blocks:0, gate_releases:0, compactions:0, subagents:0}}
           else
             ((.by[.cur] // {}) as $S
-             | (($S.signals // {guard_blocks:0, gate_releases:0,
-                                compactions:0, subagents:0}) as $sig
-                | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
-                   phases:($S.phases // {}),
-                   now:($S.last_post // null),
-                   evidence:($S.last_verify // null),
-                   # Merge SID-scoped + null-SID (production) guard blocks.
-                   signals:($sig | .guard_blocks = ((.guard_blocks // 0) + $gg))}))
+             | (($S.t0 // null) as $t0
+                | ([$ge[] | select($t0 == null or . >= $t0)] | length) as $gg
+                | (($S.signals // {guard_blocks:0, gate_releases:0,
+                                   compactions:0, subagents:0}) as $sig
+                   | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
+                      phases:($S.phases // {}),
+                      now:($S.last_post // null),
+                      evidence:($S.last_verify // null),
+                      # SID-scoped + null-SID guards at/after active session t0.
+                      signals:($sig | .guard_blocks = ((.guard_blocks // 0) + $gg))
+                   })))
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?
@@ -2867,7 +2870,8 @@ access = tokens.get("access_token")
 if not access or not isinstance(access, str):
     sys.exit(2)
 account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else ""
-# urllib keeps the bearer out of process argv (curl -H "Authorization: Bearer …" is visible in ps).
+# urllib keeps the bearer out of process argv. No redirects: default opener
+# would re-send Authorization on cross-origin 3xx (unlike our previous curl -f).
 import urllib.error
 import urllib.request
 headers = {
@@ -2881,9 +2885,20 @@ req = urllib.request.Request(
     headers=headers,
     method="GET",
 )
+# Install no-redirect opener for this call only.
+class _NoRedirect(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        return response
+    https_response = http_response
+_opener = urllib.request.build_opener(_NoRedirect)
 try:
-    with urllib.request.urlopen(req, timeout=to_s) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
+    resp = _opener.open(req, timeout=to_s)
+    code = getattr(resp, "status", None) or resp.getcode()
+    if code is not None and int(code) >= 400:
+        sys.exit(4)
+    if code is not None and int(code) in (301, 302, 303, 307, 308):
+        sys.exit(4)  # refuse to follow (would risk bearer leak)
+    body = resp.read().decode("utf-8", errors="replace")
 except urllib.error.HTTPError:
     sys.exit(4)
 except Exception as e:
@@ -3181,9 +3196,14 @@ if not token:
     sys.exit(2)
 
 def curl_json(url, required=True):
-    """HTTP GET with bearer in urllib headers (never on argv). required=False: return None on any failure."""
+    """HTTP GET with bearer in urllib headers (never on argv). No redirects.
+    required=False: return None on any failure."""
     import urllib.error
     import urllib.request
+    class _NoRedirect(urllib.request.HTTPErrorProcessor):
+        def http_response(self, request, response):
+            return response
+        https_response = http_response
     req = urllib.request.Request(
         url,
         headers={
@@ -3193,8 +3213,23 @@ def curl_json(url, required=True):
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=to_s) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace") or "")
+        resp = urllib.request.build_opener(_NoRedirect).open(req, timeout=to_s)
+        code = getattr(resp, "status", None) or resp.getcode()
+        if code is not None and int(code) in (301, 302, 303, 307, 308):
+            if not required:
+                return None
+            raise SystemExit(4)
+        if code is not None and int(code) >= 400:
+            if not required:
+                return None
+            raise SystemExit(4)
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "")
+    except SystemExit:
+        raise
+    except json.JSONDecodeError:
+        if not required:
+            return None
+        raise SystemExit(5)
     except Exception as e:
         if not required:
             return None
@@ -4443,22 +4478,36 @@ _write_handoff() {
     [ -n "$prev_done" ] && done_block="$prev_done"
     [ -n "$prev_next" ] && next="$prev_next"
   fi
-  # Insert a phase-aware first Next line: drop superseded build/harden/review
-  # boilerplate so `plinth next` routes to current lifecycle state, not a stale
-  # stack. Preserve distinct operator-authored lines.
+  # Insert a phase-aware first Next line. Only drop exact known auto-generated
+  # lifecycle hints (not arbitrary operator text containing "review.sh" etc.).
+  _handoff_is_auto_lifecycle() {
+    case "$1" in
+      "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."|\
+      "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)"|\
+      "continue build (or plinth harden when product ready)"|\
+      "continue build (or plinth harden when product ready)."|\
+      "open PR (APPROVED@HEAD)"|\
+      "re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"|\
+      "run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"|\
+      "fix review finding, commit, re-run ./.plinth/review.sh")
+        return 0 ;;
+    esac
+    # Generated "Fix [severity] file:…" review-handoff lines
+    case "$1" in
+      Fix\ \[*\]*) return 0 ;;
+    esac
+    return 1
+  }
   _handoff_set_primary_next() {
     local hint="$1" cur="$2" line stripped out=""
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
     while IFS= read -r line; do
       stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
       [ -n "$stripped" ] || continue
-      # Drop exact dup of the new hint
       [ "$stripped" = "$hint" ] && continue
-      # Drop superseded lifecycle boilerplate (any phase)
-      case "$stripped" in
-        *"plinth harden"*|*"plinth build"*|*"review.sh"*|*"continue build"*|*"open PR"*|*"Fix ["*|*"fix review finding"*)
-          continue ;;
-      esac
+      if _handoff_is_auto_lifecycle "$stripped"; then
+        continue
+      fi
       out="${out}${out:+$'\n'}- ${stripped}"
     done <<< "$cur"
     if [ -n "$out" ]; then
@@ -4467,6 +4516,21 @@ _write_handoff() {
       printf '1. %s' "$hint"
     fi
   }
+  # Default primary action from current phase when no explicit hint (e.g. review-approved).
+  if [ -z "$next_hint" ] && [ -z "${PLINTH_HANDOFF_NEXT:-}" ]; then
+    case "$phase" in
+      harden)
+        if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ]; then
+          next_hint="open PR (APPROVED@HEAD) — or re-run review if HEAD moved"
+        else
+          next_hint="Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
+        fi
+        ;;
+      build)
+        next_hint="continue build (or plinth harden when product ready)"
+        ;;
+    esac
+  fi
   if [ -n "$next_hint" ]; then
     next=$(_handoff_set_primary_next "$next_hint" "$next")
   fi
