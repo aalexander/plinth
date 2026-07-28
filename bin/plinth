@@ -2831,9 +2831,95 @@ for add in d.get("additional_rate_limits") or []:
 if not windows:
     sys.exit(5)
 plan = d.get("plan_type") if isinstance(d.get("plan_type"), str) else None
+# Dollar-ish fields from the plan API (often 0 on pure subscription).
+spend = {"currency": "USD"}
+credits = d.get("credits") if isinstance(d.get("credits"), dict) else {}
+try:
+    bal = credits.get("balance")
+    if bal is not None and str(bal).strip() != "":
+        spend["credits_balance_usd"] = float(bal)
+except Exception:
+    pass
+sc = d.get("spend_control") if isinstance(d.get("spend_control"), dict) else {}
+if sc.get("individual_limit") is not None:
+    try:
+        spend["spend_limit_usd"] = float(sc["individual_limit"])
+    except Exception:
+        pass
+# Local Codex rate_limits from newest session (often exposes 5h session % missing from wham).
+try:
+    import os, time
+    from pathlib import Path
+    root = Path.home() / ".codex" / "sessions"
+    newest = None
+    newest_m = 0
+    if root.is_dir():
+        for f in root.rglob("*.jsonl"):
+            try:
+                m = f.stat().st_mtime
+            except Exception:
+                continue
+            if m > newest_m:
+                newest_m = m
+                newest = f
+    if newest is not None and (time.time() - newest_m) < 7 * 86400:
+        # Walk from end for latest token_count with rate_limits
+        lines = newest.read_text(errors="ignore").splitlines()
+        for line in reversed(lines[-400:]):
+            if "token_count" not in line or "rate_limits" not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            payload = rec.get("payload") if isinstance(rec, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            rl2 = payload.get("rate_limits") if isinstance(payload.get("rate_limits"), dict) else None
+            if not rl2:
+                continue
+            for key, fallback in (("primary", "session"), ("secondary", "week")):
+                blk = rl2.get(key)
+                if not isinstance(blk, dict) or blk.get("used_percent") is None:
+                    continue
+                try:
+                    pct = int(blk["used_percent"])
+                except Exception:
+                    continue
+                mins = blk.get("window_minutes")
+                try:
+                    secs = int(mins) * 60 if mins is not None else None
+                except Exception:
+                    secs = None
+                name = win_name(secs, fallback)
+                ent = {"window": name, "used_pct": max(0, min(100, pct))}
+                if secs:
+                    ent["window_seconds"] = secs
+                ra = blk.get("resets_at")
+                if ra is not None:
+                    try:
+                        ra = int(ra)
+                        ent["reset_at"] = ra
+                        ent["reset_text"] = datetime.fromtimestamp(
+                            ra, tz=timezone.utc
+                        ).strftime("%Y-%m-%d %H:%M UTC")
+                    except Exception:
+                        pass
+                # Prefer API windows; fill session if missing.
+                if name == "session" and not any(w.get("window") == "session" for w in windows):
+                    windows.insert(0, ent)
+                elif name in ("week", "day", "month") and not any(
+                    w.get("window") == name for w in windows
+                ):
+                    windows.append(ent)
+            break
+except Exception:
+    pass
 out = {"vendor": "codex", "available": True, "windows": windows}
 if plan:
     out["plan_type"] = plan
+if len(spend) > 1:
+    out["spend"] = spend
 # Never emit tokens, email, user_id, or raw API body.
 print(json.dumps(out, separators=(",", ":")))
 ' "$cx_auth" "$cx_to" 2>/dev/null)" || cx_rc=$?
@@ -3054,9 +3140,97 @@ try:
 except Exception:
     plan = None
 
+# Spend: plan on-demand/prepaid (API) + local session costUsdTicks (1 USD = 1e10 ticks).
+spend = {"currency": "USD"}
+src = []
+od_used = num_val(credits_cfg or {}, "onDemandUsed")
+if od_used is None:
+    od_used = num_val(cfg, "onDemandUsed")
+od_cap = num_val(credits_cfg or {}, "onDemandCap")
+if od_cap is None:
+    od_cap = num_val(cfg, "onDemandCap")
+prepaid = num_val(credits_cfg or {}, "prepaidBalance")
+if prepaid is None:
+    prepaid = num_val(cfg, "prepaidBalance")
+# API values are dollar amounts (interactive /usage shows $).
+if od_used is not None:
+    spend["on_demand_usd"] = round(float(od_used), 2)
+if od_cap is not None:
+    spend["on_demand_cap_usd"] = round(float(od_cap), 2)
+if prepaid is not None:
+    spend["prepaid_usd"] = round(float(prepaid), 2)
+if od_used is not None or prepaid is not None:
+    src.append("billing")
+
+# Local rolling spend from session updates (bounded scan).
+try:
+    import time
+    from pathlib import Path
+    TICKS = 10_000_000_000  # 1e10 ticks per USD
+    now_ts = time.time()
+    cut_24 = now_ts - 86400
+    cut_7 = now_ts - 7 * 86400
+    ticks_24 = ticks_7 = 0
+    files = 0
+    root = Path.home() / ".grok" / "sessions"
+    if root.is_dir():
+        candidates = []
+        for f in root.rglob("updates.jsonl"):
+            try:
+                m = f.stat().st_mtime
+            except Exception:
+                continue
+            if m < cut_7:
+                continue
+            candidates.append((m, f))
+        candidates.sort(reverse=True)
+        for _m, f in candidates[:120]:
+            files += 1
+            try:
+                for line in f.open(errors="ignore"):
+                    if "costUsdTicks" not in line or "turn_completed" not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    upd = (rec.get("params") or {}).get("update") or {}
+                    if upd.get("sessionUpdate") != "turn_completed":
+                        continue
+                    usage = upd.get("usage") if isinstance(upd.get("usage"), dict) else {}
+                    ticks = usage.get("costUsdTicks")
+                    if ticks is None:
+                        continue
+                    try:
+                        ticks = int(ticks)
+                    except Exception:
+                        continue
+                    # Event time: prefer record timestamp, else file mtime
+                    ts = rec.get("timestamp")
+                    try:
+                        ts = float(ts)
+                    except Exception:
+                        ts = _m
+                    if ts >= cut_7:
+                        ticks_7 += ticks
+                    if ts >= cut_24:
+                        ticks_24 += ticks
+            except Exception:
+                continue
+    spend["local_24h_usd"] = round(ticks_24 / TICKS, 2)
+    spend["local_7d_usd"] = round(ticks_7 / TICKS, 2)
+    spend["local_files_scanned"] = files
+    src.append("local_sessions")
+except Exception:
+    pass
+if src:
+    spend["source"] = "+".join(src)
+
 out = {"vendor": "grok", "available": True, "windows": windows}
 if plan:
     out["plan_type"] = plan
+if len(spend) > 1:
+    out["spend"] = spend
 # Never emit tokens, email, user ids, or raw bodies.
 print(json.dumps(out, separators=(",", ":")))
 ' "$gk_auth" "$gk_to" 2>/dev/null)" || gk_rc=$?
@@ -3369,7 +3543,7 @@ except Exception:
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "claude: -p /usage (session+week); codex: wham/usage (≤6h=session); grok: billing month (+week credits when present). Burn: linear from last reset."
+        note: "claude: -p /usage; codex: wham/usage (+local 5h when present); grok: billing+credits + local $ from session costUsdTicks. Burn: linear from last reset."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

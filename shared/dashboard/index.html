@@ -176,6 +176,12 @@
     font-weight: 600;
     flex-shrink: 0;
   }
+  #quota-bar .qspend {
+    color: var(--green);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
   #quota-bar .qchev {
     color: var(--dim);
     font-size: 0.65rem;
@@ -1013,6 +1019,75 @@
       (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
   }
 
+  function formatUsd(n) {
+    if (n == null || Number.isNaN(Number(n))) return null;
+    const v = Number(n);
+    const abs = Math.abs(v);
+    const s = abs >= 100 ? v.toFixed(0) : abs >= 10 ? v.toFixed(1) : v.toFixed(2);
+    return "$" + s;
+  }
+
+  /** Best single dollar figure for the compact row. */
+  function spendFront(sp) {
+    if (!sp || typeof sp !== "object") return null;
+    if (sp.local_24h_usd != null) {
+      return { text: formatUsd(sp.local_24h_usd) + "/24h", title: "Local session cost (24h)" };
+    }
+    if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) {
+      return { text: formatUsd(sp.on_demand_usd) + " OD", title: "On-demand spend" };
+    }
+    if (sp.prepaid_usd != null && Number(sp.prepaid_usd) > 0) {
+      return { text: formatUsd(sp.prepaid_usd) + " prepaid", title: "Prepaid balance" };
+    }
+    if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) {
+      return { text: formatUsd(sp.credits_balance_usd) + " cr", title: "Credits balance" };
+    }
+    // Still show $0 on-demand when we know the field (subscription-only seats).
+    if (sp.on_demand_usd != null) {
+      return { text: "$0", title: "On-demand spend (included plan / no overage)" };
+    }
+    return null;
+  }
+
+  function spendDetailHTML(sp) {
+    if (!sp || typeof sp !== "object") {
+      return '<div class="drow"><span class="dlab">spend</span>' +
+        '<span class="dval dim">no $ meter from plan API</span></div>';
+    }
+    const rows = [];
+    function add(lab, val, tip) {
+      const t = formatUsd(val);
+      if (t == null) return;
+      rows.push(
+        '<div class="drow" title="' + esc(tip || "") + '">' +
+          '<span class="dlab">' + esc(lab) + "</span>" +
+          '<span class="dval">' + esc(t) + "</span>" +
+          '<span class="dmeta dim">' + esc(tip || "") + "</span>" +
+        "</div>"
+      );
+    }
+    add("24h", sp.local_24h_usd, "local session burn (this machine)");
+    add("7d", sp.local_7d_usd, "local session burn (this machine)");
+    add("on-dem", sp.on_demand_usd, "account on-demand spend");
+    if (sp.on_demand_cap_usd != null) {
+      add("OD cap", sp.on_demand_cap_usd, "on-demand monthly cap");
+    }
+    add("prepaid", sp.prepaid_usd, "prepaid credit balance");
+    add("credits", sp.credits_balance_usd, "plan credits balance");
+    if (sp.spend_limit_usd != null) add("limit", sp.spend_limit_usd, "spend control limit");
+    if (!rows.length) {
+      return '<div class="drow"><span class="dlab">spend</span>' +
+        '<span class="dval dim">no dollar fields</span></div>';
+    }
+    if (sp.source) {
+      rows.push(
+        '<div class="drow"><span class="dlab">src</span>' +
+          '<span class="dval dim">' + esc(String(sp.source)) + "</span></div>"
+      );
+    }
+    return rows.join("");
+  }
+
   function formatResetShort(v) {
     if (v == null || v.reset_at == null || Number.isNaN(Number(v.reset_at))) {
       return v && v.reset_text ? String(v.reset_text).slice(0, 24) : null;
@@ -1063,6 +1138,7 @@
           return typeof b === "string" ? "<span>" + esc(b) + "</span>" : b;
         }).join("") + "</div>" +
         (rows || '<div class="dim">no window detail</div>') +
+        spendDetailHTML(v.spend) +
       "</div>"
     );
   }
@@ -1140,6 +1216,13 @@
         ? '<div class="qmeter" aria-hidden="true"></div>'
         : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
       const metaBits = [];
+      const front$ = spendFront(v.spend);
+      if (front$) {
+        metaBits.push(
+          '<span class="qspend" title="' + esc(front$.title || "spend") + '">' +
+            esc(front$.text) + "</span>"
+        );
+      }
       if (tight) {
         const rs = formatResetShort(tight);
         if (rs) metaBits.push('<span title="reset">↻ ' + esc(rs) + "</span>");
