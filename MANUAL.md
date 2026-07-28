@@ -565,20 +565,31 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 - **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir (session + week).
 - **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
 - **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH). Plan tier from `/v1/user?include=subscription`.
-- **API $ (not subscription invoice; no extrapolation)** — observed costs only, harvested into an append-only log at `~/.config/plinth/api-cost-log.jsonl` (deduped by event id). Dash sums that log for 24h / week / month / 3 mo / 6 mo / year:
-  - **Grok:** `costUsdTicks` on `turn_completed` in `~/.grok/sessions/**/updates.jsonl` (1 USD = 10¹⁰ ticks) — same family as interactive `/usage` cost.
+- **Primary metric = plan headroom (not $)** — each vendor row shows the tightest
+  window’s **used %**, linear **→100%** ETA (or **overrun** if it hits the cap
+  before reset), **%/h** plan-burn rate, and **reset** clock. Claude/Codex
+  subscription seats are rate-limited; this is what their CLIs actually meter.
+- **API $ only when observed** — never list-price estimates, never empty “$0”
+  placeholders. Harvested into `~/.config/plinth/api-cost-log.jsonl` (deduped by
+  event id); dash sums 24h / week / month / 3 mo / 6 mo / year when events exist:
+  - **Grok:** `costUsdTicks` on `turn_completed` in `~/.grok/sessions/**/updates.jsonl` (1 USD = 10¹⁰ ticks) — same family as interactive `/usage` cost; usually dense.
   - **Claude:** only when `total_cost_usd` appears in session transcripts (subscription seats often omit it).
   - **Codex:** only when an explicit USD cost field appears in session logs (most ChatGPT seats have none).
-  Re-probes append new events only; they never invent token×price spend.
+  Compact row and expand detail omit the $ strip entirely until at least one
+  positive observed amount (or a positive account OD/prepaid/credits balance)
+  exists for that vendor. Re-probes append new events only; they never invent
+  token×price spend.
+- **Token burn (per project card)** — recent tok/min + token total from the
+  transcript tail: thrash / intensity signal, not plan capacity and not $.
 Scratch temps for event/transcript parsing use the process `TMPDIR` (default
 system temp) — do not point `TMPDIR` or a discovered project root at `/tmp` or
 the quota-cache directory if you need a hard quarantine. TTL ~15 min
 (`PLINTH_DASH_QUOTA_TTL` / `PLINTH_DASH_QUOTA_TIMEOUT` / `PLINTH_DASH_QUOTA=0`
-for smoke). Empty/unparsed usage is `parse_failed`. Burn projection: **linear
-from last reset** (assume 0% at window start = `reset_at − window_seconds`,
-line through current `used_pct` → time-to-100%). Needs a parseable next-reset
-clock + window length (week = 7d; Claude session = 5h; Codex uses API
-`limit_window_seconds`).
+for smoke). Empty/unparsed usage is `parse_failed`. Plan burn projection:
+**linear from last reset** (assume 0% at window start =
+`reset_at − window_seconds`, line through current `used_pct` → time-to-100%).
+Needs a parseable next-reset clock + window length (week = 7d; Claude session =
+5h; Codex uses API `limit_window_seconds`).
 
 Smoke (canary CI): `shared/dashboard/smoke-snapshot.sh` — offline `--snapshot`
 fixture matrix (`PLINTH_DASH_QUOTA=0`), quota cache/parse unit cases, phase

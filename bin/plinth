@@ -3750,9 +3750,15 @@ appended = append_entries(new_entries)
 sums, oldest_map, n_log = sum_log_by_vendor()
 
 def spend_from_log(vendor):
+    """Return observed API $ periods only when at least one bucket is > 0.
+    Claude/Codex seats often have no events — omit spend entirely rather than
+    inventing $0 placeholders (plan % is the primary metric for those seats).
+    """
     if vendor not in sums:
         return None
     local = {lab: round(sums[vendor][lab], 2) for lab, _ in period_days}
+    if not any(v > 0 for v in local.values()):
+        return None
     out = {
         "currency": "USD",
         "kind": "api_cost",
@@ -3960,7 +3966,7 @@ except Exception:
         overall: $overall,
         vendors: $vendors,
         history: $hist2,
-        note: "claude: -p /usage; codex: wham/usage; grok: billing+credits. API $ from ~/.config/plinth/api-cost-log.jsonl (observed only, no extrapolation). Burn: linear from last reset."
+        note: "claude: -p /usage; codex: wham/usage; grok: billing+credits. Primary: plan % + linear →100% from last reset. API $ only when observed in ~/.config/plinth/api-cost-log.jsonl (no extrapolation)."
       }
   ' 2>/dev/null)" || assembled=""
   rm -f "$vendors_tmp"

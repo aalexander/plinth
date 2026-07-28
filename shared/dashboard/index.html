@@ -182,6 +182,11 @@
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
   }
+  #quota-bar .qproj {
+    color: var(--cyan);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
   #quota-bar .qchev {
     color: var(--dim);
     font-size: 0.65rem;
@@ -1059,7 +1064,9 @@
             ? '<dt>models</dt><dd class="models">' + modelsHtml + "</dd>"
             : "") +
           (burnBits.length
-            ? "<dt>burn</dt><dd class=\"muted\">" + esc(burnBits.join(" · ")) + "</dd>"
+            ? "<dt title=\"Token burn — thrash / intensity (not plan $)\">tok</dt>" +
+              "<dd class=\"muted\" title=\"Token burn — thrash / intensity (not plan $)\">" +
+              esc(burnBits.join(" · ")) + "</dd>"
             : "") +
         "</dl>" +
         (phases ? '<div>' + phases + "</div>" : "") +
@@ -1142,7 +1149,7 @@
     const last = vals[vals.length - 1];
     const hot = last >= 90 ? "var(--red)" : last >= 70 ? "var(--yellow)" : "var(--cyan)";
     return (
-      '<span class="spark" title="24h burn (' + vals.length + " samples, " +
+      '<span class="spark" title="24h plan % (' + vals.length + " samples, " +
         min + "→" + max + '%)">' +
         '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + " " + h +
         '" aria-hidden="true">' +
@@ -1178,6 +1185,15 @@
       (left > 0 ? " (in " + hum(left) + ")" : left === 0 ? " (now)" : " (overrun)");
   }
 
+  /** Compact plan-headroom chip: primary story for Claude/Codex (not $). */
+  function formatProjectionShort(v) {
+    if (v == null || v.projected_100pct_at == null) return null;
+    const left = Number(v.projected_100pct_at) - Math.floor(Date.now() / 1000);
+    if (Number.isNaN(left)) return null;
+    if (left <= 0) return "→100% now";
+    return "→100% in " + hum(left);
+  }
+
   function formatUsd(n) {
     if (n == null || Number.isNaN(Number(n))) return null;
     const v = Number(n);
@@ -1200,9 +1216,26 @@
     return m;
   }
 
-  /** Best single dollar figure for the compact row. */
+  /**
+   * True when the vendor emitted real dollars (observed log and/or account
+   * balance fields). Empty spend must not invent a $ story for Claude/Codex.
+   */
+  function hasObservedSpend(sp) {
+    if (!sp || typeof sp !== "object") return false;
+    const loc = localUsdMap(sp);
+    const keys = Object.keys(loc);
+    for (let i = 0; i < keys.length; i++) {
+      if (loc[keys[i]] != null && Number(loc[keys[i]]) > 0) return true;
+    }
+    if (sp.on_demand_usd != null && Number(sp.on_demand_usd) > 0) return true;
+    if (sp.prepaid_usd != null && Number(sp.prepaid_usd) > 0) return true;
+    if (sp.credits_balance_usd != null && Number(sp.credits_balance_usd) > 0) return true;
+    return false;
+  }
+
+  /** Best single dollar figure for the compact row — only when observed. */
   function spendFront(sp) {
-    if (!sp || typeof sp !== "object") return null;
+    if (!hasObservedSpend(sp)) return null;
     const loc = localUsdMap(sp);
     // Prefer week cumulative from observed API-cost log.
     if (loc["7d"] != null && Number(loc["7d"]) > 0) {
@@ -1229,13 +1262,12 @@
     return null;
   }
 
+  /** Dollar rows only when the vendor shows real $ — never empty placeholders. */
   function spendDetailHTML(sp) {
-    if (!sp || typeof sp !== "object") {
-      return '<div class="drow"><span class="dlab">API $</span>' +
-        '<span class="dval dim">no observed API cost logged yet</span></div>';
-    }
+    if (!hasObservedSpend(sp)) return "";
     const rows = [];
     function add(lab, val, tip) {
+      if (val == null || !(Number(val) > 0)) return;
       const t = formatUsd(val);
       if (t == null) return;
       rows.push(
@@ -1266,7 +1298,7 @@
     ];
     let hasLocal = false;
     periods.forEach(function (row) {
-      if (loc[row[0]] != null) {
+      if (loc[row[0]] != null && Number(loc[row[0]]) > 0) {
         hasLocal = true;
         add(row[1], loc[row[0]], row[2]);
       }
@@ -1289,10 +1321,8 @@
     add("prepaid", sp.prepaid_usd, "prepaid credit balance");
     add("credits", sp.credits_balance_usd, "plan credits balance");
     if (sp.spend_limit_usd != null) add("limit", sp.spend_limit_usd, "spend control limit");
-    if (rows.length <= 1) {
-      return '<div class="drow"><span class="dlab">API $</span>' +
-        '<span class="dval dim">no dollar fields</span></div>';
-    }
+    // Header alone is not useful — require at least one numeric row.
+    if (rows.length <= 1) return "";
     return rows.join("");
   }
 
@@ -1347,11 +1377,13 @@
         "</div>"
       );
     }).join("");
+    // Primary story = plan windows (% + →100% + reset). API $ only if observed.
+    const spendHtml = hasObservedSpend(v.spend) ? spendDetailHTML(v.spend) : "";
     return (
       '<div class="qdetail open" data-qdetail="' + esc(v.vendor) + '">' +
         '<div class="dhead">' + head.join("") + "</div>" +
         (rows || '<div class="dim">no window detail</div>') +
-        spendDetailHTML(v.spend) +
+        spendHtml +
       "</div>"
     );
   }
@@ -1428,22 +1460,35 @@
       const meter = p == null
         ? '<div class="qmeter" aria-hidden="true"></div>'
         : '<div class="' + meterCls + '"><i style="width:' + Math.min(100, p) + '%"></i></div>';
+      // Primary: plan headroom (→100% / overrun / %/h / reset). $ only if observed.
       const metaBits = [];
+      if (tight) {
+        if (tight.overrun_risk) {
+          metaBits.push('<span class="chip-over" title="Hits 100% before reset at current plan burn">overrun</span>');
+        } else {
+          const proj = formatProjectionShort(tight);
+          if (proj) {
+            metaBits.push(
+              '<span class="qproj" title="Linear plan % burn from last reset → 100%">' +
+                esc(proj) + "</span>"
+            );
+          }
+        }
+        if (tight.rate_pct_per_hour != null) {
+          metaBits.push(
+            '<span class="dim" title="Plan % burn rate (linear from last reset)">' +
+              esc(String(tight.rate_pct_per_hour)) + "%/h</span>"
+          );
+        }
+        const rs = formatResetShort(tight);
+        if (rs) metaBits.push('<span title="window reset">↻ ' + esc(rs) + "</span>");
+      }
       const front$ = spendFront(v.spend);
       if (front$) {
         metaBits.push(
-          '<span class="qspend" title="' + esc(front$.title || "spend") + '">' +
+          '<span class="qspend" title="' + esc(front$.title || "observed API $") + '">' +
             esc(front$.text) + "</span>"
         );
-      }
-      if (tight) {
-        const rs = formatResetShort(tight);
-        if (rs) metaBits.push('<span title="reset">↻ ' + esc(rs) + "</span>");
-        if (tight.overrun_risk) {
-          metaBits.push('<span class="chip-over" title="Hits 100% before reset">overrun</span>');
-        } else if (tight.rate_pct_per_hour != null) {
-          metaBits.push('<span class="dim">' + esc(String(tight.rate_pct_per_hour)) + "%/h</span>");
-        }
       }
       if (idx === 0) metaBits.push('<span class="dim">polled ' + esc(age) + "</span>");
       const nWin = wins.length;

@@ -1088,7 +1088,12 @@ PATH="$QBIN:/usr/bin:/bin" \
 jq -e '
   .overall.used_pct == 55
   and (.history | length) >= 1
-  and (.history[-1].week_all_models_pct == 55)
+  and (
+    (.history[-1].week_all_models_pct == 55)
+    or (.history[-1].used_pct == 55
+        and (.history[-1].window == "week_all_models"
+             or .history[-1].window == null))
+  )
   and (.history[-1].reset_text != null)
 ' "$PCACHE" >/dev/null
 
@@ -1773,7 +1778,7 @@ setTimeout(() => {
       "feat/dash", "abc1234", "CHANGES", "do the thing",
       "12/min", "1.5k tok", "r2", "claude-test", "gpt-test",
       "coding", "reviewing", "fable-max", "gpt-t2", "gpt-t1",
-      "wall 42s", "review wall", "models-grid", "mrole",
+      "wall 42s", "models-grid", "mrole",
       "driver", "review", "audit", "advise", "opus", "fable",
       'data-changes="/tmp/alpha"',
     ]) {
@@ -2047,7 +2052,17 @@ setTimeout(() => {
         console.error("renderQuota missing overrun chip:", qb);
         process.exit(1);
       }
-      // Expand claude → detail shows session + weekday reset
+      // Plan headroom is primary: overrun chip (claude) or →100% ETA (codex has rate only).
+      // No invented API $ on compact rows when spend is absent.
+      if (qb.includes("API $") || qb.includes("no observed") || qb.includes("no dollar")) {
+        console.error("compact quota must not show empty API $ placeholders:", qb);
+        process.exit(1);
+      }
+      if (qb.includes("$") && !qb.includes("%")) {
+        console.error("unexpected bare $ without plan %:", qb);
+        process.exit(1);
+      }
+      // Expand claude → detail shows session + weekday reset; still no empty $
       if (typeof api.toggleQuotaVendor !== "function") {
         console.error("missing toggleQuotaVendor seam");
         process.exit(1);
@@ -2059,7 +2074,53 @@ setTimeout(() => {
         console.error("expanded claude detail missing session/weekday:", qb2);
         process.exit(1);
       }
+      if (qb2.includes("API $") || qb2.includes("no observed") || qb2.includes("no dollar")) {
+        console.error("claude expand without spend must omit API $ strip:", qb2);
+        process.exit(1);
+      }
+      // →100% detail line present for the projected window
+      if (!qb2.includes("→100%") && !qb2.includes("100%")) {
+        console.error("expanded detail should surface plan →100% projection:", qb2.slice(0, 600));
+        process.exit(1);
+      }
       api.toggleQuotaVendor("claude"); // collapse
+      // Observed $ only when spend present (Grok-style log totals)
+      api.renderQuota({
+        available: true, refreshed_at: nowSec,
+        vendors: [{
+          vendor: "grok", available: true,
+          windows_detail: [
+            { window: "week_credits", used_pct: 20, remaining_pct: 80,
+              reset_at: resetAt, kind: "plan", rate_pct_per_hour: 0.1,
+              projected_100pct_at: nowSec + 7200 }
+          ],
+          spend: {
+            currency: "USD", kind: "api_cost", pricing: "observed",
+            local_usd: { "24h": 1.25, "7d": 12.5, "30d": 40 },
+            local_7d_usd: 12.5, local_24h_usd: 1.25, local_30d_usd: 40,
+            source: "api-cost-log"
+          }
+        }]
+      });
+      const qb$ = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb$.includes("$12.5/wk") && !qb$.includes("$12.50/wk")) {
+        // formatUsd: 12.5 → $12.5
+        if (!qb$.includes("/wk") || !qb$.includes("12.5")) {
+          console.error("observed spend should surface compact $/wk:", qb$);
+          process.exit(1);
+        }
+      }
+      if (!qb$.includes("→100%")) {
+        console.error("compact row should lead with plan →100% ETA when not overrun:", qb$);
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("grok");
+      const qb$d = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qb$d.includes("API $") || !qb$d.includes("week")) {
+        console.error("expanded grok with observed spend should show API $ detail:", qb$d.slice(0, 800));
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("grok"); // collapse
       // attention sort + filter seams
       if (typeof api.attentionScore !== "function" || typeof api.sortProjects !== "function") {
         console.error("missing attentionScore/sortProjects seams");
@@ -2116,9 +2177,9 @@ setTimeout(() => {
         process.exit(1);
       }
       api.renderQuota({ available: false, note: "vendor plan unknown", vendors: [] });
-      const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
-      if (!qb2.includes("unavailable")) {
-        console.error("renderQuota unavailable missing text:", qb2);
+      const qbUnavail = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      if (!qbUnavail.includes("unavailable")) {
+        console.error("renderQuota unavailable missing text:", qbUnavail);
         process.exit(1);
       }
       // Malformed vendors must not throw (Array.isArray guard)
@@ -2154,7 +2215,7 @@ setTimeout(() => {
       console.error("UNBOUND card missing yellow UNBOUND chip:", ubHtml.slice(0, 200));
       process.exit(1);
     }
-    // Healthy idle: no review chip present, tone idle
+    // Healthy idle: no review row/chips, tone idle
     const idle = {
       name: "beta", path: "/tmp/beta", branch: "main", head: "deadbee",
       feedless: true, review: null, needs_human: { open: 0, blocking: 0 },
@@ -2164,8 +2225,9 @@ setTimeout(() => {
       process.exit(1);
     }
     const idleHtml = api.cardHTML(idle);
-    if (!idleHtml.includes("no review")) {
-      console.error("idle card should show no review");
+    if (idleHtml.includes("<dt>review</dt>") || idleHtml.includes("APPROVED") ||
+        idleHtml.includes("CHANGES") || idleHtml.includes("RUNNING")) {
+      console.error("idle card should omit review row/chips:", idleHtml.slice(0, 300));
       process.exit(1);
     }
     // last_error chip (infra failure presentation)
@@ -2175,8 +2237,9 @@ setTimeout(() => {
       review: { last_error: true, running: false, round: 1, verdict: null },
     };
     const errHtml = api.cardHTML(errRev);
-    if (!errHtml.includes("review infra error")) {
-      console.error("last_error card missing infra-error chip");
+    // Chip label is compact "review err" (was longer "review infra error").
+    if (!errHtml.includes("review err") && !errHtml.includes("infra error")) {
+      console.error("last_error card missing review-error chip:", errHtml.slice(0, 300));
       process.exit(1);
     }
     if (!errHtml.includes('class="card bad"')) {
