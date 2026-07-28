@@ -41,12 +41,15 @@ case "$branch" in
     log_release "commits landed directly on '$branch' — base branch is never gated"
     exit 0 ;;
 esac
-slug=$(printf '%s' "$branch" | tr '/ ' '--')
+# Encoded slug (feat/a-b ≠ feat/a/b); legacy tr '/ ' '--' for older session dirs.
+slug=$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')
+slug_legacy=$(printf '%s' "$branch" | tr '/ ' '--')
 
 # Lifecycle phase: default build (no forced review). Harden restores v1 Stop.
 # Corrupt/invalid phase file → fail CLOSED as harden (do not silently build_defer).
 phase="build"
 pfile="$SDIR/phase-$slug.json"
+[ -f "$pfile" ] || pfile="$SDIR/phase-$slug_legacy.json"
 if [ -f "$pfile" ]; then
   if phase=$(jq -er '.phase' "$pfile" 2>/dev/null) && { [ "$phase" = "build" ] || [ "$phase" = "harden" ]; }; then
     :
@@ -57,8 +60,9 @@ if [ -f "$pfile" ]; then
   fi
 fi
 # Migration hint: open review CHANGES_NEEDED/UNBOUND without phase file → harden.
-if [ ! -f "$pfile" ]; then
+if [ ! -f "$SDIR/phase-$slug.json" ] && [ ! -f "$SDIR/phase-$slug_legacy.json" ]; then
   vtry="$SDIR/review/$slug/verdict.json"
+  [ -f "$vtry" ] || vtry="$SDIR/review/$slug_legacy/verdict.json"
   if [ -f "$vtry" ]; then
     vv=$(jq -r '.verdict // empty' "$vtry" 2>/dev/null || true)
     case "$vv" in
@@ -69,6 +73,8 @@ if [ ! -f "$pfile" ]; then
     esac
   fi
 fi
+# Prefer encoded slug for review session paths; fall back to legacy.
+[ -d "$SDIR/review/$slug" ] || slug="$slug_legacy"
 case "$phase" in
   harden) ;;
   *)

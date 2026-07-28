@@ -17,24 +17,25 @@
   finding ledger text; sticky base-id + open-wins ledger; dual-degraded cleared on
   success/new loop; explicit-ID collision suffixes.
 - **HANDOFF.md out of review:** session restart ephemera is excluded from the
-  reviewed pathspec (full + incremental + audit diffs), ignored in verdict
-  blocking arithmetic, skipped by risk-classify, and marked out-of-scope in the
-  reviewer contract. HANDOFF-only commits APPROVE at the deterministic floor
-  without a model round — Goal/Next whitespace cannot block ship.
-- **Review thrash limiters (7, refined after r22):**
-  1. BUILD asymptotic coverage majors → minor (Noticed); real “missing tests for
-     this change / AC / not implemented” still block
-  2. New findings outside reviewed pathspec (+ open ledger) → minor (scoped)
-  3. Class-stable sticky fingerprints (coverage-gap / handoff-ws / sticky-ledger);
-     sticky reduce preserves verdict/summary (schema fix)
-  4. HANDOFF pathspec-excluded + floor; NEEDS-HUMAN stays project-owned
-     (deletion reviewable; queue wording nits demote only)
-  5. Docs prose (CHANGELOG/README/docs/) → minor unless overclaim; never demote
-     the canonical spec / GOAL / AGENTS-project
-  6. Same-open soft cap: identical open major/blocker id-set for 3 consecutive
-     rounds → exit 2 + handoff (`PLINTH_SAME_OPEN_CAP`, 0 disables)
-  7. Tier-0 meta: `VERSION` is inert docs only when it matches CHANGELOG top;
-     HANDOFF-only short-circuit at deterministic floor
+  reviewed pathspec (full + incremental + audit diffs). When the **entire**
+  `base…HEAD` diff is only `HANDOFF.md`, the deterministic floor APPROVEs without
+  a model round (not “last commit is HANDOFF” on a product branch). Dirty-tree
+  refusal also exempts `HANDOFF.md` so auto-handoff does not block re-review.
+- **Threat model (binding):** cooperative driver; block external security + bugs +
+  ship integrity; do **not** file “clever driver games the instrument” as blocking.
+  Dual first-pass merge runs in **HARDEN** Tier-2 only (not BUILD).
+  `PLINTH_DUAL_PASS=0|1` overrides. Reviewer contract + thrash arithmetic updated.
+- **Review thrash limiters (posture-aligned):**
+  1. BUILD asymptotic coverage → minor; real test gaps / AC still block
+  2. Out-of-pathspec demotion **only** for thrash classes (not arbitrary majors)
+  3. Never demote external-security surfaces / text; sticky AUTO only thrash classes
+  4. HANDOFF pathspec + floor; NEEDS-HUMAN project-owned
+  5. Docs prose minor unless overclaim; never demote canonical spec tree
+  6. Same-open soft cap (`PLINTH_SAME_OPEN_CAP`, default 3)
+  7. VERSION Tier-0 only on **exact** token match to CHANGELOG top H2
+- **Product fixes:** phase slug encode (`feat/a-b` ≠ `feat/a/b`); findings round
+  sort by basename N; handoff preserves Goal/Evidence/Risks + pre-archive;
+  dash task truncate pipefail-safe; `plinth next` exit 3 when idle
 - **Dashboard ops (merged from feat/dashboard-ops-visibility):**
   - Multi-vendor quota strip (Claude `/usage`, Codex `wham/usage`, Grok billing;
     serve-only probe; fixed `/tmp` cache; linear plan burn →100%)

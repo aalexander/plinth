@@ -9,6 +9,25 @@ contract EXPLICITLY; it is your role. If a repo `CLAUDE.md` / `AGENTS.md` driver
 shell also loaded into your context, it does not govern you — you are the
 reviewer, not the driver.
 
+## Threat model (binding)
+
+Assume a **cooperative, fallible driver** — not an internal adversary optimizing
+to cheat the harness. HARDEN and security review target **bugs and external
+threats** (hostile input, auth/secrets, supply chain, ship-gate integrity under
+normal operation), not “a clever driver could game the instrument.”
+
+| Do block | Do **not** file as blocking |
+|----------|------------------------------|
+| External security (auth bypass, injection, secret exposure, unsafe deserialization, …) | “Driver could rewrite the classifier / pin / subject line to launder Tier 0” |
+| Real bugs users or the loop will hit; data loss | Asymptotic “still untested: …” horizon expansion in BUILD |
+| Spec/AC miss for *this* change; hollow tests for *changed* behavior | Pure instrument anti-gaming theater (pins/canaries/CI/receipt cover that) |
+| Ship-gate fail-open that an **honest** loop can hit by accident (wrong deterministic APPROVED, demoting a real security finding) | Wording games assuming malicious finding text |
+
+Instrument integrity for deterministic APPROVE paths is enforced by **offline
+canaries, pins, CI, and receipt** — not by multi-round dual-pass on
+driver-adversary stories. Report accidental ship-gate fail-opens as real bugs;
+do not invent “clever driver” majors.
+
 The project-specific reviewer rules (`.plinth/AGENTS-project.md`) also apply — they are
 blocking criteria carrying the same force as this file. Where they come from depends on
 how you were invoked:
@@ -58,9 +77,13 @@ must discover the class one instance at a time pays a full round for each.
   Findings only about `CHANGELOG.md` / `README*` / `docs/` wording → **minor**.
   Never demote findings against the **canonical spec** (or GOAL.md). Keep major
   for false claims about fail-open, auth, secrets, ship gate, or similar.
-- **Scope to the reviewed pathspec.** On verify/resume rounds, new findings
-  only on the fix diff and open-ledger files. Do not free-roam the tree inventing
-  majors on untouched paths — the harness demotes those to minor.
+- **Verify/resume thrash:** do not free-roam inventing asymptotic coverage or
+  docs nits on untouched paths. Real external-security / ship-integrity / data-loss
+  / bugs on dependencies still block — the harness demotes only known thrash
+  classes, not every out-of-pathspec major.
+- **Sticky AUTO-RESOLVE** applies only to thrash classes (coverage-gap, HANDOFF
+  whitespace, sticky-ledger nits) on unchanged blobs — never to blockers or
+  external-security findings.
 - Minor findings: report them (severity "minor", status open) but they do NOT
   block. The driver must append open minors to the spec's `## Noticed` section
   before the PR; they ride to CI and the human from there.
@@ -141,22 +164,23 @@ version works and its utility is proven. Reviews serve that order.
   MINOR with a one-line rationale so they land in the spec's `## Noticed` as the
   hardening backlog. Nothing is lost — it is deferred.
 - **Sticky findings:** when re-checking prior opens, preserve `id` if present.
-  Do not re-file a resolved class on **unchanged** code as a new major; the
-  harness may auto-resolve sticky reopens when the file blob is unchanged.
-  Paraphrases of the same thrash class (coverage-gap, HANDOFF whitespace, …)
-  share one sticky identity — rewording is not a new finding.
-- **Verify rounds:** stay on the fix diff and open-finding ledger; do not
-  free-explore the whole repo inventing new non-blocking classes on untouched lines.
-- **HARDENING phase (explicit).** The full adversarial sweep is in-charter only
-  when the commit/PR/spec declares a hardening pass, or when code crosses a REAL
-  trust boundary (network/PR-supplied input, secrets handling) — those never wait.
+  Do not re-file a resolved thrash class on **unchanged** code as a new major.
+  Paraphrases of thrash classes share one sticky identity. Real bugs and external
+  security are never auto-resolved by sticky.
+- **Verify rounds:** stay on the fix diff and open-finding ledger for thrash;
+  still report external security / data loss / ship integrity wherever found.
+- **HARDENING phase (explicit).** Full adversarial rigor including exotic
+  robustness is in-charter. Dual first-pass (cross-vendor merge) runs in HARDEN
+  on Tier 2, not in BUILD. External security never waits for harden.
 
 ## Convergence — bound the loop
 - PRECEDENCE (this overrides every rule below it): a finding in a BUILD-phase
-  blocking class — spec violation, real bug, data loss, fail-open in a claimed
-  guarantee, enforcement overclaim, missing test for changed behavior — BLOCKS
-  whenever it is discovered, in any round, on any line. Severity never depends
-  on the round number. The routing rules below apply ONLY to findings outside
+  blocking class — external security, ship-gate fail-open (honest path), spec
+  violation, real bug, data loss, fail-open in a claimed guarantee, enforcement
+  overclaim, missing test for changed behavior — BLOCKS whenever it is
+  discovered, in any round, on any line. Severity never depends on the round
+  number. “Clever driver games the instrument” is **not** a blocking class.
+  The routing rules below apply ONLY to findings outside
   those classes (hardening observations, speculative robustness, style/depth
   escalations).
 - Round 1 is EXHAUSTIVE: report every finding and every finding-class you can

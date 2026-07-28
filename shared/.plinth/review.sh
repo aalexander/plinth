@@ -774,14 +774,19 @@ if [ "$RISK" = "0" ]; then
   # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
   if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
     ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-    # Top entry only: first markdown H2 after the title (## vX.Y.Z …).
+    # Top H2 only; exact version token (not substring: 5.0 must not match v5.0.0).
     top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
-    if [ -z "$ver_txt" ] || [ -z "$top_entry" ] \
-       || ! printf '%s\n' "$top_entry" | grep -Fq "$ver_txt"; then
+    ver_ok=0
+    if [ -n "$ver_txt" ] && [ -n "$top_entry" ]; then
+      if printf '%s\n' "$top_entry" | grep -Eq "(^|[^0-9.])$(printf '%s' "$ver_txt" | sed 's/[.[\*^$()+?{|]/g')([^0-9.]|$)"; then
+        ver_ok=1
+      fi
+    fi
+    if [ "$ver_ok" != 1 ]; then
       RISK=1
       RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}" \
-        '{tier:1,reasons:["VERSION does not match CHANGELOG top H2 (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
-      echo "Plinth review: VERSION/CHANGELOG top-entry consistency failed — elevating above Tier 0 to Tier 1."
+        '{tier:1,reasons:["VERSION does not exactly match CHANGELOG top H2 token (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
+      echo "Plinth review: VERSION/CHANGELOG exact top-entry match failed — elevating above Tier 0 to Tier 1."
     fi
   fi
 fi
@@ -1358,17 +1363,14 @@ sticky_process_findings() {  # <findings-json-path>
               and (($L[$bid].blob | startswith("absent:")) | not)
               and (($blobs[.file] | startswith("absent:")) | not)
               and ($L[$bid].file != null) and ($L[$bid].file == .file)
-              and (
-                (($f | thrash_class) | startswith("class:"))
-                or (
-                  ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
-                  and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
-                )
-              )
+              # AUTO-STICKY only for thrash classes — never blockers or general majors
+              # (cooperative-driver posture: sticky is anti-thrash, not anti-security).
+              and (.severity != "blocker")
+              and (($f | thrash_class) | startswith("class:"))
            then .status = "resolved"
                 | .id = $disp
                 | .description = (($f | strip_sticky)
-                    + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
+                    + " [AUTO-STICKY: thrash class reopened without blob change — treated resolved]")
            else .id = $disp end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
@@ -1416,18 +1418,14 @@ sticky_process_findings() {  # <findings-json-path>
   ' > "$tmp" && mv "$tmp" "$ledger"
 }
 
-# Thrash policy (deterministic demotions after sticky). Enforces anti-thrash rules
-# the model is asked to follow but often does not:
-#   1) BUILD asymptotic "coverage incomplete" → minor (Noticed), unless the text
-#      names missing tests for THIS change / AC / "not implemented" / hollow tests
-#   2) Docs prose (CHANGELOG/README/docs/) → minor unless ship/security overclaim
-#      NEVER demote the canonical spec (SPEC_PATH), GOAL.md, or AGENTS-project.md
-#   3) NEW findings whose file is outside the reviewed pathspec (and not a prior
-#      open ledger id) → minor — SCOPED verify must not free-roam the tree
-#   4) HANDOFF.md ephemera → minor (also excluded from pathspec)
-#   5) NEEDS-HUMAN.md queue wording nits → minor; deletions / "lost blocking work"
-#      stay major (project-owned queue must remain reviewable)
-# Markers: " [THRASH: …]" so the driver can see what the harness demoted.
+# Thrash policy (deterministic demotions after sticky). Posture: cooperative
+# driver; block external security + honest bugs + ship integrity; demote thrash.
+#   1) Never demote external_security / ship_integrity / data_loss (path + text)
+#   2) BUILD asymptotic coverage → minor (Noticed), not real test gaps
+#   3) Docs prose (not canonical spec) → minor unless ship/security overclaim
+#   4) Out-of-pathspec demotion ONLY for known thrash classes (not "any major")
+#   5) HANDOFF ephemera → minor; NEEDS-HUMAN queue nits → minor (not deletions)
+# Markers: " [THRASH: …]"
 thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <prior-open-ids-nl> [spec_path]
   local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" tmp
   [ -f "$f" ] || return 0
@@ -1441,38 +1439,59 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     | def is_ephemera:
         ((.file // "") | test("(^|/)HANDOFF\\.md$"));
     def is_canonical_spec:
-        ($spec != "" and (.file // "") == $spec)
+        ($spec != "" and (
+          (.file // "") == $spec
+          or ((.file // "") | startswith($spec + "/"))
+        ))
         or ((.file // "") | test("(^|/)SPEC(\\.md)?$|(^|/)spec/|(^|/)GOAL\\.md$|(^|/)\\.plinth/AGENTS-project\\.md$"));
+    # Paths that can mint or weaken ship/security under honest operation.
+    def is_security_surface:
+        ((.file // "") | test(
+          "(^|/)(\\.plinth/(review|risk-classify|receipt|lane-guard)\\.sh$|guard\\.sh$)|(^|/)\\.claude/hooks/|(^|/)bin/plinth$|(^|/)(auth|crypto|secret|oauth|jwt|session)[^/]*\\.(py|ts|js|go|rs|sh)$"; "i"
+        ));
+    def is_external_security:
+        is_security_surface
+        or ((.description // "") | test(
+          "auth bypass|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss"; "i"
+        ));
     def is_docs_prose:
         (is_canonical_spec | not)
+        and (is_external_security | not)
         and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/"));
     def is_overclaim:
-        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss|null deref|SIGPIPE|real bug|spec (miss|violation)|precedence"; "i"));
+        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
     def is_real_test_gap:
         ((.description // "") | test(
-          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested: the new|named changed behavior still lacks|zero coverage|with ZERO coverage|no production test|no test covers"; "i"
+          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested: the new|named changed behavior still lacks"; "i"
         ));
-    # Asymptotic horizon only — NOT "changed behavior lacks tests" / "not implemented".
     def is_coverage_asymp:
         ((.description // "") | test(
           "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond"; "i"
         ))
-        and (is_real_test_gap | not);
+        and (is_real_test_gap | not)
+        and (is_external_security | not);
+    def is_thrash_class:
+        is_coverage_asymp
+        or ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"))
+        or ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"))
+        or is_docs_prose;
     def is_queue_nit:
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
         and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue"; "i") | not);
-    def is_out_of_scope:
+    # Out-of-pathspec: demote ONLY known thrash classes (never arbitrary majors).
+    def is_out_of_scope_thrash:
         (($files | length) > 0)
         and ((.file // "") != "")
         and ((.file // "") != ".")
         and (((.file // "") as $fp | ($files | index($fp)) == null))
         and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)))
-        # Never demote security / fail-open / data-loss / real test-gap classes.
-        and (is_overclaim | not)
+        and is_thrash_class
+        and (is_external_security | not)
         and (is_real_test_gap | not);
     .findings |= map(
       if (.status != "open") then .
       elif (.severity != "major" and .severity != "blocker") then .
+      elif is_external_security then .
       elif is_ephemera then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
@@ -1489,10 +1508,10 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: docs prose → Noticed]")
-      elif is_out_of_scope then
+      elif is_out_of_scope_thrash then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: file not in reviewed pathspec — scoped]")
+            + " [THRASH: thrash class outside fix pathspec — scoped]")
       else .
       end
     )
@@ -1695,10 +1714,18 @@ INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
   fi
 
+  local phase_src="default"
+  if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
+    case "$(printf '%s' "$PLINTH_REVIEW_PHASE" | tr '[:upper:]' '[:lower:]')" in
+      build|harden|hardening) phase_src="env" ;;
+    esac
+  fi
+  [ "$phase_src" = "env" ] || phase_src="file_or_default"
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
-        --arg review_phase "$rphase" \
-        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts, review_phase:$review_phase}' \
+        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
+        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
+          review_phase:$review_phase, phase_source:$phase_source}' \
         > "$SDIR/request-$r.json"
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
@@ -1738,9 +1765,20 @@ ${inc}${evidence}${commits}"
   fi
   [ -n "$thrash_scope" ] || thrash_scope="${REVIEWED_FILES_FULL:-}"
 
-  # Dual first-pass (Tier 2 fresh round 1): parallel cross-vendor auditor; merge open majors.
+  # Dual first-pass: HARDEN + Tier 2 + fresh r1 only. BUILD skips merge-blocking
+  # dual-pass (cooperative-driver posture — thrash/cost; external security still
+  # blocks via primary). Override: PLINTH_DUAL_PASS=1 forces on; =0 forces off.
+  local dual_ok=0
   if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
      && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    if [ "${PLINTH_DUAL_PASS:-}" = "1" ]; then dual_ok=1
+    elif [ "${PLINTH_DUAL_PASS:-}" = "0" ]; then dual_ok=0
+    elif [ "$rphase" = "hardening" ]; then dual_ok=1
+    else
+      echo "Plinth review: dual first-pass skipped in BUILD (HARDEN or PLINTH_DUAL_PASS=1 to enable)."
+    fi
+  fi
+  if [ "$dual_ok" = 1 ]; then
     echo "Plinth review: dual first-pass — cross-vendor audit seat (${AUDIT_VENDOR}) on same SHA…"
     local dual_out dual_prompt
     dual_out="$SDIR/findings-dual-$r.json"

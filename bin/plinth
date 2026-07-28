@@ -1089,12 +1089,17 @@ render_frame() {
   [ -f "$transcript" ] || transcript=/dev/null
   head="$(git -C "$target" rev-parse --short HEAD 2>/dev/null || echo '-')"
   branch="$(git -C "$target" symbolic-ref --short -q HEAD 2>/dev/null || echo '-')"
-  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
-  local vfile="$target/.plinth/session/review/$slug/verdict.json"; [ -f "$vfile" ] || vfile=/dev/null
+  slug="$(_lifecycle_slug "$target")"
+  local vfile="$target/.plinth/session/review/$slug/verdict.json"
+  if [ ! -f "$vfile" ]; then
+    slug="$(_lifecycle_slug_legacy "$target")"
+    vfile="$target/.plinth/session/review/$slug/verdict.json"
+  fi
+  [ -f "$vfile" ] || vfile=/dev/null
   local ufile="$target/.plinth/session/review/$slug/usage.jsonl"; [ -f "$ufile" ] || ufile=/dev/null
   # A round in flight: the newest request-N.json outruns verdict.json.
   local rqfile
-  rqfile="$(ls "$target/.plinth/session/review/$slug"/request-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)"
+  rqfile="$(_dash_latest_request "$target" "$slug")"
   [ -n "$rqfile" ] && [ -f "$rqfile" ] || rqfile=/dev/null
   local rfile="$target/.plinth/session/run/$slug/receipt.json"; [ -f "$rfile" ] || rfile=/dev/null
   local life_phase next_hint
@@ -2008,6 +2013,20 @@ _dash_latest_request() {
   done | sort -n -k1,1 | tail -1 | cut -f2-
 }
 
+# Newest findings-N.json under a review session dir (basename numeric N only).
+_latest_findings_json() {
+  local fdir="$1" f bn n
+  [ -d "$fdir" ] || return 0
+  for f in "$fdir"/findings-*.json; do
+    [ -f "$f" ] || continue
+    bn="${f##*/}"
+    n="${bn#findings-}"
+    n="${n%.json}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$n" "$f"
+  done | sort -n -k1,1 | tail -1 | cut -f2-
+}
+
 # Bounds for per-poll work. Session identity streams at most the last N event
 # lines (O(N) time / O(unique SIDs in window) mem). Transcript burn uses a tail.
 _DASH_EV_MAX_LINES=10000
@@ -2028,7 +2047,11 @@ snapshot_one_project() {
   # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
   branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [ -z "$branch" ]; then branch="detached"; fi
-  slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+  slug="$(_lifecycle_slug "$dir")"
+  if [ ! -f "$dir/.plinth/session/review/$slug/verdict.json" ] \
+     && [ ! -d "$dir/.plinth/session/review/$slug" ]; then
+    slug="$(_lifecycle_slug_legacy "$dir")"
+  fi
 
   local vfile="$dir/.plinth/session/review/$slug/verdict.json"
   local verdict_file_bad=false
@@ -2329,12 +2352,15 @@ snapshot_one_project() {
             "You are "*|"# "*|READ-ONLY*|*"independent design reviewer"*|*"adversarial reviewer"*|*"Do not edit"*|*"do not implement"*|*"READ-ONLY"*)
               task="" ;;
           esac
-          if [ -n "$task" ] && printf '%s' "$task" | grep -q $'\n'; then
-            task="$(printf '%s' "$task" | head -1 | tr -d '\r')"
-            [ "${#task}" -gt 160 ] && task=""
+          # Pipefail-safe: no printf|grep|head pipelines (SIGPIPE → 141 under set -e).
+          if [ -n "$task" ]; then
+            case "$task" in
+              *$'\n'*) task="${task%%$'\n'*}"; task="${task//$'\r'/}"
+                [ "${#task}" -gt 160 ] && task="" ;;
+            esac
           fi
           if [ -n "$task" ] && [ "${#task}" -gt 200 ]; then
-            task="$(printf '%s' "$task" | head -c 197)…"
+            task="${task:0:197}…"
           fi
         fi
       fi
@@ -4387,7 +4413,14 @@ PY
 # Missing phase file => build (Stop does not force review). harden => Stop
 # requires APPROVED@HEAD. Ship gate always requires APPROVED@HEAD.
 
+# Branch slug for session files. Encode / and space distinctly so feat/a-b ≠ feat/a/b.
+# Legacy readers also try tr '/ ' '--' via _lifecycle_phase_file_legacy.
 _lifecycle_slug() {
+  local b
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  printf '%s' "$b" | sed 's/\//%2F/g; s/ /%20/g'
+}
+_lifecycle_slug_legacy() {
   local b
   b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
   printf '%s' "$b" | tr '/ ' '--'
@@ -4398,12 +4431,21 @@ _lifecycle_phase_file() {
   slug=$(_lifecycle_slug "$root")
   printf '%s' "$root/.plinth/session/phase-$slug.json"
 }
+_lifecycle_phase_file_legacy() {
+  local root="$1" slug
+  slug=$(_lifecycle_slug_legacy "$root")
+  printf '%s' "$root/.plinth/session/phase-$slug.json"
+}
 
 _lifecycle_read_phase() {
   # Missing file => build (default). Corrupt / unknown phase => harden (fail closed:
   # Stop requires APPROVED rather than silently deferring review).
-  local f p
-  f=$(_lifecycle_phase_file "$1")
+  # Prefer encoded slug; fall back to legacy tr '/ ' '--' for older session files.
+  local f p root="$1"
+  f=$(_lifecycle_phase_file "$root")
+  if [ ! -f "$f" ]; then
+    f=$(_lifecycle_phase_file_legacy "$root")
+  fi
   if [ ! -f "$f" ]; then
     echo build
     return 0
@@ -4491,27 +4533,54 @@ _write_handoff() {
   out="$root/HANDOFF.md"
   done_block="- (edit: bullets of what is already committed)"
   next="1. (edit: next concrete step)"$'\n'"2. …"
+  # Operator freeform sections preserved across refresh (not only Done/Next).
+  local goal_body="" evidence_body="" risks_body="" extra_sections="" restart_body=""
   if [ -f "$out" ]; then
-    local prev_done prev_next
-    # Preserve trailing blanks: temp file + sentinel (bash $(...) strips
-    # trailing newlines; append marker then strip it).
-    local _hd _hn _raw
-    _hd=$(mktemp) _hn=$(mktemp)
+    local _hd _hn _hg _he _hr _hx _raw
+    _hd=$(mktemp) _hn=$(mktemp) _hg=$(mktemp) _he=$(mktemp) _hr=$(mktemp) _hx=$(mktemp)
+    # Archive PRE-overwrite so freeform text is recoverable.
+    local sdir_pre arch_pre
+    sdir_pre="$root/.plinth/session"
+    mkdir -p "$sdir_pre"
+    arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%SZ).md"
+    cp "$out" "$arch_pre" 2>/dev/null || true
     awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
     awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
-    if [ -s "$_hd" ]; then
-      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$_hd" 2>/dev/null) \
-        || _raw=$(cat "$_hd"; printf '\n<<PLINTH_EOF>>')
-      done_block=${_raw%$'\n<<PLINTH_EOF>>'}
-      done_block=${done_block%<<PLINTH_EOF>>}
+    awk '/^## Goal/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hg" || true
+    awk '/^## Evidence/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_he" || true
+    awk '/^## Risks/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hr" || true
+    # Unrecognized ## sections (not Goal/Done/Next/Restart/Evidence/Risks)
+    awk '
+      /^## / {
+        title=$0
+        if (title ~ /^## (Goal|Done|Next|Restart|Evidence|Risks)/) { p=0; next }
+        p=1; print title; next
+      }
+      p { print }
+    ' "$out" 2>/dev/null > "$_hx" || true
+    _read_sec() {
+      local f="$1"
+      [ -s "$f" ] || return 1
+      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$f" 2>/dev/null) \
+        || _raw=$(cat "$f"; printf '\n<<PLINTH_EOF>>')
+      _raw=${_raw%$'\n<<PLINTH_EOF>>'}
+      _raw=${_raw%<<PLINTH_EOF>>}
+      printf '%s' "$_raw"
+    }
+    if [ -s "$_hd" ]; then done_block=$(_read_sec "$_hd"); fi
+    if [ -s "$_hn" ]; then next=$(_read_sec "$_hn"); fi
+    if [ -s "$_hg" ]; then
+      goal_body=$(_read_sec "$_hg")
+      # Keep operator Goal unless it is still the placeholder.
+      case "$goal_body" in
+        "(edit:"*|"(edit)"*) goal_body="" ;;
+        *) goal="$goal_body" ;;
+      esac
     fi
-    if [ -s "$_hn" ]; then
-      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$_hn" 2>/dev/null) \
-        || _raw=$(cat "$_hn"; printf '\n<<PLINTH_EOF>>')
-      next=${_raw%$'\n<<PLINTH_EOF>>'}
-      next=${next%<<PLINTH_EOF>>}
-    fi
-    rm -f "$_hd" "$_hn"
+    if [ -s "$_he" ]; then evidence_body=$(_read_sec "$_he"); fi
+    if [ -s "$_hr" ]; then risks_body=$(_read_sec "$_hr"); fi
+    if [ -s "$_hx" ]; then extra_sections=$(_read_sec "$_hx"); fi
+    rm -f "$_hd" "$_hn" "$_hg" "$_he" "$_hr" "$_hx"
   fi
   # Insert a phase-aware first Next line. Only drop exact known auto-generated
   # lifecycle hints (not arbitrary operator text containing "review.sh" etc.).
@@ -4614,6 +4683,7 @@ _write_handoff() {
     next=$(printf '%s' "$next" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
     goal=$(printf '%s' "$goal" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
   fi
+  # shellcheck disable=SC2154
   {
     printf '%s\n' "# Handoff — \`${branch}\` @ ${head}" "" \
       "Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}" "" \
@@ -4629,19 +4699,38 @@ _write_handoff() {
       "> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD)." \
       "> Advisor: \`plinth advise\` anytime." \
       "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
-      "" "## Evidence" \
-      "- HEAD: \`${head}\` on \`${branch}\`" \
-      "- Lifecycle phase: ${phase}" \
-      "- Snapshot reason: ${reason} (${kind})" \
-      "- Review verdict: ${verdict}${vsha:+ (sha $vsha)}" \
-      "- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)" \
-      "- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)" \
-      "" "## Risks / Noticed" \
-      "- (edit)"
+      "" "## Evidence"
+    if [ -n "$evidence_body" ]; then
+      printf '%s' "$evidence_body"
+      # Ensure trailing newline then append live snapshot bullets if missing HEAD line.
+      case "$evidence_body" in *$'\n') ;; *) printf '\n' ;; esac
+      printf '%s\n' "- HEAD: \`${head}\` on \`${branch}\` (refresh ${ts})" \
+        "- Lifecycle phase: ${phase} · Snapshot: ${reason} (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}"
+    else
+      printf '%s\n' \
+        "- HEAD: \`${head}\` on \`${branch}\`" \
+        "- Lifecycle phase: ${phase}" \
+        "- Snapshot reason: ${reason} (${kind})" \
+        "- Review verdict: ${verdict}${vsha:+ (sha $vsha)}" \
+        "- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)" \
+        "- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)"
+    fi
+    printf '%s\n' "" "## Risks / Noticed"
+    if [ -n "$risks_body" ]; then
+      printf '%s' "$risks_body"
+      case "$risks_body" in *$'\n') ;; *) printf '\n' ;; esac
+    else
+      printf '%s\n' "- (edit)"
+    fi
+    if [ -n "$extra_sections" ]; then
+      printf '\n%s' "$extra_sections"
+      case "$extra_sections" in *$'\n') ;; *) printf '\n' ;; esac
+    fi
   } > "$out"
   local arch sdir
   sdir="$root/.plinth/session"
   mkdir -p "$sdir"
+  # Post-write snapshot (pre-write already archived when prior file existed).
   arch="$sdir/handoff-${slug}-$(date -u +%Y%m%dT%H%M%SZ).md"
   cp "$out" "$arch" 2>/dev/null || true
   # Non-blocking notification event for watch/dash (never waits).
@@ -5093,10 +5182,10 @@ run_next() {
       echo "detail: phase=harden head=$head verdict_sha=${vsha:-none} HEAD=$full"
       exit 0
     fi
-    # Check latest findings for open majors
+    # Check latest findings for open majors (basename numeric N — not full-path sort)
     local fdir latest
     fdir="$root/.plinth/session/review/$slug"
-    latest=$(ls -1 "$fdir"/findings-*.json 2>/dev/null | sort -t- -k2 -n | tail -1 || true)
+    latest=$(_latest_findings_json "$fdir")
     if [ -n "$latest" ] && [ -f "$latest" ]; then
       local openf
       openf=$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
@@ -5130,23 +5219,10 @@ run_next() {
     fi
   fi
 
-  # Build: suggest harden if PLAN has content and product seems ready — still work
-  if [ "$phase" != "harden" ] && [ -f "$root/PLAN.md" ]; then
-    if grep -q 'Acceptance criteria' "$root/PLAN.md" 2>/dev/null \
-       && ! grep -q '^(Testable' "$root/PLAN.md" 2>/dev/null; then
-      :
-    fi
-  fi
-  if [ "$phase" != "harden" ]; then
-    echo "status: work"
-    echo "action: continue build (or plinth harden when product ready)"
-    echo "detail: phase=$phase head=$head — fill HANDOFF ## Next for sharper routing"
-    exit 0
-  fi
-
+  # Nothing left in Next / NH / open review majors — done (both phases).
   echo "status: done"
   echo "action: none"
-  echo "detail: no open next / blocking items detected"
+  echo "detail: no open next / blocking items detected (phase=$phase head=$head)"
   exit 3
 }
 

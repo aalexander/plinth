@@ -146,15 +146,18 @@ head=$(git -C "$TMP/p4" rev-parse HEAD)
 jq -n --arg s "$head" '{verdict:"CHANGES_NEEDED",sha:$s,round:1}' \
   > "$TMP/p4/.plinth/session/review/$slug/verdict.json"
 "$PLINTH" lifecycle-migrate "$TMP/p4" >/dev/null
-[ "$(jq -r .phase "$TMP/p4/.plinth/session/phase-feat-canary.json")" = "harden" ] \
-  || fail "lifecycle-migrate should set harden for open CHANGES_NEEDED"
+# Encoded slug feat/canary → feat%2Fcanary (legacy feat-canary still readable)
+phf=$(ls "$TMP/p4/.plinth/session"/phase-*.json 2>/dev/null | head -1)
+[ -n "$phf" ] && [ "$(jq -r .phase "$phf")" = "harden" ] \
+  || fail "lifecycle-migrate should set harden for open CHANGES_NEEDED (got $phf)"
 pass "lifecycle migrate open review → harden"
 
 # corrupt phase without matching review dir still repaired by migrate
 setup_proj "$TMP/p4b"
-echo 'not-json' > "$TMP/p4b/.plinth/session/phase-feat-canary.json"
+echo 'not-json' > "$TMP/p4b/.plinth/session/phase-feat%2Fcanary.json"
 "$PLINTH" lifecycle-migrate "$TMP/p4b" >/dev/null
-[ "$(jq -r .phase "$TMP/p4b/.plinth/session/phase-feat-canary.json")" = "harden" ] \
+phf=$(ls "$TMP/p4b/.plinth/session"/phase-*.json 2>/dev/null | head -1)
+[ -n "$phf" ] && [ "$(jq -r .phase "$phf")" = "harden" ] \
   || fail "lifecycle-migrate should rewrite corrupt phase without review/"
 ph=$("$PLINTH" phase "$TMP/p4b" | sed -n 's/^phase:[[:space:]]*//p')
 [ "$ph" = "harden" ] || fail "phase status after corrupt migrate expected harden, got $ph"
@@ -162,7 +165,7 @@ pass "lifecycle-migrate repairs orphan corrupt phase; phase CLI fail-closed"
 
 # corrupt phase → gate treats as harden
 setup_proj "$TMP/p5"
-echo 'not-json' > "$TMP/p5/.plinth/session/phase-feat-canary.json"
+echo 'not-json' > "$TMP/p5/.plinth/session/phase-feat%2Fcanary.json"
 export CLAUDE_PROJECT_DIR="$TMP/p5"
 set +e
 printf '%s' '{"session_id":"canary"}' | bash "$GATE" >"$TMP/g5.out" 2>"$TMP/g5.err"
@@ -277,9 +280,11 @@ bash -c '
   SDIR="'"$SDIR"'"
   eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
   f="$SDIR/findings-test.json"
-  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
-    {file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"},
-    {file:\"a.sh\",line:2,severity:\"major\",description:\"same text\",status:\"open\"}
+  # AUTO-STICKY only for thrash classes (coverage-gap, …) — not arbitrary majors.
+  thrash_desc="Coverage remains incomplete despite canary"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"},
+    {file:\"a.sh\",line:2,severity:\"major\",description:\$d,status:\"open\"}
   ]}" > "$f"
   cd "'"$TMP/p9"'"
   sticky_process_findings "$f"
@@ -288,29 +293,65 @@ bash -c '
   [ -n "$id1" ] && [ "$id1" = "$id2" ] || { echo "expected shared base id, got $id1 vs $id2"; exit 1; }
   jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   sticky_process_findings "$f"
-  jq ".findings = [{file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
   sticky_process_findings "$f"
   st=$(jq -r ".findings[0].status" "$f")
-  [ "$st" = "resolved" ] || { echo "expected AUTO-STICKY resolve, got $st"; jq . "$f"; exit 1; }
-  # Blob change must keep reopen open
-  printf "echo changed\n" > a.sh
-  git add a.sh && git -c user.email=t@t -c user.name=t commit -qm "mutate a.sh"
-  jq ".findings = [{file:\"a.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-  sticky_process_findings "$f"
-  st2=$(jq -r ".findings[0].status" "$f")
-  [ "$st2" = "open" ] || { echo "expected open after blob change, got $st2"; exit 1; }
-  # Absent path must never AUTO-STICKY (missing==missing fail-open guard)
-  jq ".findings = [{file:\"no-such-file.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  [ "$st" = "resolved" ] || { echo "expected AUTO-STICKY resolve on thrash class, got $st"; jq . "$f"; exit 1; }
+  # Non-thrash major must NOT auto-resolve
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\"real null deref on path X\",status:\"open\"}
+  ]}" > "$f"
   sticky_process_findings "$f"
   jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   sticky_process_findings "$f"
-  jq ".findings = [{file:\"no-such-file.sh\",line:1,severity:\"major\",description:\"same text\",status:\"open\"}]" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\"real null deref on path X\",status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  stn=$(jq -r ".findings[0].status" "$f")
+  [ "$stn" = "open" ] || { echo "non-thrash major must stay open, got $stn"; exit 1; }
+  # Blob change must keep thrash reopen open
+  printf "echo changed\n" > a.sh
+  git add a.sh && git -c user.email=t@t -c user.name=t commit -qm "mutate a.sh"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  # First write resolved with old blob was lost — ledger may have absent. Force resolve+reopen path:
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  st2=$(jq -r ".findings[0].status" "$f")
+  [ "$st2" = "resolved" ] || { echo "same blob thrash should sticky-resolve after re-ledger, got $st2"; exit 1; }
+  printf "echo again\n" > a.sh
+  git add a.sh && git -c user.email=t@t -c user.name=t commit -qm "mutate2"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  st2b=$(jq -r ".findings[0].status" "$f")
+  [ "$st2b" = "open" ] || { echo "expected open after blob change, got $st2b"; exit 1; }
+  # Absent path must never AUTO-STICKY
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"no-such-file.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  sticky_process_findings "$f"
+  jq -n --arg d "$thrash_desc" "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"no-such-file.sh\",line:1,severity:\"major\",description:\$d,status:\"open\"}
+  ]}" > "$f"
   sticky_process_findings "$f"
   st3=$(jq -r ".findings[0].status" "$f")
   [ "$st3" = "open" ] || { echo "expected open on absent path, got $st3"; exit 1; }
   echo "sticky production ok"
 ' || fail "production sticky_process_findings unit"
-pass "production sticky_process_findings (base id + AUTO-STICKY + blob fail-closed)"
+pass "production sticky_process_findings (thrash-only AUTO-STICKY + blob fail-closed)"
 
 # Explicit colliding reviewer ids get unique suffixes
 bash -c '
@@ -359,5 +400,82 @@ grep -F 'Fix [Windows] packaging regression' "$TMP/p11/HANDOFF.md" \
 grep -F 'custom operator note' "$TMP/p11/HANDOFF.md" \
   || fail "operator note must be preserved"
 pass "handoff preserves operator-authored Next lines"
+
+# Handoff preserves Goal/Evidence freeform + pre-archive
+setup_proj "$TMP/p12"
+printf '%s\n' '# H' '## Goal' 'Operator custom goal text keep me' '## Next' '1. do thing' \
+  '## Evidence' '- my evidence note' '## Risks / Noticed' '- my risk' \
+  > "$TMP/p12/HANDOFF.md"
+"$PLINTH" build "$TMP/p12" >/dev/null
+grep -F 'Operator custom goal text keep me' "$TMP/p12/HANDOFF.md" \
+  || fail "Goal freeform must survive refresh"
+grep -F 'my evidence note' "$TMP/p12/HANDOFF.md" \
+  || fail "Evidence freeform must survive refresh"
+grep -F 'my risk' "$TMP/p12/HANDOFF.md" \
+  || fail "Risks freeform must survive refresh"
+ls "$TMP/p12/.plinth/session"/handoff-*-pre-*.md >/dev/null 2>&1 \
+  || fail "pre-overwrite archive must exist"
+pass "handoff preserves Goal/Evidence/Risks + pre-archive"
+
+# Phase slug: feat/a-b vs feat/a/b do not collide
+setup_proj "$TMP/p13"
+git -C "$TMP/p13" checkout -qb feat/a-b
+"$PLINTH" harden "$TMP/p13" >/dev/null
+f1=$(ls "$TMP/p13/.plinth/session"/phase-*.json)
+git -C "$TMP/p13" checkout -qb feat/a/b
+"$PLINTH" build "$TMP/p13" >/dev/null
+f2=$(ls "$TMP/p13/.plinth/session"/phase-*.json | tr '\n' ' ')
+# Two distinct phase files; feat/a-b still harden, feat/a/b build
+[ "$(echo "$f2" | wc -w | tr -d ' ')" -ge 2 ] || fail "expected distinct phase files, got $f2"
+ph_ab=$(jq -r .phase "$TMP/p13/.plinth/session/phase-feat%2Fa-b.json" 2>/dev/null || echo missing)
+ph_aslash=$(jq -r .phase "$TMP/p13/.plinth/session/phase-feat%2Fa%2Fb.json" 2>/dev/null || echo missing)
+[ "$ph_ab" = "harden" ] || fail "feat/a-b should stay harden, got $ph_ab"
+[ "$ph_aslash" = "build" ] || fail "feat/a/b should be build, got $ph_aslash"
+pass "lifecycle phase slug does not collide feat/a-b vs feat/a/b"
+
+# Latest findings sort: findings-10 beats findings-2 under hyphenated path
+setup_proj "$TMP/p14"
+slug=feat%2Fcanary
+mkdir -p "$TMP/p14/.plinth/session/review/$slug"
+echo '{"findings":[]}' > "$TMP/p14/.plinth/session/review/$slug/findings-2.json"
+echo '{"findings":[{"file":"x","line":1,"severity":"major","description":"r10","status":"open"}]}' \
+  > "$TMP/p14/.plinth/session/review/$slug/findings-10.json"
+# shellcheck source=/dev/null
+eval "$(sed -n '/^_latest_findings_json()/,/^}/p' "$PLINTH")"
+lat=$(_latest_findings_json "$TMP/p14/.plinth/session/review/$slug")
+echo "$lat" | grep -q 'findings-10.json' || fail "expected findings-10, got $lat"
+pass "latest findings uses basename numeric sort"
+
+# thrash_policy: demote coverage; never demote auth bypass
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^thrash_policy_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  f=$(mktemp)
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"x.sh\",line:1,severity:\"major\",description:\"Coverage remains incomplete despite canary\",status:\"open\"},
+    {file:\"auth.py\",line:2,severity:\"major\",description:\"auth bypass on login route\",status:\"open\"},
+    {file:\"CHANGELOG.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"}
+  ]}" > "$f"
+  thrash_policy_process_findings "$f" build "x.sh"$'"\n"'"auth.py"$'"\n"'"CHANGELOG.md" "" "MANUAL.md"
+  s0=$(jq -r ".findings[0].severity" "$f")
+  s1=$(jq -r ".findings[1].severity" "$f")
+  s2=$(jq -r ".findings[2].severity" "$f")
+  [ "$s0" = "minor" ] || { echo "coverage should demote, got $s0"; exit 1; }
+  [ "$s1" = "major" ] || { echo "auth bypass must stay major, got $s1"; exit 1; }
+  [ "$s2" = "minor" ] || { echo "docs prose should demote, got $s2"; exit 1; }
+  rm -f "$f"
+' || fail "thrash_policy matrix"
+pass "thrash_policy demotes coverage/docs; keeps external security"
+
+# plinth next done when empty Next / no NH
+setup_proj "$TMP/p15"
+printf '%s\n' '# H' '## Next' '' > "$TMP/p15/HANDOFF.md"
+set +e
+out=$("$PLINTH" next "$TMP/p15" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q 'status: done' || fail "expected done: $out"
+[ "$rc" -eq 3 ] || fail "plinth next exit 3 for done, got $rc"
+pass "plinth next done when idle"
 
 echo "canary-lifecycle-build-harden: ALL PASS"

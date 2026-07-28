@@ -25,19 +25,22 @@ Drivers (Claude/codex/grok) and operators using Plinth on feature branches.
 7. Canary script proves 1–4 without network (wired in `plinth-canary.yml`).
 8. `plinth plan` scaffolds PLAN.md; `plinth plan --deep` runs three existing seats
    (reviewer/audit/advisor config) as a best-effort plan review panel (not a new Delphi product).
-9. Review anti-thrash (instrument): HANDOFF.md excluded from reviewed pathspec +
-   HANDOFF-only floor APPROVED; BUILD asymptotic coverage demotes to minor with
-   escape hatches for changed-behavior test gaps / AC / not-implemented;
-   sticky class fingerprints + schema-valid sticky reduce; same-open soft cap;
-   VERSION Tier-0 only when VERSION matches CHANGELOG top H2; thrash demotions
-   never swallow fail-open/security/data-loss/spec-miss classes; NEEDS-HUMAN
-   remains project-owned (deletion reviewable).
+9. Review anti-thrash (instrument): cooperative-driver threat model; HANDOFF
+   excluded + HANDOFF-only **base…HEAD** floor; BUILD asymptotic coverage →
+   minor; out-of-pathspec demotion only for thrash classes; never demote
+   external security; sticky AUTO thrash-classes only; dual-pass in HARDEN
+   Tier-2 only; same-open soft cap; VERSION exact top-H2 match; NEEDS-HUMAN
+   project-owned.
+10. Phase slug encode (no feat/a-b vs feat/a/b collision); findings round sort
+    by basename N; handoff preserves Goal/Evidence/Risks + pre-archive;
+    `plinth next` exit 3 when idle.
 
 ## Risks / trust boundaries
 Ship path must not weaken. Phase file is session-local under `.plinth/session/`
 (agent-unwritable via protected paths). Missing phase = build (default).
-Corrupt/unknown phase = harden (fail closed, matches Stop). Thrash demotions
-are fail-closed on security/ship classes.
+Corrupt/unknown phase = harden (fail closed, matches Stop). Driver is not an
+internal adversary; instrument gaming is canary/CI/receipt, not review thrash.
+Thrash demotions fail-closed on external security / ship integrity.
 
 ## Open tradeoffs
 - **Harden sticky until build/clear:** yes — explicit `plinth build` to leave.
