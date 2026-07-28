@@ -454,22 +454,31 @@ bash -c '
   jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
     {file:\"x.sh\",line:1,severity:\"major\",description:\"Coverage remains incomplete despite canary\",status:\"open\"},
     {file:\"auth.py\",line:2,severity:\"major\",description:\"auth bypass on login route\",status:\"open\"},
-    {file:\"CHANGELOG.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"},
-    {file:\"docs/build.py\",line:4,severity:\"major\",description:\"crash on empty input\",status:\"open\"}
+    {file:\"README.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"},
+    {file:\"docs/build.py\",line:4,severity:\"major\",description:\"crash on empty input\",status:\"open\"},
+    {file:\"CHANGELOG.md\",line:5,severity:\"major\",description:\"missing release notes for v5\",status:\"open\"},
+    {file:\"a.py\",line:6,severity:\"major\",description:\"unauthenticated access on /api\",status:\"open\"},
+    {file:\"b.sh\",line:7,severity:\"major\",description:\"Still untested: plinth plan --deep merge path\",status:\"open\"}
   ]}" > "$f"
-  scope=$(printf "%s\n" "x.sh" "auth.py" "CHANGELOG.md" "docs/build.py")
+  scope=$(printf "%s\n" "x.sh" "auth.py" "README.md" "docs/build.py" "CHANGELOG.md" "a.py" "b.sh")
   thrash_policy_process_findings "$f" build "$scope" "" "MANUAL.md"
   s0=$(jq -r ".findings[0].severity" "$f")
   s1=$(jq -r ".findings[1].severity" "$f")
   s2=$(jq -r ".findings[2].severity" "$f")
   s3=$(jq -r ".findings[3].severity" "$f")
+  s4=$(jq -r ".findings[4].severity" "$f")
+  s5=$(jq -r ".findings[5].severity" "$f")
+  s6=$(jq -r ".findings[6].severity" "$f")
   [ "$s0" = "minor" ] || { echo "coverage should demote, got $s0"; exit 1; }
   [ "$s1" = "major" ] || { echo "auth bypass must stay major, got $s1"; exit 1; }
-  [ "$s2" = "minor" ] || { echo "docs prose should demote, got $s2"; exit 1; }
+  [ "$s2" = "minor" ] || { echo "README prose should demote, got $s2"; exit 1; }
   [ "$s3" = "major" ] || { echo "docs/build.py must stay major, got $s3"; exit 1; }
+  [ "$s4" = "major" ] || { echo "CHANGELOG must stay major, got $s4"; exit 1; }
+  [ "$s5" = "major" ] || { echo "unauthenticated must stay major, got $s5"; exit 1; }
+  [ "$s6" = "major" ] || { echo "plan --deep test gap must stay major, got $s6"; exit 1; }
   rm -f "$f"
 ' || fail "thrash_policy matrix"
-pass "thrash_policy demotes coverage/docs; keeps external security + docs scripts"
+pass "thrash_policy demotes coverage/README; keeps security + CHANGELOG + AC gaps"
 
 # VERSION exact match via production helper version_changelog_match
 bash -c '
@@ -483,9 +492,25 @@ bash -c '
   version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" || { echo "5.0.0 should match"; exit 1; }
   echo 5.0 > "$d/VERSION"
   version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" && { echo "5.0 must not match"; exit 1; }
+  printf "%s\n" "# Plinth changelog" "" "## v5.0.0-rc1 — x" > "$d/CHANGELOG.md"
+  echo 5.0.0 > "$d/VERSION"
+  version_changelog_match "$d/VERSION" "$d/CHANGELOG.md" && { echo "5.0.0 must not match v5.0.0-rc1"; exit 1; }
   rm -rf "$d"
 ' || fail "VERSION exact match"
 pass "VERSION exact token match via production helper"
+
+# plinth harden invalidates BUILD-era APPROVED@HEAD
+setup_proj "$TMP/p20"
+"$PLINTH" build "$TMP/p20" >/dev/null
+enc=feat%2Fcanary
+mkdir -p "$TMP/p20/.plinth/session/review/$enc"
+head=$(git -C "$TMP/p20" rev-parse HEAD)
+jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1,review_phase:"build"}' \
+  > "$TMP/p20/.plinth/session/review/$enc/verdict.json"
+"$PLINTH" harden "$TMP/p20" >/dev/null
+v=$(jq -r .verdict "$TMP/p20/.plinth/session/review/$enc/verdict.json")
+[ "$v" = "UNBOUND" ] || fail "harden should UNBOUND build approval, got $v"
+pass "plinth harden invalidates BUILD APPROVED@HEAD"
 
 # Cost append under flock: two concurrent writers, one event id
 python3 - <<'PY' || fail "cost concurrent append"

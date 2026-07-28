@@ -780,9 +780,13 @@ version_changelog_match() {
   ver_txt="$(tr -d '[:space:]' < "$verfile" 2>/dev/null || true)"
   top_entry="$(awk '/^## /{print; exit}' "$clfile" 2>/dev/null || true)"
   [ -n "$ver_txt" ] && [ -n "$top_entry" ] || return 1
+  # Extract the heading's version token (## vX.Y.Z or ## X.Y.Z) and compare
+  # equality after stripping a leading v — not a free substring of the title.
   python3 -c 'import re,sys
 v,t=sys.argv[1],sys.argv[2]
-sys.exit(0 if re.search(r"(^|[^0-9.])"+re.escape(v)+r"([^0-9.]|$)", t) else 1)
+v=v.lstrip("vV")
+m=re.match(r"^##\s+v?([0-9][0-9A-Za-z._+-]*)", t.strip())
+sys.exit(0 if m and m.group(1)==v else 1)
 ' "$ver_txt" "$top_entry" 2>/dev/null
 }
 
@@ -1472,18 +1476,19 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     def is_external_security:
         is_security_surface
         or ((.description // "") | test(
-          "auth bypass|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss"; "i"
+          "auth bypass|unauthenticated|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss|privilege escalat"; "i"
         ));
     def is_docs_prose:
         (is_canonical_spec | not)
         and (is_external_security | not)
-        # Only prose extensions — never demote scripts under docs/ (docs/build.py, …).
-        and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/.*\\.(md|markdown|rst|adoc|txt)$"));
+        # Only prose under docs/ or root README — CHANGELOG is project release surface:
+        # never auto-demote (missing release notes / wrong version claims stay major).
+        and ((.file // "") | test("(^|/)README(\\.(md|markdown|rst|txt))?$|(^|/)docs/.*\\.(md|markdown|rst|adoc|txt)$"));
     def is_overclaim:
-        ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
+        ((.description // "") | test("fail[- ]?open|security|auth bypass|unauthenticated|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
     def is_real_test_gap:
         ((.description // "") | test(
-          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested: the new|named changed behavior still lacks"; "i"
+          "acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested:.*(new|changed|AC|plan|deep|criterion)|named changed behavior"; "i"
         ));
     def is_coverage_asymp:
         ((.description // "") | test(
@@ -1497,8 +1502,10 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         or ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"))
         or is_docs_prose;
     def is_queue_nit:
+        # Only pure wording nits — never demote checked-off / deleted / lost blockers.
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
-        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue"; "i") | not);
+        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
+        and ((.description // "") | test("whitespace|wording|typo|formatting|blank line|nit"; "i"));
     # Out-of-pathspec: demote ONLY known thrash classes (never arbitrary majors).
     def is_out_of_scope_thrash:
         (($files | length) > 0)
@@ -1906,9 +1913,10 @@ ${diff}"
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
         --arg mbase "$merge_base" \
+        --arg rphase "$rphase" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson extra "$write_extra" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts}
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts, review_phase:$rphase}
          + $extra
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"

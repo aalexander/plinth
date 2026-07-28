@@ -4793,6 +4793,23 @@ run_harden() {
       exit 1 ;;
   esac
   _lifecycle_write_phase "$root" harden
+  # Invalidate any prior BUILD APPROVED@HEAD — harden requires a new review under
+  # HARDEN rigor (dual-pass, full adversarial). Same HEAD must not ship on a BUILD verdict.
+  local rdir vf
+  rdir="$(_lifecycle_review_dir "$root")"
+  vf="$rdir/verdict.json"
+  if [ -f "$vf" ]; then
+    local pv
+    pv=$(jq -r '.review_phase // .risk.review_phase // empty' "$vf" 2>/dev/null || true)
+    # Missing review_phase = pre-v5 / BUILD-era verdict — always invalidate on harden.
+    if [ "$pv" != "hardening" ]; then
+      jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '.verdict = "UNBOUND" | .unbound_reason = "plinth harden invalidated non-HARDEN approval — re-run review" | .ts = $ts' \
+        "$vf" > "$vf.tmp" 2>/dev/null && mv "$vf.tmp" "$vf" \
+        || rm -f "$vf"
+      echo "  Prior non-HARDEN verdict demoted to UNBOUND — re-run ./.plinth/review.sh under harden."
+    fi
+  fi
   _write_handoff "$root" "enter-harden" "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
   echo "Plinth phase → HARDEN (ship prep)."
   echo "  Stop gate now requires APPROVED@HEAD."
