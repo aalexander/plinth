@@ -1890,18 +1890,30 @@ jobs:
           # A verify-origin session must NOT be resumable — else the next round
           # resumes it as mode=resume and binds_directly(resume,1) binds a narrow
           # thread that never read the full diff. resumable_prev enforces it.
+          # Signature (v4.7.1+): also requires matching merge-base args 7/8 and uses
+          # canon_base for base spelling — extract both helpers.
           RP="$(sed -n '/^resumable_prev() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main resume codex" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main verify codex" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main '' codex"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main bogus codex"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED '' main main fresh codex"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 otherbase main fresh codex" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          CB="$(sed -n '/^canon_base() {/,/^}/p' "$GITHUB_WORKSPACE/shared/.plinth/review.sh")"
+          grep -q 'canon_base' <<<"$RP" || { echo "::error::resumable_prev no longer uses canon_base — update canary extraction"; exit 1; }
+          # MB: synthetic matching merge-base pair (empty fails CLOSED by design).
+          MB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          rprev() {
+            local vend="$1"; shift
+            bash -c "REVIEWER_VENDOR=$vend; $CB; $RP; resumable_prev \"\$@\"" _ "$@"
+          }
+          rprev codex CHANGES_NEEDED S1 main main fresh codex "$MB" "$MB"  || { echo "::error::a fresh CHANGES_NEEDED session must be resumable"; exit 1; }
+          rprev codex CHANGES_NEEDED S1 main main resume codex "$MB" "$MB" || { echo "::error::a resume-origin session must be resumable"; exit 1; }
+          rprev codex CHANGES_NEEDED S1 main main verify codex "$MB" "$MB" && { echo "::error::a verify-origin session must NOT be resumable (narrow-thread bind bypass)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main '' codex "$MB" "$MB"     && { echo "::error::a missing prev mode must fail CLOSED (pre-mode-field verdict.json)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main bogus codex "$MB" "$MB"  && { echo "::error::an unknown prev mode must fail CLOSED"; exit 1; } || true
+          rprev codex CHANGES_NEEDED '' main main fresh codex "$MB" "$MB"  && { echo "::error::a session with no id must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 otherbase main fresh codex "$MB" "$MB" && { echo "::error::a session on a different base must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh codex "$MB" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb && { echo "::error::a moved merge-base must NOT be resumable"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh codex '' "$MB" && { echo "::error::empty prev merge-base must fail CLOSED"; exit 1; } || true
           # v4.6 vendor guard: a mid-loop seat swap must never hand a foreign session id
           # to a different vendor's --resume; a missing recorded vendor fails CLOSED.
-          bash -c "REVIEWER_VENDOR=claude; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh codex" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
-          bash -c "REVIEWER_VENDOR=codex; $RP; resumable_prev CHANGES_NEEDED S1 main main fresh ''"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
+          rprev claude CHANGES_NEEDED S1 main main fresh codex "$MB" "$MB" && { echo "::error::a session from a DIFFERENT vendor must NOT be resumable (override swap)"; exit 1; } || true
+          rprev codex CHANGES_NEEDED S1 main main fresh '' "$MB" "$MB"     && { echo "::error::a pre-v4.6 verdict (no recorded vendor) must fail CLOSED to a non-resume round"; exit 1; } || true
           # The tools-forbidden auditor must inline the WHOLE canonical spec tree
           # (any extension), not just .md/.rst/.txt — else a Tier-2 audit judges an
           # incomplete spec. Binaries are skipped. Run the REAL inline_spec fn.
