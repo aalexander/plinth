@@ -499,18 +499,35 @@ bash -c '
 ' || fail "VERSION exact match"
 pass "VERSION exact token match via production helper"
 
-# plinth harden invalidates BUILD-era APPROVED@HEAD
+# plinth harden invalidates BUILD-era APPROVED@HEAD (encoded + legacy dirs)
 setup_proj "$TMP/p20"
 "$PLINTH" build "$TMP/p20" >/dev/null
 enc=feat%2Fcanary
-mkdir -p "$TMP/p20/.plinth/session/review/$enc"
+leg=feat-canary
 head=$(git -C "$TMP/p20" rev-parse HEAD)
+mkdir -p "$TMP/p20/.plinth/session/review/$enc" "$TMP/p20/.plinth/session/review/$leg"
 jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1,review_phase:"build"}' \
   > "$TMP/p20/.plinth/session/review/$enc/verdict.json"
+jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1}' \
+  > "$TMP/p20/.plinth/session/review/$leg/verdict.json"
 "$PLINTH" harden "$TMP/p20" >/dev/null
 v=$(jq -r .verdict "$TMP/p20/.plinth/session/review/$enc/verdict.json")
-[ "$v" = "UNBOUND" ] || fail "harden should UNBOUND build approval, got $v"
-pass "plinth harden invalidates BUILD APPROVED@HEAD"
+[ "$v" = "UNBOUND" ] || fail "harden should UNBOUND encoded build approval, got $v"
+v=$(jq -r .verdict "$TMP/p20/.plinth/session/review/$leg/verdict.json")
+[ "$v" = "UNBOUND" ] || fail "harden should UNBOUND legacy build approval, got $v"
+# Empty encoded dir + legacy APPROVED only
+setup_proj "$TMP/p20b"
+"$PLINTH" build "$TMP/p20b" >/dev/null
+mkdir -p "$TMP/p20b/.plinth/session/review/$enc" "$TMP/p20b/.plinth/session/review/$leg"
+head=$(git -C "$TMP/p20b" rev-parse HEAD)
+# empty encoded dir (exists but no verdict)
+: > "$TMP/p20b/.plinth/session/review/$enc/.keep"
+jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1,review_phase:"build"}' \
+  > "$TMP/p20b/.plinth/session/review/$leg/verdict.json"
+"$PLINTH" harden "$TMP/p20b" >/dev/null
+v=$(jq -r .verdict "$TMP/p20b/.plinth/session/review/$leg/verdict.json")
+[ "$v" = "UNBOUND" ] || fail "legacy-only APPROVED must UNBOUND on harden, got $v"
+pass "plinth harden invalidates BUILD APPROVED (encoded+legacy)"
 
 # Cost append under flock: two concurrent writers, one event id
 python3 - <<'PY' || fail "cost concurrent append"
