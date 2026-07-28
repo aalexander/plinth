@@ -3720,9 +3720,9 @@ def harvest_claude(seen):
                 if ts < cut_year:
                     continue
                 sid = rec.get("session_id") or rec.get("sessionId") or f.name
-                # Keep match-index slot (always 0 for structured single-value harvest)
-                # so ids stay compatible with earlier log rows (upgrade-safe).
-                eid = "claude:%s:%s:0:%.6f" % (sid, lineno, usd)
+                # Content id (no line/index): re-harvest of the same session cost
+                # cannot double-count after upgrades.
+                eid = "claude:%s:%.6f" % (sid, usd)
                 if eid in seen:
                     continue
                 seen.add(eid)
@@ -3782,7 +3782,7 @@ def harvest_codex(seen):
                 ts = parse_ts(rec.get("timestamp"), mtime)
                 if ts < cut_year:
                     continue
-                eid = "codex:%s:%s:0:%.6f" % (f.name, lineno, usd)
+                eid = "codex:%s:%.6f" % (f.name, usd)
                 if eid in seen:
                     continue
                 seen.add(eid)
@@ -4485,12 +4485,8 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Generated Fix [sev] path:line — desc: strip on review-driven or phase-enter
-  # refreshes (see _handoff_strip_fix). Paths may contain spaces.
-    if [ "${_handoff_strip_fix:-0}" = 1 ] \
-       && printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] .+:[0-9]+ — '; then
-      return 0
-    fi
+    # Residual: never pattern-match Fix […] (operators and generated share shape).
+    # Exact allowlist only for known auto lifecycle strings (see CHANGELOG residual).
     return 1
   }
   _handoff_set_primary_next() {

@@ -1254,52 +1254,45 @@ sticky_process_findings() {  # <findings-json-path>
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L
     | .findings |= map(
-        (. as $f | ($f | base_id) as $bid
-         # Ledger lookup always uses base_id (anti-thrash). Display id: keep
-         # explicit unique reviewer ids; fill empty with base_id.
-         | (if (.id == null or .id == "") then $bid else .id end) as $keep_id
+        (. as $f
+         | (.id // ($f | base_id)) as $kid
          | if .status == "open"
-              and ($L[$bid] != null)
-              and ($L[$bid].status == "resolved")
-              and ($L[$bid].blob != null) and ($blobs[.file] != null)
-              and ($L[$bid].blob == $blobs[.file])
-              and ($L[$bid].file != null) and ($L[$bid].file == .file)
-              and ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
-              and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
+              and ($L[$kid] != null)
+              and ($L[$kid].status == "resolved")
+              and ($L[$kid].blob != null) and ($blobs[.file] != null)
+              and ($L[$kid].blob == $blobs[.file])
+              and ($L[$kid].file != null) and ($L[$kid].file == .file)
+              and ($L[$kid].severity != null) and ($L[$kid].severity == .severity)
+              and ($L[$kid].desc_norm != null) and ($L[$kid].desc_norm == ($f | normdesc))
            then .status = "resolved"
-                | .id = $keep_id
+                | .id = $kid
                 | .description = (($f | strip_sticky)
                     + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
-           else .id = $keep_id end)
+           else .id = $kid end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
-  # Update ledger: one key per base identity. If ANY sibling is still open,
-  # ledger status is open (never let a resolved twin clobber an open twin).
+  # Update ledger keyed by the finding's display id (unique after collision
+  # pass). Explicit-ID siblings stay independent; auto same-text siblings share
+  # one id and thus one sticky entry by design.
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
     def strip_sticky:
       ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
-    def base_id:
-      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L0
-    | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
-        ($x | base_id) as $bid
-        | if ($bid == null or $bid == "") then .
+    | reduce ($cur[0].findings // [])[] as $x ($L0;
+        ($x.id // empty) as $kid
+        | if ($kid == null or $kid == "") then .
           else
-            .led[$bid] = {
+            .[$kid] = {
               status: $x.status,
               file: $x.file,
               blob: ($blobs[$x.file] // null),
               severity: $x.severity,
               desc_norm: ($x | normdesc)
             }
-            | if $x.status == "open" then .open[$bid] = true else . end
           end)
-    | . as $acc
-    | reduce ($acc.open | keys[]) as $k ($acc.led;
-        .[$k].status = "open")
   ' > "$tmp" && mv "$tmp" "$ledger"
 }
 
