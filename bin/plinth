@@ -2217,9 +2217,7 @@ snapshot_one_project() {
         # Gaps >=3600s are dropped (session pause).
         # Also tracks last PostToolUse (now), last VERIFY Bash (evidence), signals.
         reduce inputs as $e (
-          {cur:null, by:{},
-           # Production guard.sh emits guard_block with sid:null — collect epochs.
-           global_guard_epochs:[]};
+          {cur:null, by:{}};
           if ($e | type) != "object" then error("bad_event_type")
           elif ($e.event == null) or (($e.event | type) != "string")
                or (($e.event | known_event) | not) then error("bad_event_name")
@@ -2228,10 +2226,9 @@ snapshot_one_project() {
           elif ($e.transcript != null) and (($e.transcript | type) != "string") then error("bad_event_transcript")
           elif ($e.detail != null) and (($e.detail | type) != "string") then error("bad_event_detail")
           elif ($e.sid == null) then
-            # Null-SID guard blocks: keep epochs; filter to active session t0 at emit.
-            if $e.event == "guard_block" and ($e.epoch != null)
-            then .global_guard_epochs += [$e.epoch]
-            else . end
+            # Null-SID events are not attributed to a card (legacy guard omitted sid;
+            # current guard.sh records session_id when the harness provides it).
+            .
           else
             (if .by[$e.sid] == null then
                .by[$e.sid] = {t0:null, task:null, tr:null, phases:{},
@@ -2298,27 +2295,18 @@ snapshot_one_project() {
               else . end
           end
         )
-        | (.global_guard_epochs // []) as $ge
         | if .cur == null then
             {sid:null, t0:null, task:null, tr:null, phases:{},
              now:null, evidence:null,
              signals:{guard_blocks:0, gate_releases:0, compactions:0, subagents:0}}
           else
             ((.by[.cur] // {}) as $S
-             | (($S.t0 // null) as $t0
-                # Watch parity: count null-SID guards only at/after active session t0.
-                # No SessionStart in window: do not invent cross-session counts.
-                | (if $t0 == null then 0
-                   else ([$ge[] | select(. >= $t0)] | length) end) as $gg
-                | (($S.signals // {guard_blocks:0, gate_releases:0,
-                                   compactions:0, subagents:0}) as $sig
-                   | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
-                      phases:($S.phases // {}),
-                      now:($S.last_post // null),
-                      evidence:($S.last_verify // null),
-                      # SID-scoped + null-SID guards at/after active session t0.
-                      signals:($sig | .guard_blocks = ((.guard_blocks // 0) + $gg))
-                   })))
+             | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
+                phases:($S.phases // {}),
+                now:($S.last_post // null),
+                evidence:($S.last_verify // null),
+                signals:($S.signals // {guard_blocks:0, gate_releases:0,
+                                        compactions:0, subagents:0})})
           end
         | @json
       ' "$ev_tmp" 2>/dev/null)" || meta_rc=$?

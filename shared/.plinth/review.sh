@@ -1196,21 +1196,25 @@ sticky_process_findings() {  # <findings-json-path>
       end
     )
     # Auto-generated identical nids intentionally share an id (anti-thrash).
-    # Only disambiguate EXPLICIT collisions or explicit-vs-auto collisions.
+    # Explicit ids must be globally unique vs every other finding id (including
+    # auto and prior suffixes): pick the first free id, id#x2, id#x3, …
     | . as $root
     | ([.findings[] | select(._auto == true) | .id] | unique) as $auto_ids
     | reduce range(0; ($root.findings|length)) as $i (
-        {out:[], seen:{}};
-        ($root.findings[$i]) as $f
+        {out:[], taken:{}};
+        # Reserve auto ids first so explicit cannot steal them without suffixing.
+        if $i == 0 then
+          reduce $auto_ids[] as $a (.; .taken[$a] = true) else . end
+        | ($root.findings[$i]) as $f
         | if $f._auto then
             .out += [$f | del(._auto)]
           else
-            .seen[$f.id] = ((.seen[$f.id] // 0) + 1)
-            | .seen[$f.id] as $n
-            | (if ($n > 1) or (($auto_ids | index($f.id)) != null) then
-                 ($f.id + "#x" + ($n|tostring))
-               else $f.id end) as $final
-            | .seen[$final] = ((.seen[$final] // 0) + 1)
+            # Find free final id
+            . as $st
+            | ([$f.id] + [range(2; 50) | ($f.id + "#x" + tostring)]
+               | map(select(($st.taken[.] // false) | not))
+               | .[0] // ($f.id + "#x" + (now|tostring))) as $final
+            | .taken[$final] = true
             | .out += [$f | .id = $final | del(._auto)]
           end
       )

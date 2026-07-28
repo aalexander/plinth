@@ -74,9 +74,9 @@ jq -nc --argjson epoch "$((NOW - 40))" \
 jq -nc --argjson epoch "$((NOW - 35))" \
   '{ts:"2026-01-01T00:01:05Z",epoch:$epoch,event:"PostToolUse",sid:"sid-smoke",transcript:null,tool:"Bash",detail:"pytest -q",rc:1}' \
   >> "$A/.plinth/session/events.jsonl"
-# Production guard.sh emits sid:null — must still count on the card.
+# Guard with session_id (current guard.sh) counts on the active SID card.
 jq -nc --argjson epoch "$((NOW - 32))" \
-  '{ts:"2026-01-01T00:01:08Z",epoch:$epoch,event:"guard_block",sid:null,transcript:null,tool:null,detail:"protected path",rc:null}' \
+  '{ts:"2026-01-01T00:01:08Z",epoch:$epoch,event:"guard_block",sid:"sid-smoke",transcript:null,tool:null,detail:"protected path",rc:null}' \
   >> "$A/.plinth/session/events.jsonl"
 # Noise SID must not pollute active phases
 jq -nc --argjson epoch "$((NOW - 30))" \
@@ -670,12 +670,12 @@ jq -e --arg head "$HEAD" '
   and .model_reviewer == "gpt-test"
   and .needs_human.source == ".plinth/NEEDS-HUMAN.md"
   and (.phases | type == "object")
-  # Event-gap: Edit 30s, Read 20s; pytest 5s shell; null-SID guard does not
-  # advance active last_epoch; advise 25s (35→10). other-sid ignored.
+  # Event-gap: Edit 30s, Read 20s; pytest 5s shell; guard 3s (same last_phase
+  # shell); advise 22s (32→10). other-sid ignored.
   and .phases.coding == 30
   and .phases.research == 20
-  and .phases.advising == 25
-  and ((.phases.shell // 0) == 5)
+  and .phases.advising == 22
+  and ((.phases.shell // 0) == 8)
   and ((.phases.ci // 0) == 0)
   and (.review_round_secs | type == "number")
   and ((.phases.other // 0) == 10)
