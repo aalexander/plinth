@@ -1189,20 +1189,29 @@ sticky_process_findings() {  # <findings-json-path>
     def nid:
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     # Fill missing ids with base nid (identical siblings share id by design).
-    # Only suffix EXPLICIT reviewer ids that collide in this payload.
+    # Disambiguate EXPLICIT id collisions with a monotonic index (stable, unique).
     .findings |= map(
       if (.id == null or .id == "") then . + {id: nid, _auto: true}
       else . + {_auto: false}
       end
     )
-    | (.findings | map(select(._auto == false) | .id) | group_by(.)
-        | map(select(length > 1) | .[0]) | unique) as $dups
-    | .findings |= map(
-        if (._auto == false) and (.id as $i | $dups | index($i) != null) then
-          .id = (.id + "#" + (.line|tostring))
-        else . end
-        | del(._auto)
+    | . as $root
+    | reduce range(0; ($root.findings|length)) as $i (
+        {out:[], seen:{}};
+        ($root.findings[$i]) as $f
+        | if $f._auto then
+            .out += [$f | del(._auto)]
+          else
+            .seen[$f.id] = ((.seen[$f.id] // 0) + 1)
+            | .seen[$f.id] as $n
+            | if $n == 1 then
+                .out += [$f | del(._auto)]
+              else
+                .out += [$f | .id = (.id + "#x" + ($n|tostring)) | del(._auto)]
+              end
+          end
       )
+    | .findings = .out
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Build blob map for files mentioned

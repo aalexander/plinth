@@ -2306,7 +2306,10 @@ snapshot_one_project() {
           else
             ((.by[.cur] // {}) as $S
              | (($S.t0 // null) as $t0
-                | ([$ge[] | select($t0 == null or . >= $t0)] | length) as $gg
+                # Watch parity: count null-SID guards only at/after active session t0.
+                # No SessionStart in window: do not invent cross-session counts.
+                | (if $t0 == null then 0
+                   else ([$ge[] | select(. >= $t0)] | length) end) as $gg
                 | (($S.signals // {guard_blocks:0, gate_releases:0,
                                    compactions:0, subagents:0}) as $sig
                    | {sid:.cur, t0:$S.t0, task:$S.task, tr:$S.tr,
@@ -4497,9 +4500,9 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Generated "Fix [severity] file:…" review-handoff lines
+    # Generated review-handoff: "Fix [major] path:line — …" only (not arbitrary Fix […]).
     case "$1" in
-      Fix\ \[*\]*) return 0 ;;
+      Fix\ \[blocker\]*|Fix\ \[major\]*|Fix\ \[minor\]*) return 0 ;;
     esac
     return 1
   }

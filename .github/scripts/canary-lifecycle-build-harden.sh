@@ -300,4 +300,51 @@ bash -c '
 ' || fail "production sticky_process_findings unit"
 pass "production sticky_process_findings (base id + AUTO-STICKY)"
 
+# Explicit colliding reviewer ids get unique suffixes
+bash -c '
+  set -euo pipefail
+  SDIR="'"$TMP"'/p9b/.plinth/session/review/x"
+  mkdir -p "$SDIR" "'"$TMP"'/p9b"
+  git -C "'"$TMP"'/p9b" init -q 2>/dev/null || true
+  eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  f="$SDIR/findings-test.json"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {id:\"dup\",file:\"a.sh\",line:1,severity:\"major\",description:\"one\",status:\"open\"},
+    {id:\"dup\",file:\"a.sh\",line:2,severity:\"major\",description:\"two\",status:\"open\"}
+  ]}" > "$f"
+  cd "'"$TMP"'/p9b"
+  sticky_process_findings "$f"
+  id1=$(jq -r ".findings[0].id" "$f")
+  id2=$(jq -r ".findings[1].id" "$f")
+  [ "$id1" = "dup" ] || { echo "first explicit id should stay dup, got $id1"; exit 1; }
+  [ "$id2" = "dup#x2" ] || { echo "second explicit id should be dup#x2, got $id2"; exit 1; }
+' || fail "explicit sticky id collision suffix"
+pass "sticky suffixes colliding explicit reviewer ids"
+
+# review_phase_for_round: corrupt phase → hardening
+bash -c '
+  set -euo pipefail
+  d="'"$TMP"'/p10"
+  mkdir -p "$d/.plinth/session"
+  git -C "$d" init -q
+  git -C "$d" checkout -qb feat/rp 2>/dev/null || git -C "$d" checkout -b feat/rp
+  echo not-json > "$d/.plinth/session/phase-feat-rp.json"
+  eval "$(sed -n "/^review_phase_for_round()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  cd "$d"
+  p=$(review_phase_for_round)
+  [ "$p" = "hardening" ] || { echo "expected hardening for corrupt phase, got $p"; exit 1; }
+' || fail "review_phase_for_round corrupt → hardening"
+pass "review_phase_for_round fail-closed on corrupt phase"
+
+# Operator Next line "Fix [Windows]…" preserved across harden refresh
+setup_proj "$TMP/p11"
+printf '%s\n' '# H' '## Next' '1. Fix [Windows] packaging regression' '2. custom operator note' \
+  > "$TMP/p11/HANDOFF.md"
+"$PLINTH" harden "$TMP/p11" >/dev/null
+grep -F 'Fix [Windows] packaging regression' "$TMP/p11/HANDOFF.md" \
+  || fail "operator Fix [Windows] line must be preserved"
+grep -F 'custom operator note' "$TMP/p11/HANDOFF.md" \
+  || fail "operator note must be preserved"
+pass "handoff preserves operator-authored Next lines"
+
 echo "canary-lifecycle-build-harden: ALL PASS"
