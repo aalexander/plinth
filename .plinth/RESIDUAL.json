@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "c707c015ab1c721d06b9b9a8ea47e055b1e6e696",
+  "sha": "20143ba7e78c95efa13bb3d616d4c8cb443846b4",
   "by": "austin",
-  "ts": "2026-07-28T21:05:30Z",
-  "note": "v5.0.0 land: canary green; model thrash residual (CHANGELOG). Strict-delta + residual ship path shipped.",
+  "ts": "2026-07-28T22:05:54Z",
+  "note": "v5.0.0 land: canary session-clean; residual thrash exit; strict-delta+residual ship control",
   "findings": [
     {
       "severity": "major",
