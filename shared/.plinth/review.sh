@@ -157,14 +157,18 @@ if [ -z "$diff" ]; then
     mkdir -p "$SDIR"
     jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
-        round:0, session_id:"", model:"deterministic-floor",
+        round:0, session_id:"", model:"deterministic-floor", review_phase:"build",
         risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
         usage:null, ts:$ts}' > "$SDIR/verdict.json"
-    rm -f "$SDIR/last-error"
-    echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
-    exit 0
-  fi
+    rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
+    # mint_receipt is defined later — flag and mint at Tier-0 site (same as docs floor).
+    NEED_EPHEMERA_MINT=1
+  else
   die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
+  fi
+fi
+if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
+  : # continue setup only until mint_receipt exists; skip model path below
 fi
 # Reviewed file list (full branch, pathspec) — thrash policy scopes NEW findings to these
 # (verify/resume narrow further inside run_round to the fix-diff + open ledger).
@@ -777,9 +781,12 @@ mint_receipt() {  # mint_receipt <round>
 version_changelog_match() {
   local verfile="${1:-VERSION}" clfile="${2:-CHANGELOG.md}" ver_txt top_entry
   [ -f "$verfile" ] && [ -f "$clfile" ] || return 1
-  ver_txt="$(tr -d '[:space:]' < "$verfile" 2>/dev/null || true)"
+  # Trim ends only — do not delete internal whitespace (5. 0.0 must not match 5.0.0).
+  ver_txt="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' < "$verfile" 2>/dev/null | head -1 || true)"
   top_entry="$(awk '/^## /{print; exit}' "$clfile" 2>/dev/null || true)"
   [ -n "$ver_txt" ] && [ -n "$top_entry" ] || return 1
+  # Reject internal whitespace in VERSION (not a valid version token).
+  case "$ver_txt" in *[[:space:]]*) return 1 ;; esac
   # Extract the heading's version token (## vX.Y.Z or ## X.Y.Z) and compare
   # equality after stripping a leading v — not a free substring of the title.
   python3 -c 'import re,sys
@@ -805,6 +812,13 @@ if [ "$RISK" = "0" ]; then
     fi
   fi
 fi
+# HANDOFF-only floor: verdict already written; mint receipt now that helper exists.
+if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
+  mint_receipt 0
+  echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
+  exit 0
+fi
+
 if [ "$RISK" = "0" ]; then
   # A Tier-0 grant is round 0 — by definition a NEW loop. It exits before the round
   # bookkeeping below, so it must do that branch's per-loop reset itself; otherwise a
@@ -820,9 +834,9 @@ if [ "$RISK" = "0" ]; then
         --arg mbase "$merge_base" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
-          round:0, session_id:"", model:"deterministic-floor", risk:$risk,
+          round:0, session_id:"", model:"deterministic-floor", review_phase:"build", risk:$risk,
           diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
-  rm -f "$SDIR/last-error"
+  rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
@@ -1262,12 +1276,15 @@ sticky_process_findings() {  # <findings-json-path>
     # Class-stable fingerprints for paraphrased thrash classes (no severity —
     # major→minor demotion must not mint a new id).
     def is_real_test_gap_desc:
-      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
+      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers"; "i");
+    def is_security_desc:
+      test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
-      # Tight class keys — never collapse real AC/test-gap findings into coverage-gap.
-      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | is_security_desc) as $sec
+      # Never thrash-class security or AC/test-gap findings (AUTO-STICKY must not clear them).
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1354,7 +1371,8 @@ sticky_process_findings() {  # <findings-json-path>
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
-      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1409,7 +1427,8 @@ sticky_process_findings() {  # <findings-json-path>
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
-      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1476,7 +1495,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     def is_external_security:
         is_security_surface
         or ((.description // "") | test(
-          "auth bypass|unauthenticated|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss|privilege escalat"; "i"
+          "auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss|privilege escalat"; "i"
         ));
     def is_docs_prose:
         (is_canonical_spec | not)
@@ -1492,7 +1511,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         ));
     def is_coverage_asymp:
         ((.description // "") | test(
-          "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond"; "i"
+          "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|no end-to-end test covers|no production-path test|lack real (production-path )?test|no real production-path test|several (named |changed )?.*(lack|have no) real"; "i"
         ))
         and (is_real_test_gap | not)
         and (is_external_security | not);

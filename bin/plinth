@@ -3989,9 +3989,11 @@ for line in lines:
     except Exception:
         out_lines.append(line)
         continue
-    if not isinstance(obj, dict) or obj.get("available") is not True:
-        out_lines.append(json.dumps(obj, separators=(",", ":")))
+    if not isinstance(obj, dict):
+        out_lines.append(line)
         continue
+    # Attach observed api-cost-log spend even when the live quota probe failed
+    # (available:false) — history must not disappear on a transient CLI/auth error.
     vendor = obj.get("vendor")
     api_spend = spend_from_log(vendor) if isinstance(vendor, str) else None
     prev = obj.get("spend") if isinstance(obj.get("spend"), dict) else {}
@@ -4948,7 +4950,11 @@ run_plan() {
 
   # Deep: parallel independent seats (best-effort vendors from project config).
   cfg="$root/.plinth/config"
-  aval() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1; }
+  # Missing config must not abort under pipefail — defaults apply.
+  aval() {
+    [ -f "$cfg" ] || { printf ''; return 0; }
+    sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1 || true
+  }
   local rv am av rm amodel
   rv="$(aval reviewer_vendor)"; [ -n "$rv" ] || rv=codex
   av="$(aval audit_vendor)"; [ -n "$av" ] || av=claude
