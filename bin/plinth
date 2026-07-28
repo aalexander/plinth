@@ -4500,23 +4500,24 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Generated review-handoff: "Fix [major] path:line — …" only (not arbitrary Fix […]).
-    case "$1" in
-      Fix\ \[blocker\]*|Fix\ \[major\]*|Fix\ \[minor\]*) return 0 ;;
-    esac
+    # Generated review-handoff only: "Fix [sev] path:line — desc" (em-dash form).
+    if printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] [^ ]+:[0-9]+ — '; then
+      return 0
+    fi
     return 1
   }
   _handoff_set_primary_next() {
     local hint="$1" cur="$2" line stripped out=""
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
     while IFS= read -r line; do
+      # Preserve original line text (indent, bullets, nesting) for operator content.
       stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
       [ -n "$stripped" ] || continue
       [ "$stripped" = "$hint" ] && continue
       if _handoff_is_auto_lifecycle "$stripped"; then
         continue
       fi
-      out="${out}${out:+$'\n'}- ${stripped}"
+      out="${out}${out:+$'\n'}${line}"
     done <<< "$cur"
     if [ -n "$out" ]; then
       printf '1. %s\n%s' "$hint" "$out"

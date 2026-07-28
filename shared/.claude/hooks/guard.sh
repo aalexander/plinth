@@ -17,11 +17,18 @@
 set -euo pipefail
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
+# Prefer session_id from PreToolUse JSON so dash/watch attribute blocks to the
+# correct SID (null only when the harness omits it).
+sid=$(printf '%s' "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+[ -n "$sid" ] || sid=""
 proj="${CLAUDE_PROJECT_DIR:-.}"
 block() {
   # Log the block for `plinth watch` (best-effort; never affects the verdict).
   { mkdir -p "$proj/.plinth/session" && jq -cn --arg tool "$tool" --arg detail "$1" \
-      '{ts:(now|todate), epoch:(now|floor), event:"guard_block", sid:null, tool:$tool, detail:($detail|.[0:160])}' \
+      --arg sid "$sid" \
+      '{ts:(now|todate), epoch:(now|floor), event:"guard_block",
+        sid:(if $sid == "" then null else $sid end),
+        tool:$tool, detail:($detail|.[0:160])}' \
       >> "$proj/.plinth/session/events.jsonl"; } 2>/dev/null || true
   echo "PLINTH BLOCKED: $1" >&2; exit 2
 }

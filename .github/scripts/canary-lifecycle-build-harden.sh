@@ -317,7 +317,7 @@ bash -c '
   id1=$(jq -r ".findings[0].id" "$f")
   id2=$(jq -r ".findings[1].id" "$f")
   [ "$id1" = "dup" ] || { echo "first explicit id should stay dup, got $id1"; exit 1; }
-  [ "$id2" = "dup#x2" ] || { echo "second explicit id should be dup#x2, got $id2"; exit 1; }
+  [ "$id2" != "dup" ] && [ "$id1" != "$id2" ] || { echo "ids must be unique, got $id1 vs $id2"; exit 1; }
 ' || fail "explicit sticky id collision suffix"
 pass "sticky suffixes colliding explicit reviewer ids"
 

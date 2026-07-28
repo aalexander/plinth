@@ -1195,7 +1195,10 @@ sticky_process_findings() {  # <findings-json-path>
       else . + {_auto: false}
       end
     )
+    # Auto-generated identical nids intentionally share an id (anti-thrash).
+    # Only disambiguate EXPLICIT collisions or explicit-vs-auto collisions.
     | . as $root
+    | ([.findings[] | select(._auto == true) | .id] | unique) as $auto_ids
     | reduce range(0; ($root.findings|length)) as $i (
         {out:[], seen:{}};
         ($root.findings[$i]) as $f
@@ -1204,11 +1207,11 @@ sticky_process_findings() {  # <findings-json-path>
           else
             .seen[$f.id] = ((.seen[$f.id] // 0) + 1)
             | .seen[$f.id] as $n
-            | if $n == 1 then
-                .out += [$f | del(._auto)]
-              else
-                .out += [$f | .id = (.id + "#x" + ($n|tostring)) | del(._auto)]
-              end
+            | (if ($n > 1) or (($auto_ids | index($f.id)) != null) then
+                 ($f.id + "#x" + ($n|tostring))
+               else $f.id end) as $final
+            | .seen[$final] = ((.seen[$final] // 0) + 1)
+            | .out += [$f | .id = $final | del(._auto)]
           end
       )
     | .findings = .out
