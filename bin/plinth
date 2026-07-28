@@ -4483,16 +4483,24 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Do not pattern-match "Fix […]" — operators may write the same shape.
-    # Prior generated Fix lines are replaced only when PLINTH_HANDOFF_NEXT supplies
-    # a new primary; exact-string match on the known auto list is the only purge.
+    # Generated Fix [sev] path:line — desc from review handoff only when review
+  # supplies PLINTH_HANDOFF_NEXT (strip prior generated findings). Never strip
+  # those shapes on plain harden/build without a new review primary.
+    if [ -n "${PLINTH_HANDOFF_NEXT:-}" ] \
+       && printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] [^ ]+:[0-9]+ — '; then
+      return 0
+    fi
     return 1
   }
   _handoff_set_primary_next() {
     local hint="$1" cur="$2" line stripped out=""
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
-    while IFS= read -r line; do
-      # Preserve original line text (indent, bullets, nesting) for operator content.
+    while IFS= read -r line || [ -n "$line" ]; do
+      # Preserve blank separators and original formatting for operator content.
+      if [ -z "${line// }" ]; then
+        out="${out}${out:+$'\n'}${line}"
+        continue
+      fi
       stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
       [ -n "$stripped" ] || continue
       [ "$stripped" = "$hint" ] && continue
