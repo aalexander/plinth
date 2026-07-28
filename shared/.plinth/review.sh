@@ -85,8 +85,15 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 # can write last-error and release the Stop gate. The mkdir itself is deferred
 # to first use / the normal session setup below — die_infra creates the dir when needed.
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+# Encode / and space distinctly (feat/a-b ≠ feat/a/b); match bin/plinth + gate.
+slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
+slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
 SDIR=".plinth/session/review/${slug}"
+# Continue an in-flight legacy-slug session if present and encoded dir is empty.
+if [ ! -d "$SDIR" ] && [ -d ".plinth/session/review/${slug_legacy}" ]; then
+  slug="$slug_legacy"
+  SDIR=".plinth/session/review/${slug}"
+fi
 # NB: the codex CLI is required only for a model round (Tier 1/2); the check is
 # deferred to just before the first round so a Tier-0 (deterministic-floor)
 # approval genuinely needs no model infrastructure.
@@ -774,11 +781,15 @@ if [ "$RISK" = "0" ]; then
   # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
   if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
     ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-    # Top H2 only; exact version token (not substring: 5.0 must not match v5.0.0).
+    # Top H2 only; exact version token (5.0 must not match v5.0.0). Python re.escape
+    # — bash sed character-class escape was broken (empty pattern → always match).
     top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
     ver_ok=0
     if [ -n "$ver_txt" ] && [ -n "$top_entry" ]; then
-      if printf '%s\n' "$top_entry" | grep -Eq "(^|[^0-9.])$(printf '%s' "$ver_txt" | sed 's/[.[\*^$()+?{|]/g')([^0-9.]|$)"; then
+      if python3 -c 'import re,sys
+v,t=sys.argv[1],sys.argv[2]
+sys.exit(0 if re.search(r"(^|[^0-9.])"+re.escape(v)+r"([^0-9.]|$)", t) else 1)
+' "$ver_txt" "$top_entry" 2>/dev/null; then
         ver_ok=1
       fi
     fi
@@ -1246,10 +1257,13 @@ sticky_process_findings() {  # <findings-json-path>
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     # Class-stable fingerprints for paraphrased thrash classes (no severity —
     # major→minor demotion must not mint a new id).
+    def is_real_test_gap_desc:
+      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
     def thrash_class:
       (normdesc) as $d
-      # Tight class keys only — bare "untested" must NOT collapse unrelated findings.
-      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      # Tight class keys — never collapse real AC/test-gap findings into coverage-gap.
+      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1331,9 +1345,12 @@ sticky_process_findings() {  # <findings-json-path>
         | sub(" \\[THRASH:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def is_real_test_gap_desc:
+      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
     def thrash_class:
       (normdesc) as $d
-      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1383,9 +1400,12 @@ sticky_process_findings() {  # <findings-json-path>
         | sub(" \\[THRASH:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def is_real_test_gap_desc:
+      test("acceptance criterion|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)"; "i");
     def thrash_class:
       (normdesc) as $d
-      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      | if ($gap | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1457,7 +1477,8 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
     def is_docs_prose:
         (is_canonical_spec | not)
         and (is_external_security | not)
-        and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/"));
+        # Only prose extensions — never demote scripts under docs/ (docs/build.py, …).
+        and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/.*\\.(md|markdown|rst|adoc|txt)$"));
     def is_overclaim:
         ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
     def is_real_test_gap:

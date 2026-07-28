@@ -34,12 +34,15 @@ fi
 # Lifecycle + handoff nudge (v5): inject short context when HANDOFF exists.
 ctx=""
 if [ -f "$proj/HANDOFF.md" ]; then
-  branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
-  slug=$(printf '%s' "$branch" | tr '/ ' '--')
+  branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
+  slug=$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')
+  slug_legacy=$(printf '%s' "$branch" | tr '/ ' '--')
   # Missing → build; corrupt/unknown → harden (fail closed; match Stop).
   phase="build"
-  if [ -f "$SDIR/phase-$slug.json" ]; then
-    phase=$(jq -r '.phase // empty' "$SDIR/phase-$slug.json" 2>/dev/null || true)
+  pfile="$SDIR/phase-$slug.json"
+  [ -f "$pfile" ] || pfile="$SDIR/phase-$slug_legacy.json"
+  if [ -f "$pfile" ]; then
+    phase=$(jq -r '.phase // empty' "$pfile" 2>/dev/null || true)
     case "$phase" in
       build|harden) ;;
       *) phase=harden ;;

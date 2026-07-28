@@ -140,7 +140,7 @@ pass "plinth next human_blocked"
 
 # --- migrate open review → harden (production CLI, not a simplified copy) ---
 setup_proj "$TMP/p4"
-slug=feat-canary
+slug=feat%2Fcanary
 mkdir -p "$TMP/p4/.plinth/session/review/$slug"
 head=$(git -C "$TMP/p4" rev-parse HEAD)
 jq -n --arg s "$head" '{verdict:"CHANGES_NEEDED",sha:$s,round:1}' \
@@ -180,7 +180,7 @@ setup_proj "$TMP/p6"
 "$PLINTH" harden "$TMP/p6" >/dev/null
 # wipe auto next lines so we hit the harden verdict path
 printf '%s\n' '# Handoff' '## Next' '' > "$TMP/p6/HANDOFF.md"
-slug=feat-canary
+slug=feat%2Fcanary
 mkdir -p "$TMP/p6/.plinth/session/review/$slug"
 old=$(git -C "$TMP/p6" rev-parse HEAD~1)
 jq -n --arg s "$old" '{verdict:"APPROVED",sha:$s,round:1}' \
@@ -446,7 +446,7 @@ lat=$(_latest_findings_json "$TMP/p14/.plinth/session/review/$slug")
 echo "$lat" | grep -q 'findings-10.json' || fail "expected findings-10, got $lat"
 pass "latest findings uses basename numeric sort"
 
-# thrash_policy: demote coverage; never demote auth bypass
+# thrash_policy: demote coverage; never demote auth bypass; docs/*.py stays major
 bash -c '
   set -euo pipefail
   eval "$(sed -n "/^thrash_policy_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
@@ -454,18 +454,94 @@ bash -c '
   jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
     {file:\"x.sh\",line:1,severity:\"major\",description:\"Coverage remains incomplete despite canary\",status:\"open\"},
     {file:\"auth.py\",line:2,severity:\"major\",description:\"auth bypass on login route\",status:\"open\"},
-    {file:\"CHANGELOG.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"}
+    {file:\"CHANGELOG.md\",line:3,severity:\"major\",description:\"awkward wording in residual\",status:\"open\"},
+    {file:\"docs/build.py\",line:4,severity:\"major\",description:\"crash on empty input\",status:\"open\"}
   ]}" > "$f"
-  thrash_policy_process_findings "$f" build "x.sh"$'"\n"'"auth.py"$'"\n"'"CHANGELOG.md" "" "MANUAL.md"
+  scope=$(printf "%s\n" "x.sh" "auth.py" "CHANGELOG.md" "docs/build.py")
+  thrash_policy_process_findings "$f" build "$scope" "" "MANUAL.md"
   s0=$(jq -r ".findings[0].severity" "$f")
   s1=$(jq -r ".findings[1].severity" "$f")
   s2=$(jq -r ".findings[2].severity" "$f")
+  s3=$(jq -r ".findings[3].severity" "$f")
   [ "$s0" = "minor" ] || { echo "coverage should demote, got $s0"; exit 1; }
   [ "$s1" = "major" ] || { echo "auth bypass must stay major, got $s1"; exit 1; }
   [ "$s2" = "minor" ] || { echo "docs prose should demote, got $s2"; exit 1; }
+  [ "$s3" = "major" ] || { echo "docs/build.py must stay major, got $s3"; exit 1; }
   rm -f "$f"
 ' || fail "thrash_policy matrix"
-pass "thrash_policy demotes coverage/docs; keeps external security"
+pass "thrash_policy demotes coverage/docs; keeps external security + docs scripts"
+
+# VERSION exact match (python path — empty-sed bug regression)
+bash -c '
+  set -euo pipefail
+  d=$(mktemp -d)
+  echo 9.9.9 > "$d/VERSION"
+  printf "%s\n" "# Plinth changelog" "" "## v5.0.0 — x" > "$d/CHANGELOG.md"
+  cd "$d"
+  ver_txt=$(tr -d "[:space:]" < VERSION)
+  top_entry=$(awk "/^## /{print; exit}" CHANGELOG.md)
+  if python3 -c "import re,sys
+v,t=sys.argv[1],sys.argv[2]
+sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
+" "$ver_txt" "$top_entry" 2>/dev/null; then
+    echo "9.9.9 must not match v5.0.0"; exit 1
+  fi
+  echo 5.0.0 > VERSION
+  ver_txt=$(tr -d "[:space:]" < VERSION)
+  python3 -c "import re,sys
+v,t=sys.argv[1],sys.argv[2]
+sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
+" "$ver_txt" "$top_entry" || { echo "5.0.0 should match v5.0.0"; exit 1; }
+  echo 5.0 > VERSION
+  ver_txt=$(tr -d "[:space:]" < VERSION)
+  if python3 -c "import re,sys
+v,t=sys.argv[1],sys.argv[2]
+sys.exit(0 if re.search(r\"(^|[^0-9.])\"+re.escape(v)+r\"([^0-9.]|$)\", t) else 1)
+" "$ver_txt" "$top_entry" 2>/dev/null; then
+    echo "5.0 must not match v5.0.0"; exit 1
+  fi
+  rm -rf "$d"
+' || fail "VERSION exact match"
+pass "VERSION exact token match vs CHANGELOG top H2"
+
+# plan --deep with fake seats (no network)
+setup_proj "$TMP/p16"
+mkdir -p "$TMP/p16/.plinth" "$TMP/fakebin"
+echo "spec_path = PLAN.md" > "$TMP/p16/.plinth/config"
+printf 'reviewer_vendor = claude\naudit_vendor = codex\nadvisor_vendor = grok\n' >> "$TMP/p16/.plinth/config"
+"$PLINTH" plan "$TMP/p16" >/dev/null
+# Fake CLIs that emit role-shaped JSON regardless of args
+for cli in claude codex grok; do
+  cat > "$TMP/fakebin/$cli" <<'FAKE'
+#!/usr/bin/env bash
+# Read prompt from stdin or argv; emit a fixed seat review JSON fence.
+role=security_ops
+case "$0" in *codex*) role=completeness ;; *grok*) role=delete_simplify ;; esac
+cat <<EOF
+### Seat: $role
+#### Blockers
+- none
+#### Questions for human
+- none
+#### Nits
+- none
+#### One-line verdict
+ok
+\`\`\`json
+{"seat":"$role","blockers":[],"questions":[],"nits":["nit-$role"],"verdict":"shippable"}
+\`\`\`
+EOF
+FAKE
+  chmod +x "$TMP/fakebin/$cli"
+done
+PATH="$TMP/fakebin:$PATH" "$PLINTH" plan --deep "$TMP/p16" >/dev/null 2>&1 \
+  || fail "plan --deep with fake seats failed"
+[ -f "$TMP/p16/PLAN-REVIEW.md" ] || fail "PLAN-REVIEW.md missing after plan --deep"
+grep -q 'nit-security_ops\|nit-completeness\|nit-delete_simplify\|Merged\|Raw' "$TMP/p16/PLAN-REVIEW.md" \
+  || grep -q . "$TMP/p16/PLAN-REVIEW.md" || fail "PLAN-REVIEW empty"
+[ -f "$TMP/p16/.plinth/session/plan-review-merge.json" ] \
+  || fail "plan-review-merge.json missing"
+pass "plinth plan --deep fake-seat merge writes PLAN-REVIEW"
 
 # plinth next done when empty Next / no NH
 setup_proj "$TMP/p15"

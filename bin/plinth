@@ -3638,10 +3638,37 @@ def append_entries(entries):
         return 0
     n = 0
     try:
+        # Exclusive lock across dashboard processes so load_seen→append is atomic.
         with log_path.open("a", encoding="utf-8") as f:
+            try:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+            # Re-load seen under the lock so concurrent harvests do not double-append.
+            seen_now, content_now = load_seen()
             for e in entries:
+                eid = e.get("id") if isinstance(e, dict) else None
+                if isinstance(eid, str) and eid in seen_now:
+                    continue
+                ck = _content_key_from_id(
+                    e.get("id") if isinstance(e, dict) else None,
+                    e.get("vendor") if isinstance(e, dict) else None,
+                    e.get("usd") if isinstance(e, dict) else None,
+                )
+                if ck is not None and ck in content_now:
+                    continue
                 f.write(json.dumps(e, separators=(",", ":")) + "\n")
                 n += 1
+                if isinstance(eid, str):
+                    seen_now.add(eid)
+                if ck is not None:
+                    content_now.add(ck)
+            try:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
     except Exception:
         return 0
     return n
@@ -4417,12 +4444,13 @@ PY
 # Legacy readers also try tr '/ ' '--' via _lifecycle_phase_file_legacy.
 _lifecycle_slug() {
   local b
-  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  # Detached HEAD → "detached" (matches dashboard smoke / statusline contract).
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
   printf '%s' "$b" | sed 's/\//%2F/g; s/ /%20/g'
 }
 _lifecycle_slug_legacy() {
   local b
-  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
+  b=$(git -C "${1:-.}" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
   printf '%s' "$b" | tr '/ ' '--'
 }
 
@@ -4702,10 +4730,12 @@ _write_handoff() {
       "" "## Evidence"
     if [ -n "$evidence_body" ]; then
       printf '%s' "$evidence_body"
-      # Ensure trailing newline then append live snapshot bullets if missing HEAD line.
       case "$evidence_body" in *$'\n') ;; *) printf '\n' ;; esac
-      printf '%s\n' "- HEAD: \`${head}\` on \`${branch}\` (refresh ${ts})" \
-        "- Lifecycle phase: ${phase} · Snapshot: ${reason} (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}"
+      # Append live HEAD line only if not already present (avoid infinite duplicates).
+      if ! printf '%s' "$evidence_body" | grep -qF "HEAD: \`${head}\`"; then
+        printf '%s\n' "- HEAD: \`${head}\` on \`${branch}\` (refresh ${ts})" \
+          "- Lifecycle phase: ${phase} · Snapshot: ${reason} (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}"
+      fi
     else
       printf '%s\n' \
         "- HEAD: \`${head}\` on \`${branch}\`" \
