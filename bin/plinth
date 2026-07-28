@@ -4486,10 +4486,15 @@ _write_handoff() {
       "Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)"|\
       "continue build (or plinth harden when product ready)"|\
       "continue build (or plinth harden when product ready)."|\
+      "Continue implementation; plinth harden when product is ready to ship."|\
+      "Continue implementation; plinth harden when product is ready to ship"|\
       "open PR (APPROVED@HEAD)"|\
+      "open PR (APPROVED@HEAD) — or re-run review if HEAD moved"|\
       "re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"|\
       "run ./.plinth/review.sh (harden phase, no APPROVED@HEAD)"|\
-      "fix review finding, commit, re-run ./.plinth/review.sh")
+      "fix review finding, commit, re-run ./.plinth/review.sh"|\
+      "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."|\
+      "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
     # Generated "Fix [severity] file:…" review-handoff lines
@@ -4518,16 +4523,21 @@ _write_handoff() {
   }
   # Default primary action from current phase when no explicit hint (e.g. review-approved).
   if [ -z "$next_hint" ] && [ -z "${PLINTH_HANDOFF_NEXT:-}" ]; then
+    local full_head
+    full_head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
     case "$phase" in
       harden)
-        if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ]; then
-          next_hint="open PR (APPROVED@HEAD) — or re-run review if HEAD moved"
+        if [ "$verdict" = "APPROVED" ] && [ -n "$vsha" ] && [ -n "$full_head" ] \
+           && { [ "$vsha" = "$full_head" ] || [ "$vsha" = "${full_head:0:${#vsha}}" ]; }; then
+          next_hint="open PR (APPROVED@HEAD)"
+        elif [ "$verdict" = "APPROVED" ]; then
+          next_hint="re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"
         else
           next_hint="Run ./.plinth/review.sh until APPROVED@HEAD, then open PR (or plinth build to leave harden)."
         fi
         ;;
       build)
-        next_hint="continue build (or plinth harden when product ready)"
+        next_hint="Continue implementation; plinth harden when product is ready to ship."
         ;;
     esac
   fi

@@ -257,8 +257,8 @@ next_block=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$TMP/p8/HANDOFF.md")
 first=$(printf '%s\n' "$next_block" | sed -n '1p' | sed -E 's/^[[:space:]]*[0-9]+[.)]*[[:space:]]*//')
 printf '%s\n' "$first" | grep -qi 'review' \
   || fail "after final harden, first Next should be review: $next_block"
-printf '%s\n' "$next_block" | grep -qi 'continue build' \
-  && fail "obsolete continue-build must be purged: $next_block"
+printf '%s\n' "$next_block" | grep -qiE 'continue build|Continue implementation' \
+  && fail "obsolete build action must be purged: $next_block"
 n_review=$(printf '%s\n' "$next_block" | grep -c 'review\.sh' || true)
 [ "$n_review" -le 1 ] || fail "handoff Next stacked review hints ($n_review): $next_block"
 pass "handoff Next prioritizes current harden action"

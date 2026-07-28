@@ -1188,10 +1188,21 @@ sticky_process_findings() {  # <findings-json-path>
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def nid:
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
+    # Fill missing ids with base nid (identical siblings share id by design).
+    # Only suffix EXPLICIT reviewer ids that collide in this payload.
     .findings |= map(
-      if (.id == null or .id == "") then . + {id: nid}
-      else . end
+      if (.id == null or .id == "") then . + {id: nid, _auto: true}
+      else . + {_auto: false}
+      end
     )
+    | (.findings | map(select(._auto == false) | .id) | group_by(.)
+        | map(select(length > 1) | .[0]) | unique) as $dups
+    | .findings |= map(
+        if (._auto == false) and (.id as $i | $dups | index($i) != null) then
+          .id = (.id + "#" + (.line|tostring))
+        else . end
+        | del(._auto)
+      )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Build blob map for files mentioned
@@ -1217,6 +1228,9 @@ sticky_process_findings() {  # <findings-json-path>
     ($led[0] // {}) as $L
     | .findings |= map(
         (. as $f | ($f | base_id) as $bid
+         # Ledger lookup always uses base_id (anti-thrash). Display id: keep
+         # explicit unique reviewer ids; fill empty with base_id.
+         | (if (.id == null or .id == "") then $bid else .id end) as $keep_id
          | if .status == "open"
               and ($L[$bid] != null)
               and ($L[$bid].status == "resolved")
@@ -1226,10 +1240,10 @@ sticky_process_findings() {  # <findings-json-path>
               and ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
               and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
            then .status = "resolved"
-                | .id = $bid
+                | .id = $keep_id
                 | .description = (($f | strip_sticky)
                     + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
-           else .id = $bid end)
+           else .id = $keep_id end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
