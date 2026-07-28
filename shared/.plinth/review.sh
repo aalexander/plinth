@@ -85,15 +85,11 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 # can write last-error and release the Stop gate. The mkdir itself is deferred
 # to first use / the normal session setup below — die_infra creates the dir when needed.
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-# Encode / and space distinctly (feat/a-b ≠ feat/a/b); match bin/plinth + gate.
+# Always write encoded slug (feat/a-b ≠ feat/a/b). Consumers (next/guard/smoke)
+# resolve encoded first, then legacy — do NOT reassign SDIR to legacy here or
+# run receipts and review state diverge.
 slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
-slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
 SDIR=".plinth/session/review/${slug}"
-# Continue an in-flight legacy-slug session if present and encoded dir is empty.
-if [ ! -d "$SDIR" ] && [ -d ".plinth/session/review/${slug_legacy}" ]; then
-  slug="$slug_legacy"
-  SDIR=".plinth/session/review/${slug}"
-fi
 # NB: the codex CLI is required only for a model round (Tier 1/2); the check is
 # deferred to just before the first round so a Tier-0 (deterministic-floor)
 # approval genuinely needs no model infrastructure.

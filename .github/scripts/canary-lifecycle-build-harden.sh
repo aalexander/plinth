@@ -532,13 +532,14 @@ print("cost concurrent ok")
 PY
 pass "cost log concurrent append dedupes event id"
 
-# plan --deep: assert three distinct seat nits in merge
-# (extends p16 if present — re-run compact check)
-if [ -f "$TMP/p16/.plinth/session/plan-review-merge.json" ]; then
-  n=$(jq '[.nits[]?.text // .nits[]? // empty] | length' "$TMP/p16/.plinth/session/plan-review-merge.json" 2>/dev/null || echo 0)
-  # re-run plan --deep with blockers for NH routing
-  for cli in claude codex grok; do
-    cat > "$TMP/fakebin/$cli" <<'FAKE'
+# plan --deep with fake seats (no network) — multi-seat nits + security blocker
+setup_proj "$TMP/p16"
+mkdir -p "$TMP/p16/.plinth" "$TMP/fakebin"
+echo "spec_path = PLAN.md" > "$TMP/p16/.plinth/config"
+printf 'reviewer_vendor = claude\naudit_vendor = codex\nadvisor_vendor = grok\n' >> "$TMP/p16/.plinth/config"
+"$PLINTH" plan "$TMP/p16" >/dev/null
+for cli in claude codex grok; do
+  cat > "$TMP/fakebin/$cli" <<'FAKE'
 #!/usr/bin/env bash
 role=security_ops
 case "$0" in *codex*) role=completeness ;; *grok*) role=delete_simplify ;; esac
@@ -574,62 +575,20 @@ ok
 EOF
 fi
 FAKE
-    chmod +x "$TMP/fakebin/$cli"
-  done
-  PATH="$TMP/fakebin:$PATH" "$PLINTH" plan --deep "$TMP/p16" >/dev/null 2>&1 || fail "plan --deep re-run"
-  jq -e '.nits | length >= 2' "$TMP/p16/.plinth/session/plan-review-merge.json" >/dev/null \
-    || fail "expected >=2 nits from two seats"
-  # security majority blocker → NEEDS-HUMAN
-  grep -q 'auth gap\|plan-review' "$TMP/p16/.plinth/NEEDS-HUMAN.md" 2>/dev/null \
-    || grep -q 'auth gap' "$TMP/p16/PLAN-REVIEW.md" \
-    || fail "security blocker not routed"
-  pass "plan --deep asserts multi-seat nits + security blocker surface"
-fi
-
-# plan --deep with fake seats (no network)
-setup_proj "$TMP/p16"
-mkdir -p "$TMP/p16/.plinth" "$TMP/fakebin"
-echo "spec_path = PLAN.md" > "$TMP/p16/.plinth/config"
-printf 'reviewer_vendor = claude\naudit_vendor = codex\nadvisor_vendor = grok\n' >> "$TMP/p16/.plinth/config"
-"$PLINTH" plan "$TMP/p16" >/dev/null
-# Fake CLIs that emit role-shaped JSON regardless of args
-for cli in claude codex grok; do
-  cat > "$TMP/fakebin/$cli" <<'FAKE'
-#!/usr/bin/env bash
-# Read prompt from stdin or argv; emit a fixed seat review JSON fence.
-role=security_ops
-case "$0" in *codex*) role=completeness ;; *grok*) role=delete_simplify ;; esac
-cat <<EOF
-### Seat: $role
-#### Blockers
-- none
-#### Questions for human
-- none
-#### Nits
-- none
-#### One-line verdict
-ok
-\`\`\`json
-{"seat":"$role","blockers":[],"questions":[],"nits":["nit-$role"],"verdict":"shippable"}
-\`\`\`
-EOF
-FAKE
   chmod +x "$TMP/fakebin/$cli"
 done
 PATH="$TMP/fakebin:$PATH" "$PLINTH" plan --deep "$TMP/p16" >/dev/null 2>&1 \
   || fail "plan --deep with fake seats failed"
 [ -f "$TMP/p16/PLAN-REVIEW.md" ] || fail "PLAN-REVIEW.md missing after plan --deep"
-[ -f "$TMP/p16/.plinth/session/plan-review-merge.json" ] \
-  || fail "plan-review-merge.json missing"
-# Structured merge must record all three seats' nits
 mj="$TMP/p16/.plinth/session/plan-review-merge.json"
-jq -e '.nits | length >= 1' "$mj" >/dev/null \
-  || fail "merge json should have nits: $(cat "$mj")"
-# Seat names present in merge or PLAN-REVIEW
-grep -qE 'security_ops|completeness|delete_simplify' "$TMP/p16/PLAN-REVIEW.md" \
-  || jq -e '[.seats[]?.seat] | length >= 1' "$mj" >/dev/null \
-  || fail "seats not reflected in PLAN-REVIEW/merge"
-pass "plinth plan --deep fake-seat merge writes PLAN-REVIEW"
+[ -f "$mj" ] || fail "plan-review-merge.json missing"
+jq -e '.nits | length >= 2' "$mj" >/dev/null \
+  || fail "expected >=2 nits from completeness+delete seats: $(cat "$mj")"
+grep -qE 'auth gap|security_ops|completeness|delete_simplify' "$TMP/p16/PLAN-REVIEW.md" \
+  || fail "PLAN-REVIEW missing seat/blocker content"
+# Security blocker should appear in PLAN-REVIEW and preferably NEEDS-HUMAN
+grep -q 'auth gap' "$TMP/p16/PLAN-REVIEW.md" || fail "security blocker missing from PLAN-REVIEW"
+pass "plinth plan --deep multi-seat nits + security blocker"
 
 # Legacy verdict path: plinth next reads encoded OR legacy review dir
 setup_proj "$TMP/p17"

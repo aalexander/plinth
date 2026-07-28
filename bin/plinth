@@ -4743,11 +4743,17 @@ _write_handoff() {
       "> Advisor: \`plinth advise\` anytime." \
       "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
       "" "## Evidence"
-    # Always emit a single Live snapshot; strip prior auto-generated lifecycle bullets
-    # and Live lines so BUILD→HARDEN never leaves contradictory "phase: build" text.
+    # Single Live snapshot. Strip only our auto Live: lines and exact template
+    # bullets we generate — never delete operator freeform (even if it starts HEAD:).
     live_line="- Live: phase=${phase} reason=${reason} verdict=${verdict}${vsha:+ @ $vsha} HEAD=\`${head}\` branch=\`${branch}\`"
     if [ -n "$evidence_body" ]; then
-      printf '%s\n' "$evidence_body" | grep -vE '^- (Live: phase=|HEAD: `|Lifecycle phase:|Snapshot reason:|Review verdict:|PLAN\.md:|PLAN-REVIEW\.md:)' || true
+      printf '%s\n' "$evidence_body" | grep -vE '^- Live: phase=' \
+        | grep -vE '^- Lifecycle phase: (build|harden)$' \
+        | grep -vE '^- Snapshot reason: ' \
+        | grep -vE '^- Review verdict: ' \
+        | grep -vE '^- PLAN\.md: (present|absent)$' \
+        | grep -vE '^- PLAN-REVIEW\.md: (present|absent)$' \
+        | grep -vE '^- HEAD: `[^`]+` on `' || true
     fi
     printf '%s\n' "$live_line"
     printf '%s\n' "" "## Risks / Noticed"
