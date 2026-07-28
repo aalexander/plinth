@@ -21,19 +21,20 @@
   blocking arithmetic, skipped by risk-classify, and marked out-of-scope in the
   reviewer contract. HANDOFF-only commits APPROVE at the deterministic floor
   without a model round — Goal/Next whitespace cannot block ship.
-- **Review thrash limiters (7):**
+- **Review thrash limiters (7, refined after r22):**
   1. BUILD asymptotic coverage majors → minor (Noticed); real “missing tests for
-     this change / AC” still block
+     this change / AC / not implemented” still block
   2. New findings outside reviewed pathspec (+ open ledger) → minor (scoped)
-  3. Class-stable sticky fingerprints (coverage-gap / handoff-ws / sticky-ledger)
-     so paraphrases auto-resolve
-  4. `NEEDS-HUMAN.md` treated like HANDOFF (pathspec + never block + risk skip)
-  5. Docs prose (CHANGELOG/MANUAL/README/docs/) → minor unless ship/security
-     overclaim
+  3. Class-stable sticky fingerprints (coverage-gap / handoff-ws / sticky-ledger);
+     sticky reduce preserves verdict/summary (schema fix)
+  4. HANDOFF pathspec-excluded + floor; NEEDS-HUMAN stays project-owned
+     (deletion reviewable; queue wording nits demote only)
+  5. Docs prose (CHANGELOG/README/docs/) → minor unless overclaim; never demote
+     the canonical spec / GOAL / AGENTS-project
   6. Same-open soft cap: identical open major/blocker id-set for 3 consecutive
      rounds → exit 2 + handoff (`PLINTH_SAME_OPEN_CAP`, 0 disables)
-  7. Tier-0 meta: `VERSION` is inert docs (pure VERSION/CHANGELOG bumps skip the
-     model); ephemera-only short-circuit covers HANDOFF+NEEDS-HUMAN
+  7. Tier-0 meta: `VERSION` is inert docs only when it matches CHANGELOG top;
+     HANDOFF-only short-circuit at deterministic floor
 - **Dashboard ops (merged from feat/dashboard-ops-visibility):**
   - Multi-vendor quota strip (Claude `/usage`, Codex `wham/usage`, Grok billing;
     serve-only probe; fixed `/tmp` cache; linear plan burn →100%)

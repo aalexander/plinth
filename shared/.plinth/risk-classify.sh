@@ -89,11 +89,10 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
-  # Session ephemera — never part of risk routing (review pathspec also excludes
-  # these). Skip without counting so queue/handoff noise cannot inflate tier.
-  case "$path" in
-    HANDOFF.md|*/HANDOFF.md|NEEDS-HUMAN.md|*/NEEDS-HUMAN.md) continue ;;
-  esac
+  # HANDOFF.md is session restart ephemera — never part of risk routing (review
+  # pathspec also excludes it). NEEDS-HUMAN stays counted (project-owned queue;
+  # a deletion must not launder to empty/Tier-0).
+  case "$path" in HANDOFF.md|*/HANDOFF.md) continue ;; esac
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,

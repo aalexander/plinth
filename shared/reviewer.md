@@ -44,20 +44,20 @@ must discover the class one instance at a time pays a full round for each.
 
 ## Verdict policy — what blocks and what doesn't
 - Open blocker or major findings in PROJECT code: CHANGES_NEEDED.
-- **Out of scope — do not review or file findings on session ephemera:**
-  `HANDOFF.md` (restart note from `plinth handoff`) and `NEEDS-HUMAN.md`
-  (root or `.plinth/`). The harness excludes them from the reviewed pathspec
-  and demotes/ignores findings against them. Goal/Next or queue whitespace
-  must never block ship.
-- **BUILD phase — asymptotic coverage is minor, not major.** "Still untested:
-  …", "coverage remains incomplete", horizon expansion beyond the canary for
-  this change → severity **minor** (Noticed backlog). Still **major**: missing
-  tests for *changed behavior*, hollow tests, or a named acceptance criterion
-  the diff does not meet.
+- **Out of scope — do not review or file findings on `HANDOFF.md`.** Session
+  restart ephemera (`plinth handoff`); the harness excludes it from the pathspec.
+  Goal/Next whitespace must never block ship.
+- **`NEEDS-HUMAN.md` is project-owned** (driver maintains and commits it). Do
+  not treat deletion or loss of blocking queue items as non-blocking. Queue
+  *wording* nits may be minor; the harness demotes pure nits only.
+- **BUILD phase — asymptotic coverage is minor, not major.** "Coverage remains
+  incomplete", horizon expansion beyond the canary → **minor** (Noticed).
+  Still **major**: missing tests for *changed behavior*, hollow tests, "not
+  implemented", or a named acceptance criterion the diff does not meet.
 - **Docs prose is minor unless it overclaims a ship/security guarantee.**
-  Findings only about `CHANGELOG.md` / `MANUAL.md` / `README*` / `docs/` wording
-  or comment contradictions → **minor**. Keep major only for false claims about
-  fail-open, auth, secrets, ship gate, or similar.
+  Findings only about `CHANGELOG.md` / `README*` / `docs/` wording → **minor**.
+  Never demote findings against the **canonical spec** (or GOAL.md). Keep major
+  for false claims about fail-open, auth, secrets, ship gate, or similar.
 - **Scope to the reviewed pathspec.** On verify/resume rounds, new findings
   only on the fix diff and open-ledger files. Do not free-roam the tree inventing
   majors on untouched paths — the harness demotes those to minor.

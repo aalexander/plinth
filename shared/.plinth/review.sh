@@ -132,20 +132,19 @@ fi
 base_tip="$(git rev-parse --verify "$baseref")" \
   || die_infra "cannot resolve tip of base ref '${baseref}'"
 
-# Session ephemera — never part of the reviewed subject:
-#   HANDOFF.md      restart note (plinth handoff); Goal/Next whitespace thrash
-#   NEEDS-HUMAN.md  human queue (root or .plinth/); driver-maintained channel
-# Excluded from model pathspec; findings against them never block (defense in depth).
+# Session restart ephemera — never part of the reviewed subject:
+#   HANDOFF.md  restart note (plinth handoff); Goal/Next whitespace thrash
+# NEEDS-HUMAN.md is project-owned queue (driver must maintain it). It is NOT
+# pathspec-excluded: a deletion must remain reviewable. Findings that only nit
+# queue wording are still demoted to minor by thrash policy (see is_queue_nit).
 REVIEW_PATHSPEC=(.
   ':(exclude)HANDOFF.md' ':(exclude)**/HANDOFF.md'
-  ':(exclude)NEEDS-HUMAN.md' ':(exclude)**/NEEDS-HUMAN.md'
 )
-# Paths that are ephemera-only (for empty-diff short-circuit + risk-classify parity).
-EPHEMERA_RE='(^|/)(HANDOFF|NEEDS-HUMAN)\.md$'
+EPHEMERA_RE='(^|/)HANDOFF\.md$'
 diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
   || die_infra "git diff ${baseref}...HEAD failed"
 if [ -z "$diff" ]; then
-  # Only excluded paths (HANDOFF / NEEDS-HUMAN) changed — nothing to review.
+  # Only HANDOFF.md changed — nothing to review.
   only_ex="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null || true)"
   if [ -n "$only_ex" ] && ! printf '%s\n' "$only_ex" | grep -Ev "$EPHEMERA_RE" >/dev/null; then
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
@@ -155,10 +154,10 @@ if [ -z "$diff" ]; then
     jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
         round:0, session_id:"", model:"deterministic-floor",
-        risk:{tier:0,files:0,reasons:["HANDOFF/NEEDS-HUMAN only — session ephemera, not reviewed"]},
+        risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
         usage:null, ts:$ts}' > "$SDIR/verdict.json"
     rm -f "$SDIR/last-error"
-    echo "Plinth review: ephemera-only change (HANDOFF/NEEDS-HUMAN) — APPROVED without model."
+    echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
     exit 0
   fi
   die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
@@ -770,6 +769,20 @@ mint_receipt() {  # mint_receipt <round>
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
 if [ "$RISK" = "0" ]; then
+  # VERSION is Tier-0-eligible as release meta, but only when it matches the top
+  # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
+  if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
+    ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
+    if [ -z "$ver_txt" ] \
+       || ! head -n 40 CHANGELOG.md 2>/dev/null | grep -Fq "$ver_txt"; then
+      RISK=1
+      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" \
+        '{tier:1,reasons:["VERSION present but does not match CHANGELOG top entry (\($v)) — floor refused Tier 0"],files:0}')"
+      echo "Plinth review: VERSION/CHANGELOG consistency failed — elevating above Tier 0 to Tier 1."
+    fi
+  fi
+fi
+if [ "$RISK" = "0" ]; then
   # A Tier-0 grant is round 0 — by definition a NEW loop. It exits before the round
   # bookkeeping below, so it must do that branch's per-loop reset itself; otherwise a
   # branch whose base advanced into Tier-0 territory keeps the PREVIOUS loop's findings,
@@ -1227,7 +1240,8 @@ sticky_process_findings() {  # <findings-json-path>
     # major→minor demotion must not mint a new id).
     def thrash_class:
       (normdesc) as $d
-      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+      # Tight class keys only — bare "untested" must NOT collapse unrelated findings.
+      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1243,19 +1257,17 @@ sticky_process_findings() {  # <findings-json-path>
         end;
     # Fill missing ids with base nid (identical siblings share id by design).
     # Disambiguate EXPLICIT id collisions with a monotonic index (stable, unique).
+    # CRITICAL: reduce state must not replace the document (would drop
+    # verdict/summary and leave out/taken/seq — schema-invalid).
     .findings |= map(
       if (.id == null or .id == "") then . + {id: nid, _auto: true}
       else . + {_auto: false}
       end
     )
-    # Auto-generated identical nids intentionally share an id (anti-thrash).
-    # Explicit ids must be globally unique vs every other finding id (including
-    # auto and prior suffixes): pick the first free id, id#x2, id#x3, …
     | . as $root
     | ([.findings[] | select(._auto == true) | .id] | unique) as $auto_ids
-    | reduce range(0; ($root.findings|length)) as $i (
+    | (reduce range(0; ($root.findings|length)) as $i (
         {out:[], taken:{}, seq:0};
-        # Reserve auto ids first so explicit cannot steal them without suffixing.
         if $i == 0 then
           reduce $auto_ids[] as $a (.; .taken[$a] = true) else . end
         | ($root.findings[$i]) as $f
@@ -1270,7 +1282,6 @@ sticky_process_findings() {  # <findings-json-path>
                 .taken[$cand] = true
                 | .out += [$f | .id = $cand | del(._auto)]
               else
-                # Walk #uN until free (always checks taken).
                 .seq = (.seq + 1)
                 | until(
                     (.taken[($f.id + "#u" + (.seq|tostring))] // false) | not;
@@ -1281,8 +1292,8 @@ sticky_process_findings() {  # <findings-json-path>
                 | .out += [$f | .id = $final | del(._auto)]
               end
           end
-      )
-    | .findings = .out
+      ) | .out) as $newf
+    | $root | .findings = $newf
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Build blob map for files mentioned
@@ -1308,7 +1319,7 @@ sticky_process_findings() {  # <findings-json-path>
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def thrash_class:
       (normdesc) as $d
-      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1360,7 +1371,7 @@ sticky_process_findings() {  # <findings-json-path>
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def thrash_class:
       (normdesc) as $d
-      | if ($d | test("coverage remains incomplete|still untested|missing (test )?cases|no end to end|coverage finding|untested |never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage"))
+      | if ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
           then "class:coverage-gap"
         elif ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
           then "class:handoff-ws"
@@ -1396,36 +1407,46 @@ sticky_process_findings() {  # <findings-json-path>
 # Thrash policy (deterministic demotions after sticky). Enforces anti-thrash rules
 # the model is asked to follow but often does not:
 #   1) BUILD asymptotic "coverage incomplete" → minor (Noticed), unless the text
-#      clearly names a missing test for THIS change / acceptance criterion
-#   2) Docs prose (CHANGELOG/MANUAL/README/docs/) → minor unless ship/security overclaim
+#      names missing tests for THIS change / AC / "not implemented" / hollow tests
+#   2) Docs prose (CHANGELOG/README/docs/) → minor unless ship/security overclaim
+#      NEVER demote the canonical spec (SPEC_PATH), GOAL.md, or AGENTS-project.md
 #   3) NEW findings whose file is outside the reviewed pathspec (and not a prior
 #      open ledger id) → minor — SCOPED verify must not free-roam the tree
-#   4) Ephemera paths (HANDOFF / NEEDS-HUMAN) → minor (also excluded from pathspec)
+#   4) HANDOFF.md ephemera → minor (also excluded from pathspec)
+#   5) NEEDS-HUMAN.md queue wording nits → minor; deletions / "lost blocking work"
+#      stay major (project-owned queue must remain reviewable)
 # Markers: " [THRASH: …]" so the driver can see what the harness demoted.
-thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <prior-open-ids-nl>
-  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" tmp
+thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <prior-open-ids-nl> [spec_path]
+  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" tmp
   [ -f "$f" ] || return 0
   tmp="$(mktemp)"
-  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" '
+  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" '
     def lines($s):
       if ($s == null or $s == "") then []
       else ($s | split("\n") | map(select(length > 0))) end;
     (lines($scope)) as $files
     | (lines($prior)) as $prior_ids
     | def is_ephemera:
-        ((.file // "") | test("(^|/)(HANDOFF|NEEDS-HUMAN)\\.md$"));
+        ((.file // "") | test("(^|/)HANDOFF\\.md$"));
+    def is_canonical_spec:
+        ($spec != "" and (.file // "") == $spec)
+        or ((.file // "") | test("(^|/)SPEC(\\.md)?$|(^|/)spec/|(^|/)GOAL\\.md$|(^|/)\\.plinth/AGENTS-project\\.md$"));
     def is_docs_prose:
-        ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|MANUAL\\.md|README(\\.[^/]+)?)$|(^|/)docs/"))
-        and ((.file // "") | test("(^|/)SPEC(\\.md)?$|(^|/)spec/|(^|/)GOAL\\.md$") | not);
+        (is_canonical_spec | not)
+        and ((.file // "") | test("(^|/)(CHANGELOG(\\.[^/]+)?|README(\\.[^/]+)?)$|(^|/)docs/"));
     def is_overclaim:
         ((.description // "") | test("fail[- ]?open|security|auth bypass|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
+    # Asymptotic horizon only — NOT "changed behavior lacks tests" / "not implemented".
     def is_coverage_asymp:
         ((.description // "") | test(
-          "coverage remains incomplete|still untested|missing (test )?cases|no end-to-end|coverage finding|untested:|never (runs|exercises)|expanded (behavioral )?coverage|wants (more |additional )?coverage|asymptotic"; "i"
+          "coverage remains incomplete|still untested:|missing (test )?cases include|no end-to-end|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond"; "i"
         ))
         and ((.description // "") | test(
-          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior has no test"; "i"
+          "acceptance criterion|spec (says|requires|mandates)|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior (has no test|still lacks|lacks real)|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not"; "i"
         ) | not);
+    def is_queue_nit:
+        ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
+        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe"; "i") | not);
     def is_out_of_scope:
         (($files | length) > 0)
         and (((.file // "") as $fp | ($files | index($fp)) == null))
@@ -1437,6 +1458,10 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope-files-nl> <
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: ephemera path — non-blocking]")
+      elif is_queue_nit then
+        .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH: NEEDS-HUMAN queue nit — non-blocking]")
       elif ($phase == "build") and is_coverage_asymp then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
@@ -1549,10 +1574,12 @@ Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
 metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
-OUT OF SCOPE: HANDOFF.md and NEEDS-HUMAN.md (session ephemera) are excluded from
-this diff — do not file findings against them. BUILD: asymptotic coverage gaps
-are minor (Noticed), not major. Docs prose is minor unless a ship/security
-overclaim. Stay on the reviewed pathspec for NEW findings.
+OUT OF SCOPE: HANDOFF.md (session restart ephemera) is excluded from this diff —
+do not file findings against it. NEEDS-HUMAN.md is project-owned (deletions
+block); queue wording nits may be minor. BUILD: asymptotic coverage gaps are
+minor (Noticed), not major — missing tests for changed behavior still major.
+Docs prose (not the canonical spec) is minor unless a ship/security overclaim.
+Stay on the reviewed pathspec for NEW findings.
 Findings on execution-gated paths whose truth depends on real libraries or
 hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
 they route to the run gate instead of blocking.
@@ -1715,7 +1742,7 @@ ${diff}"
 
   # Deterministic thrash demotions (coverage/docs/scope/ephemera) — after dual so
   # secondary majors get the same treatment.
-  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior"
+  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior" "${SPEC_PATH:-}"
   validate_findings "$SDIR/findings-$r.json" \
     || die_infra "findings invalid after thrash policy — see $SDIR/findings-$r.json"
   demoted_n="$(jq '[.findings[] | select(.description | test("\\[THRASH:"))] | length' \
@@ -1734,10 +1761,10 @@ ${diff}"
   local blocking tamper RRAW
   # RUNTIME: findings on declared exec-gated paths don't block (dual-keyed:
   # reviewer prefix AND config path match) — they join the run gate instead.
-  # Ephemera (HANDOFF / NEEDS-HUMAN): never blocks (pathspec + thrash demotion;
-  # this filter is defense in depth if a finding still arrives as major).
+  # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
+  # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-    --arg href '(^|/)(HANDOFF|NEEDS-HUMAN)\.md$' \
+    --arg href '(^|/)HANDOFF\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
@@ -1945,9 +1972,9 @@ $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
       # Apply thrash demotions to the audit payload before counting (same policy).
       thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
-        "${REVIEWED_FILES_FULL:-}" ""
+        "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-        --arg href '(^|/)(HANDOFF|NEEDS-HUMAN)\.md$' \
+        --arg href '(^|/)HANDOFF\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select((.file // "" | test($href)) | not)
