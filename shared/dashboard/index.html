@@ -625,7 +625,7 @@
 <div class="filters" id="filters" role="toolbar" aria-label="Project filter">
   <button type="button" data-filter="all" class="on">all</button>
   <button type="button" data-filter="active">active</button>
-  <button type="button" data-filter="nh">nh</button>
+  <button type="button" data-filter="human">human</button>
   <button type="button" data-filter="review">review</button>
 </div>
 <main id="grid">
@@ -638,7 +638,7 @@
 </footer>
 <div id="nh-modal" role="dialog" aria-modal="true" aria-labelledby="nh-title">
   <div id="nh-panel">
-    <h2 id="nh-title">NEEDS-HUMAN</h2>
+    <h2 id="nh-title">HUMAN</h2>
     <div class="sub" id="nh-sub"></div>
     <ul id="nh-list"></ul>
     <button type="button" id="nh-close">Close</button>
@@ -941,8 +941,9 @@
       const blk = p.needs_human.blocking > 0
         ? " · " + p.needs_human.blocking + " blocking" : "";
       chips.push(
-        '<button type="button" class="chip orange btn" data-nh="' + esc(p.path) +
-        '" title="Show open NEEDS-HUMAN items">NH ×' + p.needs_human.open + blk + "</button>"
+        '<button type="button" class="chip orange btn" data-human="' + esc(p.path) +
+        '" title="Show items waiting on a human">HUMAN ×' +
+        p.needs_human.open + blk + "</button>"
       );
     }
     const r = p.review;
@@ -954,7 +955,14 @@
       } else if (r.verdict === "APPROVED") {
         chips.push('<span class="chip green">APPROVED</span>');
       } else if (r.verdict === "CHANGES_NEEDED") {
-        chips.push('<span class="chip yellow">CHANGES</span>');
+        const nOpen = r.findings_open != null
+          ? r.findings_open
+          : (Array.isArray(r.findings) ? r.findings.length : null);
+        const nLab = nOpen != null ? (" ×" + nOpen) : "";
+        chips.push(
+          '<button type="button" class="chip yellow btn" data-changes="' + esc(p.path) +
+          '" title="Show open review findings">CHANGES' + nLab + "</button>"
+        );
       } else if (r.verdict === "UNBOUND") {
         chips.push('<span class="chip yellow">UNBOUND</span>');
       } else if (r.verdict) {
@@ -1497,13 +1505,13 @@
     if (f === "all" || !f) return true;
     const r = p.review || {};
     const nh = p.needs_human || {};
-    if (f === "nh") return (nh.open || 0) > 0;
+    if (f === "human" || f === "nh") return (nh.open || 0) > 0;
     if (f === "review") {
       return !!(r.running || r.stale || r.last_error ||
         r.verdict === "CHANGES_NEEDED" || r.verdict === "UNBOUND");
     }
     if (f === "active") {
-      // Live work only — NH/review issues have their own chips (nh / review).
+      // Live work only — human/review issues have their own chips.
       return isRecentlyActive(p);
     }
     return true;
@@ -1576,31 +1584,77 @@
   }
 
   function openNeedsHuman(path) {
+    openProjectModal(path, "human");
+  }
+
+  function openChanges(path) {
+    openProjectModal(path, "changes");
+  }
+
+  function openProjectModal(path, kind) {
     const p = projectsByPath[path];
     if (!p) return;
     if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
-    const items = (p.needs_human && p.needs_human.items) || [];
-    nhTitle.textContent = "NEEDS-HUMAN — " + (p.name || path);
-    nhSub.textContent =
-      (p.needs_human && p.needs_human.open != null ? p.needs_human.open : items.length) +
-      " open · " +
-      (p.needs_human && p.needs_human.blocking ? p.needs_human.blocking : 0) +
-      " blocking · " + path +
-      " · " + (p.needs_human && p.needs_human.source
-        ? p.needs_human.source
-        : ".plinth/NEEDS-HUMAN.md");
-    if (!items.length) {
-      nhList.innerHTML = '<li class="muted">(no open item text — counts only or empty parse)</li>';
+    if (kind === "changes") {
+      const r = p.review || {};
+      const items = Array.isArray(r.findings) ? r.findings : [];
+      const openN = r.findings_open != null ? r.findings_open : items.length;
+      nhTitle.textContent = "CHANGES — " + (p.name || path);
+      nhSub.textContent =
+        openN + " open finding" + (openN === 1 ? "" : "s") +
+        (r.round != null ? " · r" + r.round : "") +
+        (r.sha7 ? " · @" + r.sha7 : "") +
+        (r.stale ? " · stale" : "") +
+        " · " + path;
+      const bits = [];
+      if (r.summary) {
+        bits.push('<li class="muted"><strong>summary:</strong> ' + esc(r.summary) + "</li>");
+      }
+      if (!items.length) {
+        bits.push('<li class="muted">(no open finding text — re-run review or open findings-N.json)</li>');
+      } else {
+        items.forEach(function (it) {
+          const sev = (it && it.severity) || "major";
+          const loc = [it.file, it.line ? ":" + it.line : ""].filter(Boolean).join("");
+          const text = (it && it.text) || "";
+          const hot = sev === "blocker" || sev === "major";
+          bits.push(
+            '<li class="' + (hot ? "blocking" : "") + '">' +
+              '<span class="dim">[' + esc(sev) + "]</span> " +
+              (loc ? "<code>" + esc(loc) + "</code> — " : "") +
+              esc(text) +
+            "</li>"
+          );
+        });
+      }
+      if (r.findings_truncated) {
+        bits.push('<li class="muted">… list truncated — see .plinth/session/review/*/findings-*.json</li>');
+      }
+      nhList.innerHTML = bits.join("");
     } else {
-      nhList.innerHTML = items.map(function (it) {
-        const text = typeof it === "string" ? it : (it.text || "");
-        const blk = typeof it === "object" && it.blocking;
-        return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
-      }).join("");
-    }
-    if (p.needs_human && p.needs_human.truncated) {
-      nhList.innerHTML +=
-        '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      const items = (p.needs_human && p.needs_human.items) || [];
+      nhTitle.textContent = "HUMAN — " + (p.name || path);
+      nhSub.textContent =
+        (p.needs_human && p.needs_human.open != null ? p.needs_human.open : items.length) +
+        " open · " +
+        (p.needs_human && p.needs_human.blocking ? p.needs_human.blocking : 0) +
+        " blocking · " + path +
+        " · " + (p.needs_human && p.needs_human.source
+          ? p.needs_human.source
+          : ".plinth/NEEDS-HUMAN.md");
+      if (!items.length) {
+        nhList.innerHTML = '<li class="muted">(no open item text — counts only or empty parse)</li>';
+      } else {
+        nhList.innerHTML = items.map(function (it) {
+          const text = typeof it === "string" ? it : (it.text || "");
+          const blk = typeof it === "object" && it.blocking;
+          return '<li class="' + (blk ? "blocking" : "") + '">' + esc(text) + "</li>";
+        }).join("");
+      }
+      if (p.needs_human && p.needs_human.truncated) {
+        nhList.innerHTML +=
+          '<li class="muted">… list truncated at 50 — run <code>plinth queue</code> for the full queue</li>';
+      }
     }
     nhModal.classList.add("open");
   }
@@ -1629,8 +1683,17 @@
         copyPath(copyBtn.getAttribute("data-copy-path"));
         return;
       }
-      const t = e.target && e.target.closest ? e.target.closest("[data-nh]") : null;
-      if (t) openNeedsHuman(t.getAttribute("data-nh"));
+      const ch = e.target && e.target.closest ? e.target.closest("[data-changes]") : null;
+      if (ch) {
+        openChanges(ch.getAttribute("data-changes"));
+        return;
+      }
+      const t = e.target && e.target.closest
+        ? (e.target.closest("[data-human]") || e.target.closest("[data-nh]"))
+        : null;
+      if (t) {
+        openNeedsHuman(t.getAttribute("data-human") || t.getAttribute("data-nh"));
+      }
     });
   }
   function syncFilterButtons() {
@@ -1690,7 +1753,8 @@
     cardTone: cardTone, cardHTML: cardHTML, esc: esc,
     modelsLine: modelsLine, modelsHTML: modelsHTML, modelParts: modelParts,
     phaseBar: phaseBar, renderQuota: renderQuota,
-    openNeedsHuman: openNeedsHuman, closeNeedsHuman: closeNeedsHuman,
+    openNeedsHuman: openNeedsHuman, openChanges: openChanges,
+    closeNeedsHuman: closeNeedsHuman, openProjectModal: openProjectModal,
     attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
     isRecentlyActive: isRecentlyActive,
     formatReset: formatReset, shortWindowName: shortWindowName, tightestWindow: tightestWindow,

@@ -2303,6 +2303,66 @@ snapshot_one_project() {
     done
   fi
 
+  # Open findings for CHANGES click-through (latest findings-N for verdict round).
+  local findings_items='[]' findings_summary='' findings_open=0 findings_trunc=false
+  if [ -d "$rev_dir" ] && [ -f "$vfile" ] && [ "$vfile" != /dev/null ] \
+     && [ "$verdict_file_bad" != true ]; then
+    local fround fpath
+    fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
+    case "$fround" in ''|*[!0-9]*) fround="" ;; esac
+    if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
+      fpath="$rev_dir/findings-$fround.json"
+    else
+      # Fall back to highest-numbered findings-N.json
+      fpath=""
+      local cand maxn=-1
+      for cand in "$rev_dir"/findings-*.json; do
+        [ -f "$cand" ] || continue
+        n="${cand##*/findings-}"
+        n="${n%.json}"
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        if [ "$n" -gt "$maxn" ] 2>/dev/null; then
+          maxn="$n"
+          fpath="$cand"
+        fi
+      done
+    fi
+    if [ -n "$fpath" ] && [ -f "$fpath" ]; then
+      local fparsed
+      fparsed="$(jq -c '
+        def clip:
+          if type != "string" then ""
+          elif length > 280 then .[0:277] + "…"
+          else . end;
+        (.summary // null) as $sum
+        | [(.findings // [])[]
+           | select((.status // "open") != "resolved")
+           | {
+               severity: (.severity // "major"),
+               status: (.status // "open"),
+               file: (if (.file // null) == null then "" else (.file|tostring) end),
+               line: (if (.line|type) == "number" then .line else 0 end),
+               text: ((.description // "") | clip)
+             }] as $all
+        | {
+            summary: (if $sum == null then null else ($sum|tostring|clip) end),
+            open: ($all|length),
+            truncated: (($all|length) > 25),
+            items: $all[0:25]
+          }
+      ' "$fpath" 2>/dev/null || true)"
+      if [ -n "$fparsed" ]; then
+        findings_items="$(printf '%s' "$fparsed" | jq -c '.items // []' 2>/dev/null || echo '[]')"
+        findings_summary="$(printf '%s' "$fparsed" | jq -r '.summary // empty' 2>/dev/null || true)"
+        findings_open="$(printf '%s' "$fparsed" | jq -r '.open // 0' 2>/dev/null || echo 0)"
+        case "$findings_open" in ''|*[!0-9]*) findings_open=0 ;; esac
+        if printf '%s' "$fparsed" | jq -e '.truncated == true' >/dev/null 2>&1; then
+          findings_trunc=true
+        fi
+      fi
+    fi
+  fi
+
   # Malformed events or present-but-non-object verdict → error card.
   # Keep independently available fields (seats, phases, review_round_secs, NH).
   if [ "$events_parse_failed" = true ] || [ "$verdict_file_bad" = true ]; then
@@ -2389,7 +2449,11 @@ snapshot_one_project() {
         --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
         --argjson plan_review_present "$plan_review_present" \
         --argjson handoff_age "${handoff_age:-null}" \
-        --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" '
+        --argjson dual_degraded "$dual_degraded" --arg next_action "${next_action:-}" \
+        --argjson findings_items "$findings_items" \
+        --arg findings_summary "${findings_summary:-}" \
+        --argjson findings_open "$findings_open" \
+        --argjson findings_trunc "$findings_trunc" '
     def sha_match($a; $b):
       ($a != null and $b != null and ($a | length) > 0 and ($b | length) > 0)
       and (($a | startswith($b)) or ($b | startswith($a)));
@@ -2490,7 +2554,11 @@ snapshot_one_project() {
           running: $running,
           mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
           tier: ($V.risk.tier // null),
-          last_error: $has_last_error
+          last_error: $has_last_error,
+          summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
+          findings_open: $findings_open,
+          findings_truncated: $findings_trunc,
+          findings: $findings_items
         } end),
         needs_human: {
           open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc,

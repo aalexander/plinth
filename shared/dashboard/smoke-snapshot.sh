@@ -1744,8 +1744,8 @@ setTimeout(() => {
       console.error("error card must not show 'no review'");
       process.exit(1);
     }
-    if (!htmlCard.includes("NEEDS-HUMAN ×1")) {
-      console.error("error card must still show NEEDS-HUMAN");
+    if (!htmlCard.includes("HUMAN ×1")) {
+      console.error("error card must still show HUMAN chip");
       process.exit(1);
     }
     // Full field card: branch/head/review/burn/task
@@ -1770,11 +1770,12 @@ setTimeout(() => {
     };
     const fullHtml = api.cardHTML(full);
     for (const needle of [
-      "feat/dash", "abc1234", "CHANGES_NEEDED", "do the thing",
+      "feat/dash", "abc1234", "CHANGES", "do the thing",
       "12/min", "1.5k tok", "r2", "claude-test", "gpt-test",
       "coding", "reviewing", "fable-max", "gpt-t2", "gpt-t1",
       "wall 42s", "review wall", "models-grid", "mrole",
       "driver", "review", "audit", "advise", "opus", "fable",
+      'data-changes="/tmp/alpha"',
     ]) {
       if (!fullHtml.includes(needle)) {
         console.error("cardHTML missing field representation:", needle);
@@ -1793,7 +1794,7 @@ setTimeout(() => {
         process.exit(1);
       }
     }
-    // NEEDS-HUMAN drill-down chip carries data-nh
+    // HUMAN drill-down chip carries data-human
     const nhOnly = {
       name: "h", path: "/tmp/h", branch: "main", head: "abc",
       feedless: true, review: null,
@@ -1804,8 +1805,9 @@ setTimeout(() => {
       }
     };
     const nhHtml = api.cardHTML(nhOnly);
-    if (!nhHtml.includes('data-nh="/tmp/h"') || !nhHtml.includes('<button type="button"')) {
-      console.error("NEEDS-HUMAN chip missing button/data-nh:", nhHtml.slice(0, 300));
+    if (!nhHtml.includes('data-human="/tmp/h"') || !nhHtml.includes("HUMAN ×2") ||
+        !nhHtml.includes('<button type="button"')) {
+      console.error("HUMAN chip missing button/data-human:", nhHtml.slice(0, 300));
       process.exit(1);
     }
     // Modal path: require seams (no silent skip)
@@ -1853,7 +1855,14 @@ setTimeout(() => {
       }
       const subHtml = (elsById["nh-sub"] && elsById["nh-sub"].textContent) || "";
       // Must render the supplied legacy source exactly — not the hard-coded fallback.
-      if (!subHtml.includes(" · NEEDS-HUMAN.md") || subHtml.includes(".plinth/NEEDS-HUMAN.md")) {
+      if (!subHtml.includes("HUMAN") && !subHtml.includes(" · NEEDS-HUMAN.md")) {
+        // title is HUMAN — name; sub still mentions source path
+        if (!subHtml.includes("NEEDS-HUMAN.md")) {
+          console.error("human modal sub must mention source:", subHtml);
+          process.exit(1);
+        }
+      }
+      if (subHtml.includes(".plinth/NEEDS-HUMAN.md")) {
         console.error("nh-sub must show legacy source only:", subHtml);
         process.exit(1);
       }
@@ -1888,7 +1897,7 @@ setTimeout(() => {
       // Grid chip click wiring
       const gridFns = (elsById["grid"]._listeners && elsById["grid"]._listeners.click) || [];
       if (!gridFns.length) {
-        console.error("grid click listener not registered for NEEDS-HUMAN chips");
+        console.error("grid click listener not registered for HUMAN chips");
         process.exit(1);
       }
       api.seedProjects([{
@@ -1899,7 +1908,11 @@ setTimeout(() => {
           items: [{ text: "from chip", blocking: false }]
         }
       }]);
-      const chip = { closest: (sel) => sel === "[data-nh]" ? { getAttribute: () => "/tmp/h2" } : null };
+      const chip = {
+        closest: (sel) => sel === "[data-human]" || sel === "[data-nh]"
+          ? { getAttribute: (a) => (a === "data-human" || a === "data-nh") ? "/tmp/h2" : null }
+          : null
+      };
       gridFns[0]({ target: chip });
       if (!modal.classList.contains("open")) {
         console.error("chip click path did not open modal");
@@ -1908,6 +1921,62 @@ setTimeout(() => {
       const chipList = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
       if (!chipList.includes("from chip")) {
         console.error("chip click did not render items:", chipList);
+        process.exit(1);
+      }
+      // CHANGES chip opens findings
+      if (typeof api.openChanges !== "function") {
+        console.error("missing openChanges seam");
+        process.exit(1);
+      }
+      api.seedProjects([{
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        feedless: false,
+        needs_human: { open: 0, blocking: 0, items: [] },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, sha7: "deadbee", stale: false,
+          findings_open: 2, findings_truncated: false,
+          summary: "two open issues",
+          findings: [
+            { severity: "blocker", file: "a.go", line: 10, text: "broken auth" },
+            { severity: "minor", file: "b.go", line: 0, text: "typo" }
+          ]
+        }
+      }]);
+      const chChip = {
+        closest: (sel) => sel === "[data-changes]"
+          ? { getAttribute: () => "/tmp/c1" } : null
+      };
+      api.closeNeedsHuman();
+      gridFns[0]({ target: chChip });
+      if (!modal.classList.contains("open")) {
+        console.error("CHANGES chip did not open modal");
+        process.exit(1);
+      }
+      const chTitle = (elsById["nh-title"] && elsById["nh-title"].textContent) || "";
+      const chList = (elsById["nh-list"] && elsById["nh-list"].innerHTML) || "";
+      if (!chTitle.includes("CHANGES") || !chList.includes("broken auth") ||
+          !chList.includes("[blocker]")) {
+        console.error("CHANGES modal missing findings:", chTitle, chList.slice(0, 300));
+        process.exit(1);
+      }
+      const chHtml = api.cardHTML(api.__nope || {
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        needs_human: { open: 0 },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, findings_open: 2, findings: []
+        }
+      });
+      // cardHTML uses the object passed in
+      const chCard = api.cardHTML({
+        name: "c1", path: "/tmp/c1", branch: "feat", head: "deadbee",
+        needs_human: { open: 0, blocking: 0 },
+        review: {
+          verdict: "CHANGES_NEEDED", round: 3, findings_open: 2,
+          findings: [{ severity: "blocker", text: "x" }]
+        }
+      });
+      if (!chCard.includes("CHANGES ×2") || !chCard.includes('data-changes="/tmp/c1"')) {
+        console.error("CHANGES chip should be clickable with count:", chCard.slice(0, 400));
         process.exit(1);
       }
     }
@@ -2024,8 +2093,13 @@ setTimeout(() => {
         console.error("active filter wrong");
         process.exit(1);
       }
-      if (!api.matchesFilter(coldNh, "nh") || api.matchesFilter(live, "nh")) {
-        console.error("nh filter wrong");
+      if (!api.matchesFilter(coldNh, "human") || api.matchesFilter(live, "human")) {
+        console.error("human filter wrong");
+        process.exit(1);
+      }
+      // back-compat alias
+      if (!api.matchesFilter(coldNh, "nh")) {
+        console.error("nh alias for human filter broken");
         process.exit(1);
       }
       if (api.cardTone(live) !== "active") {
