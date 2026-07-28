@@ -621,7 +621,10 @@ jobs:
           done
           # Risk classifier tiers: docs => 0, code => 1, tooling => 2. Each probe
           # starts fresh from main (checkout -qB resets the probe branch).
-          tier() { git checkout -q main; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
+          # review.sh attempts above leave .plinth/session/ untracked; git add -A
+          # would then classify session paths as tooling (Tier 2) and break docs=0.
+          rm -rf .plinth/session
+          tier() { git checkout -q main; rm -rf .plinth/session; git checkout -qB probe >/dev/null 2>&1; eval "$1"; git add -A; git commit -qm p >/dev/null; ./.plinth/risk-classify.sh main | jq -r .tier; }
           [ "$(tier 'echo doc > R.md')" = "0" ] || { echo "::error::classifier: docs != Tier 0"; exit 1; }
           [ "$(tier 'echo code > src.py')" = "1" ] || { echo "::error::classifier: code != Tier 1"; exit 1; }
           [ "$(tier 'mkdir -p .claude/hooks; echo x > .claude/hooks/z.sh')" = "2" ] || { echo "::error::classifier: tooling != Tier 2"; exit 1; }
