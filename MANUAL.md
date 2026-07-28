@@ -569,8 +569,8 @@ it does **not** spawn vendor probes (caller env cannot force a probe on
 `/tmp/plinth-dash-quota-$UID/dash-quota.json` (ignores
 `TMPDIR`/`HOME`/`PLINTH_DASH_QUOTA_CACHE`):
 - **Claude** — timeout-bounded `claude -p /usage --output-format json` in an empty `/tmp` dir (session + week).
-- **Codex** — ChatGPT `wham/usage` via `curl` + `~/.codex/auth.json` access token (tokens never logged; requires `codex` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
-- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` (tokens/PII never logged; requires `grok` on PATH). Plan tier from `/v1/user?include=subscription`.
+- **Codex** — ChatGPT `wham/usage` via Python `urllib` + `~/.codex/auth.json` access token (bearer stays out of process argv; tokens never logged; requires `codex` + `python3` on PATH so restricted-PATH smoke stays offline). Windows classified by length: ≤6h = session, ≤8d = week, else month.
+- **Grok** — `cli-chat-proxy.grok.com/v1/billing` (monthly) and `?format=credits` (weekly credit %) via OIDC in `~/.grok/auth.json` through Python `urllib` (tokens/PII never logged; requires `grok` + `python3` on PATH). Plan tier from `/v1/user?include=subscription` (best-effort optional endpoints).
 - **Primary metric = plan headroom (not $)** — each vendor row shows the tightest
   window’s **used %**, linear **→100%** ETA (or **overrun** if it hits the cap
   before reset), **%/h** plan-burn rate, and **reset** clock. Claude/Codex

@@ -2127,11 +2127,18 @@ snapshot_one_project() {
   fi
 
   # Lifecycle phase + plan/handoff presence (v5).
+  # Corrupt/unknown → harden (fail closed; match Stop + _lifecycle_read_phase).
   local life_phase="build" life_file="$dir/.plinth/session/phase-$slug.json"
   if [ -f "$life_file" ]; then
-    life_phase="$(jq -r '.phase // "build"' "$life_file" 2>/dev/null || echo build)"
+    life_phase="$(jq -r '.phase // empty' "$life_file" 2>/dev/null || true)"
+  else
+    life_phase=""
   fi
-  case "$life_phase" in harden|build) ;; *) life_phase=build ;; esac
+  case "$life_phase" in
+    build|harden) ;;
+    "") life_phase=build ;;
+    *) life_phase=harden ;;
+  esac
   local plan_present=false handoff_present=false plan_review_present=false
   [ -f "$dir/PLAN.md" ] && plan_present=true
   [ -f "$dir/HANDOFF.md" ] && handoff_present=true
@@ -2829,9 +2836,9 @@ except Exception:
         '{vendor:"codex",available:false,error:"auth_missing",
           note:"Run codex login (ChatGPT) — need ~/.codex/auth.json",probed_at:$now}' \
         >> "$vendors_tmp"
-    elif ! command -v curl >/dev/null 2>&1; then
+    elif ! command -v python3 >/dev/null 2>&1; then
       jq -nc --argjson now "$now" \
-        '{vendor:"codex",available:false,error:"curl_missing",probed_at:$now}' \
+        '{vendor:"codex",available:false,error:"python3_missing",probed_at:$now}' \
         >> "$vendors_tmp"
     else
       cx_out="$(python3 -c '
@@ -3134,9 +3141,9 @@ print(json.dumps(out, separators=(",", ":")))
         '{vendor:"grok",available:false,error:"auth_missing",
           note:"Run grok login — need ~/.grok/auth.json",probed_at:$now}' \
         >> "$vendors_tmp"
-    elif ! command -v curl >/dev/null 2>&1; then
+    elif ! command -v python3 >/dev/null 2>&1; then
       jq -nc --argjson now "$now" \
-        '{vendor:"grok",available:false,error:"curl_missing",probed_at:$now}' \
+        '{vendor:"grok",available:false,error:"python3_missing",probed_at:$now}' \
         >> "$vendors_tmp"
     else
       gk_out="$(python3 -c '
@@ -4407,9 +4414,14 @@ _write_handoff() {
   fi
   goal="(edit: one paragraph of what this branch ships)"
   if [ -f "$root/PLAN.md" ]; then
-    # Full Problem section (not only the first wrapped line) — collapse to one paragraph.
-    goal=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p' "$root/PLAN.md" 2>/dev/null \
-      | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//' | head -c 500)
+    # Full Problem section — collapse to one paragraph. Avoid SIGPIPE under
+    # pipefail (large sections + head -c) by reading into a var first.
+    local graw
+    graw=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p' "$root/PLAN.md" 2>/dev/null || true)
+    if [ -n "$graw" ]; then
+      goal=$(printf '%s' "$graw" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')
+      [ "${#goal}" -gt 500 ] && goal="${goal:0:500}"
+    fi
     [ -n "$goal" ] || goal="(edit: one paragraph of what this branch ships)"
   fi
   out="$root/HANDOFF.md"
@@ -4422,17 +4434,21 @@ _write_handoff() {
     [ -n "$prev_done" ] && done_block="$prev_done"
     [ -n "$prev_next" ] && next="$prev_next"
   fi
-  # Prepend hints only when not already the first actionable line (dedupe).
+  # Prepend a hint only when it is not already present as any numbered/bulleted
+  # line (dedupe). Prevents harden→build→harden from stacking identical review
+  # actions that misroute `plinth next`.
   _handoff_prepend_next() {
-    local hint="$1" cur="$2" first
+    local hint="$1" cur="$2" line stripped
     [ -n "$hint" ] || { printf '%s' "$cur"; return; }
-    first=$(printf '%s\n' "$cur" | sed -n 's/^[[:space:]]*[0-9]*[.)]*[[:space:]]*//p; s/^-[[:space:]]*//p' \
-      | grep -v '^$' | head -1 || true)
-    if [ -n "$first" ] && [ "$first" = "$hint" ]; then
-      printf '%s' "$cur"
-    else
-      printf '1. %s\n%s' "$hint" "$cur"
-    fi
+    while IFS= read -r line; do
+      stripped=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([0-9]+[.)]+|-)?[[:space:]]*//')
+      [ -n "$stripped" ] || continue
+      if [ "$stripped" = "$hint" ]; then
+        printf '%s' "$cur"
+        return
+      fi
+    done <<< "$cur"
+    printf '1. %s\n%s' "$hint" "$cur"
   }
   if [ -n "$next_hint" ]; then
     next=$(_handoff_prepend_next "$next_hint" "$next")

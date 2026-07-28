@@ -1203,57 +1203,76 @@ sticky_process_findings() {  # <findings-json-path>
   done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
 
   # Auto-close sticky reopens only when ledger identity fully matches + same blob.
+  # Strip AUTO-STICKY marker BEFORE normalizing punctuation (marker uses [ ] chars).
+  # Always use unqualified nid for ledger keys (line-suffixed ids are collision-only
+  # and would otherwise thrash when a sibling disappears).
   jq --argjson blobs "$blobs_json" --slurpfile led "$ledger" '
+    def strip_sticky:
+      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
-      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "")
-       | sub(" \\[auto-sticky:.*$"; ""));
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def base_id:
+      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L
     | .findings |= map(
-        if .status == "open"
-           and (.id != null) and (.id != "")
-           and ($L[.id] != null)
-           and ($L[.id].status == "resolved")
-           and ($L[.id].blob != null) and ($blobs[.file] != null)
-           and ($L[.id].blob == $blobs[.file])
-           and ($L[.id].file != null) and ($L[.id].file == .file)
-           and ($L[.id].severity != null) and ($L[.id].severity == .severity)
-           and ($L[.id].desc_norm != null) and ($L[.id].desc_norm == normdesc)
-        then .status = "resolved"
-             | .description = ((.description // "") + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
-        else . end
+        (. as $f | ($f | base_id) as $bid
+         | if .status == "open"
+              and ($L[$bid] != null)
+              and ($L[$bid].status == "resolved")
+              and ($L[$bid].blob != null) and ($blobs[.file] != null)
+              and ($L[$bid].blob == $blobs[.file])
+              and ($L[$bid].file != null) and ($L[$bid].file == .file)
+              and ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
+              and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
+           then .status = "resolved"
+                | .id = $bid
+                | .description = (strip_sticky
+                    + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
+           else . end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Update ledger from current findings (store full identity for fail-closed sticky).
+  # Key by base_id (no line) so identity survives sibling collapse.
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
+    def strip_sticky:
+      ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
-      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "")
-       | sub(" \\[auto-sticky:.*$"; ""));
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def base_id:
+      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L
     | reduce ($cur[0].findings // [])[] as $x ($L;
-        if ($x.id != null and $x.id != "") then
-          .[$x.id] = {
-            status: $x.status,
-            file: $x.file,
-            blob: ($blobs[$x.file] // null),
-            severity: $x.severity,
-            desc_norm: ($x | normdesc)
-          }
-        else . end)
+        ($x | base_id) as $bid
+        | if ($bid != null and $bid != "") then
+            .[$bid] = {
+              status: $x.status,
+              file: $x.file,
+              blob: ($blobs[$x.file] // null),
+              severity: $x.severity,
+              desc_norm: ($x | normdesc)
+            }
+          else . end)
   ' > "$tmp" && mv "$tmp" "$ledger"
 }
 
 # Review charter phase for prompts (build vs hardening). Default build; harden
 # when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
+# Corrupt/unknown phase file → hardening (fail closed — match Stop / CLI helper).
 review_phase_for_round() {
-  local p="build" slug pf
+  local slug pf p
   if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
     case "$PLINTH_REVIEW_PHASE" in hardening|HARDENING) echo hardening; return ;; *) echo build; return ;; esac
   fi
   slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
   pf=".plinth/session/phase-${slug}.json"
-  if [ -f "$pf" ] && [ "$(jq -r '.phase // empty' "$pf" 2>/dev/null)" = "harden" ]; then
-    echo hardening; return
+  if [ -f "$pf" ]; then
+    p=$(jq -r '.phase // empty' "$pf" 2>/dev/null || true)
+    case "$p" in
+      build) echo build; return ;;
+      harden) echo hardening; return ;;
+      *) echo hardening; return ;;  # corrupt/unknown → fail closed
+    esac
   fi
   if git log -1 --format=%s 2>/dev/null | grep -qiE 'HARDENING:|hardening pass'; then
     echo hardening; return

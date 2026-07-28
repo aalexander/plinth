@@ -36,8 +36,15 @@ ctx=""
 if [ -f "$proj/HANDOFF.md" ]; then
   branch=$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)
   slug=$(printf '%s' "$branch" | tr '/ ' '--')
+  # Missing → build; corrupt/unknown → harden (fail closed; match Stop).
   phase="build"
-  [ -f "$SDIR/phase-$slug.json" ] && phase=$(jq -r '.phase // "build"' "$SDIR/phase-$slug.json" 2>/dev/null || echo build)
+  if [ -f "$SDIR/phase-$slug.json" ]; then
+    phase=$(jq -r '.phase // empty' "$SDIR/phase-$slug.json" 2>/dev/null || true)
+    case "$phase" in
+      build|harden) ;;
+      *) phase=harden ;;
+    esac
+  fi
   head=$(git -C "$proj" rev-parse --short HEAD 2>/dev/null || echo "?")
   ctx="Plinth lifecycle: phase=${phase} branch=${branch} @ ${head}. HANDOFF.md present — READ it and continue from ## Next. Automation: keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items. Never wait for compaction (optional only). Ship needs APPROVED@HEAD (plinth harden + ./.plinth/review.sh)."
   { jq -cn --arg sid "$sid" --arg detail "handoff present phase=$phase" \

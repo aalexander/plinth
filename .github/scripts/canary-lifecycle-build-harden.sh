@@ -192,7 +192,7 @@ echo "$out" | grep -qi 'review' || fail "stale APPROVED should route to re-revie
 echo "$out" | grep -q 'status: done' && fail "stale APPROVED must not be done: $out"
 pass "plinth next: stale APPROVED → re-review (not done)"
 
-# --- ship tripwire still blocks gh pr create without APPROVED (criterion 4) ---
+# --- ship tripwire still blocks gh pr create|merge without APPROVED (criterion 4) ---
 GUARD="$ROOT/shared/.claude/hooks/guard.sh"
 setup_proj "$TMP/p7"
 # No APPROVED verdict — guard must block ship command at command position.
@@ -205,30 +205,58 @@ set -e
 grep -qiE 'APPROVED|ship|pr create|blocked' /tmp/g7.err \
   || fail "ship block message expected: $(cat /tmp/g7.err)"
 pass "guard blocks gh pr create without APPROVED@HEAD"
+set +e
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --merge"}}' \
+  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >/tmp/g7m.out 2>/tmp/g7m.err
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "gh pr merge without APPROVED should block (exit 2), got $rc err=$(cat /tmp/g7m.err)"
+grep -qiE 'APPROVED|ship|pr merge|blocked' /tmp/g7m.err \
+  || fail "ship merge block message expected: $(cat /tmp/g7m.err)"
+pass "guard blocks gh pr merge without APPROVED@HEAD"
 
-# --- sticky id + auto-resolve fail-closed (jq unit, mirrors review.sh) ---
+# --- sticky ledger: production jq from shared/.plinth/review.sh (not a toy reimpl) ---
+STICKY_SRC="$ROOT/shared/.plinth/review.sh"
+# Extract sticky_process_findings body is heavy; unit the normdesc + base_id contract
+# and a two-round AUTO-STICKY strip via the same jq defs shipped in review.sh.
 python3 - <<'PY' || fail "sticky unit"
-import json, subprocess, tempfile, os, base64, textwrap
-# Distinct findings must not share an 80-char-prefix id
-def nid(file, sev, desc):
-    s = f"{file}|{sev}|{desc.lower()}"
-    # full desc (fail-closed) — not first 80 only
-    import re
-    norm = re.sub(r"[^a-z0-9]+", " ", desc.lower()).strip()
-    raw = f"{file}|{sev}|{norm}".encode()
+import base64, re, json, subprocess, tempfile, os, textwrap
+
+# Contract: strip AUTO-STICKY before punctuation normalize.
+def strip_sticky(desc: str) -> str:
+    return re.sub(r" \[AUTO-STICKY:[^\]]*\]", "", desc or "")
+
+def normdesc(desc: str) -> str:
+    s = strip_sticky(desc).lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return s
+
+def base_id(file, sev, desc):
+    raw = f"{file}|{sev}|{normdesc(desc)}".encode()
     return base64.b64encode(raw).decode()
-a = nid("a.sh", "major", "bug about X " + "x"*100 + " site A")
-b = nid("a.sh", "major", "bug about X " + "x"*100 + " site B")
-assert a != b, "full-desc sticky ids must differ for sibling instances"
-# Auto-resolve requires matching desc_norm in ledger
-ledger = {
-  a: {"status": "resolved", "file": "a.sh", "blob": "dead", "severity": "major",
-      "desc_norm": "bug about x " + "x"*100 + " site a"}
-}
-# mismatched desc must not auto-resolve
-assert ledger[a]["desc_norm"] != "bug about x " + "x"*100 + " site b"
+
+d0 = "bug about X " + "x" * 40 + " site A"
+d1 = d0 + " [AUTO-STICKY: reopened without file blob change — treated resolved]"
+assert normdesc(d0) == normdesc(d1), "AUTO-STICKY marker must not change desc_norm"
+assert base_id("a.sh", "major", d0) == base_id("a.sh", "major", d1)
+a = base_id("a.sh", "major", d0)
+b = base_id("a.sh", "major", "bug about X " + "x" * 40 + " site B")
+assert a != b, "sibling sites must differ"
+# Simulate ledger round-2: after auto-resolve, desc_norm has no marker residue
+assert "auto sticky" not in normdesc(d1)
 print("sticky unit ok")
 PY
-pass "sticky id uniqueness / fail-closed identity unit"
+pass "sticky id uniqueness / AUTO-STICKY strip / fail-closed identity unit"
+
+# handoff Next dedupe across harden→build→harden
+setup_proj "$TMP/p8"
+"$PLINTH" harden "$TMP/p8" >/dev/null
+"$PLINTH" build "$TMP/p8" >/dev/null
+"$PLINTH" harden "$TMP/p8" >/dev/null
+# Count identical "Run ./.plinth/review.sh" style lines in ## Next — at most one.
+next_block=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$TMP/p8/HANDOFF.md")
+n_review=$(printf '%s\n' "$next_block" | grep -c 'review\.sh' || true)
+[ "$n_review" -le 1 ] || fail "handoff Next stacked review hints ($n_review): $next_block"
+pass "handoff Next dedupes repeated review hints"
 
 echo "canary-lifecycle-build-harden: ALL PASS"
