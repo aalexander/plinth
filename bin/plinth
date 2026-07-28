@@ -4483,10 +4483,9 @@ _write_handoff() {
       "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement")
         return 0 ;;
     esac
-    # Generated review-handoff only: "Fix [sev] path:line — desc" (em-dash form).
-    if printf '%s' "$1" | grep -qE '^Fix \[(blocker|major|minor)\] [^ ]+:[0-9]+ — '; then
-      return 0
-    fi
+    # Do not pattern-match "Fix […]" — operators may write the same shape.
+    # Prior generated Fix lines are replaced only when PLINTH_HANDOFF_NEXT supplies
+    # a new primary; exact-string match on the known auto list is the only purge.
     return 1
   }
   _handoff_set_primary_next() {

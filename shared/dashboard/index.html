@@ -1007,7 +1007,7 @@
           "gate rel ×" + esc(String(sig.gate_releases)) + "</span>"
       );
     }
-    // Always-on utility: copy project .plinth/session (events, review, handoff).
+    // Always-on utility: copy project .plinth/session (events, review, phase).
     // Browsers block file:// opens from http://127.0.0.1 — same copy pattern as the name.
     if (p.path) {
       const sessDir = String(p.path).replace(/\/+$/, "") + "/.plinth/session";
