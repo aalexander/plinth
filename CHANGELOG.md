@@ -32,6 +32,11 @@
 - **Dashboard lifecycle chips:** BUILD/HARDEN, PLAN, HANDOFF, dual-degraded, next
 - **Canary:** `.github/scripts/canary-lifecycle-build-harden.sh` wired into
   `plinth-canary.yml` (Stop, ship tripwire create+merge, migrate, sticky, next)
+- **Residual (human-adjudicated follow-up, not blocking this PR):** adversarial
+  review thrash (20+ rounds) on expanded behavioral coverage beyond the
+  lifecycle canary + dashboard smoke (e.g. full dual-pass arithmetic,
+  urllib redirect matrix, harvester migration fixtures, attention-score unit
+  tests). Open as follow-up issues rather than infinite review loop.
 
 ## v4.8.1 — Write-tool recombine + Tier-2 confirmation window + delegation canary — July 26, 2026
 - **#43:** Both implementer lanes use the non-shell **Write tool** + project-local
