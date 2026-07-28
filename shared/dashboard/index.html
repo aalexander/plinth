@@ -1129,12 +1129,19 @@
   }
 
   function vendorDetailHTML(q, v, wins) {
-    const bits = [];
-    if (v.plan_type) bits.push("plan " + v.plan_type);
-    bits.push("click row to collapse");
-    const series = historySeries(q, v.vendor, null);
+    const head = [];
+    if (v.plan_type) {
+      head.push('<span>' + esc("plan " + v.plan_type) + "</span>");
+    }
+    head.push('<span class="dim">click row to collapse</span>');
+    // Sparkline for the primary plan window only — never mix session+week samples.
+    const planWin = (v.plan && v.plan.window) ||
+      (wins || []).map(function (w) { return w.window; })
+        .filter(function (n) { return n && !/session/.test(n); })[0] ||
+      null;
+    const series = historySeries(q, v.vendor, planWin || "plan");
     const spark = sparklineSVG(series, 72, 18);
-    if (spark) bits.push(spark);
+    if (spark) head.push(spark); // trusted SVG HTML from sparklineSVG — do not esc()
     const rows = wins.map(function (w) {
       const name = shortWindowName(w);
       const p = Number(w.used_pct);
@@ -1158,9 +1165,7 @@
     }).join("");
     return (
       '<div class="qdetail open" data-qdetail="' + esc(v.vendor) + '">' +
-        '<div class="dhead">' + bits.map(function (b) {
-          return typeof b === "string" ? "<span>" + esc(b) + "</span>" : b;
-        }).join("") + "</div>" +
+        '<div class="dhead">' + head.join("") + "</div>" +
         (rows || '<div class="dim">no window detail</div>') +
         spendDetailHTML(v.spend) +
       "</div>"
