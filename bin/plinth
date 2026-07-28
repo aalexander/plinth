@@ -4607,39 +4607,38 @@ _write_handoff() {
     advice="keep_cooking — checkpoint only; do not compact/clear mid-loop."
   fi
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  cat > "$out" <<EOF
-# Handoff — \`${branch}\` @ ${head}
-
-Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}
-
-context_advice: ${advice}
-
-## Goal
-${goal}
-
-## Done
-${done_block}
-
-## Next (ordered)
-${next}
-
-## Restart prompt
-> Read HANDOFF.md and continue from ## Next.
-> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD).
-> Advisor: \`plinth advise\` anytime.
-> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items.
-
-## Evidence
-- HEAD: \`${head}\` on \`${branch}\`
-- Lifecycle phase: ${phase}
-- Snapshot reason: ${reason} (${kind})
-- Review verdict: ${verdict}${vsha:+ (sha $vsha)}
-- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)
-- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)
-
-## Risks / Noticed
-- (edit)
-EOF
+  # Normalize section bodies to end with exactly one newline so the template
+  # does not accumulate blanks on every refresh.
+  if command -v python3 >/dev/null 2>&1; then
+    done_block=$(printf '%s' "$done_block" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+    next=$(printf '%s' "$next" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+    goal=$(printf '%s' "$goal" | python3 -c 'import sys; t=sys.stdin.read().rstrip("\n")+"\n"; sys.stdout.write(t)')
+  fi
+  {
+    printf '%s\n' "# Handoff — \`${branch}\` @ ${head}" "" \
+      "Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}" "" \
+      "context_advice: ${advice}" "" \
+      "## Goal"
+    printf '%s' "$goal"
+    printf '%s\n' "" "## Done"
+    printf '%s' "$done_block"
+    printf '%s\n' "" "## Next (ordered)"
+    printf '%s' "$next"
+    printf '%s\n' "" "## Restart prompt" \
+      "> Read HANDOFF.md and continue from ## Next." \
+      "> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD)." \
+      "> Advisor: \`plinth advise\` anytime." \
+      "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
+      "" "## Evidence" \
+      "- HEAD: \`${head}\` on \`${branch}\`" \
+      "- Lifecycle phase: ${phase}" \
+      "- Snapshot reason: ${reason} (${kind})" \
+      "- Review verdict: ${verdict}${vsha:+ (sha $vsha)}" \
+      "- PLAN.md: $([ -f "$root/PLAN.md" ] && echo present || echo absent)" \
+      "- PLAN-REVIEW.md: $([ -f "$root/PLAN-REVIEW.md" ] && echo present || echo absent)" \
+      "" "## Risks / Noticed" \
+      "- (edit)"
+  } > "$out"
   local arch sdir
   sdir="$root/.plinth/session"
   mkdir -p "$sdir"
