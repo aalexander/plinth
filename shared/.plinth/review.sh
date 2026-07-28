@@ -1201,7 +1201,7 @@ sticky_process_findings() {  # <findings-json-path>
     | . as $root
     | ([.findings[] | select(._auto == true) | .id] | unique) as $auto_ids
     | reduce range(0; ($root.findings|length)) as $i (
-        {out:[], taken:{}};
+        {out:[], taken:{}, seq:0};
         # Reserve auto ids first so explicit cannot steal them without suffixing.
         if $i == 0 then
           reduce $auto_ids[] as $a (.; .taken[$a] = true) else . end
@@ -1209,11 +1209,17 @@ sticky_process_findings() {  # <findings-json-path>
         | if $f._auto then
             .out += [$f | del(._auto)]
           else
-            # Find free final id
             . as $st
-            | ([$f.id] + [range(2; 50) | ($f.id + "#x" + tostring)]
+            | ([$f.id] + [range(2; 200) | ($f.id + "#x" + tostring)]
                | map(select(($st.taken[.] // false) | not))
-               | .[0] // ($f.id + "#x" + (now|tostring))) as $final
+               | .[0]) as $cand
+            | (if $cand != null then $cand
+               else
+                 # Monotonic free suffix never collides with preclaimed #xN or timestamps.
+                 ($st.seq + 1) as $s
+                 | ($f.id + "#u" + ($s|tostring))
+               end) as $final
+            | .seq = (if $cand == null then (.seq + 1) else .seq end)
             | .taken[$final] = true
             | .out += [$f | .id = $final | del(._auto)]
           end

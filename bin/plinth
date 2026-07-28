@@ -1236,9 +1236,9 @@ render_frame() {
     | ([range(0; 12) | . as $b | [$use[] | select(.e > $NOW - (12 - $b) * 60 and .e <= $NOW - (11 - $b) * 60) | .i + .cc + .o] | add // 0]) as $bkt
     | (($bkt | max) // 0) as $bmax
     | ($bkt | map(if $bmax == 0 then "▁" else $bars[(. / $bmax * 7) | floor] end) | join("")) as $spark
-    # ---------- signals ----------
-    | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $blocks
-    | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $releases
+    # ---------- signals (active SID only — $sev is already SID-scoped) ----------
+    | ([$sev[] | select(.event == "guard_block")] | length) as $blocks
+    | ([$sev[] | select(.event == "gate_release")] | length) as $releases
     | ([$sev[] | select(.event == "PreCompact")] | length) as $compacts
     | ([$sev[] | select(.event == "SubagentStop")] | length) as $subs
     | (([$sev[] | select(.event == "UserPromptSubmit") | .detail // ""
@@ -1410,8 +1410,8 @@ statusline_render() {
          elif $V.verdict == "APPROVED" then "APPROVED (stale)"
          elif $V.verdict == "UNBOUND" then "UNBOUND r\($V.round)"
          else "CHANGES r\($V.round)" end) as $rv
-      | ([$all[] | select(.event == "guard_block" and .epoch >= $t0)] | length) as $b
-      | ([$all[] | select(.event == "gate_release" and .epoch >= $t0)] | length) as $r
+      | ([$sev[] | select(.event == "guard_block")] | length) as $b
+      | ([$sev[] | select(.event == "gate_release")] | length) as $r
       | "◆ " + $cur.s + " " + (($NOW - $cur.e) | hum_t) + " · " + $rv
         + (if $nh != "" and $nh != "0" then " · ⏸ HUMAN×" + $nh else "" end)
         + (if $b > 0 then " · guard⛔\($b)" else "" end)
