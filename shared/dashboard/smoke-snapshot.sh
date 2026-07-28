@@ -1906,46 +1906,78 @@ setTimeout(() => {
     {
       const resetAt = Math.floor(Date.now() / 1000) + 86400 * 3; // ~3d out
       const nowSec = Math.floor(Date.now() / 1000);
+      // Week 80% is more constrained than session 12% → front line shows week.
       api.renderQuota({
         available: true, refreshed_at: nowSec,
-        overall: {
-          vendor: "claude",
-          used_pct: 80, remaining_pct: 20, reset_text: "Jul 30 at 9am",
-          reset_at: resetAt,
-          projected_100pct_at: nowSec + 3600,
-          rate_pct_per_hour: 5,
-          overrun_risk: true
-        },
-        vendors: [{
-          vendor: "claude", available: true,
-          plan: {
-            window: "week_all_models", used_pct: 80, remaining_pct: 20,
-            reset_at: resetAt, projected_100pct_at: nowSec + 3600,
-            rate_pct_per_hour: 5, overrun_risk: true, kind: "plan"
+        vendors: [
+          {
+            vendor: "claude", available: true, plan_type: "pro",
+            windows_detail: [
+              { window: "week_all_models", used_pct: 80, remaining_pct: 20,
+                reset_at: resetAt, projected_100pct_at: nowSec + 3600,
+                rate_pct_per_hour: 5, overrun_risk: true, kind: "plan" },
+              { window: "session", used_pct: 12, remaining_pct: 88,
+                reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
+                rate_pct_per_hour: 2, overrun_risk: false, kind: "session" }
+            ]
           },
-          session: {
-            window: "session", used_pct: 12, remaining_pct: 88,
-            reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
-            rate_pct_per_hour: 2, overrun_risk: false, kind: "session"
+          {
+            vendor: "codex", available: true,
+            windows_detail: [
+              { window: "week", used_pct: 4, remaining_pct: 96,
+                reset_at: resetAt + 86400, kind: "plan", rate_pct_per_hour: 0.4 }
+            ]
           },
-          windows_detail: [
-            { window: "week_all_models", used_pct: 80, remaining_pct: 20,
-              reset_at: resetAt, projected_100pct_at: nowSec + 3600,
-              rate_pct_per_hour: 5, overrun_risk: true, kind: "plan" },
-            { window: "session", used_pct: 12, remaining_pct: 88,
-              reset_at: nowSec + 7200, projected_100pct_at: nowSec + 20000,
-              rate_pct_per_hour: 2, overrun_risk: false, kind: "session" }
-          ]
-        }]
+          {
+            vendor: "grok", available: true, plan_type: "SuperGrokPro",
+            windows_detail: [
+              { window: "week_credits", used_pct: 20, remaining_pct: 80,
+                reset_at: resetAt, kind: "plan", rate_pct_per_hour: 0.1, overrun_risk: true },
+              { window: "month", used_pct: 17, remaining_pct: 83,
+                reset_at: resetAt + 86400 * 5, kind: "plan" }
+            ]
+          }
+        ]
       });
       const qb = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
-      const weekday = new Date(resetAt * 1000).toLocaleString(undefined, { weekday: "long" });
-      if (!qb.includes("80%") || !qb.includes("WEEK") || !qb.includes("→100%") ||
-          !qb.includes("reset ") || !qb.includes(weekday) ||
-          !qb.includes("SESS") || !qb.includes("overrun risk") || !qb.includes("12%")) {
-        console.error("renderQuota available missing expected text (weekday=" + weekday + "):", qb);
+      // Compact: exactly 3 vendor lines; tightest window chip; no expanded session % yet.
+      const rowCount = (qb.match(/data-qvendor=/g) || []).length;
+      if (rowCount !== 3) {
+        console.error("renderQuota expected 3 vendor lines, got", rowCount, qb);
         process.exit(1);
       }
+      if (!qb.includes("CLAUDE") || !qb.includes("CODEX") || !qb.includes("GROK")) {
+        console.error("renderQuota missing vendor labels:", qb);
+        process.exit(1);
+      }
+      if (!qb.includes("80%") || !qb.includes(">week<") && !qb.includes(">week</")) {
+        // chip text is "week"
+        if (!qb.includes("week") || !qb.includes("80%")) {
+          console.error("renderQuota missing tightest claude week 80%:", qb);
+          process.exit(1);
+        }
+      }
+      if (qb.includes("12%") && !qb.includes("data-qdetail")) {
+        console.error("session 12% should not show until expanded:", qb);
+        process.exit(1);
+      }
+      if (!qb.includes("overrun")) {
+        console.error("renderQuota missing overrun chip:", qb);
+        process.exit(1);
+      }
+      // Expand claude → detail shows session + weekday reset
+      if (typeof api.toggleQuotaVendor !== "function") {
+        console.error("missing toggleQuotaVendor seam");
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("claude");
+      const qb2 = (elsById["quota-bar"] && elsById["quota-bar"].innerHTML) || "";
+      const weekday = new Date(resetAt * 1000).toLocaleString(undefined, { weekday: "long" });
+      if (!qb2.includes("12%") || !qb2.includes("data-qdetail") || !qb2.includes(weekday)) {
+        console.error("expanded claude detail missing session/weekday:", qb2);
+        process.exit(1);
+      }
+      api.toggleQuotaVendor("claude"); // collapse
       // attention sort + filter seams
       if (typeof api.attentionScore !== "function" || typeof api.sortProjects !== "function") {
         console.error("missing attentionScore/sortProjects seams");
