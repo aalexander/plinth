@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "20143ba7e78c95efa13bb3d616d4c8cb443846b4",
+  "sha": "0ea092442152324bc26f726e82da2ea5bc9a3e9a",
   "by": "austin",
-  "ts": "2026-07-28T22:05:54Z",
-  "note": "v5.0.0 land: canary session-clean; residual thrash exit; strict-delta+residual ship control",
+  "ts": "2026-07-28T22:08:41Z",
+  "note": "v5.0.0 land: canary+strict-delta align; residual thrash exit",
   "findings": [
     {
       "severity": "major",
