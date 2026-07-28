@@ -11,8 +11,7 @@ APPROVED@HEAD; Stop should not re-tax build.
 Drivers (Claude/codex/grok) and operators using Plinth on feature branches.
 
 ## Non-goals
-- Full Delphi 3-seat plan product
-- Dual first-pass beyond existing Tier-2 audit
+- Full Delphi 3-seat plan product with independent deliberation UX
 - Cryptographic human gates / accept digests
 - Changing ship gate (still APPROVED@HEAD + CI/receipt where wired)
 
@@ -23,16 +22,19 @@ Drivers (Claude/codex/grok) and operators using Plinth on feature branches.
 4. Ship / `gh pr create|merge` still blocked without APPROVED@HEAD (unchanged guard).
 5. `plinth handoff` writes/updates root `HANDOFF.md` with goal/next/restart prompt.
 6. Driver rules document: plan → build → harden → ship; read HANDOFF to restart; advisor anytime.
-7. Canary script proves 1–4 without network.
+7. Canary script proves 1–4 without network (wired in `plinth-canary.yml`).
+8. `plinth plan` scaffolds PLAN.md; `plinth plan --deep` runs three existing seats
+   (reviewer/audit/advisor config) as a best-effort plan review panel (not a new Delphi product).
 
 ## Risks / trust boundaries
 Ship path must not weaken. Phase file is session-local under `.plinth/session/`
 (agent-unwritable via protected paths). Missing phase = build (default).
+Corrupt/unknown phase = harden (fail closed, matches Stop).
 
 ## Open tradeoffs
 - **Harden sticky until build/clear:** yes — explicit `plinth build` to leave.
-- **Plan tooling:** docs + PLAN.md convention only in this slice; no multi-agent panel CLI yet.
+- **Plan tooling:** light scaffold always; `--deep` reuses configured seats (ratified for v5).
 
 ## Ratification
-- by: operator (this branch implements the thin core agreed in design)
+- by: operator (this branch implements lifecycle v5 + dashboard ops agreed in design)
 - product_rev: 1

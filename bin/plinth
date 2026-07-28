@@ -2778,25 +2778,31 @@ access = tokens.get("access_token")
 if not access or not isinstance(access, str):
     sys.exit(2)
 account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else ""
-cmd = [
-    "curl", "-sS", "-f", "--max-time", str(to_s),
-    "-H", "Authorization: Bearer " + access,
-    "-H", "Accept: application/json",
-]
+# urllib keeps the bearer out of process argv (curl -H "Authorization: Bearer …" is visible in ps).
+import urllib.error
+import urllib.request
+headers = {
+    "Authorization": "Bearer " + access,
+    "Accept": "application/json",
+}
 if account_id:
-    cmd += ["-H", "ChatGPT-Account-Id: " + account_id]
-cmd.append("https://chatgpt.com/backend-api/wham/usage")
+    headers["ChatGPT-Account-Id"] = account_id
+req = urllib.request.Request(
+    "https://chatgpt.com/backend-api/wham/usage",
+    headers=headers,
+    method="GET",
+)
 try:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=to_s + 2)
-except subprocess.TimeoutExpired:
-    sys.exit(124)
-except Exception:
+    with urllib.request.urlopen(req, timeout=to_s) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+except urllib.error.HTTPError:
+    sys.exit(4)
+except Exception as e:
+    if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+        sys.exit(124)
     sys.exit(1)
-if p.returncode != 0:
-    # 22 = curl -f HTTP error; do not print body (may include account bits).
-    sys.exit(4 if p.returncode == 22 else 1)
 try:
-    d = json.loads(p.stdout or "")
+    d = json.loads(body or "")
 except Exception:
     sys.exit(5)
 if not isinstance(d, dict):
@@ -3085,23 +3091,29 @@ for _k, entry in auth.items():
 if not token:
     sys.exit(2)
 
-def curl_json(url):
-    cmd = [
-        "curl", "-sS", "-f", "--max-time", str(to_s),
-        "-H", "Authorization: Bearer " + token,
-        "-H", "Accept: application/json",
+def curl_json(url, required=True):
+    """HTTP GET with bearer in urllib headers (never on argv). required=False: return None on any failure."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
         url,
-    ]
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=to_s + 2)
-    except subprocess.TimeoutExpired:
-        raise SystemExit(124)
-    if p.returncode != 0:
-        raise SystemExit(4 if p.returncode == 22 else 1)
-    try:
-        return json.loads(p.stdout or "")
-    except Exception:
-        raise SystemExit(5)
+        with urllib.request.urlopen(req, timeout=to_s) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace") or "")
+    except Exception as e:
+        if not required:
+            return None
+        if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+            raise SystemExit(124)
+        if isinstance(e, urllib.error.HTTPError):
+            raise SystemExit(4)
+        raise SystemExit(1)
 
 def num_val(obj, *keys):
     cur = obj
@@ -3129,9 +3141,9 @@ def cfg_of(payload):
         return payload["config"]
     return None
 
-# Default payload: monthly allotment. Credits payload: weekly SuperGrok credit %.
+# Default payload: monthly allotment (required). Credits/user are best-effort.
 try:
-    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing")
+    bill = curl_json("https://cli-chat-proxy.grok.com/v1/billing", required=True)
 except SystemExit:
     raise
 except Exception:
@@ -3140,12 +3152,11 @@ cfg = cfg_of(bill)
 if not isinstance(cfg, dict):
     sys.exit(5)
 
-credits_cfg = None
-try:
-    credits = curl_json("https://cli-chat-proxy.grok.com/v1/billing?format=credits")
-    credits_cfg = cfg_of(credits)
-except Exception:
-    credits_cfg = None
+# Best-effort: never let optional endpoints abort the monthly billing row.
+credits = curl_json(
+    "https://cli-chat-proxy.grok.com/v1/billing?format=credits", required=False
+)
+credits_cfg = cfg_of(credits) if isinstance(credits, dict) else None
 
 windows = []
 
@@ -3199,14 +3210,13 @@ if used is not None and limit is not None and limit > 0:
 if not windows:
     sys.exit(5)
 
-# Plan tier from user endpoint (best-effort; ignore failures).
+# Plan tier from user endpoint (best-effort; never aborts monthly windows).
 plan = None
-try:
-    user = curl_json("https://cli-chat-proxy.grok.com/v1/user?include=subscription")
-    if isinstance(user, dict) and isinstance(user.get("subscriptionTier"), str):
-        plan = user["subscriptionTier"]
-except Exception:
-    plan = None
+user = curl_json(
+    "https://cli-chat-proxy.grok.com/v1/user?include=subscription", required=False
+)
+if isinstance(user, dict) and isinstance(user.get("subscriptionTier"), str):
+    plan = user["subscriptionTier"]
 
 # Billing-only $ fields here; cumulative API cost periods filled in post-pass
 # (shared scanner: Grok costUsdTicks + Claude/Codex list-price estimates).
@@ -3549,16 +3559,11 @@ def harvest_grok(seen):
     return out
 
 def harvest_claude(seen):
-    """Only real total_cost_usd fields (never token*list-price)."""
+    """Only structured result/assistant total_cost_usd (never free-text or token*price)."""
     root = Path.home() / ".claude" / "projects"
     if not root.is_dir():
         return []
     out = []
-    # Match total_cost_usd even when escaped inside tool_result strings.
-    import re
-    # No single quotes in this bash-quoted block — use double only.
-    pat = re.compile(r"total_cost_usd\\?\":\s*([0-9]+(?:\.[0-9]+)?)")
-    sid_pat = re.compile(r"session_id\\?\":\s*\\?\"([0-9a-fA-F-]{8,})\\?\"")
     cands = []
     for f in root.rglob("*.jsonl"):
         try:
@@ -3579,69 +3584,53 @@ def harvest_claude(seen):
             for lineno, line in enumerate(f.open(errors="ignore"), 1):
                 if "total_cost_usd" not in line:
                     continue
-                matches = pat.findall(line)
-                if not matches:
-                    continue
-                # Prefer structured JSON when possible
-                ts = mtime
-                sid = None
+                # Structured JSON only — ignore tool_result strings / prompt echoes.
                 try:
                     rec = json.loads(line)
-                    ts = parse_ts(rec.get("timestamp"), mtime)
-                    sid = rec.get("session_id") or rec.get("sessionId")
-                    # Walk for total_cost_usd numbers with session context
-                    found = []
-                    def walk(o):
-                        if isinstance(o, dict):
-                            if "total_cost_usd" in o and isinstance(o["total_cost_usd"], (int, float)):
-                                found.append(float(o["total_cost_usd"]))
-                            for v in o.values():
-                                walk(v)
-                        elif isinstance(o, list):
-                            for v in o[:50]:
-                                walk(v)
-                    walk(rec)
-                    if found:
-                        matches = [str(x) for x in found]
                 except Exception:
-                    # Escaped tool_result path
-                    sm = sid_pat.search(line)
-                    if sm:
-                        sid = sm.group(1)
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rtype = rec.get("type")
+                usd = None
+                if rtype == "result" and isinstance(rec.get("total_cost_usd"), (int, float)):
+                    usd = float(rec["total_cost_usd"])
+                elif rtype == "assistant":
+                    msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+                    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                    if isinstance(usage.get("total_cost_usd"), (int, float)):
+                        usd = float(usage["total_cost_usd"])
+                    elif isinstance(rec.get("total_cost_usd"), (int, float)):
+                        usd = float(rec["total_cost_usd"])
+                else:
+                    continue
+                if usd is None or usd <= 0:
+                    continue
+                ts = parse_ts(rec.get("timestamp"), mtime)
                 if ts < cut_year:
                     continue
-                for i, m in enumerate(matches):
-                    try:
-                        usd = float(m)
-                    except Exception:
-                        continue
-                    if usd <= 0:
-                        continue
-                    eid = "claude:%s:%s:%s:%s" % (
-                        sid or f.name, lineno, i, ("%.6f" % usd)
-                    )
-                    if eid in seen:
-                        continue
-                    seen.add(eid)
-                    out.append({
-                        "t": int(ts),
-                        "vendor": "claude",
-                        "usd": round(usd, 6),
-                        "id": eid,
-                        "src": "total_cost_usd",
-                    })
+                sid = rec.get("session_id") or rec.get("sessionId") or f.name
+                eid = "claude:%s:%s:%.6f" % (sid, lineno, usd)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append({
+                    "t": int(ts),
+                    "vendor": "claude",
+                    "usd": round(usd, 6),
+                    "id": eid,
+                    "src": "total_cost_usd",
+                })
         except Exception:
             continue
     return out
 
 def harvest_codex(seen):
-    """Codex sessions rarely expose USD; only record explicit cost fields if present."""
+    """Codex: only numeric cost on known event payload types (never free-text)."""
     root = Path.home() / ".codex" / "sessions"
     if not root.is_dir():
         return []
     out = []
-    import re
-    pat = re.compile(r"(?:total_cost_usd|cost_usd|costUsd)\\?\":\s*([0-9]+(?:\.[0-9]+)?)")
     cands = []
     for f in root.rglob("*.jsonl"):
         try:
@@ -3652,40 +3641,46 @@ def harvest_codex(seen):
             continue
         cands.append((m, f))
     cands.sort(reverse=True)
+    cost_keys = ("total_cost_usd", "cost_usd", "costUsd")
     for mtime, f in cands[:400]:
         try:
             for lineno, line in enumerate(f.open(errors="ignore"), 1):
                 if "cost" not in line.lower() and "usd" not in line.lower():
                     continue
-                matches = pat.findall(line)
-                if not matches:
-                    continue
-                ts = mtime
                 try:
                     rec = json.loads(line)
-                    ts = parse_ts(rec.get("timestamp"), mtime)
                 except Exception:
-                    pass
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rtype = rec.get("type")
+                if rtype not in ("event_msg", "turn_context", "session_meta", "response_item"):
+                    continue
+                payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+                usd = None
+                for k in cost_keys:
+                    if isinstance(payload.get(k), (int, float)):
+                        usd = float(payload[k])
+                        break
+                    if isinstance(rec.get(k), (int, float)):
+                        usd = float(rec[k])
+                        break
+                if usd is None or usd <= 0:
+                    continue
+                ts = parse_ts(rec.get("timestamp"), mtime)
                 if ts < cut_year:
                     continue
-                for i, m in enumerate(matches):
-                    try:
-                        usd = float(m)
-                    except Exception:
-                        continue
-                    if usd <= 0:
-                        continue
-                    eid = "codex:%s:%s:%s:%s" % (f.name, lineno, i, ("%.6f" % usd))
-                    if eid in seen:
-                        continue
-                    seen.add(eid)
-                    out.append({
-                        "t": int(ts),
-                        "vendor": "codex",
-                        "usd": round(usd, 6),
-                        "id": eid,
-                        "src": "session_cost",
-                    })
+                eid = "codex:%s:%s:%.6f" % (f.name, lineno, usd)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append({
+                    "t": int(ts),
+                    "vendor": "codex",
+                    "usd": round(usd, 6),
+                    "id": eid,
+                    "src": "session_cost",
+                })
         except Exception:
             continue
     return out
@@ -4261,13 +4256,19 @@ _lifecycle_phase_file() {
 }
 
 _lifecycle_read_phase() {
-  local f
+  # Missing file => build (default). Corrupt / unknown phase => harden (fail closed:
+  # Stop requires APPROVED rather than silently deferring review).
+  local f p
   f=$(_lifecycle_phase_file "$1")
-  if [ -f "$f" ]; then
-    jq -r '.phase // "build"' "$f" 2>/dev/null || echo build
-  else
+  if [ ! -f "$f" ]; then
     echo build
+    return 0
   fi
+  p=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+  case "$p" in
+    build|harden) echo "$p" ;;
+    *) echo harden ;;
+  esac
 }
 
 _lifecycle_write_phase() {
@@ -4333,7 +4334,10 @@ _write_handoff() {
   fi
   goal="(edit: one paragraph of what this branch ships)"
   if [ -f "$root/PLAN.md" ]; then
-    goal=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p&&NF{print; exit}' "$root/PLAN.md" 2>/dev/null || echo "$goal")
+    # Full Problem section (not only the first wrapped line) — collapse to one paragraph.
+    goal=$(awk '/^## Problem/{p=1;next} p&&/^## /{exit} p' "$root/PLAN.md" 2>/dev/null \
+      | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//' | head -c 500)
+    [ -n "$goal" ] || goal="(edit: one paragraph of what this branch ships)"
   fi
   out="$root/HANDOFF.md"
   done_block="- (edit: bullets of what is already committed)"
@@ -4345,12 +4349,24 @@ _write_handoff() {
     [ -n "$prev_done" ] && done_block="$prev_done"
     [ -n "$prev_next" ] && next="$prev_next"
   fi
+  # Prepend hints only when not already the first actionable line (dedupe).
+  _handoff_prepend_next() {
+    local hint="$1" cur="$2" first
+    [ -n "$hint" ] || { printf '%s' "$cur"; return; }
+    first=$(printf '%s\n' "$cur" | sed -n 's/^[[:space:]]*[0-9]*[.)]*[[:space:]]*//p; s/^-[[:space:]]*//p' \
+      | grep -v '^$' | head -1 || true)
+    if [ -n "$first" ] && [ "$first" = "$hint" ]; then
+      printf '%s' "$cur"
+    else
+      printf '1. %s\n%s' "$hint" "$cur"
+    fi
+  }
   if [ -n "$next_hint" ]; then
-    next="1. ${next_hint}"$'\n'"${next}"
+    next=$(_handoff_prepend_next "$next_hint" "$next")
   fi
   # Optional: PLINTH_HANDOFF_NEXT forces first Next line (review.sh sets from findings).
   if [ -n "${PLINTH_HANDOFF_NEXT:-}" ]; then
-    next="1. ${PLINTH_HANDOFF_NEXT}"$'\n'"${next}"
+    next=$(_handoff_prepend_next "$PLINTH_HANDOFF_NEXT" "$next")
   fi
   kind=$(_handoff_kind "$reason")
   if [ "$kind" = "milestone" ]; then
@@ -4839,6 +4855,13 @@ run_next() {
       echo "detail: gh pr create — ship gate satisfied at $head"
       exit 0
     fi
+    # Stale APPROVED (or APPROVED with missing sha) — ship gate unsatisfied; re-review.
+    if [ "$verdict" = "APPROVED" ]; then
+      echo "status: work"
+      echo "action: re-run ./.plinth/review.sh (APPROVED but not at HEAD — ship gate unsatisfied)"
+      echo "detail: phase=harden head=$head verdict_sha=${vsha:-none} HEAD=$full"
+      exit 0
+    fi
     # Check latest findings for open majors
     local fdir latest
     fdir="$root/.plinth/session/review/$slug"
@@ -4897,24 +4920,31 @@ run_next() {
 }
 
 # On plinth update: migrate open review loops → harden phase; corrupt phase → fail closed harden.
+# Always scans phase-*.json (even with no review/ dir) plus every review slug.
 migrate_lifecycle_phases() {
   local root="$1" sdir revdir
   sdir="$root/.plinth/session"
+  [ -d "$sdir" ] || return 0
+  local phasef slug d vfile v base
+  # 1) All phase files — corrupt / unknown → harden (no review dir required).
+  for phasef in "$sdir"/phase-*.json; do
+    [ -f "$phasef" ] || continue
+    base=$(basename "$phasef")
+    slug=${base#phase-}; slug=${slug%.json}
+    if ! jq -e '.phase == "build" or .phase == "harden"' "$phasef" >/dev/null 2>&1; then
+      echo "  lifecycle migrate: corrupt $base → harden (fail closed)"
+      jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:"corrupt_phase"}' > "$phasef"
+    fi
+  done
+  # 2) Open review verdicts → ensure harden phase.
   revdir="$sdir/review"
   [ -d "$revdir" ] || return 0
-  local d slug phasef vfile v
   for d in "$revdir"/*/; do
     [ -d "$d" ] || continue
     slug=$(basename "$d")
     phasef="$sdir/phase-$slug.json"
     vfile="$d/verdict.json"
-    # Corrupt phase file → rewrite as harden (fail closed for Stop)
-    if [ -f "$phasef" ] && ! jq -e '.phase == "build" or .phase == "harden"' "$phasef" >/dev/null 2>&1; then
-      echo "  lifecycle migrate: corrupt phase-$slug.json → harden (fail closed)"
-      jq -n --arg p harden --arg slug "$slug" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{phase:$p, slug:$slug, updated_at:$ts, migrated:true, reason:"corrupt_phase"}' > "$phasef"
-      continue
-    fi
     [ -f "$vfile" ] || continue
     v=$(jq -r '.verdict // empty' "$vfile" 2>/dev/null || true)
     case "$v" in

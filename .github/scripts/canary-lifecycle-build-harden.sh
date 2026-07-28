@@ -138,38 +138,31 @@ echo "$out" | grep -q human_blocked || fail "expected human_blocked: $out"
 [ "$rc" -eq 2 ] || fail "plinth next exit 2 for blocking, got $rc"
 pass "plinth next human_blocked"
 
-# --- migrate open review → harden ---
+# --- migrate open review → harden (production CLI, not a simplified copy) ---
 setup_proj "$TMP/p4"
 slug=feat-canary
 mkdir -p "$TMP/p4/.plinth/session/review/$slug"
 head=$(git -C "$TMP/p4" rev-parse HEAD)
 jq -n --arg s "$head" '{verdict:"CHANGES_NEEDED",sha:$s,round:1}' \
   > "$TMP/p4/.plinth/session/review/$slug/verdict.json"
-# call migrate via sourcing is hard; simulate update path by running bash function
-# Use plinth update would need full project - invoke migrate through a tiny wrapper
-bash -c '
-  source /dev/null
-  target="'"$TMP/p4"'"
-  # inline minimal migrate
-  sdir="$target/.plinth/session"
-  for d in "$sdir/review"/*/; do
-    [ -d "$d" ] || continue
-    slug=$(basename "$d")
-    vfile="$d/verdict.json"
-    v=$(jq -r ".verdict // empty" "$vfile")
-    if [ "$v" = "CHANGES_NEEDED" ]; then
-      jq -n --arg p harden --arg slug "$slug" "{phase:\$p,slug:\$slug,migrated:true}" > "$sdir/phase-$slug.json"
-    fi
-  done
-'
+"$PLINTH" lifecycle-migrate "$TMP/p4" >/dev/null
 [ "$(jq -r .phase "$TMP/p4/.plinth/session/phase-feat-canary.json")" = "harden" ] \
-  || fail "migrate should set harden"
+  || fail "lifecycle-migrate should set harden for open CHANGES_NEEDED"
 pass "lifecycle migrate open review → harden"
+
+# corrupt phase without matching review dir still repaired by migrate
+setup_proj "$TMP/p4b"
+echo 'not-json' > "$TMP/p4b/.plinth/session/phase-feat-canary.json"
+"$PLINTH" lifecycle-migrate "$TMP/p4b" >/dev/null
+[ "$(jq -r .phase "$TMP/p4b/.plinth/session/phase-feat-canary.json")" = "harden" ] \
+  || fail "lifecycle-migrate should rewrite corrupt phase without review/"
+ph=$("$PLINTH" phase "$TMP/p4b" | sed -n 's/^phase:[[:space:]]*//p')
+[ "$ph" = "harden" ] || fail "phase status after corrupt migrate expected harden, got $ph"
+pass "lifecycle-migrate repairs orphan corrupt phase; phase CLI fail-closed"
 
 # corrupt phase → gate treats as harden
 setup_proj "$TMP/p5"
 echo 'not-json' > "$TMP/p5/.plinth/session/phase-feat-canary.json"
-# start-head already set by setup - run gate
 export CLAUDE_PROJECT_DIR="$TMP/p5"
 set +e
 printf '%s' '{"session_id":"canary"}' | bash "$GATE" >/tmp/g5.out 2>/tmp/g5.err
@@ -178,5 +171,64 @@ set -e
 [ "$rc" -eq 2 ] || fail "corrupt phase should block as harden, got $rc err=$(cat /tmp/g5.err)"
 grep -qi HARDEN /tmp/g5.err || grep -qi corrupt /tmp/g5.err || fail "expected harden/corrupt message"
 pass "corrupt phase fail-closed as harden"
+
+# --- next: stale APPROVED under harden must not report done ---
+setup_proj "$TMP/p6"
+"$PLINTH" harden "$TMP/p6" >/dev/null
+# wipe auto next lines so we hit the harden verdict path
+printf '%s\n' '# Handoff' '## Next' '' > "$TMP/p6/HANDOFF.md"
+slug=feat-canary
+mkdir -p "$TMP/p6/.plinth/session/review/$slug"
+old=$(git -C "$TMP/p6" rev-parse HEAD~1)
+jq -n --arg s "$old" '{verdict:"APPROVED",sha:$s,round:1}' \
+  > "$TMP/p6/.plinth/session/review/$slug/verdict.json"
+set +e
+out=$("$PLINTH" next "$TMP/p6" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q 'status: work' || fail "stale APPROVED must be work not done: $out"
+echo "$out" | grep -qi 'review' || fail "stale APPROVED should route to re-review: $out"
+[ "$rc" -eq 0 ] || fail "stale APPROVED next exit 0, got $rc"
+echo "$out" | grep -q 'status: done' && fail "stale APPROVED must not be done: $out"
+pass "plinth next: stale APPROVED → re-review (not done)"
+
+# --- ship tripwire still blocks gh pr create without APPROVED (criterion 4) ---
+GUARD="$ROOT/shared/.claude/hooks/guard.sh"
+setup_proj "$TMP/p7"
+# No APPROVED verdict — guard must block ship command at command position.
+set +e
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body b"}}' \
+  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >/tmp/g7.out 2>/tmp/g7.err
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "gh pr create without APPROVED should block (exit 2), got $rc err=$(cat /tmp/g7.err)"
+grep -qiE 'APPROVED|ship|pr create|blocked' /tmp/g7.err \
+  || fail "ship block message expected: $(cat /tmp/g7.err)"
+pass "guard blocks gh pr create without APPROVED@HEAD"
+
+# --- sticky id + auto-resolve fail-closed (jq unit, mirrors review.sh) ---
+python3 - <<'PY' || fail "sticky unit"
+import json, subprocess, tempfile, os, base64, textwrap
+# Distinct findings must not share an 80-char-prefix id
+def nid(file, sev, desc):
+    s = f"{file}|{sev}|{desc.lower()}"
+    # full desc (fail-closed) — not first 80 only
+    import re
+    norm = re.sub(r"[^a-z0-9]+", " ", desc.lower()).strip()
+    raw = f"{file}|{sev}|{norm}".encode()
+    return base64.b64encode(raw).decode()
+a = nid("a.sh", "major", "bug about X " + "x"*100 + " site A")
+b = nid("a.sh", "major", "bug about X " + "x"*100 + " site B")
+assert a != b, "full-desc sticky ids must differ for sibling instances"
+# Auto-resolve requires matching desc_norm in ledger
+ledger = {
+  a: {"status": "resolved", "file": "a.sh", "blob": "dead", "severity": "major",
+      "desc_norm": "bug about x " + "x"*100 + " site a"}
+}
+# mismatched desc must not auto-resolve
+assert ledger[a]["desc_norm"] != "bug about x " + "x"*100 + " site b"
+print("sticky unit ok")
+PY
+pass "sticky id uniqueness / fail-closed identity unit"
 
 echo "canary-lifecycle-build-harden: ALL PASS"

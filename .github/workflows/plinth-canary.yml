@@ -154,6 +154,11 @@ jobs:
           # shared/dashboard/smoke-snapshot.sh: offline fixture matrix, node
           # cardHTML unit test, and a short-lived 127.0.0.1 server (cleaned up).
           ./shared/dashboard/smoke-snapshot.sh
+      - name: Lifecycle build/harden canary (Stop + ship tripwire + next)
+        run: |
+          set -euo pipefail
+          # PLAN.md AC 1–4 + migrate/next/sticky units (no network).
+          ./.github/scripts/canary-lifecycle-build-harden.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

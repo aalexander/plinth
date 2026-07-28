@@ -1052,7 +1052,8 @@ if [ -f "$SDIR/verdict.json" ]; then
     # session directory written by a v4.6 instrument can still hold one, so it
     # is swept here rather than left behind as a misleading artifact.
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
-          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
+          "$SDIR/dual-degraded.json" "$SDIR"/findings-dual-*.json
   fi
 fi
 
@@ -1166,20 +1167,30 @@ validate_findings() {  # <findings-json> — full schema shape: enums, integer l
 }
 
 # Sticky findings + ids (anti-thrash): assign stable ids; auto-resolve reopens of
-# prior-resolved findings when the file blob at HEAD is unchanged.
-# Ledger: $SDIR/sticky-ledger.json  { id: {status, blob, file, desc} }
+# prior-resolved findings when the file blob at HEAD is unchanged AND the
+# finding identity matches (file + severity + full normalized description).
+# Fail-closed: short-prefix ids, missing ledger fields, or desc/file mismatch
+# never auto-resolve. Ledger: $SDIR/sticky-ledger.json
 sticky_process_findings() {  # <findings-json-path>
   local f="$1" ledger="$SDIR/sticky-ledger.json" tmp
   [ -f "$f" ] || return 0
   [ -f "$ledger" ] || echo '{}' > "$ledger"
   tmp="$(mktemp)"
-  # Assign missing ids (hash of file|severity|normalized desc head).
+  # Assign missing ids from FULL normalized desc (not an 80-char prefix — collisions).
+  # Explicit reviewer ids are kept only when unique in this payload; collisions get a suffix.
   jq '
+    def normdesc:
+      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def nid:
-      ((.file // "") + "|" + (.severity // "") + "|" + ((.description // "")
-        | ascii_downcase | gsub("[^a-z0-9]+"; " ") | .[0:80]))
-      | @base64;
+      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     .findings |= map(if (.id == null or .id == "") then . + {id: nid} else . end)
+    | (.findings | group_by(.id) | map(select(length > 1) | .[0].id) | unique) as $dups
+    | .findings |= map(
+        if (.id != null) and (.id as $i | $dups | index($i) != null) then
+          # Collision: re-key with line so siblings do not share an id.
+          .id = ((.file // "") + "|" + (.severity // "") + "|" + (.line|tostring) + "|" + normdesc | @base64)
+        else . end
+      )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
   # Build blob map for files mentioned
@@ -1191,21 +1202,33 @@ sticky_process_findings() {  # <findings-json-path>
     blobs_json=$(jq -cn --argjson b "$blobs_json" --arg f "$fp" --arg h "$bh" '$b + {($f): $h}')
   done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
 
-  # Auto-close sticky reopens: open finding whose id was resolved with same blob.
+  # Auto-close sticky reopens only when ledger identity fully matches + same blob.
   jq --argjson blobs "$blobs_json" --slurpfile led "$ledger" '
+    def normdesc:
+      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "")
+       | sub(" \\[auto-sticky:.*$"; ""));
     ($led[0] // {}) as $L
     | .findings |= map(
-        if .status == "open" and ($L[.id] != null) and ($L[.id].status == "resolved")
+        if .status == "open"
+           and (.id != null) and (.id != "")
+           and ($L[.id] != null)
+           and ($L[.id].status == "resolved")
            and ($L[.id].blob != null) and ($blobs[.file] != null)
            and ($L[.id].blob == $blobs[.file])
+           and ($L[.id].file != null) and ($L[.id].file == .file)
+           and ($L[.id].severity != null) and ($L[.id].severity == .severity)
+           and ($L[.id].desc_norm != null) and ($L[.id].desc_norm == normdesc)
         then .status = "resolved"
              | .description = ((.description // "") + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
         else . end
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
-  # Update ledger from current findings
+  # Update ledger from current findings (store full identity for fail-closed sticky).
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
+    def normdesc:
+      ((.description // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "")
+       | sub(" \\[auto-sticky:.*$"; ""));
     ($led[0] // {}) as $L
     | reduce ($cur[0].findings // [])[] as $x ($L;
         if ($x.id != null and $x.id != "") then
@@ -1213,7 +1236,8 @@ sticky_process_findings() {  # <findings-json-path>
             status: $x.status,
             file: $x.file,
             blob: ($blobs[$x.file] // null),
-            severity: $x.severity
+            severity: $x.severity,
+            desc_norm: ($x | normdesc)
           }
         else . end)
   ' > "$tmp" && mv "$tmp" "$ledger"
@@ -1323,8 +1347,9 @@ ${diff}${evidence}${commits}"
     # SCOPED + COMPACT verify: open findings as a one-line ledger; fix diff only;
     # do not free-explore the whole repo (anti-thrash).
     local prior vanchor="" vinc="" vscope vlabel vpayload vrule
+    # Full descriptions + ids — never truncate finding text (siblings live in the tail).
     prior="$(jq -c '[.findings[] | select(.status == "open")
-      | {id:(.id//null),file,line,severity,description:(.description|.[0:200])}]' \
+      | {id:(.id//null),file,line,severity,description}]' \
       "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
@@ -1342,14 +1367,15 @@ Do NOT re-read the whole branch. Prefer opening only files cited in open finding
       vlabel="DIFF (${baseref}...HEAD at ${sha})"
       vpayload="$diff"
     fi
-    prompt="Fix-verification round ${r} (fresh session, COMPACT). ${phase_note}
+    # Full reviewer contract (never truncate — binding criteria live past byte 12000).
+    prompt="Fix-verification round ${r} (fresh session, COMPACT scope on DIFF only). ${phase_note}
 ${vscope}
 
-=== REVIEWER CONTRACT (summary — full rules still apply) ===
-$(inline_contract | head -c 12000)
-=== END (truncated if long; policy unchanged) ===
+=== REVIEWER CONTRACT (.plinth/reviewer.md + project rules — FULL, not summarized) ===
+$(inline_contract)
+=== END REVIEWER CONTRACT ===
 
-OPEN PRIOR FINDINGS (compact ledger — preserve ids when present):
+OPEN PRIOR FINDINGS (full ledger — preserve ids; do not resolve without evidence):
 ${prior}
 
 1) For each open finding, status \"resolved\" or \"open\" — resolved requires ${vrule}.
@@ -1364,7 +1390,7 @@ ${vpayload}${evidence}${commits}"
     local inc prior_ids
     inc="$(git diff "${prev_sha}..HEAD" 2>/dev/null || true)"
     [ -n "$inc" ] || inc="$diff"
-    prior_ids="$(jq -c '[.findings[] | select(.status=="open") | {id:(.id//null),file,line,severity,description:(.description|.[0:160])}]' \
+    prior_ids="$(jq -c '[.findings[] | select(.status=="open") | {id:(.id//null),file,line,severity,description}]' \
       "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
     prompt="Fix-verification round ${r} (resume, INCREMENTAL). ${phase_note}
 HEAD is now ${sha}. You hold prior full context; below is only ${prev_sha}..HEAD.
@@ -1372,7 +1398,7 @@ HEAD is now ${sha}. You hold prior full context; below is only ${prev_sha}..HEAD
    Sticky: do not reopen prior-resolved classes on unchanged files as new majors.
 2) New defects on the incremental diff only. $(bind_note "$m" "$RISK")
 
-OPEN LEDGER:
+OPEN LEDGER (full descriptions — preserve ids):
 ${prior_ids}
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
@@ -1431,6 +1457,8 @@ ${diff}"
       ' > "$merged" && mv "$merged" "$SDIR/findings-$r.json"
       sticky_process_findings "$SDIR/findings-$r.json"
       validate_findings "$SDIR/findings-$r.json" || true
+      # Dual succeeded — clear any prior degradation marker from an earlier failed attempt.
+      rm -f "$SDIR/dual-degraded.json"
       echo "Plinth review: dual first-pass merged $(jq '[.findings[]|select(.description|startswith("[DUAL-PASS"))]|length' "$SDIR/findings-$r.json") secondary finding(s)."
     else
       echo "Plinth review: dual first-pass UNAVAILABLE (audit seat failed) — continuing with primary only; recorded dual_degraded (Tier-2 still binds on primary + later audit-on-APPROVED when available)."

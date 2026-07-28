@@ -1,14 +1,14 @@
 # Plinth lifecycle — command reference card
 
-**Version:** 5.0.0 · **Ship gate:** always `APPROVED@HEAD`  
+**Version:** 5.0.0 · **Ship gate:** always `APPROVED@HEAD`
 **Default phase:** **build** (Stop does **not** force review)
 
 ```
 plinth plan [--deep]  →  build  →  plinth harden  →  ./review.sh  →  PR
 ```
 
-**In-session:** all of these run from a driver shell in the repo (or `bin/plinth` from a Plinth checkout).  
-**Restart:** `Read HANDOFF.md and continue from ## Next.`  
+**In-session:** all of these run from a driver shell in the repo (or `bin/plinth` from a Plinth checkout).
+**Restart:** `Read HANDOFF.md and continue from ## Next.`
 **Automation default:** **keep cooking** after every handoff — never wait for
 compaction or a human timer. Optional fresh session is advice only at milestones.
 Stop only when ## Next is done or paths are **human-blocked** (`[BLOCKING]` NEEDS-HUMAN).
@@ -100,10 +100,10 @@ Stop-hook behavior follows phase only if the harness runs `.claude` hooks (Claud
 | `plinth plan` | Create `PLAN.md` skeleton if missing; never clobber |
 | `plinth plan --deep` | Same + 3 parallel critics → `PLAN-REVIEW.md` |
 
-Deep seats (from `.plinth/config`):  
-1. **security_ops** — `reviewer_vendor` / tier2 model  
-2. **completeness** — `audit_vendor` / audit_model  
-3. **delete_simplify** — `advisor_vendor` / advisor_model_max  
+Deep seats (from `.plinth/config`):
+1. **security_ops** — `reviewer_vendor` / tier2 model
+2. **completeness** — `audit_vendor` / audit_model
+3. **delete_simplify** — `advisor_vendor` / advisor_model_max
 
 Human adjudicates; majority is advisory only.
 
@@ -119,12 +119,12 @@ Human adjudicates; majority is advisory only.
 
 Cards show:
 
-- **BUILD** / **HARDEN** chip  
-- **PLAN** / **PLAN-REVIEW** / **HANDOFF** if files present  
-- lifecycle line (phase + ages)  
-- existing review verdict / rounds / NEEDS-HUMAN  
+- **BUILD** / **HARDEN** chip
+- **PLAN** / **PLAN-REVIEW** / **HANDOFF** if files present
+- lifecycle line (phase + ages)
+- existing review verdict / rounds / NEEDS-HUMAN
 
-`build_defer` is a known event (does not break snapshot parse).  
+`build_defer` is a known event (does not break snapshot parse).
 Requires current `bin/plinth` + `shared/dashboard/index.html` (this release).
 
 ```bash
