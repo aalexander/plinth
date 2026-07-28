@@ -3329,7 +3329,7 @@ if isinstance(user, dict) and isinstance(user.get("subscriptionTier"), str):
     plan = user["subscriptionTier"]
 
 # Billing-only $ fields here; cumulative API cost periods filled in post-pass
-# (shared scanner: Grok costUsdTicks + Claude/Codex list-price estimates).
+# (shared scanner: Grok costUsdTicks + structured Claude/Codex total_cost only).
 spend = {"currency": "USD"}
 od_used = num_val(credits_cfg or {}, "onDemandUsed")
 if od_used is None:
@@ -3746,7 +3746,7 @@ def harvest_claude(seen):
                     continue
                 sid = rec.get("session_id") or rec.get("sessionId") or f.name
                 # Stable per-event id: session + line + usd (line anchors event;
-                # content_seen migrates legacy ids with same session+usd).
+                # content_seen migrates legacy ids with same session+usd+line).
                 eid = "claude:%s:%s:%.6f" % (sid, lineno, usd)
                 if eid in seen:
                     continue
@@ -4493,17 +4493,23 @@ _write_handoff() {
   next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$out" ]; then
     local prev_done prev_next
-    # Preserve trailing blanks: write sections to temp files and read with
-    # python (bash $(...) always strips trailing newlines).
-    local _hd _hn
+    # Preserve trailing blanks: temp file + sentinel (bash $(...) strips
+    # trailing newlines; append marker then strip it).
+    local _hd _hn _raw
     _hd=$(mktemp) _hn=$(mktemp)
     awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
     awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
     if [ -s "$_hd" ]; then
-      done_block=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())' "$_hd" 2>/dev/null || cat "$_hd")
+      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$_hd" 2>/dev/null) \
+        || _raw=$(cat "$_hd"; printf '\n<<PLINTH_EOF>>')
+      done_block=${_raw%$'\n<<PLINTH_EOF>>'}
+      done_block=${done_block%<<PLINTH_EOF>>}
     fi
     if [ -s "$_hn" ]; then
-      next=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())' "$_hn" 2>/dev/null || cat "$_hn")
+      _raw=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text()+"\n<<PLINTH_EOF>>")' "$_hn" 2>/dev/null) \
+        || _raw=$(cat "$_hn"; printf '\n<<PLINTH_EOF>>')
+      next=${_raw%$'\n<<PLINTH_EOF>>'}
+      next=${next%<<PLINTH_EOF>>}
     fi
     rm -f "$_hd" "$_hn"
   fi
@@ -4583,10 +4589,16 @@ _write_handoff() {
         ;;
     esac
   fi
-  if [ -n "${PLINTH_HANDOFF_NEXT:-}" ]; then
-    next=$(_handoff_set_primary_next "$PLINTH_HANDOFF_NEXT" "$next")
-  elif [ -n "$next_hint" ]; then
-    next=$(_handoff_set_primary_next "$next_hint" "$next")
+  if [ -n "${PLINTH_HANDOFF_NEXT:-}" ] || [ -n "$next_hint" ]; then
+    local _hp _hint_use
+    _hint_use="${PLINTH_HANDOFF_NEXT:-$next_hint}"
+    _hp=$(mktemp)
+    # Sentinel so trailing blanks from the helper survive command substitution.
+    { _handoff_set_primary_next "$_hint_use" "$next"; printf '\n<<PLINTH_EOF>>'; } > "$_hp"
+    _raw=$(cat "$_hp")
+    rm -f "$_hp"
+    next=${_raw%$'\n<<PLINTH_EOF>>'}
+    next=${next%<<PLINTH_EOF>>}
   fi
   kind=$(_handoff_kind "$reason")
   if [ "$kind" = "milestone" ]; then

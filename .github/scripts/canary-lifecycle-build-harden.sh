@@ -165,11 +165,11 @@ setup_proj "$TMP/p5"
 echo 'not-json' > "$TMP/p5/.plinth/session/phase-feat-canary.json"
 export CLAUDE_PROJECT_DIR="$TMP/p5"
 set +e
-printf '%s' '{"session_id":"canary"}' | bash "$GATE" >/tmp/g5.out 2>/tmp/g5.err
+printf '%s' '{"session_id":"canary"}' | bash "$GATE" >"$TMP/g5.out" 2>"$TMP/g5.err"
 rc=$?
 set -e
-[ "$rc" -eq 2 ] || fail "corrupt phase should block as harden, got $rc err=$(cat /tmp/g5.err)"
-grep -qi HARDEN /tmp/g5.err || grep -qi corrupt /tmp/g5.err || fail "expected harden/corrupt message"
+[ "$rc" -eq 2 ] || fail "corrupt phase should block as harden, got $rc err=$(cat "$TMP/g5.err")"
+grep -qi HARDEN "$TMP/g5.err" || grep -qi corrupt "$TMP/g5.err" || fail "expected harden/corrupt message"
 pass "corrupt phase fail-closed as harden"
 
 # --- next: stale APPROVED under harden must not report done ---
@@ -198,21 +198,21 @@ setup_proj "$TMP/p7"
 # No APPROVED verdict — guard must block ship command at command position.
 set +e
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body b"}}' \
-  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >/tmp/g7.out 2>/tmp/g7.err
+  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >"$TMP/g7.out" 2>"$TMP/g7.err"
 rc=$?
 set -e
-[ "$rc" -eq 2 ] || fail "gh pr create without APPROVED should block (exit 2), got $rc err=$(cat /tmp/g7.err)"
-grep -qiE 'APPROVED|ship|pr create|blocked' /tmp/g7.err \
-  || fail "ship block message expected: $(cat /tmp/g7.err)"
+[ "$rc" -eq 2 ] || fail "gh pr create without APPROVED should block (exit 2), got $rc err=$(cat "$TMP/g7.err")"
+grep -qiE 'APPROVED|ship|pr create|blocked' "$TMP/g7.err" \
+  || fail "ship block message expected: $(cat "$TMP/g7.err")"
 pass "guard blocks gh pr create without APPROVED@HEAD"
 set +e
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --merge"}}' \
-  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >/tmp/g7m.out 2>/tmp/g7m.err
+  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >"$TMP/g7m.out" 2>"$TMP/g7m.err"
 rc=$?
 set -e
-[ "$rc" -eq 2 ] || fail "gh pr merge without APPROVED should block (exit 2), got $rc err=$(cat /tmp/g7m.err)"
-grep -qiE 'APPROVED|ship|pr merge|blocked' /tmp/g7m.err \
-  || fail "ship merge block message expected: $(cat /tmp/g7m.err)"
+[ "$rc" -eq 2 ] || fail "gh pr merge without APPROVED should block (exit 2), got $rc err=$(cat "$TMP/g7m.err")"
+grep -qiE 'APPROVED|ship|pr merge|blocked' "$TMP/g7m.err" \
+  || fail "ship merge block message expected: $(cat "$TMP/g7m.err")"
 pass "guard blocks gh pr merge without APPROVED@HEAD"
 
 # --- sticky ledger: production jq from shared/.plinth/review.sh (not a toy reimpl) ---
