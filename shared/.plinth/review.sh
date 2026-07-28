@@ -1254,44 +1254,47 @@ sticky_process_findings() {  # <findings-json-path>
       ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L
     | .findings |= map(
-        (. as $f
-         | (.id // ($f | base_id)) as $kid
+        (. as $f | ($f | base_id) as $bid
+         | (if (.id == null or .id == "") then $bid else .id end) as $disp
+         # AUTO-STICKY uses base identity (file|sev|normdesc), not display id —
+         # so renames/suffixes after sibling collapse cannot evade resolution.
          | if .status == "open"
-              and ($L[$kid] != null)
-              and ($L[$kid].status == "resolved")
-              and ($L[$kid].blob != null) and ($blobs[.file] != null)
-              and ($L[$kid].blob == $blobs[.file])
-              and ($L[$kid].file != null) and ($L[$kid].file == .file)
-              and ($L[$kid].severity != null) and ($L[$kid].severity == .severity)
-              and ($L[$kid].desc_norm != null) and ($L[$kid].desc_norm == ($f | normdesc))
+              and ($L[$bid] != null)
+              and ($L[$bid].status == "resolved")
+              and ($L[$bid].blob != null) and ($blobs[.file] != null)
+              and ($L[$bid].blob == $blobs[.file])
+              and ($L[$bid].file != null) and ($L[$bid].file == .file)
+              and ($L[$bid].severity != null) and ($L[$bid].severity == .severity)
+              and ($L[$bid].desc_norm != null) and ($L[$bid].desc_norm == ($f | normdesc))
            then .status = "resolved"
-                | .id = $kid
+                | .id = $disp
                 | .description = (($f | strip_sticky)
                     + " [AUTO-STICKY: reopened without file blob change — treated resolved]")
-           else .id = $kid end)
+           else .id = $disp end)
       )
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 
-  # Update ledger keyed by display id. Open-wins: if any row with that id is
-  # open in this payload, ledger status is open (order-independent).
+  # Ledger keyed by base_id (stable identity). Open-wins across siblings.
   jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
     def strip_sticky:
       ((.description // "") | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; ""));
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def base_id:
+      ((.file // "") + "|" + (.severity // "") + "|" + normdesc) | @base64;
     ($led[0] // {}) as $L0
     | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
-        ($x.id // empty) as $kid
-        | if ($kid == null or $kid == "") then .
+        ($x | base_id) as $bid
+        | if ($bid == null or $bid == "") then .
           else
-            .led[$kid] = {
+            .led[$bid] = {
               status: $x.status,
               file: $x.file,
               blob: ($blobs[$x.file] // null),
               severity: $x.severity,
               desc_norm: ($x | normdesc)
             }
-            | if $x.status == "open" then .open[$kid] = true else . end
+            | if $x.status == "open" then .open[$bid] = true else . end
           end)
     | . as $acc
     | reduce ($acc.open | keys[]) as $k ($acc.led; .[$k].status = "open")

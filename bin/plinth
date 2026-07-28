@@ -4493,23 +4493,19 @@ _write_handoff() {
   next="1. (edit: next concrete step)"$'\n'"2. …"
   if [ -f "$out" ]; then
     local prev_done prev_next
-    # Preserve blanks: base64 round-trip so command substitution cannot strip
-    # trailing newlines from Done/Next sections.
-    if command -v base64 >/dev/null 2>&1; then
-      prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | base64 | tr -d '\n')
-      prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null | base64 | tr -d '\n')
-      if [ -n "$prev_done" ]; then
-        done_block=$(printf '%s' "$prev_done" | base64 -d 2>/dev/null || printf '%s' "$prev_done" | base64 -D 2>/dev/null || true)
-      fi
-      if [ -n "$prev_next" ]; then
-        next=$(printf '%s' "$prev_next" | base64 -d 2>/dev/null || printf '%s' "$prev_next" | base64 -D 2>/dev/null || true)
-      fi
-    else
-      prev_done=$(awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
-      prev_next=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null || true)
-      [ -n "$prev_done" ] && done_block="$prev_done"
-      [ -n "$prev_next" ] && next="$prev_next"
+    # Preserve trailing blanks: write sections to temp files and read with
+    # python (bash $(...) always strips trailing newlines).
+    local _hd _hn
+    _hd=$(mktemp) _hn=$(mktemp)
+    awk '/^## Done/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
+    awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
+    if [ -s "$_hd" ]; then
+      done_block=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())' "$_hd" 2>/dev/null || cat "$_hd")
     fi
+    if [ -s "$_hn" ]; then
+      next=$(python3 -c 'import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())' "$_hn" 2>/dev/null || cat "$_hn")
+    fi
+    rm -f "$_hd" "$_hn"
   fi
   # Insert a phase-aware first Next line. Only drop exact known auto-generated
   # lifecycle hints (not arbitrary operator text containing "review.sh" etc.).
