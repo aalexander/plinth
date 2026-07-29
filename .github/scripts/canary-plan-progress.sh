@@ -1250,4 +1250,24 @@ echo "$outs" | jq -e '.pct_complete != 100 and .done == 1 and .total == 2' >/dev
   || fail "stale status=done over open boxes: $(echo "$outs"|jq '{pct_complete,done,total,mode:.progress_mode}')"
 pass "stale status=done does not force 100% over open checkboxes"
 
+# Phase/Foundation under Release gates must NOT be coding majors
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [ ] Real work
+## Release gates
+### Phase 0
+- [ ] Gate paperwork
+### Foundation
+- [ ] Human sign-off only
+### Release 2
+- [ ] External gate
+P
+outrg=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outrg" | jq -e '[.outline[].title] | map(test("Phase 0|Foundation|Release 2|Release gates")) | any | not' >/dev/null \
+  || fail "release-gates nest leaked: $(echo "$outrg"|jq '[.outline[].title]')"
+echo "$outrg" | jq -e '.total==1 and (.current.title|test("Real work"))' >/dev/null \
+  || fail "only real AC work: $(echo "$outrg"|jq '{total,current,titles:[.outline[].title]}')"
+pass "Release gates nest does not admit Phase/Foundation/Release"
+
 echo "canary-plan-progress: ALL PASS"

@@ -5497,6 +5497,10 @@ def section_done_from_title(ht: str) -> bool:
 outline = []
 cur = None  # current H2/H3 section node
 title = None
+# When a non-coding parent is skipped, ignore descendants until a heading at
+# the same or higher level exits that subtree (so ### Phase under ## Release
+# gates is not admitted as a coding major).
+skip_below = None
 lines = text.splitlines()
 i = 0
 while i < len(lines):
@@ -5511,6 +5515,9 @@ while i < len(lines):
             continue
         # #### substeps under ### Slice / module majors (expandable on the dash).
         if level == 4:
+            if skip_below is not None and level > skip_below:
+                i += 1
+                continue
             parent = (cur.get("title") if cur else "") or ""
             under_slice = bool(re.search(r"\bslice\s*\d+\b", parent, re.I))
             if cur is not None and is_coding_item(ht, parent) and (
@@ -5531,10 +5538,17 @@ while i < len(lines):
             i += 1
             continue
         if level >= 2:
+            if skip_below is not None and level > skip_below:
+                cur = None
+                i += 1
+                continue
+            if skip_below is not None and level <= skip_below:
+                skip_below = None
             key = ht.lower().strip()
             # Skip pure meta headings always for plan-like docs.
             if key in SKIP_H2 or (NON_CODING_SECTION_RE.search(ht) and not is_coding_section(ht)):
                 cur = None
+                skip_below = level
                 i += 1
                 continue
             if not is_coding_section(ht) and primary_kind == "plan":
