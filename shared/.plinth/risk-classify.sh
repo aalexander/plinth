@@ -49,7 +49,13 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
 is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -Eq "$SPECRE"; }
 
-raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
+# plinth#11: never treat a failed git diff as empty (Tier 0). Infra fail → Tier 2.
+raw=""; raw_rc=0
+raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null)" || raw_rc=$?
+if [ "$raw_rc" -ne 0 ]; then
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git diff --raw failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$raw_rc"
+  exit 0
+fi
 [ -n "$raw" ] || { printf '{"tier":0,"reasons":["empty diff"],"files":0,"base_ref":"%s"}\n' "$baseref"; exit 0; }
 
 # High-consequence path signals (Tier 2). Case-insensitive matching below.

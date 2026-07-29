@@ -815,4 +815,26 @@ residual_ship_ok "$TMP/p22" "$tip_a" || fail "residual should authorize its own 
 residual_ship_ok "$TMP/p22" "$tip_b" && fail "residual for tip_a must NOT authorize unrelated tip_b" || true
 pass "residual authorizes bound tip only (not unrelated tip)"
 
+# plinth#11: git diff --raw failure → Tier 2 (not empty/Tier 0)
+setup_proj "$TMP/p23b"
+mkdir -p "$TMP/p23b/.plinth" "$TMP/badgit2"
+cp "$ROOT/shared/.plinth/risk-classify.sh" "$TMP/p23b/.plinth/risk-classify.sh"
+chmod +x "$TMP/p23b/.plinth/risk-classify.sh"
+# Ensure a base branch named main exists (setup_proj may leave only feat/canary).
+git -C "$TMP/p23b" branch -f main HEAD~1 2>/dev/null || git -C "$TMP/p23b" branch -f main "$(git -C "$TMP/p23b" rev-list --max-parents=0 HEAD)"
+REALGIT="$(command -v git)"
+cat > "$TMP/badgit2/git" <<G
+#!/bin/bash
+if [ "\$1" = "diff" ] && [ "\$2" = "--raw" ]; then exit 128; fi
+exec "$REALGIT" "\$@"
+G
+chmod +x "$TMP/badgit2/git"
+out="$(cd "$TMP/p23b" && PATH="$TMP/badgit2:$PATH" ./.plinth/risk-classify.sh main 2>/dev/null || true)"
+tier="$(printf '%s' "$out" | jq -r .tier 2>/dev/null || echo x)"
+[ "$tier" = "2" ] || fail "plinth#11: git diff --raw failure must be Tier 2, got tier=$tier out=$out"
+reasons="$(printf '%s' "$out" | jq -r '.reasons[0] // empty' 2>/dev/null || true)"
+printf '%s' "$reasons" | grep -qi 'diff --raw failed' \
+  || fail "plinth#11: expected raw-failed reason, got: $reasons"
+pass "plinth#11 git diff --raw failure fails closed to Tier 2"
+
 echo "canary-lifecycle-build-harden: ALL PASS"

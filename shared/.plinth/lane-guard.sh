@@ -268,7 +268,12 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # git/find failure must NOT be conflated with a legitimately-empty result (which would yield a
   # partial baseline that later reads as "scope ok"). ls-files exits 0 on empty, non-zero on error.
   local _gv _cp _d; local -a _cpdirs=()
-  _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
+  # plinth#17: NUL-delimited enumeration so tabs/newlines in pathnames are not C-quoted
+  # into forms that miss SECRET_DIRS / protected patterns. (Downstream filters still
+  # line-split for grep compatibility — paths containing raw newlines remain a residual
+  # honest bound; tabs are preserved in the path bytes.)
+  _gv=""
+  _gv="$( { git ls-files -z -c && git ls-files -z -o -i --exclude-standard && git ls-files -z -o --exclude-standard; } | tr '\0' '\n' )" 2>/dev/null \
     || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
   # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter):
   # the ignored-file listing stays FULL (that is the security property — gitignored secrets must be

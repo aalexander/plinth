@@ -104,16 +104,29 @@ command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 # SHA-bound review. Parse porcelain -z (NUL-delimited, UNquoted) and compare the EXACT
 # path — a substring/space-anchored regex would wrongly exempt a filename that merely
 # ends in "NEEDS-HUMAN.md" (filenames may contain spaces, e.g. "docs/foo NEEDS-HUMAN.md").
+# plinth#12: git status failure must fail CLOSED (not "clean"). Porcelain -z rename
+# records are XY path\0path2\0 — only the first record has the "XY " prefix.
+# Do NOT capture -z output in a bash $(...) var — command substitution strips NULs.
 dirty=0
+status_rc=0
+_status_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-status.XXXXXX")" || die_infra "mktemp failed for git status capture"
+git status --porcelain -z > "$_status_tmp" 2>/dev/null || status_rc=$?
+[ "$status_rc" -eq 0 ] \
+  || { rm -f "$_status_tmp"; die_infra "git status failed (rc=$status_rc) — cannot verify a clean tree for SHA-bound review"; }
 while IFS= read -r -d '' entry; do
-  path="${entry:3}"   # porcelain -z prefixes each record with "XY " (2 status + 1 space)
+  [ -n "$entry" ] || continue
+  case "$entry" in
+    [MADRCUT?!][MADRCUT?!]\ *) path="${entry:3}" ;;  # XY + space + path
+    *) path="$entry" ;;                              # rename/copy second path
+  esac
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
     HANDOFF.md) ;;                               # review/handoff auto-refresh — not reviewable product
-    "") ;;                                       # defensive (e.g. a rename's second field)
+    "") ;;
     *) dirty=1; break ;;
   esac
-done < <(git status --porcelain -z)
+done < "$_status_tmp"
+rm -f "$_status_tmp"
 [ "$dirty" = 0 ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
@@ -468,7 +481,20 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
 m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
 sys.stdout.write(m.group(1) if m else "")' > "${out}.j" 2>/dev/null || return 1 ;;
     agy|gemini)
-      ( cd "$ad" && agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null || return 1
+      # plinth#14: never put a multi-hundred-KB prompt on argv (E2BIG → silent UNAVAILABLE).
+      # Feed via stdin; refuse oversized prompts with a clear failure rather than empty error.
+      _agy_p="$(mktemp "${TMPDIR:-/tmp}/plinth-agy.XXXXXX")" || return 1
+      printf '%s' "$prompt" > "$_agy_p" || { rm -f "$_agy_p"; return 1; }
+      _agy_sz=$(wc -c < "$_agy_p" | tr -d ' ')
+      if [ "${_agy_sz:-0}" -gt 400000 ] 2>/dev/null; then
+        echo "agy audit prompt too large (${_agy_sz} bytes) — would E2BIG; audit UNAVAILABLE" >&2
+        rm -f "$_agy_p"; return 1
+      fi
+      # Prefer file-path form when supported; fall back to stdin without shell-expanding contents.
+      ( cd "$ad" && agy -p "@${_agy_p}" --sandbox ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null \
+        || ( cd "$ad" && agy --sandbox ${margs[@]+"${margs[@]}"} < "$_agy_p" ) > "$raw" 2>/dev/null \
+        || { rm -f "$_agy_p"; return 1; }
+      rm -f "$_agy_p"
       python3 -c 'import sys,re
 m=re.search(r"(\{.*\})", open(sys.argv[1]).read(), re.S)
 sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
@@ -552,21 +578,41 @@ merge_base="$(git merge-base "$base_tip" "$sha" 2>/dev/null)" || merge_base=""
 # (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
 # high-consequence diff is over-reviewed, never under-reviewed.
 RISK=2; RISK_JSON='{"tier":2,"reasons":["classifier unavailable — failing closed to Tier 2"]}'
-if [ -x ".plinth/risk-classify.sh" ]; then
-  # Pass the pinned tip SHA (not the mutable base name) so classification cannot
-  # re-resolve a moved ref and disagree with the diff already taken.
-  out="$(./.plinth/risk-classify.sh "$base_tip" 2>/dev/null || true)"
-  t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
-  case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
+# plinth#13/#15: never run a PR-controlled classifier before knowing the tooling floor.
+# If risk-classify.sh itself changed vs base, refuse working-tree execution (Tier 2).
+# Prefer the base-blob script when present so classification is not attacker shell.
+_cls_changed=0
+_tool_diff_rc=0
+_tool_names="$(git diff --name-only "${base_tip}..HEAD" 2>/dev/null)" || _tool_diff_rc=$?
+if [ "$_tool_diff_rc" -ne 0 ]; then
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["git diff --name-only for tooling floor failed — failing closed to Tier 2"]}'
+elif printf '%s\n' "$_tool_names" | grep -qxF '.plinth/risk-classify.sh'; then
+  _cls_changed=1
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["risk-classify.sh changed in this PR — refuse working-tree classifier (fail closed Tier 2)"]}'
+else
+  # Run base-blob classifier when possible (not attacker working-tree shell).
+  _cls_tmp=""; _cls_src=""
+  if git cat-file -e "${base_tip}:.plinth/risk-classify.sh" 2>/dev/null; then
+    _cls_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-cls.XXXXXX")" || _cls_tmp=""
+    if [ -n "$_cls_tmp" ] && git show "${base_tip}:.plinth/risk-classify.sh" > "$_cls_tmp" 2>/dev/null; then
+      chmod +x "$_cls_tmp" 2>/dev/null || true
+      _cls_src="$_cls_tmp"
+    fi
+  elif [ -x ".plinth/risk-classify.sh" ]; then
+    # First-adoption: base has no classifier — working tree is the only copy.
+    _cls_src=".plinth/risk-classify.sh"
+  fi
+  if [ -n "$_cls_src" ]; then
+    out="$(bash "$_cls_src" "$base_tip" 2>/dev/null || true)"
+    t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
+    case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac
+  fi
+  [ -n "$_cls_tmp" ] && rm -f "$_cls_tmp"
 fi
-# SELF-REFERENTIAL FLOOR (independent of the classifier): the classifier is version-pinned
-# tooling but is EXECUTED from the PR working tree, so a PR could rewrite it to emit Tier 0 and
-# skip BOTH the model round AND the tooling-tamper block (Tier 0 exits APPROVED before that
-# arithmetic). Check the diff directly: if it touches ANY version-pinned tooling path, it CANNOT
-# be Tier 0 — floor to Tier 2 so the full review + tamper arithmetic run. (This repo's own shared/
-# product edits do not match the root-anchored HARNESS_RE, so they are unaffected.)
-if [ "$RISK" = "0" ] && git diff --name-only "${base_tip}..HEAD" 2>/dev/null | grep -Eq "$HARNESS_RE"; then
-  RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the working-tree classifier to prevent a self-referential Tier-0 bypass"]}'
+# SELF-REFERENTIAL FLOOR: any version-pinned tooling path in the diff cannot be Tier 0.
+if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ] \
+   && printf '%s\n' "$_tool_names" | grep -Eq "$HARNESS_RE"; then
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the classifier to prevent a self-referential Tier-0 bypass"]}'
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
@@ -1104,8 +1150,11 @@ if [ -f "$SDIR/verdict.json" ]; then
     # clean-slate confirmation) instead of a warm re-read.
     fallback="fresh"
     [ -f "$SDIR/findings-${prev_round}.json" ] && fallback="verify"
-    if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
-      echo "Plinth review: last reviewed commit ${prev_sha} no longer exists (rebase?) — running a fresh full round."
+    # plinth#5: after rebase drops a reviewed commit, cat-file may still succeed if
+    # the object is dangling — require ancestry of current HEAD for resume/verify.
+    if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null \
+       || ! git merge-base --is-ancestor "$prev_sha" "$sha" 2>/dev/null; then
+      echo "Plinth review: last reviewed commit ${prev_sha} is missing or not an ancestor of HEAD (rebase?) — running a fresh full round."
       mode="fresh"   # no valid anchor for an incremental diff
     else
       prev_in="$(jq -r '.usage.input_tokens // 0' "$SDIR/verdict.json")"

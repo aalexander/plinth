@@ -233,8 +233,8 @@ restart the loop or clear session state to dodge it). The PLINTH_* review overri
 PLINTH_REVIEWER_MODEL, PLINTH_AUDIT_VENDOR, PLINTH_AUDIT_MODEL, PLINTH_ROUND_CAP)
 are OPERATOR-ONLY: the driver must NEVER set them — using them to change the
 reviewer, drop the cross-vendor audit, or raise the round cap is the same
-tampering class as dodging the cap, whatever the intent. Every override any round
-recorded in session state (verdict.json for the latest round; the per-round
+tampering class as dodging the cap, whatever the intent. Every override recorded
+in any round of session state (verdict.json for the latest round; the per-round
 usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
 (seat, value, round) — in the canonical machine-checked form
 `PLINTH-OVERRIDE: NAME=VALUE (round N)`, one line per tuple. The receipt check
