@@ -5446,6 +5446,13 @@ def is_coding_section(ht: str) -> bool:
     """True only for sections that are operational coding milestones."""
     if not ht:
         return False
+    # Non-coding context on a Phase/Release title (e.g. "Phase 0 risks").
+    if NON_CODING_SECTION_RE.search(ht) and not re.search(
+        r"\bbuild (status|order)\b|\bslice\s*\d+\b", ht, re.I
+    ):
+        # "Phase 0 risks" / "Phase 0 design decisions" are not coding majors.
+        if re.search(r"\b(risk|gate|design decision|tradeoff|approv)", ht, re.I):
+            return False
     # Strong positive: module build status / build order / Slice N / Phase N.
     if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b|\bphase\s*\d+\b", ht, re.I):
         return True
@@ -5553,7 +5560,9 @@ while i < len(lines):
                 continue
             if not is_coding_section(ht) and primary_kind == "plan":
                 # PLAN.md: only coding milestone sections (### Slice N, AC, …).
+                # Descendants of non-coding parents (Human approvals, etc.) skip too.
                 cur = None
+                skip_below = level
                 i += 1
                 continue
             # Spec primary: keep requirement-like sections only.
@@ -5655,7 +5664,7 @@ while i < len(lines):
         and re.search(r"\bshall\b", line, re.I)
         and len(line.strip()) > 12
     ):
-        body = re.sub(r"^[-*+\d.)\s]+", "", line.strip()).strip()
+        body = re.sub(r"^(?:\s*(?:[-*+]|\d+[.)])\s+)+", "", line.strip()).strip()
         if is_coding_item(body, sec_title):
             cur["children"].append({
                 "id": f"{cur['id']}.{len(cur['children'])+1}",
@@ -5717,7 +5726,7 @@ def harvest_shall(max_n=40):
     for line in lines:
         t = line.strip()
         if re.search(r"\bshall\b", t, re.I) and len(t) > 12:
-            shall.append(re.sub(r"^[-*+\d.)\s]+", "", t).strip()[:200])
+            shall.append(re.sub(r"^(?:\s*(?:[-*+]|\d+[.)])\s+)+", "", t).strip()[:200])
         if len(shall) >= max_n:
             break
     return shall
@@ -5928,14 +5937,13 @@ current = None
 current_via = None
 checkpoint_cursor = False
 
-# status=done is authoritative only when no leaf is still open from checkboxes.
-# Stale done fences must not paint 100% over unchecked PLAN boxes.
-if (
-    cp_status == "done"
-    and leaves
-    and not truncated
-    and not any(n.get("status") != "done" for n in leaves)
-):
+# status=done paints whole-plan complete unless unchecked CHECKBOX leaves remain.
+# Non-checkbox plans (bullets/shall/####) are open by construction — trust done.
+_open_boxes = [
+    n for n in leaves
+    if n.get("checkbox") and n.get("status") != "done"
+] if leaves else []
+if cp_status == "done" and leaves and not truncated and not _open_boxes:
     current = leaves[-1]
     current_via = "checkpoint_status_done"
     checkpoint_cursor = True

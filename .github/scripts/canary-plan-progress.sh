@@ -1270,4 +1270,32 @@ echo "$outrg" | jq -e '.total==1 and (.current.title|test("Real work"))' >/dev/n
   || fail "only real AC work: $(echo "$outrg"|jq '{total,current,titles:[.outline[].title]}')"
 pass "Release gates nest does not admit Phase/Foundation/Release"
 
+# shall prefix must not strip 3DS / .NET / 24-hour
+rm -f "$TMP/a/PLAN.md"
+cat > "$TMP/a/SPEC.md" <<'S'
+# Spec
+## Requirements
+3DS shall authenticate cardholders.
+24-hour retention shall apply to logs.
+.NET shall host the API.
+S
+printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"
+outs=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outs" | jq -e '[.outline[].children[]?.title] | map(test("^3DS shall|^24-hour|^\\.NET shall")) | all' >/dev/null \
+  || fail "shall prefix corruption: $(echo "$outs"|jq '[.outline[].children[]?.title]')"
+pass "shall normalizer preserves 3DS/24-hour/.NET prefixes"
+
+# non-checkbox plan + status=done → 100%
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- Stage one bullet
+- Stage two bullet
+P
+rt='{"status":"done","plan_ref":"PLAN.md"}'
+outd=$(_plan_progress_json "$TMP/a" "$rt")
+echo "$outd" | jq -e '.pct_complete==100 and .done==2' >/dev/null \
+  || fail "non-checkbox status=done should be 100: $(echo "$outd"|jq '{pct_complete,done,total}')"
+pass "non-checkbox plan status=done is 100%"
+
 echo "canary-plan-progress: ALL PASS"
