@@ -5914,7 +5914,14 @@ current = None
 current_via = None
 checkpoint_cursor = False
 
-if cp_status == "done" and leaves and not truncated:
+# status=done is authoritative only when no leaf is still open from checkboxes.
+# Stale done fences must not paint 100% over unchecked PLAN boxes.
+if (
+    cp_status == "done"
+    and leaves
+    and not truncated
+    and not any(n.get("status") != "done" for n in leaves)
+):
     current = leaves[-1]
     current_via = "checkpoint_status_done"
     checkpoint_cursor = True

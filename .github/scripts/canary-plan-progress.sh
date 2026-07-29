@@ -1236,4 +1236,18 @@ echo "$cj" | jq -e '.status != "done"' >/dev/null \
   || fail "truncated + prior done must reopen: $cj"
 pass "truncated reopens prior done fence"
 
+# Stale status=done must not force 100% when PLAN has open checkboxes
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [x] Done leaf
+- [ ] Still open leaf
+P
+printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"
+rt='{"status":"done","slice_index":2,"slice_total":2,"plan_ref":"PLAN.md"}'
+outs=$(_plan_progress_json "$TMP/a" "$rt")
+echo "$outs" | jq -e '.pct_complete != 100 and .done == 1 and .total == 2' >/dev/null \
+  || fail "stale status=done over open boxes: $(echo "$outs"|jq '{pct_complete,done,total,mode:.progress_mode}')"
+pass "stale status=done does not force 100% over open checkboxes"
+
 echo "canary-plan-progress: ALL PASS"

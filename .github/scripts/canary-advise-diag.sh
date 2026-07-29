@@ -173,6 +173,11 @@ pass "agy empty stdout → unavailable"
 run_advise_vendor claude whitespace
 echo "$_adv_out" | grep -qi 'empty output\|advisor unavailable' || fail "whitespace: $_adv_out"
 pass "whitespace-only stdout is empty (not advice)"
+for v in codex grok agy; do
+  run_advise_vendor "$v" whitespace
+  echo "$_adv_out" | grep -qi 'empty output\|advisor unavailable' || fail "$v whitespace: $_adv_out"
+done
+pass "whitespace-only stdout empty on all vendors"
 
 run_advise_vendor claude fail_nz
 [ "$_adv_rc" -eq 0 ] || fail "fail_nz must be non-blocking"
