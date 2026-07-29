@@ -5194,20 +5194,18 @@ if not _plan_ref:
 # Never preserve a nested *PLAN.md path as operational plan_ref.
 if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# Orphan PLAN cursor: no root PLAN.md and any inherited plan position (or done).
-# Never leave a plan cursor authoritative over SPEC when PLAN is absent.
+# Orphan PLAN cursor (narrow): root PLAN absent AND prior fence claimed a PLAN
+# path or whole-plan done with an index — clear ghost 100% over SPEC.
+# Planless projects may still keep operator slice_id/effort routing without PLAN.md.
 _prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
 _no_root_plan = not (root / "PLAN.md").is_file()
 _orphan_plan = (
     _no_root_plan
     and (
-        (_plan_ref is None or _plan_ref in ("PLAN.md", "./PLAN.md"))
-        and (
-            isinstance(prev.get("slice_index"), int)
-            or isinstance(prev.get("slice_id"), str)
-            or isinstance(prev.get("slice_title"), str)
-            or prev.get("status") == "done"
-            or (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
+        (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
+        or (
+            prev.get("status") == "done"
+            and isinstance(prev.get("slice_index"), int)
         )
     )
 )
