@@ -2022,27 +2022,46 @@ ${diff}"
               or ( (.id == null) and (((.file//"") + "|" + (.severity//"") + "|" + (.description//"")) as $fp
                     | ($seen_fp | index($fp)) == null) )
             )
-          | . + {status:"open", description: ((.description // "") + " [VERIFY-CARRY: not in capped ledger / not re-adjudicated — remains open]")}
+          | {
+              file: (.file // ""),
+              line: (if (.line|type) == "number" then .line else 0 end),
+              severity: (if .severity == "blocker" or .severity == "major" or .severity == "minor" then .severity else "major" end),
+              description: ((.description // "") + " [VERIFY-CARRY: not in capped ledger / not re-adjudicated — remains open]"),
+              status: "open",
+              id: (if .id == null then null else .id end)
+            }
         ] as $carry
       | $cur
-      | .findings = (($cf + $carry))
+      | .findings = (($cf | map({
+            file: (.file // ""),
+            line: (if (.line|type) == "number" then .line else 0 end),
+            severity, description, status,
+            id: (if .id == null then null else .id end)
+          })) + $carry)
       | if ($carry | length) > 0 and .verdict == "APPROVED" then .verdict = "CHANGES_NEEDED" else . end
-      | . + {verify_carried: ($carry | length)}
+      | {verdict, summary, findings, _n: ($carry | length)}
     ' "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null; then
       rm -f "$_vf_tmp"
       die_infra "verify prior re-merge failed — refusing to approve with a capped ledger (see findings-$((r-1)).json)"
     fi
-    mv "$_vf_tmp" "$SDIR/findings-$r.json"
-    _vf_n="$(jq -r '.verify_carried // 0' "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
+    _vf_n="$(jq -r '._n // 0' "$_vf_tmp" 2>/dev/null || echo 0)"
+    jq -c 'del(._n)' "$_vf_tmp" > "${_vf_tmp}.out" 2>/dev/null \
+      && mv "${_vf_tmp}.out" "$SDIR/findings-$r.json" || {
+        rm -f "$_vf_tmp" "${_vf_tmp}.out"
+        die_infra "verify prior re-merge strip failed"
+      }
+    rm -f "$_vf_tmp"
     case "$_vf_n" in ''|*[!0-9]*) _vf_n=0 ;; esac
     if [ "$_vf_n" -gt 0 ]; then
       echo "Plinth review: verify re-carried ${_vf_n} prior open finding(s) not in the capped ledger (fail closed)."
       RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
     fi
-    if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ] && [ "$RVERDICT" = "APPROVED" ]; then
+    # Truncated fix-diff: refuse APPROVED regardless of raw model verdict
+    # (effective promotion below must also not APPROVE).
+    if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ]; then
       RVERDICT="CHANGES_NEEDED"
       _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-trunc.XXXXXX")" || die_infra "mktemp failed for verify trunc"
-      jq -c '.verdict = "CHANGES_NEEDED" | .summary = ((.summary // "") + " [VERIFY: fix-diff truncated — cannot APPROVE]")' \
+      jq -c 'del(.verify_carried) | .verdict = "CHANGES_NEEDED" | .summary = ((.summary // "") + " [VERIFY: fix-diff truncated — cannot APPROVE]") | {verdict, summary, findings}' \
         "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null \
         && mv "$_vf_tmp" "$SDIR/findings-$r.json" || rm -f "$_vf_tmp"
       echo "Plinth review: verify fix-diff was truncated (PLINTH_VERIFY_MAX_BYTES) — refusing APPROVED this round."
