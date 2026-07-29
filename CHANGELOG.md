@@ -1,5 +1,13 @@
 # Plinth changelog
 
+## v5.0.7 — residual zero-debt — July 29, 2026
+- **Thrash:** define precedence before coverage-asymptotic so mixed "helper
+  extraction + real bug" descriptions stay major in BUILD.
+- **Canaries:** residual-zero suite — combined asymptotic+bug, verify prior
+  schema gates + `validate_findings`, `plinth update` comment-only DRIVER
+  preserve, plan hollow seats; lifecycle canary reads CHECKPOINT.md.
+- **Residual:** unbound empty findings (clean dogfood state).
+
 ## v5.0.6 — checkpoint + slice routing — July 29, 2026
 - **Checkpoint:** `plinth checkpoint` writes `CHECKPOINT.md` (canonical resume);
   `handoff` alias; `HANDOFF.md` is a pointer with mtime refresh.

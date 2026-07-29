@@ -1,7 +1,10 @@
-# Residual triage (v5.0.5 closeout)
+# Residual triage (closed — 2026-07-29)
 
-Product fixes landed for the PR #57 residual class list. Remaining review thrash
-(canary "eval helpers" style, false tooling claims on process docs) may reappear
-as non-binding minors under thrash policy or as residual bind for ship.
+All bound residual from PR #57 / #58 closeout is **cleared** as of v5.0.7:
 
-See `.plinth/RESIDUAL.json` when bound.
+| Item | Disposition |
+|------|-------------|
+| Mixed asymptotic thrash + real-bug wording | **FIXED** — `is_precedence_must_block` before `is_coverage_asymp` |
+| Production-path canary gaps | **FIXED** — residual-zero canaries (validate_findings, plinth update, plan hollow) |
+
+`.plinth/RESIDUAL.json` is unbound with empty findings.
