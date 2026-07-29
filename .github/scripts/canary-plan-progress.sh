@@ -1158,4 +1158,62 @@ echo "$outh2" | jq -e '.truncated==true' >/dev/null \
   || fail "seed progress should set truncated: $(echo "$outh2"|jq '{truncated,done,total}')"
 pass "truncated refuse all-done seed"
 
+# No PLAN.md + prior status=done (no plan_ref) must not leave 100% SPEC
+mkdir -p "$TMP/nopref/.plinth"
+cd "$TMP/nopref"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+rm -f PLAN.md
+cat > SPEC.md <<'S'
+# Spec
+## Requirements
+The system shall not complete from ghost done.
+S
+printf 'spec_path = SPEC.md\n' > .plinth/config
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","slice_index":2,"slice_total":2,"status":"done"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '(.status!="done") and (.slice_index==null or .slice_index=="")' >/dev/null \
+  || fail "no plan_ref done ghost: $cj"
+pass "no plan_ref done ghost cleared without root PLAN"
+
+# truncated + prior done fence reopens
+mkdir -p "$TMP/hugedone/.plinth"
+cd "$TMP/hugedone"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+{
+  echo "# Huge"
+  echo "## Acceptance criteria"
+  echo "- [x] Early"
+  python3 -c 'print("\n".join(["pad %d" % i for i in range(8000)]))'
+  echo "- [ ] Late open"
+} > PLAN.md
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","slice_index":1,"slice_total":1,"status":"done","plan_ref":"PLAN.md"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status != "done"' >/dev/null \
+  || fail "truncated + prior done must reopen: $cj"
+pass "truncated reopens prior done fence"
+
 echo "canary-plan-progress: ALL PASS"

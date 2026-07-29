@@ -5193,14 +5193,20 @@ if not _plan_ref:
 # Never preserve a nested *PLAN.md path as operational plan_ref.
 if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# Orphan PLAN cursor: prior fence claimed any *PLAN.md (root or nested legacy)
-# but root PLAN.md is gone — clear ghost position so SPEC fallback is not 100%.
+# Orphan PLAN cursor: root PLAN.md absent AND prior fence had plan position
+# (any *PLAN.md ref, OR status=done with an index — ghost 100% on SPEC).
 _prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
+_no_root_plan = not (root / "PLAN.md").is_file()
 _orphan_plan = (
     _plan_ref is None
-    and _prev_ref is not None
-    and Path(_prev_ref).name == "PLAN.md"
-    and not (root / "PLAN.md").is_file()
+    and _no_root_plan
+    and (
+        (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
+        or (
+            prev.get("status") == "done"
+            and isinstance(prev.get("slice_index"), int)
+        )
+    )
 )
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
     _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
@@ -6384,12 +6390,19 @@ _write_handoff() {
       fi
       # Only seed from PLAN.md — never from spec-fallback leaves (first-open AND all-done).
       _seed_primary=$(printf '%s' "$_seed_pp" | jq -r '.primary // empty' 2>/dev/null || true)
+      _seed_trunc=$(printf '%s' "$_seed_pp" | jq -r 'if .truncated == true then "true" else "false" end' 2>/dev/null || true)
       _seed_is_plan=0
       # Exact root PLAN.md only — never docs/PLAN.md or other basename collisions.
       if [ "$_seed_primary" = "PLAN.md" ]; then
         _seed_is_plan=1
       else
         _seed_first=0
+      fi
+      # Truncated PLAN parse: never keep status=done (unread late leaves may exist).
+      if [ "$_seed_is_plan" = 1 ] && [ "$_seed_trunc" = "true" ]; then
+        if [ "$_prev_status" = "done" ] || [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ]; then
+          export PLINTH_CHECKPOINT_STATUS=implementing
+        fi
       fi
       # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor labels).
       _seed_done_all=$(printf '%s' "$_seed_pp" | jq -r '
