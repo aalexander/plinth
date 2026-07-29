@@ -217,6 +217,21 @@ set -e
 grep -qiE 'APPROVED|ship|pr merge|blocked' "$TMP/g7m.err" \
   || fail "ship merge block message expected: $(cat "$TMP/g7m.err")"
 pass "guard blocks gh pr merge without APPROVED@HEAD"
+# plinth#49: bare `gh pr merge` (no number/URL) always blocked — even with APPROVED@HEAD
+head=$(git -C "$TMP/p7" rev-parse HEAD)
+slug=feat-canary
+mkdir -p "$TMP/p7/.plinth/session/review/$slug"
+jq -n --arg s "$head" '{verdict:"APPROVED",sha:$s,round:1}' \
+  > "$TMP/p7/.plinth/session/review/$slug/verdict.json"
+set +e
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge --merge"}}' \
+  | CLAUDE_PROJECT_DIR="$TMP/p7" bash "$GUARD" >"$TMP/g7bare.out" 2>"$TMP/g7bare.err"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "bare gh pr merge should block even with APPROVED (exit 2), got $rc err=$(cat "$TMP/g7bare.err")"
+grep -qiE 'bare|repository/head-bound|match-head-commit|blocked' "$TMP/g7bare.err" \
+  || fail "bare merge block should explain head-bound form: $(cat "$TMP/g7bare.err")"
+pass "guard blocks bare gh pr merge even with APPROVED@HEAD (plinth#49)"
 
 # --- sticky ledger: production jq from shared/.plinth/review.sh (not a toy reimpl) ---
 STICKY_SRC="$ROOT/shared/.plinth/review.sh"

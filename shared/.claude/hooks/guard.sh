@@ -391,7 +391,10 @@ ORIGSEGS
       if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
         _ship_targeted
       else
-        _ship_bare
+        # plinth#49: bare `gh pr merge` is not origin/head-bound (gh default-repo /
+        # GH_REPO can desync authorize-from vs merge-into). Always refuse; require
+        # PR number/URL + -R origin + --match-head-commit (targeted path).
+        block "$what blocked — bare 'gh pr merge' is not repository/head-bound (gh default-repo or GH_REPO can desync authorize-from vs merge-into). Use: gh pr merge <n> -R <origin-owner/repo> --match-head-commit <origin-resolved-head-sha> …"
       fi
     done <<< "$disc"
   done <<< "$segments"

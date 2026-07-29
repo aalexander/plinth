@@ -1,5 +1,13 @@
 # Plinth changelog
 
+## v5.0.2 — Residual triage + bare merge refuse (plinth#49) — July 29, 2026
+- **Residual triage:** document dispositions in `.plinth/RESIDUAL-TRIAGE.md`; fix remaining
+  easy items (error-card `lifecycle`, deep-plan seat authority, HANDOFF Next parse,
+  LIFECYCLE sticky wording).
+- **plinth#49:** bare `gh pr merge` always refused (require PR number/URL + origin-bound
+  targeted form). Canary covers APPROVED@HEAD still blocked for bare merge.
+- **#51:** close as stale vs 5.0.x; remaining UPSTREAM depth tracked in NEEDS-HUMAN.
+
 ## v5.0.1 — Residual ship fail-closed + classifier holes — July 29, 2026
 - **Residual ship:** authorize the resolved tip (`$head`), not checkout `HEAD` on
   targeted `gh pr merge` (local residual cannot authorize an unrelated PR).
