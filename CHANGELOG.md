@@ -21,8 +21,9 @@
 - **Migration:** DRIVER-project stock scaffold is fingerprint-matched; any other
   comment text (including short tokens / stock+append) is preserved.
 - **Delegation:** transcript BEFORE/HEAD lines must match before-sha when present.
-- **Tests:** lifecycle canary exercises production functions (thrash/sticky/scaffold/plan)
-  via extracted helpers, matching the suite style for #2/#20/#21.
+- **Tests:** lifecycle canary covers residual closeout via production function
+  extraction (same style as #2/#20/#21 unit canaries), not full end-to-end CLI
+  integration for every path.
 - **Pin policy:** monorepo keeps `.plinth-version` as dogfood pin; product changes
   ship in `shared/` until a release refresh (documented in RESIDUAL-TRIAGE).
 

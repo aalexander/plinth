@@ -179,9 +179,9 @@ detect_owner() {
 # reads both. AGENTS.md was ALWAYS a pinned copy (reviewer contract pre-v4.4.0,
 # driver shell now) — safe to (re)generate unconditionally. CLAUDE.md was
 # historically per-project (held user "Project-specific notes"), so only
-# (re)generate it when absent or already a stock shell; otherwise PRESERVE it and
-# tell the human to move notes into .plinth/DRIVER-project.md (no auto-extraction —
-# marker-parsing a user-edited file is a known bug class).
+# (re)generate it when absent or already a stock shell; otherwise AUTO-MIGRATE
+# the full custom file into .plinth/DRIVER-project.md then install the shell
+# (preserve custom CLAUDE.md only if that migration fails).
 DRIVER_SHELL_MARKER="Plinth driver shell (version-pinned)"
 # True if $1 is the pre-v4.4 STOCK driver CLAUDE.md: the WHOLE file equals the retired
 # templates/CLAUDE.md verbatim (whitespace-normalized: per-line trim, blank lines

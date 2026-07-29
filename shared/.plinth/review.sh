@@ -1626,7 +1626,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     def is_coverage_asymp:
         # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
         ((.description // "") | test(
-          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects"; "i"
+          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects|no production-path coverage|production-path (test|coverage)|eval (extracted|isolated)|extracted helpers|helper-level canar|no end-to-end coverage for both|still eval/sed|does not exercise these (paths|behaviors)"; "i"
         ))
         and (is_real_test_gap | not)
         and (is_external_security | not);
