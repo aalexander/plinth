@@ -167,19 +167,18 @@ Everything between is the model's call.
   tool-blocked under a Claude driver; project-owned entries reviewed as normal project
   code), `AGENTS-project.md`
   (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
-  None is ever overwritten by `plinth update`.
+  Project note files (`AGENTS-project.md`, `DRIVER-project.md`) are not clobbered by
+  routine `plinth update`. Exception: when a CUSTOM pre-shell `CLAUDE.md` is found,
+  `plinth update` **auto-migrates** its full contents into `.plinth/DRIVER-project.md`
+  (replace empty scaffold, or append if custom notes already exist) and regenerates
+  `CLAUDE.md` as the pinned driver shell. If migration fails, the custom `CLAUDE.md` is
+  preserved with a loud NOTE.
 - The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`, so
   whichever file your driver's CLI auto-loads (Claude→CLAUDE.md, codex→AGENTS.md,
   grok→both) delivers the driver role; it imports the shared rules and your
-  `.plinth/DRIVER-project.md`. `plinth init`/`update` write both shells byte-identical —
-  UNLESS a CUSTOM `CLAUDE.md` already exists (a pre-v4.4.0 project on update, or `init`
-  into a repo that already had its own `CLAUDE.md`): the same protection preserves it with
-  a loud NOTE to move its notes into `.plinth/DRIVER-project.md` and delete it, so nothing
-  is lost. Until you complete that one-time migration the two shells are NOT byte-identical
-  and a Claude driver still auto-loads your old `CLAUDE.md`; the CI floor verifies
-  `CLAUDE.md` against the shell, so it fails until the migration is done — that failure is
-  the reminder. The REVIEWER contract lives in `.plinth/reviewer.md`, which the review
-  harness passes to the reviewer explicitly.
+  `.plinth/DRIVER-project.md`. `plinth init`/`update` write both shells byte-identical
+  after migration (or when already-shell / stock). The REVIEWER contract lives in
+  `.plinth/reviewer.md`, which the review harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
   the dashboard shows a red banner while it's non-empty.
@@ -1031,13 +1030,9 @@ installed copies.
   `inline_contract()` concatenates both, so every review prompt here includes the
   charter twice. No functional impact — trim the duplicate from AGENTS-project.md
   on the next ratified charter touch. (v4.6 post-approval fresh round, minor.)
-- **`plinth update` cannot complete the driver-shell migration autonomously.**
-  The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
-  delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
-  driver from performing (`rm CLAUDE.md`), so it lands in NEEDS-HUMAN on every
-  affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
-  wave, consider an explicit `plinth update --regen-shell` that completes the
-  migration under a byte-honest no-content-loss check.
+- **`plinth update` auto-migrates custom pre-shell `CLAUDE.md` into
+  `.plinth/DRIVER-project.md` and regenerates the shell** (v4.4+ / 5.0.x). Older
+  notes about a manual `rm CLAUDE.md` NEEDS-HUMAN step are obsolete for that path.
 - **`changelog-collate` is not multi-file atomic across CHANGELOG + VERSION +
   fragment deletes.** Each file is written via temp+mv (so no half-written single
   file), but if the VERSION install or a fragment `rm` fails after CHANGELOG is

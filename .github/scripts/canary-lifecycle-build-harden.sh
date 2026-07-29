@@ -764,25 +764,28 @@ echo "$out" | grep -q 'status: done' || fail "expected done: $out"
 [ "$rc" -eq 3 ] || fail "plinth next exit 3 for done, got $rc"
 pass "plinth next done when idle"
 
-# Strict delta: verify mode demotes new non-security major outside fix pathspec
-# Reuse thrash_fn from above
+# Strict delta: verify demotes thrash classes outside fix pathspec only —
+# never arbitrary "free-roam" majors (real bugs stay major even out-of-delta).
 # shellcheck disable=SC1090
 . "$THRASH_FN"
 f=$(mktemp)
 jq -n '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
   {file:"bin/plinth",line:1,severity:"major",description:"real null deref in next routing",status:"open",id:"keep"},
-  {file:"untouched/other.c",line:2,severity:"major",description:"unrelated bug inventing free roam",status:"open",id:"new1"},
-  {file:"auth.py",line:3,severity:"major",description:"auth bypass on login",status:"open",id:"sec1"}
+  {file:"untouched/other.c",line:2,severity:"major",description:"coverage remains incomplete for asymptotic free roam",status:"open",id:"thrash1"},
+  {file:"untouched/other.c",line:3,severity:"major",description:"Clicking Save does nothing",status:"open",id:"bug1"},
+  {file:"auth.py",line:4,severity:"major",description:"auth bypass on login",status:"open",id:"sec1"}
 ]}' > "$f"
 thrash_policy_process_findings "$f" build "bin/plinth" "keep" "MANUAL.md" "verify"
-s0=$(jq -r ".findings[0].severity" "$f")
-s1=$(jq -r ".findings[1].severity" "$f")
-s2=$(jq -r ".findings[2].severity" "$f")
+s0=$(jq -r '.findings[]|select(.id=="keep")|.severity' "$f")
+s1=$(jq -r '.findings[]|select(.id=="thrash1")|.severity' "$f")
+sbug=$(jq -r '.findings[]|select(.id=="bug1")|.severity' "$f")
+s2=$(jq -r '.findings[]|select(.id=="sec1")|.severity' "$f")
 [ "$s0" = "major" ] || fail "ledger open must stay major, got $s0"
-[ "$s1" = "minor" ] || fail "outside delta free-roam must demote, got $s1"
+[ "$s1" = "minor" ] || fail "outside delta thrash class must demote, got $s1"
+[ "$sbug" = "major" ] || fail "outside delta real bug must stay major, got $sbug"
 [ "$s2" = "major" ] || fail "security outside delta must stay major, got $s2"
 rm -f "$f"
-pass "BUILD verify strict delta demotes free-roam; keeps security + ledger"
+pass "BUILD verify strict delta demotes thrash-only; keeps real bugs + security + ledger"
 
 # residual bind authorizes ship when only residual hygiene changed
 setup_proj "$TMP/p21"
@@ -960,5 +963,238 @@ printf '%s' "$out2" | grep -q "delegation recorded:" || fail "expected receipt l
 printf '%s' "$out2" | grep -q "before=$bsha" || fail "expected before= binding: $out2"
 rm -f "$trf"
 pass "plinth#32 delegation receipt requires transcript + optional before-sha"
+
+
+# ── residual closeout 5.0.5 ──────────────────────────────────────────────
+_review_src="$ROOT/shared/.plinth/review.sh"
+[ -f "$_review_src" ] || fail "missing $_review_src"
+
+_gap_n="$(grep -c 'no end-to-end test covers' "$_review_src" || true)"
+[ "$_gap_n" -ge 3 ] || fail "end-to-end test-gap regex under-copied (count=$_gap_n want >=3)"
+grep -qF '(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+' "$_review_src" \
+  || fail "AC edge pattern missing (avoid jq \\b backspace trap)"
+pass "residual: sticky+thrash test-gap regex parity markers present"
+
+THRASH_FN2="$TMP/thrash_fn2.sh"
+sed -n '/^thrash_policy_process_findings()/,/^review_phase_for_round()/p' \
+  "$_review_src" | sed '$d' > "$THRASH_FN2"
+grep -q 'is_precedence_must_block' "$THRASH_FN2" \
+  || fail "thrash policy missing is_precedence_must_block"
+# shellcheck disable=SC1090
+. "$THRASH_FN2"
+_tf=$(mktemp)
+jq -n '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
+  {file:"other.go",line:1,severity:"major",
+   description:"no end-to-end test covers the new changed quota parser",status:"open",id:"t1"},
+  {file:"docs/readme-extra.md",line:2,severity:"major",
+   description:"coverage remains incomplete for asymptotic cases",status:"open",id:"t2"}
+]}' > "$_tf"
+thrash_policy_process_findings "$_tf" "build" "fixed.go" "" "SPEC.md" "verify"
+sev1=$(jq -r '.findings[] | select(.id=="t1") | .severity' "$_tf")
+[ "$sev1" = "major" ] || fail "real e2e test gap demoted to $sev1 (must stay major)"
+sev2=$(jq -r '.findings[] | select(.id=="t2") | .severity' "$_tf")
+[ "$sev2" = "minor" ] || fail "asymptotic coverage should demote to minor, got $sev2"
+rm -f "$_tf"
+pass "residual: thrash keeps real e2e gap; demotes asymptotic outside delta"
+
+setup_proj "$TMP/pphase"
+mkdir -p "$TMP/pphase/.plinth/session"
+_br=$(git -C "$TMP/pphase" symbolic-ref --short HEAD 2>/dev/null || echo main)
+_slug=$(printf '%s' "$_br" | sed 's/\//%2F/g; s/ /%20/g')
+echo '{"phase":"harden"}' > "$TMP/pphase/.plinth/session/phase-${_slug}.json"
+PHASE_FN="$TMP/phase_fn.sh"
+sed -n '/^review_phase_for_round()/,/^run_round()/p' "$_review_src" | sed '$d' > "$PHASE_FN"
+_ph_out="$(cd "$TMP/pphase" && PLINTH_REVIEW_PHASE=build bash -c '
+  set -euo pipefail
+  # shellcheck disable=SC1090
+  . "'"$PHASE_FN"'"
+  review_phase_for_round
+' 2>&1)"
+printf '%s\n' "$_ph_out" | tail -1 | grep -qx 'hardening' \
+  || fail "env build must not downgrade lifecycle harden, got: $_ph_out"
+pass "residual: PLINTH_REVIEW_PHASE=build does not downgrade lifecycle harden"
+
+# Hollow plan seat (header-only / empty JSON) rejected; explicit - none + verdict accepted
+_plan_ok_src="$TMP/plan_ok_fn.sh"
+sed -n '/^_plan_seat_output_ok()/,/^}/p' "$PLINTH" > "$_plan_ok_src"
+# shellcheck disable=SC1090
+. "$_plan_ok_src"
+_plan_seat_output_ok $'### Seat: completeness\n#### Blockers\n' \
+  && fail "header-only plan seat should fail"
+_plan_seat_output_ok $'### Seat: completeness\n```json\n{"seat":"completeness","blockers":[],"questions":[],"nits":[],"verdict":""}\n```\n' \
+  && fail "empty JSON plan seat should fail"
+_plan_seat_output_ok $'### Seat: completeness\n#### Blockers\n- none\n#### Questions for human\n- none\n#### Nits\n- none\n#### One-line verdict\nok\n```json\n{"seat":"completeness","blockers":[],"questions":[],"nits":[],"verdict":"ok"}\n```\n' \
+  || fail "explicit none + verdict should pass"
+pass "residual: plan seat rejects hollow header/empty JSON"
+
+_df=$(mktemp)
+printf '%s\n' '# Project-Specific Driver Notes' '' \
+  '<!-- Operator rule: always use texas housing rates for compliance checks. -->' > "$_df"
+_scaf_src="$TMP/scaf_fn.sh"
+sed -n '/^_driver_project_is_scaffold()/,/^}/p' "$PLINTH" > "$_scaf_src"
+# shellcheck disable=SC1090
+. "$_scaf_src"
+if _driver_project_is_scaffold "$_df"; then
+  fail "comment-only custom DRIVER-project treated as scaffold"
+fi
+rm -f "$_df"
+pass "residual: comment-only DRIVER-project is not scaffold"
+
+setup_proj "$TMP/p32b"
+cp "$ROOT/shared/.plinth/lane-guard.sh" "$TMP/p32b/.plinth/lane-guard.sh"
+chmod +x "$TMP/p32b/.plinth/lane-guard.sh"
+trf=$(mktemp)
+git -C "$TMP/p32b" commit --allow-empty -m "second" >/dev/null 2>&1 || true
+_old=$(git -C "$TMP/p32b" rev-parse HEAD~1 2>/dev/null || git -C "$TMP/p32b" rev-parse HEAD)
+_new=$(git -C "$TMP/p32b" rev-parse HEAD)
+printf 'BEFORE: %s\nMODEL: x\nok\n' "$_old" > "$trf"
+set +e
+outm="$(cd "$TMP/p32b" && ./.plinth/lane-guard.sh delegation grok 0 "$trf" "$_new" 2>&1)"
+rcm=$?
+set -e
+[ "$rcm" = "3" ] || fail "mismatched transcript BEFORE must exit 3, got $rcm $outm"
+printf '%s' "$outm" | grep -qiE 'does not match|mismatched|stale' \
+  || fail "expected mismatch message: $outm"
+rm -f "$trf"
+pass "residual: delegation rejects transcript BEFORE mismatch"
+
+_vf=$(mktemp)
+echo '{}' > "$_vf"
+_vf_src="$TMP/validate_fn.sh"
+sed -n '/^validate_findings()/,/^}/p' "$_review_src" > "$_vf_src"
+# shellcheck disable=SC1090
+. "$_vf_src"
+if validate_findings "$_vf"; then
+  fail "validate_findings should reject {}"
+fi
+rm -f "$_vf"
+pass "residual: validate_findings rejects corrupt {}"
+
+
+
+# residual r2: hollow free-floating bullet rejected; stock scaffold still scaffold
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^_plan_seat_output_ok()/,/^}/p" "'"$PLINTH"'")"
+  eval "$(sed -n "/^_driver_project_is_scaffold()/,/^}/p" "'"$PLINTH"'")"
+  _plan_seat_output_ok $'"'"'### Seat: completeness
+Generated notes:
+- model completed
+'"'"' && exit 1 || true
+  _driver_project_is_scaffold "'"$ROOT"'/templates/DRIVER-project.md" || exit 1
+  f=$(mktemp)
+  printf "%s\n" "# Project-Specific Driver Notes" "" "<!-- use Go 1.23 -->" > "$f"
+  if _driver_project_is_scaffold "$f"; then rm -f "$f"; exit 1; fi
+  rm -f "$f"
+' || fail "hollow free-floating bullet / scaffold edge cases"
+pass "residual: hollow free-float rejected; stock scaffold; short comment kept"
+
+# residual r2: sticky does not thrash-class "for the new" coverage wording
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^sticky_process_findings()/,/^}/p" "'"$ROOT"'/shared/.plinth/review.sh")"
+  d=$(mktemp -d)
+  git -C "$d" init -q
+  git -C "$d" config user.email t@t
+  git -C "$d" config user.name t
+  echo x > "$d/a.sh"
+  git -C "$d" add a.sh && git -C "$d" commit -qm i
+  SDIR="$d/.plinth/session/review/x"
+  mkdir -p "$SDIR"
+  f="$SDIR/f.json"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",
+     description:\"Coverage remains incomplete for the new empty-vendor branch\",status:\"open\"}
+  ]}" > "$f"
+  cd "$d"
+  sticky_process_findings "$f"
+  id=$(jq -r .findings[0].id "$f")
+  decoded=$(printf "%s" "$id" | base64 -d 2>/dev/null || true)
+  printf "%s" "$decoded" | grep -q "class:coverage-gap" && { echo "still coverage-gap: $decoded"; exit 1; }
+  jq ".findings[].status=\"resolved\"" "$f" > "$f.t" && mv "$f.t" "$f"
+  sticky_process_findings "$f"
+  jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+    {file:\"a.sh\",line:1,severity:\"major\",
+     description:\"Coverage remains incomplete for the new empty-vendor branch\",status:\"open\"}
+  ]}" > "$f"
+  sticky_process_findings "$f"
+  st=$(jq -r .findings[0].status "$f")
+  [ "$st" = "open" ] || { echo "should stay open, got $st"; exit 1; }
+  rm -rf "$d"
+' || fail "sticky for-the-new coverage must not AUTO-STICKY"
+pass "residual: sticky keeps for-the-new coverage gaps open"
+
+# residual r2: thrash keeps NaN/data-loss/documented-command outside delta
+THRASH_FN3="$TMP/thrash_fn3.sh"
+sed -n "/^thrash_policy_process_findings()/,/^review_phase_for_round()/p" \
+  "$ROOT/shared/.plinth/review.sh" | sed "\$d" > "$THRASH_FN3"
+# shellcheck disable=SC1090
+. "$THRASH_FN3"
+_tf3=$(mktemp)
+jq -n "{verdict:\"CHANGES_NEEDED\",summary:\"t\",findings:[
+  {file:\"other.go\",line:1,severity:\"major\",description:\"The quota row renders NaN% for an empty overall value\",status:\"open\",id:\"n1\"},
+  {file:\"other.go\",line:2,severity:\"major\",description:\"Saving an empty record erases the previous value\",status:\"open\",id:\"n2\"},
+  {file:\"other.go\",line:3,severity:\"major\",description:\"The documented command no longer exists\",status:\"open\",id:\"n3\"}
+]}" > "$_tf3"
+thrash_policy_process_findings "$_tf3" "build" "fixed.go" "" "SPEC.md" "verify"
+for id in n1 n2 n3; do
+  sev=$(jq -r --arg i "$id" ".findings[]|select(.id==\$i)|.severity" "$_tf3")
+  [ "$sev" = "major" ] || fail "precedence class $id demoted to $sev"
+done
+rm -f "$_tf3"
+pass "residual: thrash keeps NaN/data-loss/documented-command majors"
+
+# residual r2: agy auditor uses -p (non-interactive print) with stdin redirect
+grep -E 'agy -p --sandbox.*<\s*"\$_agy_p"' "$ROOT/shared/.plinth/review.sh" \
+  || fail "agy auditor must use -p non-interactive print mode with stdin"
+pass "residual: agy auditor invokes -p"
+
+
+
+# residual r3: real bugs outside delta stay major (not keyword-list dependent)
+. "$THRASH_FN2" 2>/dev/null || {
+  THRASH_FN2="$TMP/thrash_fn2b.sh"
+  sed -n '/^thrash_policy_process_findings()/,/^review_phase_for_round()/p' \
+    "$ROOT/shared/.plinth/review.sh" | sed '$d' > "$THRASH_FN2"
+  # shellcheck disable=SC1090
+  . "$THRASH_FN2"
+}
+_tf4=$(mktemp)
+jq -n '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
+  {file:"other.go",line:1,severity:"major",description:"Clicking Save does nothing",status:"open",id:"b1"},
+  {file:"other.go",line:2,severity:"major",description:"Clearing the name deletes the saved settings",status:"open",id:"b2"},
+  {file:"other.go",line:3,severity:"major",description:"The required export flag is absent",status:"open",id:"b3"}
+]}' > "$_tf4"
+thrash_policy_process_findings "$_tf4" "build" "fixed.go" "" "SPEC.md" "verify"
+for id in b1 b2 b3; do
+  sev=$(jq -r --arg i "$id" '.findings[]|select(.id==$i)|.severity' "$_tf4")
+  [ "$sev" = "major" ] || fail "real-bug class $id demoted to $sev"
+done
+rm -f "$_tf4"
+pass "residual: out-of-delta real bugs stay major without keyword match"
+
+# residual r3: single-section - none is hollow
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^_plan_seat_output_ok()/,/^}/p" "'"$PLINTH"'")"
+  _plan_seat_output_ok $'"'"'### Seat: completeness
+#### Blockers
+- none
+'"'"' && exit 1 || true
+' || fail "single-section - none must be hollow"
+pass "residual: single-section plan seat is hollow"
+
+# residual r3: stock comment + short AWS token kept
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^_driver_project_is_scaffold()/,/^}/p" "'"$PLINTH"'")"
+  f=$(mktemp)
+  # stock template body + AWS in the comment
+  cat "'"$ROOT"'/templates/DRIVER-project.md" | sed "s/real notes\\./real notes. AWS./" > "$f"
+  if _driver_project_is_scaffold "$f"; then rm -f "$f"; exit 1; fi
+  rm -f "$f"
+' || fail "stock template with AWS append must not be scaffold"
+pass "residual: stock-comment AWS append preserved"
+
 
 echo "canary-lifecycle-build-harden: ALL PASS"

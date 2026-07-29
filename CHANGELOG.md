@@ -1,5 +1,32 @@
 # Plinth changelog
 
+## v5.0.5 — residual closeout — July 29, 2026
+- **Residual closeout:** clear thrash/pin/phase debt from the PR #57 residual land.
+- **Verify fail-closed:** schema-validate prior findings before compact ledger + re-carry;
+  refuse corrupt `{}` priors.
+- **Sticky classifiers:** unify `is_real_test_gap_desc` across all three sticky copies +
+  thrash (end-to-end, AC edge without jq `\\b` backspace trap, "for the new …",
+  "missing test cases include").
+- **Thrash scope:** outside fix pathspec, demote thrash classes only (coverage
+  asymptotic, handoff-ws, docs prose) — never arbitrary new majors in BUILD
+  verify/resume (real bugs/data-loss/spec stay blocking without keyword lists).
+- **Phase:** `PLINTH_REVIEW_PHASE=build` cannot downgrade lifecycle harden.
+- **Floors:** VERSION Tier-0 fails closed on `git diff` failure; harness floor greps
+  avoid `grep -q` SIGPIPE under pipefail.
+- **agy audit:** `agy -p` + stdin (no `@file`); require parseable findings object.
+- **Plan seats:** require all three markdown sections, or JSON with string-only
+  arrays and a required non-empty string verdict (empty markers stripped at merge);
+  statusline BLOCKING matches queue forms; classify/diagnostics avoid SIGPIPE.
+- **Quota UI:** overall-only cache renders used_pct again.
+- **Migration:** DRIVER-project stock scaffold is fingerprint-matched; any other
+  comment text (including short tokens / stock+append) is preserved.
+- **Delegation:** transcript BEFORE/HEAD lines must match before-sha when present.
+- **Tests:** residual closeout covered by lifecycle canary unit paths (extracted
+  production functions), consistent with existing #2/#20/#21 canary style.
+- **Pin policy:** monorepo keeps `.plinth-version` as dogfood pin; product changes
+  ship in `shared/` until a release refresh (documented in RESIDUAL-TRIAGE).
+
+
 ## v5.0.4 — dashboard-upstream-ship — July 29, 2026
 - **Dashboard + upstream openers (5.0.x ship):** findings-without-verdict cards;
   markdown `[BLOCKING]` detection; plan --deep seat reliability + incomplete merge;

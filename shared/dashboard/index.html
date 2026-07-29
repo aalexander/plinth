@@ -1476,8 +1476,22 @@
       : "—";
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
     const preferred = ["claude", "codex", "grok"];
-    // No vendor objects at all (offline cache empty / total unknown): single row.
+    // No vendor objects: prefer overall.used_pct (legacy/offline cache) before unavailable.
     if (!vendors.length) {
+      const ov = q.overall && typeof q.overall === "object" ? q.overall : null;
+      if (ov && ov.used_pct != null && ov.used_pct !== "") {
+        const pct = Number(ov.used_pct);
+        const note = (q.note || "overall only").slice(0, 140);
+        const cls = !isFinite(pct) ? "" : pct >= 90 ? " hot" : pct >= 70 ? " warm" : "";
+        const width = isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 0;
+        quotaBar.innerHTML =
+          '<div class="qrow plain"><span class="qlabel">QUOTA</span>' +
+          '<span class="qbar' + cls + '"><span style="width:' + width + '%"></span></span>' +
+          "<span>" + (isFinite(pct) ? Math.round(pct) + "% overall" : "— overall") + "</span>" +
+          '<span class="dim" title="' + esc(q.note || "") + '">' + esc(note) + "</span>" +
+          '<span class="dim">polled ' + esc(age) + "</span></div>";
+        return;
+      }
       const note = (q.note || "vendor plan unknown").slice(0, 140);
       quotaBar.innerHTML =
         '<div class="qrow plain"><span class="qlabel">QUOTA</span>' +

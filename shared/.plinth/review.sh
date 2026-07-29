@@ -495,14 +495,23 @@ sys.stdout.write(m.group(1) if m else "")' > "${out}.j" 2>/dev/null || return 1 
         echo "agy audit prompt too large (${_agy_sz} bytes) — would E2BIG; audit UNAVAILABLE" >&2
         rm -f "$_agy_p"; return 1
       fi
-      # Prefer file-path form when supported; fall back to stdin without shell-expanding contents.
-      ( cd "$ad" && agy -p "@${_agy_p}" --sandbox ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null \
-        || ( cd "$ad" && agy --sandbox ${margs[@]+"${margs[@]}"} < "$_agy_p" ) > "$raw" 2>/dev/null \
+      # Always stdin + -p (non-interactive print mode). Never rely on @file
+      # expansion (agy may echo the literal path as a "successful" empty audit).
+      # Require a parseable findings object.
+      ( cd "$ad" && agy -p --sandbox ${margs[@]+"${margs[@]}"} < "$_agy_p" ) > "$raw" 2>/dev/null \
         || { rm -f "$_agy_p"; return 1; }
       rm -f "$_agy_p"
-      python3 -c 'import sys,re
-m=re.search(r"(\{.*\})", open(sys.argv[1]).read(), re.S)
-sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
+      python3 -c 'import sys,re,json
+raw=open(sys.argv[1]).read()
+m=re.search(r"(\{.*\})", raw, re.S)
+if not m:
+    sys.exit(1)
+obj=json.loads(m.group(1))
+if not isinstance(obj, dict) or "findings" not in obj and "verdict" not in obj:
+    # Accept either full verdict schema or findings-bearing object
+    if not (isinstance(obj, dict) and ("verdict" in obj or "findings" in obj)):
+        sys.exit(1)
+sys.stdout.write(m.group(1))' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     codex)
       ( cd "$ad" && printf '%s' "$prompt" | codex exec --skip-git-repo-check -c project_doc_max_bytes=0 \
           ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
@@ -591,7 +600,7 @@ _tool_diff_rc=0
 _tool_names="$(git diff --name-only "${base_tip}..HEAD" 2>/dev/null)" || _tool_diff_rc=$?
 if [ "$_tool_diff_rc" -ne 0 ]; then
   RISK=2; RISK_JSON='{"tier":2,"reasons":["git diff --name-only for tooling floor failed — failing closed to Tier 2"]}'
-elif printf '%s\n' "$_tool_names" | grep -qxF '.plinth/risk-classify.sh'; then
+elif printf '%s\n' "$_tool_names" | grep -xF '.plinth/risk-classify.sh' >/dev/null 2>&1; then
   _cls_changed=1
   RISK=2; RISK_JSON='{"tier":2,"reasons":["risk-classify.sh changed in this PR — refuse working-tree classifier (fail closed Tier 2)"]}'
 else
@@ -615,9 +624,12 @@ else
   [ -n "$_cls_tmp" ] && rm -f "$_cls_tmp"
 fi
 # SELF-REFERENTIAL FLOOR: any version-pinned tooling path in the diff cannot be Tier 0.
-if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ] \
-   && printf '%s\n' "$_tool_names" | grep -Eq "$HARNESS_RE"; then
-  RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the classifier to prevent a self-referential Tier-0 bypass"]}'
+# Avoid grep -q under pipefail (SIGPIPE / exit 141 can skip this elevation).
+if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ]; then
+  if printf '%s
+' "$_tool_names" | grep -E "$HARNESS_RE" >/dev/null 2>&1; then
+    RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the classifier to prevent a self-referential Tier-0 bypass"]}'
+  fi
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
@@ -859,14 +871,22 @@ sys.exit(0 if m and m.group(1)==v else 1)
 if [ "$RISK" = "0" ]; then
   # VERSION is Tier-0-eligible as release meta, but only when it matches the top
   # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
-  if git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -qx 'VERSION'; then
+  # Fail closed if git diff itself fails (empty pipe must not mean "VERSION unchanged").
+  _ver_names=""
+  _ver_diff_rc=0
+  _ver_names="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _ver_diff_rc=$?
+  if [ "$_ver_diff_rc" -ne 0 ]; then
+    RISK=1
+    RISK_JSON="$(jq -nc --argjson rc "$_ver_diff_rc"       '{tier:1,reasons:["git diff --name-only failed (rc=\($rc)) — VERSION/CHANGELOG Tier-0 floor refused"],files:0}')"
+    echo "Plinth review: git diff --name-only failed (rc=${_ver_diff_rc}) — elevating above Tier 0 to Tier 1."
+  elif printf '%s
+' "$_ver_names" | grep -qx 'VERSION'; then
     # Shared helper (also used by canary) — must stay the production path.
     if ! version_changelog_match VERSION CHANGELOG.md; then
       ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
       top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
       RISK=1
-      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}" \
-        '{tier:1,reasons:["VERSION does not exactly match CHANGELOG top H2 token (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
+      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}"         '{tier:1,reasons:["VERSION does not exactly match CHANGELOG top H2 token (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
       echo "Plinth review: VERSION/CHANGELOG exact top-entry match failed — elevating above Tier 0 to Tier 1."
     fi
   fi
@@ -1361,7 +1381,9 @@ sticky_process_findings() {  # <findings-json-path>
     # Class-stable fingerprints for paraphrased thrash classes (no severity —
     # major→minor demotion must not mint a new id).
     def is_real_test_gap_desc:
-      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers"; "i");
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
     def is_security_desc:
       test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i");
     def thrash_class:
@@ -1452,7 +1474,9 @@ sticky_process_findings() {  # <findings-json-path>
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def is_real_test_gap_desc:
-      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
@@ -1508,7 +1532,9 @@ sticky_process_findings() {  # <findings-json-path>
     def normdesc:
       (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
     def is_real_test_gap_desc:
-      test("acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new changed|changed behavior|missing tests? for|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)"; "i");
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
     def thrash_class:
       (normdesc) as $d
       | ((.description // "") | is_real_test_gap_desc) as $gap
@@ -1551,8 +1577,8 @@ sticky_process_findings() {  # <findings-json-path>
 #   1) Never demote external_security / ship_integrity / data_loss (path + text)
 #   2) BUILD asymptotic coverage → minor (Noticed), not real test gaps
 #   3) Docs prose (not canonical spec) → minor unless ship/security overclaim
-#   4) Out-of-pathspec: thrash classes on fresh; VERIFY/RESUME BUILD demotes any
-#      new non-security major outside fix delta (monotonic open-set)
+#   4) Out-of-pathspec: thrash classes only (all modes) — never demote arbitrary
+#      new majors outside fix delta (real bugs stay blocking)
 #   5) HANDOFF ephemera → minor; NEEDS-HUMAN queue nits → minor (not deletions)
 # Markers: " [THRASH: …]"
 # mode: fresh|verify|resume
@@ -1593,8 +1619,9 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     def is_overclaim:
         ((.description // "") | test("fail[- ]?open|security|auth bypass|unauthenticated|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
     def is_real_test_gap:
+        # Keep in sync with sticky is_real_test_gap_desc (plus thrash-only tokens).
         ((.description // "") | test(
-          "acceptance criterion|\\bAC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|this change (has|adds|introduces)|missing tests? for (the )?changed|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|canonical[- ]spec|documented behavior is not|still untested:|named changed behavior|quota parser|malformed reset"; "i"
+          "acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|for the new |this change (has|adds|introduces)|missing tests? for|missing test cases include|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|not implemented|canonical[- ]spec|documented behavior is not|still untested:|named changed behavior|quota parser|malformed reset|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor"; "i"
         ));
     def is_coverage_asymp:
         # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
@@ -1620,18 +1647,23 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         and ((.file // "") != ".")
         and (((.file // "") as $fp | ($files | index($fp)) == null))
         and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
-    # Fresh: thrash classes only. Verify/resume BUILD: any new non-security major
-    # outside the fix delta is non-blocking (monotonic open-set convergence).
+    # Belt: thrash_class mislabels that are really security/test-gap/data-loss.
+    def is_precedence_must_block:
+        # Real bugs / data loss / spec / fail-open must never demote solely for
+        # being outside the fix pathspec (ratified convergence precedence).
+        is_external_security
+        or is_real_test_gap
+        or ((.description // "") | test(
+          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not"; "i"
+        ));
+    # Outside fix pathspec: demote thrash classes only. Never demote arbitrary
+    # new majors/blockers in BUILD verify/resume solely for being out-of-delta —
+    # that fail-opened real bugs/data-loss/spec gaps that keyword lists miss.
+    # is_precedence_must_block remains a belt for thrash_class edge mislabels.
     def is_out_of_scope_demote:
         is_outside_delta
-        and (is_external_security | not)
-        and (
-          is_thrash_class
-          or (
-            ($phase == "build")
-            and ($mode == "verify" or $mode == "resume")
-          )
-        );
+        and (is_precedence_must_block | not)
+        and is_thrash_class;
     .findings |= map(
       if (.status != "open") then .
       elif (.severity != "major" and .severity != "blocker") then .
@@ -1644,7 +1676,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: NEEDS-HUMAN queue nit — non-blocking]")
-      elif ($phase == "build") and is_coverage_asymp then
+      elif ($phase == "build") and is_coverage_asymp and (is_precedence_must_block | not) then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: asymptotic coverage → Noticed in BUILD]")
@@ -1668,40 +1700,55 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
 # when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
 # Corrupt/unknown phase file → hardening (fail closed — match Stop / CLI helper).
 review_phase_for_round() {
-  local slug pf p envp
+  local slug pf p envp file_phase=""
   # Exact allowlist only — typos/HARDEN must not silently weaken to BUILD.
-  # Unknown values are ignored (fall through to lifecycle file / default).
+  # Unknown env values are ignored (fall through to lifecycle file / default).
+  # Precedence: lifecycle harden cannot be downgraded by a stale
+  # PLINTH_REVIEW_PHASE=build (operator harden env still upgrades).
+  _phase_from_file() {
+    local s f ph
+    s=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | sed 's/\//%2F/g; s/ /%20/g')
+    f=".plinth/session/phase-${s}.json"
+    if [ -f "$f" ]; then
+      ph=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+      case "$ph" in
+        build) echo build; return 0 ;;
+        harden) echo hardening; return 0 ;;
+        *) echo hardening; return 0 ;;  # corrupt/unknown → fail closed
+      esac
+    fi
+    s=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
+    f=".plinth/session/phase-${s}.json"
+    if [ -f "$f" ]; then
+      ph=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+      case "$ph" in
+        build) echo build; return 0 ;;
+        harden) echo hardening; return 0 ;;
+        *) echo hardening; return 0 ;;
+      esac
+    fi
+    return 1
+  }
+  file_phase="$(_phase_from_file || true)"
   if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
-    envp="$(printf '%s' "$PLINTH_REVIEW_PHASE" | tr '[:upper:]' '[:lower:]')"
+    envp="$(printf '%s' "${PLINTH_REVIEW_PHASE}" | tr '[:upper:]' '[:lower:]')"
     case "$envp" in
-      hardening|harden) echo hardening; return ;;
-      build) echo build; return ;;
+      hardening|harden)
+        echo hardening; return ;;
+      build)
+        # Do not let stale env downgrade an explicit lifecycle harden.
+        if [ "$file_phase" = "hardening" ]; then
+          echo "Plinth review: NOTE — PLINTH_REVIEW_PHASE=build ignored; lifecycle phase is harden." >&2
+          echo hardening; return
+        fi
+        echo build; return ;;
       *)
         echo "Plinth review: NOTE — ignoring invalid PLINTH_REVIEW_PHASE='${PLINTH_REVIEW_PHASE}' (want build|harden|hardening)." >&2
         ;;
     esac
   fi
-  # Branch-keyed phase file: encode '/' and space distinctly so feat/a-b ≠ feat/a/b.
-  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | sed 's/\//%2F/g; s/ /%20/g')
-  pf=".plinth/session/phase-${slug}.json"
-  if [ -f "$pf" ]; then
-    p=$(jq -r '.phase // empty' "$pf" 2>/dev/null || true)
-    case "$p" in
-      build) echo build; return ;;
-      harden) echo hardening; return ;;
-      *) echo hardening; return ;;  # corrupt/unknown → fail closed
-    esac
-  fi
-  # Legacy slug (tr '/ ' '--') — read-only fallback for pre-encode phase files.
-  slug=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
-  pf=".plinth/session/phase-${slug}.json"
-  if [ -f "$pf" ]; then
-    p=$(jq -r '.phase // empty' "$pf" 2>/dev/null || true)
-    case "$p" in
-      build) echo build; return ;;
-      harden) echo hardening; return ;;
-      *) echo hardening; return ;;
-    esac
+  if [ -n "$file_phase" ]; then
+    echo "$file_phase"; return
   fi
   if git log -1 --format=%s 2>/dev/null | grep -qiE 'HARDENING:|hardening pass'; then
     echo hardening; return
@@ -1807,18 +1854,22 @@ ${diff}${evidence}${commits}"
     case "$vmaxf" in ''|*[!0-9]*) vmaxf=40 ;; esac
     case "$vmaxb" in ''|*[!0-9]*) vmaxb=400000 ;; esac
     # Prefer blockers/majors; cap count (ids preserved; note truncation in prompt).
+    # Fail closed on corrupt prior — never substitute empty ledger (would drop opens).
+    if ! validate_findings "$SDIR/findings-$((r - 1)).json"; then
+      die_infra "verify prior findings-$((r - 1)).json fails schema — refusing compact verify (corrupt prior)"
+    fi
     prior="$(jq -c --argjson n "$vmaxf" '
       [.findings[] | select(.status == "open")
         | {id:(.id//null),file,line,severity,description,
            _rank:(if .severity=="blocker" then 0 elif .severity=="major" then 1 else 2 end)}]
       | sort_by(._rank) | map(del(._rank))
       | .[0:$n]
-      ' "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
+      ' "$SDIR/findings-$((r - 1)).json")"       || die_infra "verify prior ledger jq failed"
     local prior_meta
     prior_meta="$(jq -c --argjson n "$vmaxf" '
       [.findings[] | select(.status == "open")]
       | {total: length, capped: ([length, $n] | min), truncated: (length > $n)}
-      ' "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '{}')"
+      ' "$SDIR/findings-$((r - 1)).json")"       || die_infra "verify prior meta jq failed"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
       vinc="$(git diff "${vanchor}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
@@ -2013,6 +2064,10 @@ ${diff}"
   if [ "$m" = "verify" ] && [ "$r" -gt 1 ] && [ -f "$SDIR/findings-$((r - 1)).json" ]; then
     local _vf_prev _vf_tmp _vf_n=0
     _vf_prev="$SDIR/findings-$((r - 1)).json"
+    # Schema-corrupt prior (e.g. {} or findings:[]) must not silently drop history.
+    if ! validate_findings "$_vf_prev"; then
+      die_infra "verify prior findings-$((r - 1)).json fails schema — refusing re-carry/APPROVED (corrupt or empty prior)"
+    fi
     _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-merge.XXXXXX")" || die_infra "mktemp failed for verify prior re-merge"
     if ! jq -c --slurpfile prev "$_vf_prev" '
       . as $cur
