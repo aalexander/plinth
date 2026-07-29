@@ -103,14 +103,18 @@ Everything between is the model's call.
   `_EFFORT` medium|high|xhigh; `_IMPLEMENT` driver|worker|either;
   `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
   complete). If index is unset, the writer **seeds from PLAN.md only** (never
-  from the spec fallback): first open stage, advance when checkboxes move ahead
-  of the prior index, and when **all** PLAN leaves are checked set `status=done`
-  with index=total (100%). Conflicting `slice_id` + `slice_title` that resolve to
-  different leaves refuse a cursor (no document-order invent); index applies only
-  when totals match and neither title nor id was supplied. Writer-seeded
-  `plan_ref` is always `PLAN.md` and only when PLAN.md is the primary. `handoff`
-  is an alias; legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass
-  (`xhigh` → dual in BUILD); never a ship gate (see MODELS live wiring).
+  from the spec fallback — all-done and first-open both require PLAN primary):
+  first open stage, advance when checkboxes move ahead of the prior index, and
+  when **all** PLAN leaves are checked set `status=done` with index=total and
+  clear stale `slice_id`/`slice_title`. If a prior `status=done` fence exists but
+  PLAN later gains an open leaf, re-seed sets `status=implementing` (dashboard
+  leaves 100%). Conflicting `slice_id` + `slice_title` that resolve to different
+  leaves refuse a cursor. Numeric index applies only when **`slice_total` is
+  present and equals** the plan leaf count, and neither title nor id was
+  supplied. Writer-seeded `plan_ref` is `PLAN.md` only when PLAN.md is primary;
+  with no PLAN.md, `plan_ref` is null (never invented). `handoff` is an alias;
+  legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass (`xhigh` → dual
+  in BUILD); never a ship gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
@@ -912,8 +916,9 @@ installed copies.
 - **`plinth advise` diagnostics (v5.0.8 / #62):** PATH vs auth vs nonzero exit are
   distinguished; stderr is sampled. Auth is classified from **stderr**, from
   **stdout on nonzero exit**, and from exit-0 only when stdout is a **short unauth
-  banner** (≤3 lines / ≤240 chars, e.g. “Please sign in”). Long exit-0 advice that
-  discusses authentication is not treated as a CLI auth failure.
+  banner** (≤3 lines / ≤160 chars, narrow tokens like “Please sign in” / “not
+  logged in”, and no advice cues). Concise exit-0 advice that mentions
+  “authentication required” is still advice, not a login failure.
 - **Plan progress classifiers (v5.0.8):** coding-milestone heuristics are best-effort;
   remaining edge cases may need PLAN.md checklist polish rather than perfect NLP.
   Spec-dir entry files beyond SPEC/README/index/OVERVIEW/REQUIREMENTS/API still

@@ -184,7 +184,7 @@ pass "implement-only route + hint"
 [ "$(slice_dual_from_effort high build)" = 0 ] || fail "policy dual_wanted high+build"
 pass "dual_wanted policy matrix (pre-eligibility)"
 
-# request.json slice_routing stamp shape (compose pure helpers as run_round does)
+# request.json stamp: production jq shape locked to review.sh (dual_wanted_note etc.)
 awk '
   /^SLICE_EFFORT=/ {p=1}
   /^# Review charter phase/ {exit}
@@ -192,6 +192,11 @@ awk '
 ' "$REVIEW" > "$TMP/slice_helpers2.sh"
 # shellcheck disable=SC1091
 . "$TMP/slice_helpers2.sh"
+# Glue lock: production run_round must still stamp dual_wanted_note + slice_routing keys
+grep -q 'dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"' "$REVIEW" \
+  || fail "production request stamp dual_wanted_note drifted in review.sh"
+grep -q 'slice_routing:{effort:$effort, implement:$implement' "$REVIEW" \
+  || fail "production slice_routing stamp drifted in review.sh"
 mkdir -p "$TMP/req"
 (
   cd "$TMP/req"
@@ -201,14 +206,46 @@ mkdir -p "$TMP/req"
 ```
 EOF
   slice_load_routing
-  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" build "")"
-  jq -n --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
-    --arg slice_id "$SLICE_ID" --argjson dual_wanted "$dual_wanted" \
-    '{slice_routing:{effort:$effort,implement:$implement,slice_id:$slice_id,dual_wanted:($dual_wanted==1)}}' \
-    > request-1.json
-  jq -e '.slice_routing.effort=="xhigh" and .slice_routing.dual_wanted==true and .slice_routing.slice_id=="X9"' \
-    request-1.json >/dev/null
+  # Same dual_wanted + jq fields as run_round (shared/.plinth/review.sh stamp block)
+  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" build "${PLINTH_DUAL_PASS:-}")"
+  r=1; sha=deadbeef; baseref=origin/main; m=fresh; SPEC_PATH=SPEC.md
+  rphase=build; phase_src=file_or_default
+  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
+        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
+        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
+        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
+        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
+          review_phase:$review_phase, phase_source:$phase_source,
+          slice_routing:{effort:$effort, implement:$implement,
+            slice_id:(if $slice_id=="" then null else $slice_id end),
+            dual_wanted:($dual_wanted==1),
+            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
+        > request-1.json
+  jq -e '.slice_routing.effort=="xhigh" and .slice_routing.dual_wanted==true
+    and .slice_routing.slice_id=="X9"
+    and (.slice_routing.dual_wanted_note|test("policy desire"))' \
+    request-1.json >/dev/null || fail "production stamp shape: $(cat request-1.json)"
 )
-pass "request.json slice_routing stamp shape (xhigh dual_wanted)"
+pass "request.json production stamp shape (xhigh dual_wanted + note)"
+
+# dual_ok eligibility composition (mirrors review.sh: fresh+r1+Tier-2+cross-vendor × policy)
+dual_ok_compose() {
+  local m="$1" r="$2" RISK="$3" AUDIT_VENDOR="$4" REVIEWER_VENDOR="$5" effort="$6" rphase="$7"
+  local dual_ok=0
+  if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
+     && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    dual_ok="$(slice_dual_from_effort "$effort" "$rphase" "")"
+  fi
+  echo "$dual_ok"
+}
+[ "$(dual_ok_compose fresh 1 2 claude codex xhigh build)" = 1 ] || fail "eligible xhigh BUILD dual_ok"
+[ "$(dual_ok_compose fresh 1 2 claude codex high build)" = 0 ] || fail "eligible high BUILD dual_ok=0"
+[ "$(dual_ok_compose fresh 1 2 claude codex high hardening)" = 1 ] || fail "eligible HARDEN dual_ok"
+[ "$(dual_ok_compose fresh 2 2 claude codex xhigh build)" = 0 ] || fail "r2 not dual_ok"
+[ "$(dual_ok_compose fresh 1 1 claude codex xhigh build)" = 0 ] || fail "Tier-1 not dual_ok"
+[ "$(dual_ok_compose fresh 1 2 codex codex xhigh build)" = 0 ] || fail "same-vendor not dual_ok"
+[ "$(dual_ok_compose verify 1 2 claude codex xhigh build)" = 0 ] || fail "verify mode not dual_ok"
+pass "dual_ok eligibility×policy composition (xhigh BUILD / HARDEN / gates)"
 
 echo "canary-checkpoint-routing: ALL PASS"

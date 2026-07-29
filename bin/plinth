@@ -1714,11 +1714,14 @@ $question"
     _advise_cleanup
     return 0
   }
-  # Auth: stderr always; stdout on nonzero exit; exit-0 only as a SHORT unauth banner
-  # (e.g. "Please sign in"). Long exit-0 text that discusses authentication is advice.
-  # `not authenticated\.` requires a trailing period so prose "not authenticated until…"
-  # is not treated as CLI auth failure.
+  # Auth: stderr always; stdout on nonzero exit; exit-0 only as a SHORT unauth banner.
+  # Broad re is for CLI error streams (stderr / nonzero). Exit-0 short path uses a
+  # NARROW banner re and rejects advice cues so "authentication required before…" is
+  # not treated as a login prompt.
   _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
+  # Banner-only tokens for exit-0 short stdout (no bare "authentication required").
+  _advise_banner_re='not logged in|please run /login|please sign in|not authenticated\.|unauthorized \(401\)|401 unauthorized'
+  _advise_advice_cue_re='sound:|because |until |before |middleware|recommend|should |require authentication|protected.route|rollout'
   _advise_auth_hit() {
     local _rc="$1" _al _ac
     if [ -n "$errf" ] && [ -s "$errf" ] && grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null; then
@@ -1731,8 +1734,10 @@ $question"
     if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
       _al=$(wc -l <"$outf" | tr -d ' ')
       _ac=$(wc -c <"$outf" | tr -d ' ')
-      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 240 ] \
-         && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; then
+      # Short CLI banner only — not concise advice that happens to mention auth.
+      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ] \
+         && grep -qiE "$_advise_banner_re" "$outf" 2>/dev/null \
+         && ! grep -qiE "$_advise_advice_cue_re" "$outf" 2>/dev/null; then
         return 0
       fi
     fi
@@ -5088,21 +5093,27 @@ _checkpoint_build_json() {
   else
     prev="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
   fi
-  python3 - "$prev" <<'PY'
+  python3 - "$prev" "$root" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
+from pathlib import Path
 prev = {}
 if len(sys.argv) > 1 and sys.argv[1]:
     try:
         prev = json.loads(sys.argv[1])
     except Exception:
         prev = {}
+root = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else Path(".")
 def env(k, default=None):
+    """Unset → default; empty string → None (explicit clear for id/title)."""
+    if k not in os.environ:
+        return default
     v = os.environ.get(k)
-    return v if v not in (None, "") else default
-def env_int(k):
-    v = env(k)
-    if v is None:
+    return v if v not in (None, "") else None
+def env_int_key(k):
+    """Parse int from env if key set; empty → None. Caller handles missing key."""
+    v = os.environ.get(k, "")
+    if v == "":
         return None
     try:
         n = int(v)
@@ -5120,13 +5131,33 @@ if status not in ("ready", "implementing", "reviewing", "blocked", "done"):
     status = prev.get("status") if prev.get("status") in (
         "ready", "implementing", "reviewing", "blocked", "done"
     ) else "implementing"
+# plan_ref: env wins; else prev; else PLAN.md only when that file exists (never invent).
+_plan_ref = env("PLINTH_CHECKPOINT_PLAN_REF", prev.get("plan_ref"))
+if not _plan_ref:
+    _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
+if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
+    _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
+else:
+    _sid = prev.get("slice_id")
+if "PLINTH_CHECKPOINT_SLICE_TITLE" in os.environ:
+    _stitle = env("PLINTH_CHECKPOINT_SLICE_TITLE")
+else:
+    _stitle = prev.get("slice_title")
+if "PLINTH_CHECKPOINT_SLICE_INDEX" in os.environ:
+    _sidx = env_int_key("PLINTH_CHECKPOINT_SLICE_INDEX")
+else:
+    _sidx = prev.get("slice_index")
+if "PLINTH_CHECKPOINT_SLICE_TOTAL" in os.environ:
+    _stot = env_int_key("PLINTH_CHECKPOINT_SLICE_TOTAL")
+else:
+    _stot = prev.get("slice_total")
 out = {
     "schema": "plinth.checkpoint/v1",
-    "plan_ref": env("PLINTH_CHECKPOINT_PLAN_REF", prev.get("plan_ref") or "PLAN.md"),
-    "slice_id": env("PLINTH_CHECKPOINT_SLICE_ID", prev.get("slice_id")),
-    "slice_title": env("PLINTH_CHECKPOINT_SLICE_TITLE", prev.get("slice_title")),
-    "slice_index": env_int("PLINTH_CHECKPOINT_SLICE_INDEX") or prev.get("slice_index"),
-    "slice_total": env_int("PLINTH_CHECKPOINT_SLICE_TOTAL") or prev.get("slice_total"),
+    "plan_ref": _plan_ref,
+    "slice_id": _sid,
+    "slice_title": _stitle,
+    "slice_index": _sidx,
+    "slice_total": _stot,
     "status": status,
     "effort": effort,
     "effort_rationale": env("PLINTH_CHECKPOINT_EFFORT_RATIONALE", prev.get("effort_rationale")),
@@ -5815,9 +5846,10 @@ else:
         current = id_hit
         current_via = "slice_id"
         checkpoint_cursor = True
-    # 2) Numeric index only when totals match and no title/id was supplied.
+    # 2) Numeric index only when slice_total is present AND matches leaf count,
+    #    and no title/id was supplied (totals must match — no omit-total fallthrough).
     if current is None and si and 1 <= si <= len(leaves):
-        if (st is None or st == len(leaves)) and not cur_title and not cur_id:
+        if st is not None and st == len(leaves) and not cur_title and not cur_id:
             current = leaves[si - 1]
             current_via = "slice_index"
             checkpoint_cursor = True
@@ -6238,6 +6270,10 @@ _write_handoff() {
         [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].id // empty
       ' 2>/dev/null || true)
       _seed_first=1
+      _prev_status=""
+      if [ -n "${_cp_prev_json:-}" ]; then
+        _prev_status=$(printf '%s' "$_cp_prev_json" | jq -r '.status // empty' 2>/dev/null || true)
+      fi
       case "$_prev_idx" in
         ''|*[!0-9]*) ;;
         *)
@@ -6249,18 +6285,25 @@ _write_handoff() {
           fi
           ;;
       esac
-      # Only seed from PLAN.md — never from spec-fallback leaves.
+      # Prior whole-plan done but PLAN now has open work → re-seed (leave 100%).
+      if [ "$_prev_status" = "done" ] && [ -n "$_seed_idx" ]; then
+        _seed_first=1
+      fi
+      # Only seed from PLAN.md — never from spec-fallback leaves (first-open AND all-done).
       _seed_primary=$(printf '%s' "$_seed_pp" | jq -r '.primary // empty' 2>/dev/null || true)
-      if [ "$_seed_primary" != "PLAN.md" ] && [ "${_seed_primary##*/}" != "PLAN.md" ]; then
+      _seed_is_plan=0
+      if [ "$_seed_primary" = "PLAN.md" ] || [ "${_seed_primary##*/}" = "PLAN.md" ]; then
+        _seed_is_plan=1
+      else
         _seed_first=0
       fi
-      # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor).
+      # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor labels).
       _seed_done_all=$(printf '%s' "$_seed_pp" | jq -r '
         ([.outline[]?.children[]? | select(.progress != false)] | length) as $t
         | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
         | if $t > 0 and $d == $t then "yes" else "no" end
       ' 2>/dev/null || true)
-      if [ "$_seed_done_all" = "yes" ]; then
+      if [ "$_seed_is_plan" = 1 ] && [ "$_seed_done_all" = "yes" ]; then
         export PLINTH_CHECKPOINT_STATUS=done
         _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
           [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
@@ -6268,6 +6311,9 @@ _write_handoff() {
         [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_tot"
         [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
         export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+        # Empty string clears prior id/title in builder (env key present).
+        export PLINTH_CHECKPOINT_SLICE_ID=""
+        export PLINTH_CHECKPOINT_SLICE_TITLE=""
         echo "  Seeded plan complete (all PLAN.md stages done)."
         _seed_first=0
       fi
@@ -6278,6 +6324,8 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+          # Re-open if prior fence was done but PLAN now has open work.
+          export PLINTH_CHECKPOINT_STATUS=implementing
           echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
         ;; esac
       fi
