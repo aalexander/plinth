@@ -135,25 +135,39 @@ echo "$outc2" | jq -e '[.outline[].children[]?.title] | map(test("Phase 2|Wire d
   || fail "coding milestones missing: $(echo "$outc2"|jq '[.outline[].children[]?.title]')"
 pass "coding milestones only (no INV/matrix/freeze/design noise)"
 
-# implementation plan when no PLAN.md
+# No PLAN.md → spec fallback only (no IMPLEMENTATION-PLAN aliases)
 rm -f "$TMP/a/PLAN.md"
-cat > "$TMP/a/IMPLEMENTATION.md" <<'I'
-# Impl
+# Even if a legacy name exists, ignore it — clients must use PLAN.md
+cat > "$TMP/a/IMPLEMENTATION-PLAN.md" <<'I'
+# Legacy name — must NOT be used
 ## Phase 1
-- [ ] wire UI
-- [x] data model
+- [x] should be ignored
+- [ ] also ignored
 I
+cat > "$TMP/a/SPEC.md" <<'S'
+# Spec
+## Requirements
+The system shall foo when ready.
+The system shall bar when done.
+S
 out2=$(_plan_progress_json "$TMP/a" '{}')
-echo "$out2" | jq -e '.primary_kind=="implementation" and .primary=="IMPLEMENTATION.md"' >/dev/null \
-  || fail "impl primary"
-echo "$out2" | jq -e '.done==1 and .total==2' >/dev/null || fail "impl counts"
-pass "implementation plan fallback"
+echo "$out2" | jq -e '.primary=="SPEC.md" and .primary_kind=="spec"' >/dev/null \
+  || fail "without PLAN.md must use spec not IMPLEMENTATION-PLAN: $(echo "$out2"|jq .primary,.primary_kind)"
+echo "$out2" | jq -e '.sources.plan == null' >/dev/null || fail "sources.plan must be null"
+pass "no plan-filename aliases; SPEC fallback only"
 
-# spec-only
-rm -f "$TMP/a/IMPLEMENTATION.md"
+# PLAN.md wins when both exist
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [x] real plan item
+- [ ] second
+P
 out3=$(_plan_progress_json "$TMP/a" '{}')
-echo "$out3" | jq -e '.primary_kind=="spec"' >/dev/null || fail "spec fallback"
-pass "spec fallback"
+echo "$out3" | jq -e '.primary=="PLAN.md" and .primary_kind=="plan"' >/dev/null \
+  || fail "PLAN.md must win: $(echo "$out3"|jq .primary)"
+echo "$out3" | jq -e '.done==1 and .total==2' >/dev/null || fail "PLAN counts"
+pass "PLAN.md is the only operational plan name"
 
 # dash snapshot attaches field
 mkdir -p "$TMP/b/.plinth/session"

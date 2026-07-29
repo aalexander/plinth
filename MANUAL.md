@@ -87,6 +87,7 @@ Everything between is the model's call.
   preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth plan [path]`          — light product plan: scaffold root `PLAN.md`
+  (canonical operational plan name for agents, checkpoint, and dash — no aliases)
   if missing (never overwrites). Default path: CWD. Runnable in-session.
 - `plinth plan --deep [path]`   — deep plan: ensure PLAN.md, then three
   independent agent seats in parallel → `PLAN-REVIEW.md` (security / completeness /

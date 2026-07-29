@@ -4988,8 +4988,10 @@ print(json.dumps(out, indent=2))
 PY
 }
 
-# Build lifecycle.plan_progress from PLAN / implementation plan / spec (coordinated).
+# Build lifecycle.plan_progress from PLAN.md (canonical) or spec (fallback).
 # Args: project root, optional routing JSON string from checkpoint. Fail-soft → empty stdout.
+# Operational plan filename is ALWAYS root PLAN.md — no aliases. Non-conforming
+# clients rename (e.g. IMPLEMENTATION-PLAN.md → PLAN.md).
 _plan_progress_json() {
   local root="${1:-.}" routing="${2:-}"
   python3 - "$root" "$routing" <<'PY' 2>/dev/null || true
@@ -5046,43 +5048,25 @@ def resolve_file(rel):
                 return Path(os.path.realpath(cand))
     return None
 
-# Coordinated source preference: product plan → implementation plan → canonical spec.
-# (gene.us uses IMPLEMENTATION-PLAN.md; wren-style uses PLAN.md as the impl plan.)
-impl_candidates = [
-    "IMPLEMENTATION-PLAN.md",
-    "IMPLEMENTATION_PLAN.md",
-    "IMPLEMENTATION.md",
-    "PLAN-IMPLEMENTATION.md",
-    "docs/IMPLEMENTATION-PLAN.md",
-    "docs/IMPLEMENTATION.md",
-    "docs/implementation-plan.md",
-]
+# Canonical operational plan: root PLAN.md only (no filename aliases).
+# checkpoint plan_ref may repoint only if basename is still PLAN.md.
 plan_ref = routing.get("plan_ref") if isinstance(routing.get("plan_ref"), str) else None
-if plan_ref and plan_ref not in ("PLAN.md",) and not any(
-    plan_ref.endswith(x) for x in ("PLAN.md",)
-):
-    # checkpoint may point at a non-PLAN implementation doc
-    impl_candidates.insert(0, plan_ref)
-
-plan_path = resolve_file("PLAN.md")
-impl_path = None
-for c in impl_candidates:
-    impl_path = resolve_file(c)
-    if impl_path:
-        break
+plan_rel = "PLAN.md"
+if plan_ref and Path(plan_ref).name == "PLAN.md":
+    plan_rel = plan_ref
+plan_path = resolve_file(plan_rel)
 spec_rel = read_cfg_spec(root) or "SPEC.md"
 spec_path = resolve_file(spec_rel)
 
 sources = {
     "plan": rel_to_root(plan_path) if plan_path else None,
-    "implementation": rel_to_root(impl_path) if impl_path else None,
     "spec": rel_to_root(spec_path) if spec_path else None,
 }
 
-primary_path = plan_path or impl_path or spec_path
+primary_path = plan_path or spec_path
 if not primary_path:
     sys.exit(0)
-primary_kind = "plan" if plan_path else ("implementation" if impl_path and primary_path == impl_path else "spec")
+primary_kind = "plan" if plan_path else "spec"
 primary_rel = rel_to_root(primary_path)
 
 # Prefer product plan outline; when only spec exists, still derive stages.
@@ -5228,11 +5212,7 @@ while i < len(lines):
                 i += 1
                 continue
             if not is_coding_section(ht) and primary_kind == "plan":
-                # Implementation plans: only coding milestone sections.
-                cur = None
-                i += 1
-                continue
-            if not is_coding_section(ht) and primary_kind == "implementation":
+                # PLAN.md: only coding milestone sections.
                 cur = None
                 i += 1
                 continue
@@ -5502,7 +5482,7 @@ cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) els
 cp_status = routing.get("status") if isinstance(routing.get("status"), str) else None
 
 # Infer Slice N from HANDOFF/CHECKPOINT prose when no routing fence (legacy handoffs).
-# e.g. gene.us "Continue **Slice 1** from IMPLEMENTATION-PLAN.md".
+# e.g. "Continue **Slice 1** from PLAN.md".
 inferred_partial = False
 if not si and not cur_title and not cur_id:
     for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):

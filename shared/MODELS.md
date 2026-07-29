@@ -155,22 +155,21 @@ Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
 
 ### Plan progress (dashboard)
 
-**Source of truth (coordinated, not duplicated):**
+**Source of truth (one name, no aliases):**
 
 | Role | Source | Why |
 |------|--------|-----|
 | **Requirements** | `spec_path` (SPEC.md / spec tree) | Canonical “what must be true” for review/ship |
-| **Execution progress** | **PLAN.md** (preferred) | Operational stages, ACs, phase exits — what the dash tracks |
-| **Fallback sequence** | implementation plan → spec shall-lines | When PLAN is absent |
+| **Execution progress** | **root `PLAN.md` only** | Operational stages agents, checkpoint, and dash all share |
+
+There is **no** alternate plan filename (`IMPLEMENTATION-PLAN.md`, etc.). Clients
+that used another name rename to `PLAN.md`. Checkpoint `plan_ref` defaults to
+`PLAN.md` (or a path whose basename is still `PLAN.md`).
 
 Stages for the dash are **auto-derived coding milestones only** — not risks,
 tradeoffs, notes, INV-# inventory lines, external/human gates, freeze sign-off,
-design digressions, or BUILD-MATRIX bookkeeping:
-
-1. **PLAN.md** if present (AC / phase exits / module build status / build order)  
-2. else **implementation plan** (`IMPLEMENTATION.md`, …)  
-3. else **`spec_path`** requirements harvest (coding-shaped only)  
-
+design digressions, or BUILD-MATRIX bookkeeping. When `PLAN.md` is absent, the
+dash may fall back to coding-shaped items from `spec_path` only.
 
 **Checkpoint is how the client reports position:** on `plinth checkpoint` /
 handoff, set `PLINTH_CHECKPOINT_SLICE_INDEX` / `_TOTAL` / `_TITLE` (or let the
