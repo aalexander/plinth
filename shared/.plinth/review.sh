@@ -116,12 +116,14 @@ git status --porcelain -z > "$_status_tmp" 2>/dev/null || status_rc=$?
 while IFS= read -r -d '' entry; do
   [ -n "$entry" ] || continue
   case "$entry" in
-    [MADRCUT?!][MADRCUT?!]\ *) path="${entry:3}" ;;  # XY + space + path
+    # XY columns may be space (e.g. " M path", "M  path") — include space in class.
+    [ MADRCUT?!][ MADRCUT?!]\ *) path="${entry:3}" ;;
     *) path="$entry" ;;                              # rename/copy second path
   esac
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
     HANDOFF.md) ;;                               # review/handoff auto-refresh — not reviewable product
+    .plinth/RESIDUAL.json) ;;                    # same-open soft-cap draft
     "") ;;
     *) dirty=1; break ;;
   esac
@@ -2108,6 +2110,11 @@ ${diff}"
   elif [ "$blocking" -gt 0 ] && [ "$RRAW" = "APPROVED" ]; then
     RVERDICT="CHANGES_NEEDED"
     echo "Plinth review: reviewer said APPROVED but ${blocking} open blocker/major project finding(s) exist — effective verdict CHANGES_NEEDED."
+  fi
+  # VERIFY payload truncation: never promote to APPROVED (even when blocking=0).
+  if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ] && [ "$RVERDICT" = "APPROVED" ]; then
+    RVERDICT="CHANGES_NEEDED"
+    echo "Plinth review: verify fix-diff truncated — effective verdict CHANGES_NEEDED (cannot APPROVE partial coverage)."
   fi
 
   local usage="$RUSAGE"; [ -n "$usage" ] || usage="null"

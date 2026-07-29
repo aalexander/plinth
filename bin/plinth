@@ -256,22 +256,14 @@ _migrate_custom_claude_into_driver_project() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$(dirname "$dest")" || return 1
   extracted="$(mktemp "${TMPDIR:-/tmp}/plinth-claude-mig.XXXXXX")" || return 1
-  # Prefer ## Project-specific notes body; else full custom file (never drop pre-H1 rules).
+  # Full custom file always — never drop pre-heading rules (review r2 blocker).
   {
     echo "# Project-Specific Driver Notes"
     echo
-    echo "<!-- Migrated from CLAUDE.md on $ts by plinth update (driver-shell v4.4+)."
+    echo "<!-- Migrated FULL custom CLAUDE.md on $ts by plinth update (driver-shell v4.4+)."
     echo "     Review and trim; this file is never overwritten by later updates. -->"
     echo
-    if grep -qE '^## Project-specific notes' "$claude" 2>/dev/null; then
-      awk '
-        /^## Project-specific notes/ { keep=1 }
-        keep { print }
-      ' "$claude" 2>/dev/null
-    else
-      # Full file — preserve every custom line (including text before first H1).
-      cat "$claude"
-    fi
+    cat "$claude"
   } > "$extracted" || { rm -f "$extracted"; return 1; }
   if [ ! -s "$extracted" ]; then
     rm -f "$extracted"
@@ -5398,11 +5390,8 @@ run_plan() {
 import json, re, sys
 paths, outj = sys.argv[1:4], sys.argv[4]
 roles_default = ["security_ops", "completeness", "delete_simplify"]
-# Only instrument-emitted unavailability markers (not model prose about login).
-unavail_re = re.compile(
-    r"^\(seat \w+ unavailable|binary not found on PATH",
-    re.I | re.M,
-)
+# Only instrument-emitted unavailability markers (line-anchored).
+unavail_re = re.compile(r"^\(seat \w+ unavailable", re.I | re.M)
 
 def section(text, name):
     mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
