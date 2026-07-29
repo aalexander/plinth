@@ -1,5 +1,14 @@
 # Plinth changelog
 
+## v5.0.6 — checkpoint + slice routing — July 29, 2026
+- **Checkpoint:** `plinth checkpoint` writes `CHECKPOINT.md` (canonical resume);
+  `handoff` alias; `HANDOFF.md` is a pointer with mtime refresh.
+- **Slice routing:** `plinth.checkpoint/v1` JSON (effort medium|high|xhigh,
+  implement driver|worker|either, 1-based slice_index/total); ETAs reserved-null.
+  Non-blocking default effort=high. MODELS documents policy (not always-worker).
+- **Dashboard:** plan position + effort chips from checkpoint routing; fail-soft parse.
+- **Review:** CHECKPOINT.md is session ephemera like HANDOFF.md.
+
 ## v5.0.5 — residual closeout — July 29, 2026
 - **Residual closeout:** clear thrash/pin/phase debt from the PR #57 residual land.
 - **Verify fail-closed:** schema-validate prior findings before compact ledger + re-carry;
@@ -25,17 +34,6 @@
   production functions), consistent with existing #2/#20/#21 canary style.
 - **Pin policy:** monorepo keeps `.plinth-version` as dogfood pin; product changes
   ship in `shared/` until a release refresh (documented in RESIDUAL-TRIAGE).
-
-
-## v5.0.6 — checkpoint + slice routing — July 29, 2026
-- **Checkpoint:** `plinth checkpoint` writes `CHECKPOINT.md` (canonical resume);
-  `handoff` alias; `HANDOFF.md` is a pointer with mtime refresh.
-- **Slice routing:** `plinth.checkpoint/v1` JSON (effort medium|high|xhigh,
-  implement driver|worker|either, 1-based slice_index/total); ETAs reserved-null.
-  Non-blocking default effort=high. MODELS documents policy (not always-worker).
-- **Dashboard:** plan position + effort chips from checkpoint routing; fail-soft parse.
-- **Review:** CHECKPOINT.md is session ephemera like HANDOFF.md.
-
 
 ## v5.0.4 — dashboard-upstream-ship — July 29, 2026
 - **Dashboard + upstream openers (5.0.x ship):** findings-without-verdict cards;
