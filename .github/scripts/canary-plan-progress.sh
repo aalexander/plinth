@@ -420,29 +420,29 @@ if (!elsById["nh-modal"].classList.contains("open")) {
   console.error("data-plan click did not open modal");
   process.exit(1);
 }
-// completed group collapsed, active leaf present
-const html = String(list.innerHTML);
-if (!html.includes("plan-done-group") && !html.includes("completed")) {
-  if (!html.includes("First")) {
-    console.error("expected completed group or first leaf");
-    process.exit(1);
-  }
-}
-if (!html.includes("leaf") && !html.includes("Second") && !html.includes("active")) {
-  console.error("expected active/open leaf markup");
+// completed group: prefer details/summary; require active leaf class
+const planHtml = String(list.innerHTML);
+if (!planHtml.includes("plan-done-group") && !planHtml.includes("<details")) {
+  console.error("expected plan-done-group details for completed leaves:", planHtml.slice(0, 240));
   process.exit(1);
 }
-// missing classList guard: openPlan must not throw when panel.classList absent
-const panel = elsById["nh-panel"];
-const saved = panel.classList;
+if (!planHtml.includes("leaf active") && !planHtml.includes('class="leaf active"') && !planHtml.includes("active")) {
+  console.error("expected active leaf markup:", planHtml.slice(0, 240));
+  process.exit(1);
+}
+// missing classList guard on panel AND list
+const savedPanelCL = panel.classList;
+const savedListCL = list.classList;
 panel.classList = undefined;
+list.classList = undefined;
 try {
   api.openPlan("/tmp/demo");
 } catch (e) {
   console.error("openPlan threw without classList", e);
   process.exit(1);
 }
-panel.classList = saved;
+panel.classList = savedPanelCL;
+list.classList = savedListCL;
 console.log("openPlan+click+details ok");
 NODE
 pass "openPlan / data-plan click / plan-wide + stage rows"
@@ -739,9 +739,15 @@ unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS PLINTH_CHECKPOINT_P
 cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 pr=$(echo "$cj" | jq -r '.plan_ref // empty')
 [ -z "$pr" ] || fail "stale plan_ref after PLAN delete: $cj"
-# also drop inherited index/title/status=done when PLAN is gone
-echo "$cj" | jq -e '(.slice_index==null or .slice_index=="") and (.slice_title==null or .slice_title=="")' >/dev/null \
-  || fail "stale position after PLAN delete: $cj"
+# also drop inherited index/title/id/total/status=done when PLAN is gone
+echo "$cj" | jq -e '
+  (.plan_ref==null or .plan_ref=="")
+  and (.slice_index==null or .slice_index=="")
+  and (.slice_title==null or .slice_title=="")
+  and (.slice_id==null or .slice_id=="")
+  and (.slice_total==null or .slice_total=="")
+  and (.status!="done")
+' >/dev/null || fail "stale position after PLAN delete: $cj"
 pass "plan_ref cleared when PLAN.md deleted"
 
 # Matching CHECKPOINT Done prose must NOT advance seeder (checkbox-only seed)
@@ -888,8 +894,12 @@ unset PLINTH_CHECKPOINT_SLICE_ID PLINTH_CHECKPOINT_SLICE_TITLE PLINTH_CHECKPOINT
 "$PLINTH" checkpoint . >/dev/null
 cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 # index may stay from env; id/title/status=done must not remain as ghost plan cursor
-echo "$cj" | jq -e '(.slice_id==null or .slice_id=="") and (.status!="done")' >/dev/null \
-  || fail "orphan PLAN with index env still ghost: $cj"
+echo "$cj" | jq -e '
+  .slice_index==1
+  and (.slice_id==null or .slice_id=="")
+  and (.slice_title==null or .slice_title=="")
+  and (.status!="done")
+' >/dev/null || fail "orphan PLAN with index env still ghost: $cj"
 unset PLINTH_CHECKPOINT_SLICE_INDEX
 pass "orphan PLAN clears ghost id/done even with index env"
 
@@ -1008,6 +1018,31 @@ cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 echo "$cj" | jq -e '(.plan_ref==null or .plan_ref=="") and (.slice_index==null or .slice_index=="") and (.status!="done")' >/dev/null \
   || fail "legacy nested plan_ref ghost cursor: $cj"
 pass "legacy nested plan_ref ghost cursor cleared"
+
+# spec_path=docs/PLAN.md basename collision must not become operational plan
+mkdir -p "$TMP/col/.plinth" "$TMP/col/docs"
+cd "$TMP/col"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > docs/PLAN.md <<'P'
+# Nested as "spec"
+## Acceptance criteria
+- [x] Should not be plan primary
+- [x] Also checked
+P
+printf 'spec_path = docs/PLAN.md\n' > .plinth/config
+rm -f PLAN.md
+outc=$(_plan_progress_json "$TMP/col" '{}')
+# primary may be nested file as SPEC fallback (primary_kind=spec) but never plan
+echo "$outc" | jq -e '.primary_kind=="spec"' >/dev/null \
+  || fail "docs/PLAN.md as spec_path must be kind=spec: $(echo "$outc"|jq '{primary,kind:.primary_kind}')"
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+si=$(echo "$cj" | jq -r '.slice_index // empty')
+[ -z "$si" ] || fail "docs/PLAN.md spec_path must not seed as plan: $cj"
+pass "spec_path=docs/PLAN.md is spec fallback not operational plan"
 
 # ready + reviewing preserved on first-open seed (missing index)
 for st in ready reviewing; do

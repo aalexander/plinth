@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PLINTH="${PLINTH:-$ROOT/bin/plinth}"
 TMP=$(mktemp -d)
+export TMPDIR="$TMP/tmp"
+mkdir -p "$TMPDIR"
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "OK: $*"; }
@@ -188,9 +190,9 @@ echo "$_adv_out" | grep -qi 'not signed in' || fail "3-line banner should be aut
 pass "three whole-line banners classify as auth"
 
 # successful advise removes prompt temp files created during this run
-rm -f "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null || true
+rm -f "$TMPDIR"/plinth-advise-prompt.* 2>/dev/null || true
 run_advise_vendor claude ok
-leftover=$(ls "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null | head -5 || true)
+leftover=$(ls "$TMPDIR"/plinth-advise-prompt.* 2>/dev/null | head -5 || true)
 [ -z "$leftover" ] || fail "prompt temp files left after success: $leftover"
 # product cleanup must include _apf (signal path + success)
 grep -q '_apf' "$ROOT/bin/plinth" || fail "missing _apf prompt path"
@@ -210,12 +212,12 @@ echo "$_adv_out" | grep -qi 'not signed in' || fail "agy auth_stdout0: $_adv_out
 pass "agy exit-0 Please sign in → not signed in"
 
 # soft cancel: short sleep fake; TERM parent; no prompt leftovers
-rm -f "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null || true
+rm -f "$TMPDIR"/plinth-advise-prompt.* 2>/dev/null || true
 printf 'advisor_vendor = claude\nadvisor_model = x\n' > .plinth/config
 install_fake claude
 set +e
 PATH="$TMP/bin:/usr/bin:/bin" FAKE_ADVISE_MODE=slow \
-  "$PLINTH" advise "cancel-secret-token" >/tmp/adv-cancel.out 2>&1 &
+  "$PLINTH" advise "cancel-secret-token" >"$TMP/adv-cancel.out" 2>&1 &
 pid=$!
 sleep 0.25
 kill -TERM "$pid" 2>/dev/null || true
@@ -227,7 +229,7 @@ done
 kill -KILL "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 set -e
-leftover=$(ls "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null | head -3 || true)
+leftover=$(ls "$TMPDIR"/plinth-advise-prompt.* 2>/dev/null | head -3 || true)
 [ -z "$leftover" ] || fail "prompt leak after TERM: $leftover"
 pass "TERM cancel path leaves no prompt files"
 
