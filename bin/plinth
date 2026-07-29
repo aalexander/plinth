@@ -4512,13 +4512,13 @@ build_dashboard_snapshot() {
     [ -n "$dir" ] || continue
     card="$(snapshot_one_project "$dir" 2>/dev/null || true)"
     if [ -n "$card" ]; then
-      merge="$PLINTH_ROOT/shared/dashboard/merge-checkpoint-routing.py"
-      if [ -f "$merge" ]; then
-        printf '%s\n' "$card" | python3 "$merge" "$dir" >> "$tmp" 2>/dev/null \
-          || printf '%s\n' "$card" >> "$tmp"
-      else
-        printf '%s\n' "$card" >> "$tmp"
-      fi
+      _rt="$(_checkpoint_parse_json "$(_checkpoint_read_path "$dir")")"
+      [ -n "$_rt" ] || _rt="{}"
+      if [ -f "$dir/CHECKPOINT.md" ] || [ -f "$dir/HANDOFF.md" ]; then _cp_bool=true; else _cp_bool=false; fi
+      printf "%s\n" "$card" | jq -c --argjson routing "$_rt" --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
+        '.lifecycle = ((.lifecycle // {}) + {checkpoint:$checkpoint, routing:(if ($routing|length)==0 then null else $routing end)})' \
+        >> "$tmp" 2>/dev/null \
+        || printf "%s\n" "$card" >> "$tmp"
     fi
   done <<< "$roots"
   # jq -s on an empty file yields []; if the slurp itself fails, surface a top-level
