@@ -5966,7 +5966,8 @@ run_next() {
     _eff=$(printf '%s' "$_cj" | jq -r '.effort // empty' 2>/dev/null || true)
     _impl=$(printf '%s' "$_cj" | jq -r '.implement // empty' 2>/dev/null || true)
     _rat=$(printf '%s' "$_cj" | jq -r '.effort_rationale // empty' 2>/dev/null || true)
-    if [ -n "$_eff" ] || [ -n "$_sid" ]; then
+    # route: whenever any routing field is present (incl. implement-only fences).
+    if [ -n "$_eff" ] || [ -n "$_sid" ] || [ -n "$_impl" ]; then
       if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either} — $_rat"
       else echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either}"; fi
     fi

@@ -110,8 +110,28 @@ EOF
   export PLINTH_CHECKPOINT_EFFORT=medium
   slice_load_routing
   [ "$SLICE_EFFORT" = "medium" ] || { echo "env override failed: $SLICE_EFFORT"; exit 1; }
+  # invalid env over xhigh fence → safe default high (not keep fence)
+  cat > CHECKPOINT.md <<'EOF'
+```json
+{"schema":"plinth.checkpoint/v1","effort":"xhigh","implement":"worker","slice_id":"X1"}
+```
+EOF
+  export PLINTH_CHECKPOINT_EFFORT=bogus
+  export PLINTH_CHECKPOINT_IMPLEMENT=notaseat
+  : >"$TMP/load.err"
+  slice_load_routing 2>"$TMP/load.err"
+  [ "$SLICE_EFFORT" = "high" ] || { echo "invalid effort env should default high: $SLICE_EFFORT"; exit 1; }
+  [ "$SLICE_IMPLEMENT" = "either" ] || { echo "invalid implement env should default either: $SLICE_IMPLEMENT"; exit 1; }
+  grep -qi 'invalid' "$TMP/load.err" || { echo "expected invalid-env warning: $(cat "$TMP/load.err")"; exit 1; }
+  unset PLINTH_CHECKPOINT_EFFORT PLINTH_CHECKPOINT_IMPLEMENT
+  # corrupt fence → default high + unparseable warning
+  printf '# broken\n```json\n{not json\n```\n' > CHECKPOINT.md
+  : >"$TMP/load.err2"
+  slice_load_routing 2>"$TMP/load.err2"
+  [ "$SLICE_EFFORT" = "high" ] || { echo "corrupt fence should default high: $SLICE_EFFORT"; exit 1; }
+  grep -qi 'unparseable' "$TMP/load.err2" || { echo "expected unparseable warning: $(cat "$TMP/load.err2")"; exit 1; }
 )
-pass "slice_load_routing fence + env override"
+pass "slice_load_routing fence + env override + invalid/corrupt defaults"
 
 # legacy HANDOFF-only read path
 setup "$TMP/b"
@@ -140,5 +160,28 @@ set -e
 [ "$rc3" -eq 0 ] || [ "$rc3" -eq 3 ] || fail "missing effort must not crash next (rc=$rc3): $out3"
 printf '%s\n' "$out3" | grep -qE '^status:' || fail "missing effort still status: $out3"
 pass "missing effort never fails next"
+
+# implement-only fence still emits route: (not only effort/slice_id)
+setup "$TMP/implonly"
+# Write CHECKPOINT with implement but no effort/slice_id via raw fence (bypass build_json defaults)
+cat > CHECKPOINT.md <<'EOF'
+# Checkpoint
+## Next
+1. do implement-only work
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","implement":"worker"}
+```
+EOF
+outi=$("$PLINTH" next . 2>&1 || true)
+printf '%s\n' "$outi" | grep -qE '^route:.*worker' || fail "implement-only should emit route: $outi"
+printf '%s\n' "$outi" | grep -qE '^hint: implement=worker' || fail "implement-only should emit worker hint: $outi"
+pass "implement-only route + hint"
+
+# dual_wanted is policy desire: pure matrix matches stamp semantics (eligibility is separate)
+# (full run_round needs vendor CLIs; matrix×gate composition is documented in MODELS)
+[ "$(slice_dual_from_effort xhigh build)" = 1 ] || fail "policy dual_wanted xhigh+build"
+[ "$(slice_dual_from_effort high build)" = 0 ] || fail "policy dual_wanted high+build"
+pass "dual_wanted policy matrix (pre-eligibility)"
 
 echo "canary-checkpoint-routing: ALL PASS"

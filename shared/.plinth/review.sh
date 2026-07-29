@@ -1723,6 +1723,8 @@ slice_dual_from_effort() {
 }
 
 # Load slice routing into SLICE_* globals. Fail-soft always.
+# Invalid/non-empty env overrides → safe defaults (high/either), never silent keep of fence xhigh.
+# Present checkpoint/handoff file with unparseable fence → warn once; default high (no silent rigor loss claim).
 slice_load_routing() {
   SLICE_EFFORT="high"
   SLICE_IMPLEMENT="either"
@@ -1766,15 +1768,30 @@ PY
       case "$e" in medium|high|xhigh) SLICE_EFFORT="$e" ;; esac
       case "$i" in driver|worker|either) SLICE_IMPLEMENT="$i" ;; esac
       [ -n "$s" ] && SLICE_ID="$s"
+    else
+      # File present but no usable plinth.checkpoint/v1 fence — do not silently claim xhigh rigor.
+      echo "Plinth review: NOTE — ${f} present but checkpoint fence unparseable; slice effort defaults to high (single-pass BUILD bias)." >&2
     fi
   fi
-  # Env overrides fence (operator / canary).
-  case "${PLINTH_CHECKPOINT_EFFORT:-}" in
-    medium|high|xhigh) SLICE_EFFORT="$PLINTH_CHECKPOINT_EFFORT" ;;
-  esac
-  case "${PLINTH_CHECKPOINT_IMPLEMENT:-}" in
-    driver|worker|either) SLICE_IMPLEMENT="$PLINTH_CHECKPOINT_IMPLEMENT" ;;
-  esac
+  # Env overrides fence (operator / canary). Non-empty invalid → safe default + warn.
+  if [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ] && [ -n "${PLINTH_CHECKPOINT_EFFORT}" ]; then
+    case "$PLINTH_CHECKPOINT_EFFORT" in
+      medium|high|xhigh) SLICE_EFFORT="$PLINTH_CHECKPOINT_EFFORT" ;;
+      *)
+        SLICE_EFFORT="high"
+        echo "Plinth review: NOTE — PLINTH_CHECKPOINT_EFFORT='${PLINTH_CHECKPOINT_EFFORT}' invalid; defaulting effort=high." >&2
+        ;;
+    esac
+  fi
+  if [ -n "${PLINTH_CHECKPOINT_IMPLEMENT+x}" ] && [ -n "${PLINTH_CHECKPOINT_IMPLEMENT}" ]; then
+    case "$PLINTH_CHECKPOINT_IMPLEMENT" in
+      driver|worker|either) SLICE_IMPLEMENT="$PLINTH_CHECKPOINT_IMPLEMENT" ;;
+      *)
+        SLICE_IMPLEMENT="either"
+        echo "Plinth review: NOTE — PLINTH_CHECKPOINT_IMPLEMENT='${PLINTH_CHECKPOINT_IMPLEMENT}' invalid; defaulting implement=either." >&2
+        ;;
+    esac
+  fi
 }
 
 # Review charter phase for prompts (build vs hardening). Default build; harden
@@ -2033,6 +2050,8 @@ ${inc}${evidence}${commits}"
   fi
   [ "$phase_src" = "env" ] || phase_src="file_or_default"
   # Stamp slice routing on the request (audit trail; never blocks).
+  # dual_wanted = policy desire from effort×phase×override ONLY (pre eligibility).
+  # Actual dual still needs fresh+r1+Tier-2+cross-vendor (see dual_ok below).
   local dual_wanted
   dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
@@ -2044,7 +2063,8 @@ ${inc}${evidence}${commits}"
           review_phase:$review_phase, phase_source:$phase_source,
           slice_routing:{effort:$effort, implement:$implement,
             slice_id:(if $slice_id=="" then null else $slice_id end),
-            dual_wanted:($dual_wanted==1)}}' \
+            dual_wanted:($dual_wanted==1),
+            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
         > "$SDIR/request-$r.json"
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs

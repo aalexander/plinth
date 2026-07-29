@@ -167,6 +167,13 @@ defaults to **high**; never stops next / review / Stop):
 | **implement=either** | No extra implement hint. |
 | **request-\<n\>.json** | Stamps `slice_routing.{effort,implement,slice_id,dual_wanted}` for the audit trail. |
 
+`dual_wanted` is **policy desire** (effort × phase × `PLINTH_DUAL_PASS` override only).
+It is **not** eligibility (fresh · r1 · Tier-2 · cross-vendor audit seat), **not**
+`dual_executed`, and **not** dual success (see `dual-degraded.json` when the audit
+seat fails). Unparseable CHECKPOINT fence → non-blocking stderr note + default
+effort=high (never silent “I wanted xhigh” rigor loss). Invalid non-empty env
+overrides → high / either (safe defaults), not “keep fence”.
+
 Overrides: `PLINTH_DUAL_PASS=1\|0` forces dual on/off after the Tier-2/fresh/r1/vendor
 gates; `PLINTH_CHECKPOINT_EFFORT` / `PLINTH_CHECKPOINT_IMPLEMENT` override the fence
 for operators and canaries. Advise depth (`plinth advise --impactful`) remains a
