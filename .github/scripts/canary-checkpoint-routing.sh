@@ -184,19 +184,23 @@ pass "implement-only route + hint"
 [ "$(slice_dual_from_effort high build)" = 0 ] || fail "policy dual_wanted high+build"
 pass "dual_wanted policy matrix (pre-eligibility)"
 
-# request.json stamp: production jq shape locked to review.sh (dual_wanted_note etc.)
+# request.json stamp: call production stamp_request_json (same function run_round uses)
 awk '
   /^SLICE_EFFORT=/ {p=1}
   /^# Review charter phase/ {exit}
   p {print}
 ' "$REVIEW" > "$TMP/slice_helpers2.sh"
+# Also extract stamp_request_json function
+awk '
+  /^stamp_request_json\(\)/ {p=1}
+  p {print}
+  p && /^}$/ {exit}
+' "$REVIEW" >> "$TMP/slice_helpers2.sh"
 # shellcheck disable=SC1091
 . "$TMP/slice_helpers2.sh"
-# Glue lock: production run_round must still stamp dual_wanted_note + slice_routing keys
-grep -q 'dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"' "$REVIEW" \
-  || fail "production request stamp dual_wanted_note drifted in review.sh"
-grep -q 'slice_routing:{effort:$effort, implement:$implement' "$REVIEW" \
-  || fail "production slice_routing stamp drifted in review.sh"
+type stamp_request_json >/dev/null 2>&1 || fail "stamp_request_json not extracted from review.sh"
+grep -q 'stamp_request_json "\$SDIR"' "$REVIEW" \
+  || fail "run_round must call stamp_request_json (production path)"
 mkdir -p "$TMP/req"
 (
   cd "$TMP/req"
@@ -206,28 +210,14 @@ mkdir -p "$TMP/req"
 ```
 EOF
   slice_load_routing
-  # Same dual_wanted + jq fields as run_round (shared/.plinth/review.sh stamp block)
-  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" build "${PLINTH_DUAL_PASS:-}")"
-  r=1; sha=deadbeef; baseref=origin/main; m=fresh; SPEC_PATH=SPEC.md
-  rphase=build; phase_src=file_or_default
-  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
-        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
-        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
-        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
-        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
-          review_phase:$review_phase, phase_source:$phase_source,
-          slice_routing:{effort:$effort, implement:$implement,
-            slice_id:(if $slice_id=="" then null else $slice_id end),
-            dual_wanted:($dual_wanted==1),
-            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
-        > request-1.json
+  stamp_request_json "$TMP/req" 1 deadbeef origin/main fresh SPEC.md build file_or_default
   jq -e '.slice_routing.effort=="xhigh" and .slice_routing.dual_wanted==true
     and .slice_routing.slice_id=="X9"
-    and (.slice_routing.dual_wanted_note|test("policy desire"))' \
-    request-1.json >/dev/null || fail "production stamp shape: $(cat request-1.json)"
+    and (.slice_routing.dual_wanted_note|test("policy desire"))
+    and .sha=="deadbeef" and .mode=="fresh"' \
+    request-1.json >/dev/null || fail "production stamp_request_json: $(cat request-1.json)"
 )
-pass "request.json production stamp shape (xhigh dual_wanted + note)"
+pass "request.json via production stamp_request_json (xhigh dual_wanted)"
 
 # dual_ok eligibility: extract the production if-condition text from review.sh (glue lock)
 # so a drifted gate fails this canary rather than a hand-copied twin.

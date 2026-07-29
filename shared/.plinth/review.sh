@@ -1722,6 +1722,28 @@ slice_dual_from_effort() {
   esac
 }
 
+# Stamp request-N.json with slice_routing (called from run_round; also canary-callable).
+# dual_wanted = policy desire from effort×phase×override ONLY (pre eligibility).
+# Actual dual still needs fresh+r1+Tier-2+cross-vendor (see dual_ok in run_round).
+# Args: sdir round sha baseref mode spec_path rphase phase_source
+stamp_request_json() {
+  local sdir="$1" r="$2" sha="$3" baseref="$4" m="$5" spec="$6" rphase="$7" phase_src="$8"
+  local dual_wanted
+  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$spec" \
+        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
+        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
+        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
+        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
+          review_phase:$review_phase, phase_source:$phase_source,
+          slice_routing:{effort:$effort, implement:$implement,
+            slice_id:(if $slice_id=="" then null else $slice_id end),
+            dual_wanted:($dual_wanted==1),
+            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
+        > "$sdir/request-$r.json"
+}
+
 # Load slice routing into SLICE_* globals. Fail-soft always.
 # Invalid/non-empty env overrides → safe defaults (high/either), never silent keep of fence xhigh.
 # Present checkpoint/handoff file with unparseable fence → warn once; default high (no silent rigor loss claim).
@@ -2050,22 +2072,7 @@ ${inc}${evidence}${commits}"
   fi
   [ "$phase_src" = "env" ] || phase_src="file_or_default"
   # Stamp slice routing on the request (audit trail; never blocks).
-  # dual_wanted = policy desire from effort×phase×override ONLY (pre eligibility).
-  # Actual dual still needs fresh+r1+Tier-2+cross-vendor (see dual_ok below).
-  local dual_wanted
-  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
-  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
-        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
-        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
-        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
-        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
-          review_phase:$review_phase, phase_source:$phase_source,
-          slice_routing:{effort:$effort, implement:$implement,
-            slice_id:(if $slice_id=="" then null else $slice_id end),
-            dual_wanted:($dual_wanted==1),
-            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
-        > "$SDIR/request-$r.json"
+  stamp_request_json "$SDIR" "$r" "$sha" "$baseref" "$m" "$SPEC_PATH" "$rphase" "$phase_src"
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
   # the CLI read-only, writes the validated verdict to findings-$r.json, and sets RSID

@@ -1703,14 +1703,19 @@ $question"
   local margs=() bin="" errf outf rc=0 diag=""
   errf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-err.XXXXXX")" || errf=""
   outf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-out.XXXXXX")" || outf=""
-  # Best-effort cleanup on interrupt (success paths also rm explicitly).
-  # Re-raise after cleanup — never swallow cancellation as empty-output success.
+  # Best-effort cleanup on interrupt. Kill the advisor child immediately so we
+  # do not wait for a hung CLI before exiting.
+  _advise_child=""
   _advise_cleanup() { [ -n "${errf:-}" ] && rm -f "$errf"; [ -n "${outf:-}" ] && rm -f "$outf"; }
   _advise_on_signal() {
     local _sig="$1"
+    if [ -n "${_advise_child:-}" ]; then
+      kill -TERM "$_advise_child" 2>/dev/null || true
+      wait "$_advise_child" 2>/dev/null || true
+      _advise_child=""
+    fi
     _advise_cleanup
     trap - INT TERM HUP
-    # 128+signum style exit for interactive shells; kill re-delivers when possible.
     case "$_sig" in
       INT) exit 130 ;;
       TERM) exit 143 ;;
@@ -1779,9 +1784,14 @@ $question"
       # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
       # from a missing binary (#62).
       set +e
-      printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" >"$outf" 2>"$errf"
+      (
+        printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+          --allowed-tools "Read,Grep,Glob"
+      ) >"$outf" 2>"$errf" &
+      _advise_child=$!
+      wait "$_advise_child"
       rc=$?
+      _advise_child=""
       set -e
       if _advise_auth_hit "$rc"; then
         _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
@@ -1805,9 +1815,13 @@ $question"
       fi
       [ -n "$use" ] && margs=(-m "$use")
       set +e
-      printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - \
-        >"$outf" 2>"$errf"
+      (
+        printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only -
+      ) >"$outf" 2>"$errf" &
+      _advise_child=$!
+      wait "$_advise_child"
       rc=$?
+      _advise_child=""
       set -e
       if _advise_auth_hit "$rc"; then
         _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
@@ -1829,9 +1843,13 @@ $question"
       fi
       [ -n "$use" ] && margs=(-m "$use")
       set +e
-      "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} \
-        >"$outf" 2>"$errf"
+      (
+        "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"}
+      ) >"$outf" 2>"$errf" &
+      _advise_child=$!
+      wait "$_advise_child"
       rc=$?
+      _advise_child=""
       set -e
       if _advise_auth_hit "$rc"; then
         _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
@@ -1853,8 +1871,13 @@ $question"
       fi
       [ -n "$use" ] && margs=(--model "$use")
       set +e
-      "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} >"$outf" 2>"$errf"
+      (
+        "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"}
+      ) >"$outf" 2>"$errf" &
+      _advise_child=$!
+      wait "$_advise_child"
       rc=$?
+      _advise_child=""
       set -e
       if _advise_auth_hit "$rc"; then
         _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
@@ -5168,6 +5191,8 @@ if _plan_ref is None and "PLINTH_CHECKPOINT_PLAN_REF" not in os.environ:
         _plan_ref = None
 if not _plan_ref:
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
+# No live PLAN → drop inherited plan position (never apply obsolete cursor to SPEC).
+_clear_plan_pos = _plan_ref is None and "PLINTH_CHECKPOINT_SLICE_INDEX" not in os.environ
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
     _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
 else:
@@ -5184,6 +5209,14 @@ if "PLINTH_CHECKPOINT_SLICE_TOTAL" in os.environ:
     _stot = env_int_key("PLINTH_CHECKPOINT_SLICE_TOTAL")
 else:
     _stot = prev.get("slice_total")
+if _clear_plan_pos:
+    _sid = None
+    _stitle = None
+    _sidx = None
+    _stot = None
+    # Keep non-done operator status; drop done-with-no-plan (would force 100% on SPEC).
+    if status == "done":
+        status = "implementing"
 out = {
     "schema": "plinth.checkpoint/v1",
     "plan_ref": _plan_ref,
@@ -5736,32 +5769,34 @@ def match_text(a, b):
     return len(ta & tb) >= need
 
 # CHECKPOINT/HANDOFF ## Done — match only against individual bullet lines (not whole blob).
+# Seeding (PLINTH_PLAN_SEED=1) is checkbox-only — never advance from Done prose.
 done_lines = []
-for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
-    cp = root / cp_name
-    if not cp.is_file():
-        continue
-    raw_cp = cp.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"^## Done\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
-    if not m:
-        continue
-    for line in m.group(1).splitlines():
-        t = line.strip()
-        t = re.sub(r"^[-*+]\s+", "", t)
-        t = re.sub(r"^\d+[.)]\s+", "", t)
-        t = t.strip()
-        if len(t) >= 24:
-            done_lines.append(t)
+if os.environ.get("PLINTH_PLAN_SEED") != "1":
+    for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
+        cp = root / cp_name
+        if not cp.is_file():
+            continue
+        raw_cp = cp.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^## Done\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            t = line.strip()
+            t = re.sub(r"^[-*+]\s+", "", t)
+            t = re.sub(r"^\d+[.)]\s+", "", t)
+            t = t.strip()
+            if len(t) >= 24:
+                done_lines.append(t)
 
-for n in leaves:
-    if n.get("status") == "done":
-        continue
-    leaf_title = n.get("title") or ""
-    for dl in done_lines:
-        if match_text(leaf_title, dl):
-            n["status"] = "done"
-            n["done_via"] = "checkpoint_done"
-            break
+    for n in leaves:
+        if n.get("status") == "done":
+            continue
+        leaf_title = n.get("title") or ""
+        for dl in done_lines:
+            if match_text(leaf_title, dl):
+                n["status"] = "done"
+                n["done_via"] = "checkpoint_done"
+                break
 
 si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
 st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
@@ -6286,7 +6321,8 @@ _write_handoff() {
       _prev_idx=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_index // empty' 2>/dev/null || true)
     fi
     # Seed discovery ignores prior routing so checked leaves stay done (not re-activated).
-    _seed_pp="$(_plan_progress_json "$root" '{}')"
+    # PLINTH_PLAN_SEED=1: checkbox-only (ignore CHECKPOINT/HANDOFF Done prose).
+    _seed_pp="$(PLINTH_PLAN_SEED=1 _plan_progress_json "$root" '{}')"
     if [ -n "$_seed_pp" ]; then
       _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
         [ .outline[]?.children[]? | select(.progress != false) ] as $L
@@ -6336,20 +6372,19 @@ _write_handoff() {
         | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
         | if $t > 0 and $d == $t then "yes" else "no" end
       ' 2>/dev/null || true)
-      # Remember whether operator set STATUS before we seed (do not clobber blocked/etc.).
+      # Remember whether operator set STATUS before we seed (open path only).
       _user_set_status=0
       if [ "${PLINTH_CHECKPOINT_STATUS+x}" = x ]; then _user_set_status=1; fi
       if [ "$_seed_is_plan" = 1 ] && [ "$_seed_done_all" = "yes" ]; then
-        if [ "$_user_set_status" != 1 ]; then
-          export PLINTH_CHECKPOINT_STATUS=done
-        fi
+        # All PLAN leaves checked → status=done is factual (not operator preference).
+        # Keeping blocked/implementing with index=total made dash show a mid-plan cursor.
+        export PLINTH_CHECKPOINT_STATUS=done
         _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
           [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
         ' 2>/dev/null || true)
         [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_tot"
         [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
         export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
-        # Empty string clears prior id/title in builder (env key present).
         export PLINTH_CHECKPOINT_SLICE_ID=""
         export PLINTH_CHECKPOINT_SLICE_TITLE=""
         echo "  Seeded plan complete (all PLAN.md stages done)."
@@ -6362,14 +6397,11 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
-          # Re-open prior done when PLAN has open work — never clobber explicit env status
-          # (e.g. operator PLINTH_CHECKPOINT_STATUS=blocked must stick).
-          if [ "$_user_set_status" != 1 ]; then
-            if [ "$_prev_status" = "done" ] || [ -z "${PLINTH_CHECKPOINT_STATUS:-}" ]; then
-              export PLINTH_CHECKPOINT_STATUS=implementing
-            fi
-          elif [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ -n "$_seed_idx" ]; then
-            # Explicit done but open leaf exists — leave 100% honestly.
+          # Open work: never clobber explicit non-done operator status (blocked/reviewing).
+          # Re-open prior/env done when PLAN still has open leaves.
+          if [ "$_user_set_status" = 1 ] && [ "${PLINTH_CHECKPOINT_STATUS:-}" != "done" ]; then
+            : # keep blocked/reviewing/ready/implementing
+          else
             export PLINTH_CHECKPOINT_STATUS=implementing
           fi
           echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"

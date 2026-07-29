@@ -708,7 +708,41 @@ unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS PLINTH_CHECKPOINT_P
 cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 pr=$(echo "$cj" | jq -r '.plan_ref // empty')
 [ -z "$pr" ] || fail "stale plan_ref after PLAN delete: $cj"
+# also drop inherited index/title/status=done when PLAN is gone
+echo "$cj" | jq -e '(.slice_index==null or .slice_index=="") and (.slice_title==null or .slice_title=="")' >/dev/null \
+  || fail "stale position after PLAN delete: $cj"
 pass "plan_ref cleared when PLAN.md deleted"
+
+# Matching CHECKPOINT Done prose must NOT advance seeder (checkbox-only seed)
+mkdir -p "$TMP/seed5/.plinth"
+cd "$TMP/seed5"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [ ] Wire dashboard plan progress meter for clients
+- [ ] Second long enough title for matching rules here
+P
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Done
+- Wire dashboard plan progress meter for clients was completed in a prior session
+## Next
+1. continue
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","slice_index":1,"slice_total":2,"status":"implementing","plan_ref":"PLAN.md"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+# Still on leaf 1 — Done prose must not mark first checkbox done for seeding
+echo "$cj" | jq -e '.slice_index==1 and .status!="done"' >/dev/null \
+  || fail "Done prose must not advance seed: $cj"
+pass "seeder ignores CHECKPOINT Done prose (checkbox-only)"
 
 # explicit STATUS=blocked must not be overwritten by open-plan seed
 mkdir -p "$TMP/seed4/.plinth"
