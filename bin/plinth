@@ -1763,7 +1763,7 @@ $question"
   # Broad re is for CLI error streams (stderr / nonzero). Exit-0 short path uses a
   # NARROW banner re and rejects advice cues so "authentication required before…" is
   # not treated as a login prompt.
-  _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
+  _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.?|not signed in|login required|\bunauthorized\b|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized|/login'
   # Exit-0 short path: each non-empty line must be ONLY banner tokens (and light
   # filler like "Error:" / "You are" / "to continue"), not advice that embeds
   # those phrases mid-sentence.
@@ -1772,7 +1772,7 @@ $question"
     [ -z "${_line//[[:space:]]/}" ] && return 1
     _low=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]')
     # Must contain at least one real auth token (filler-only lines are not auth).
-    printf '%s' "$_low" | grep -qE 'not logged in|please run /login|please sign in|not authenticated|unauthorized|401 unauthorized|/login' \
+    printf '%s' "$_low" | grep -qE 'not logged in|please run /login|please sign in|not authenticated|not signed in|unauthorized|login required|401 unauthorized|/login' \
       || return 1
     # Portable sed (macOS BSD sed has no \b).
     _rest=$(printf '%s' "$_low" | sed -E \
@@ -1780,6 +1780,9 @@ $question"
       -e 's/please run \/login//g' \
       -e 's/please sign in//g' \
       -e 's/not authenticated\.?//g' \
+      -e 's/not signed in//g' \
+      -e 's/login required//g' \
+      -e 's/\bunauthorized\b//g' \
       -e 's/unauthorized \(401\)//g' \
       -e 's/401 unauthorized//g' \
       -e 's/error:?//g' \
@@ -5444,7 +5447,7 @@ NON_CODING_ITEM_RE = re.compile(
     r"^Gate\s*G?\d+\b|"
     r"\bINV-\d+\b\s*[—\-:]|"  # "INV-7 — …" invariant note as the item
     r"^(Risks?|Notes?|Design decisions?|Deployment checklist|Operational readiness|"
-    r"External gate|Confirm launch|Deployment approval)\b|"
+    r"External gate)\s*$|"
     r"owner explicitly agrees|"
     r"human (sign[- ]?off|gate|approval|ratification)|"
     r"external(ly)? gated|"
@@ -5477,13 +5480,14 @@ def is_coding_section(ht: str) -> bool:
     """True only for sections that are operational coding milestones."""
     if not ht:
         return False
-    # Non-coding context on a Phase/Release title (e.g. "Phase 0 risks").
-    if NON_CODING_SECTION_RE.search(ht) and not re.search(
-        r"\bbuild (status|order)\b|\bslice\s*\d+\b", ht, re.I
-    ):
-        # "Phase 0 risks" / "Phase 0 design decisions" are not coding majors.
-        if re.search(r"\b(risk|gate|design decision|tradeoff|approv)", ht, re.I):
-            return False
+    # Non-coding context wins over bare Phase/Release titles.
+    if re.search(
+        r"\b(risk|approval|checklist|readiness|design decision|tradeoff|"
+        r"human approval|deployment checklist|operational readiness|required human|"
+        r"non-?goal|freeze|ratification|background|context)\b",
+        ht, re.I,
+    ) and not re.search(r"\bbuild (status|order)\b|\bslice\s*\d+\b", ht, re.I):
+        return False
     # Strong positive: module build status / build order / Slice N / Phase N.
     if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b|\bphase\s*\d+\b", ht, re.I):
         return True
