@@ -147,10 +147,10 @@ to end a turn that committed (it logs `build_defer`). Ship is unchanged —
 `gh pr create|merge` still needs APPROVED@HEAD. When the product is ready:
 `plinth harden`, then run `./.plinth/review.sh` until APPROVED, then open the PR.
 `plinth build` returns to default build. `plinth phase` prints the current phase.
-`plinth handoff` writes root `HANDOFF.md`; **auto-snapshots** also run on
+`plinth checkpoint` (alias `handoff`) writes root `CHECKPOINT.md`; **auto-snapshots** also run on
 `plinth harden`, `plinth build`, `plinth plan --deep`, and after review rounds
-(CHANGES_NEEDED / APPROVED). SessionStart nudges when HANDOFF exists.
-**Restart:** read `HANDOFF.md` if present and continue from ## Next.
+(CHANGES_NEEDED / APPROVED). SessionStart nudges when CHECKPOINT (or legacy HANDOFF) exists.
+**Restart:** read `CHECKPOINT.md` (or legacy `HANDOFF.md`) and continue from ## Next.
 
 ## Autonomous execution (max automation)
 Default: **keep cooking**. Never wait for optional compaction, human ack of a
@@ -164,7 +164,7 @@ Loop until one of:
    that path only), or
 3. **Hard fail** — infra exit 2 you cannot fix; record and surface.
 
-Otherwise: run `plinth next` (or pick the next item from HANDOFF ## Next, PLAN
+Otherwise: run `plinth next` (or pick the next item from CHECKPOINT ## Next, PLAN
 AC, or open review findings); implement; commit; continue. Mid-loop review
 CHANGES_NEEDED is a **checkpoint** (keep session). Phase changes / APPROVED are
 **milestones** (optional fresh session advice only — still do not wait).

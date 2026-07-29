@@ -27,6 +27,16 @@
   ship in `shared/` until a release refresh (documented in RESIDUAL-TRIAGE).
 
 
+## v5.0.6 — checkpoint + slice routing — July 29, 2026
+- **Checkpoint:** `plinth checkpoint` writes `CHECKPOINT.md` (canonical resume);
+  `handoff` alias; `HANDOFF.md` is a pointer with mtime refresh.
+- **Slice routing:** `plinth.checkpoint/v1` JSON (effort medium|high|xhigh,
+  implement driver|worker|either, 1-based slice_index/total); ETAs reserved-null.
+  Non-blocking default effort=high. MODELS documents policy (not always-worker).
+- **Dashboard:** plan position + effort chips from checkpoint routing; fail-soft parse.
+- **Review:** CHECKPOINT.md is session ephemera like HANDOFF.md.
+
+
 ## v5.0.4 — dashboard-upstream-ship — July 29, 2026
 - **Dashboard + upstream openers (5.0.x ship):** findings-without-verdict cards;
   markdown `[BLOCKING]` detection; plan --deep seat reliability + incomplete merge;

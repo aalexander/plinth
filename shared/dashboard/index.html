@@ -988,6 +988,35 @@
     // Only non-default lifecycle signals (BUILD is default — omit)
     if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
     if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
+    // Slice routing (generalized model policy) — from CHECKPOINT.md JSON
+    const rt = life.routing && typeof life.routing === "object" ? life.routing : null;
+    if (rt) {
+      if (rt.slice_index != null && rt.slice_total != null) {
+        chips.push(
+          '<span class="chip dim" title="Plan position (1-based)">' +
+            "slice " + esc(String(rt.slice_index)) + "/" + esc(String(rt.slice_total)) +
+            (rt.slice_id ? " · " + esc(String(rt.slice_id)) : "") +
+            "</span>"
+        );
+      } else if (rt.slice_id) {
+        chips.push('<span class="chip dim" title="Current slice">' + esc(String(rt.slice_id)) + "</span>");
+      }
+      if (rt.effort) {
+        chips.push(
+          '<span class="chip" title="Slice effort (routing, non-blocking)">' +
+            esc(String(rt.effort)) +
+            (rt.implement ? " · " + esc(String(rt.implement)) : "") +
+            "</span>"
+        );
+      }
+      // v1: ETAs reserved-null — show only when non-null (future)
+      if (rt.eta_secs_slice != null && Number(rt.eta_secs_slice) > 0) {
+        chips.push('<span class="chip dim" title="Slice ETA">η ' + hum(Number(rt.eta_secs_slice)) + "</span>");
+      }
+      if (rt.eta_secs_plan != null && Number(rt.eta_secs_plan) > 0) {
+        chips.push('<span class="chip dim" title="Plan ETA">plan η ' + hum(Number(rt.eta_secs_plan)) + "</span>");
+      }
+    }
     if (isRecentlyActive(p) && !(r && r.running)) {
       chips.push('<span class="chip cyan" title="Driver activity within the last hour">active</span>');
     }
@@ -1093,6 +1122,7 @@
       session ? ("sess " + session) : null,
       life.plan ? "plan" : null,
       life.plan_review ? "plan-review" : null,
+      (life.checkpoint || life.handoff) ? "checkpoint" : null,
     ].filter(Boolean).join(" · ");
 
     // Show cleaned prompt only if headline is next (avoid duplicating same text)
