@@ -1476,26 +1476,8 @@
       : "—";
     const vendors = Array.isArray(q.vendors) ? q.vendors : [];
     const preferred = ["claude", "codex", "grok"];
-    const ordered = preferred
-      .map(function (name) { return vendors.find(function (v) { return v.vendor === name; }); })
-      .filter(Boolean)
-      .concat(vendors.filter(function (v) { return preferred.indexOf(v.vendor) < 0; }));
-
-    let live = ordered.filter(function (v) {
-      return v && v.available && (v.plan || v.session || v.used_pct != null ||
-        (Array.isArray(v.windows_detail) && v.windows_detail.length));
-    });
-    if (!live.length && q.overall && q.overall.used_pct != null) {
-      live = [{
-        vendor: q.overall.vendor || "primary",
-        available: true,
-        plan: q.overall,
-        session: null,
-        plan_type: q.overall.plan_type
-      }];
-    }
-
-    if (!live.length) {
+    // No vendor objects at all (offline cache empty / total unknown): single row.
+    if (!vendors.length) {
       const note = (q.note || "vendor plan unknown").slice(0, 140);
       quotaBar.innerHTML =
         '<div class="qrow plain"><span class="qlabel">QUOTA</span>' +
@@ -1504,20 +1486,52 @@
         '<span class="dim">polled ' + esc(age) + "</span></div>";
       return;
     }
+    // Prefer three seats; pad missing preferred names only when at least one
+    // vendor was probed (so failed codex/grok still show a row).
+    let rows = preferred.map(function (name) {
+      return vendors.find(function (v) { return v && v.vendor === name; })
+        || { vendor: name, available: false, error: "missing" };
+    });
+    vendors.forEach(function (v) {
+      if (v && preferred.indexOf(v.vendor) < 0) rows.push(v);
+    });
 
     // Front page: at most one line each for claude/codex/grok (preferred order).
-    live = live.slice(0, 3);
+    rows = rows.slice(0, 3);
 
-    // If expanded vendor dropped out of live set, collapse.
-    if (expandedQuotaVendor && !live.some(function (v) { return v.vendor === expandedQuotaVendor; })) {
+    // If expanded vendor dropped out of set, collapse.
+    if (expandedQuotaVendor && !rows.some(function (v) { return v.vendor === expandedQuotaVendor; })) {
       expandedQuotaVendor = null;
     }
 
+    function vendorLive(v) {
+      return v && v.available && (v.plan || v.session || v.used_pct != null ||
+        (Array.isArray(v.windows_detail) && v.windows_detail.length) ||
+        (Array.isArray(v.windows) && v.windows.length));
+    }
+
     const parts = [];
-    live.forEach(function (v, idx) {
+    rows.forEach(function (v, idx) {
+      const open = expandedQuotaVendor === v.vendor;
+      if (!vendorLive(v)) {
+        const err = v.error || (v.available === false ? "unavailable" : "unknown");
+        const note = (v.note || q.note || err).slice(0, 100);
+        parts.push(
+          '<div class="qrow plain" title="' + esc(v.note || err) + '">' +
+            '<span class="qlabel">' + esc((v.vendor || "?").toUpperCase()) + "</span>" +
+            '<span class="dim">—</span>' +
+            '<span class="qstat"><span class="dim">' + esc(String(err)) + "</span></span>" +
+            '<div class="qmeter" aria-hidden="true"></div>' +
+            '<span class="qmeta"><span class="dim">' + esc(note) + "</span>" +
+            (idx === 0 ? '<span class="dim">polled ' + esc(age) + "</span>" : "") +
+            "</span>" +
+            '<span class="qchev" aria-hidden="true"></span>' +
+          "</div>"
+        );
+        return;
+      }
       const wins = vendorWindows(v);
       const tight = tightestWindow(wins);
-      const open = expandedQuotaVendor === v.vendor;
       const p = tight ? Number(tight.used_pct) : null;
       const rem = tight && tight.remaining_pct != null ? tight.remaining_pct
         : (p != null ? 100 - p : null);
