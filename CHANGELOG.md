@@ -1,5 +1,12 @@
 # Plinth changelog
 
+## v5.0.4 — dashboard-upstream-ship — July 29, 2026
+- **Dashboard + upstream openers (5.0.x ship):** findings-without-verdict cards;
+  markdown `[BLOCKING]` detection; plan --deep seat reliability + incomplete merge;
+  verify fail-closed re-carry for capped ledgers; CLAUDE.md → DRIVER-project migration;
+  quota SSL curl fallback + three-vendor bar; lane-guard before-sha HEAD binding;
+  SIGPIPE-safe codex event parse.
+
 ## v5.0.3 — UPSTREAM debt paydown — July 29, 2026
 - **#11:** `risk-classify` — `git diff --raw` failure → Tier 2 (not empty/Tier 0)
 - **#12:** `review.sh` — `git status` failure fails closed; porcelain -z rename second path

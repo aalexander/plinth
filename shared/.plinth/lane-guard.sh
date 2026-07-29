@@ -495,11 +495,20 @@ case "$sub" in
     printf '%s' "$dv"   | grep -Eq '^[A-Za-z0-9._-]+$' || _dusage
     printf '%s' "$dcrc" | grep -Eq '^[0-9]+$'          || _dusage   # the CLI's real rc, not a narrative
     [ -n "$dtr" ] || _dusage
-    # Optional BEFORE sha binds the receipt to THIS run (upstream #32) — refuse a
-    # non-hex token so a narrative cannot be smuggled in.
+    # Optional BEFORE sha binds the receipt to THIS run (upstream #32).
+    # When supplied: must resolve to a commit that is exactly HEAD (lane does not commit).
     if [ -n "$dbefore" ]; then
       printf '%s' "$dbefore" | grep -Eq '^[0-9a-fA-F]{7,64}$' || {
         echo "unavailable: before-sha must be a 7–64 hex git object id (got '$dbefore')"; exit 3; }
+      _dfull="$(git rev-parse --verify "${dbefore}^{commit}" 2>/dev/null || true)"
+      [ -n "$_dfull" ] || {
+        echo "unavailable: before-sha '$dbefore' is not a commit in this repo"; exit 3; }
+      _dhead="$(git rev-parse HEAD 2>/dev/null || true)"
+      [ -n "$_dhead" ] || {
+        echo "unavailable: cannot resolve HEAD for before-sha binding"; exit 3; }
+      if [ "$_dfull" != "$_dhead" ]; then
+        echo "unavailable: before-sha '$dbefore' ($_dfull) != HEAD ($_dhead) — not bound to this run (stale paste?)"; exit 3
+      fi
     fi
     # THE GATE. A missing or EMPTY transcript means nothing shows the delegate ran at all.
     { [ -f "$dtr" ] && [ -s "$dtr" ]; } || {

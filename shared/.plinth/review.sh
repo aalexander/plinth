@@ -1832,16 +1832,20 @@ Do NOT re-read the whole branch. Prefer opening only files cited in open finding
       vpayload="$diff"
     fi
     local vtrunc_note=""
+    VERIFY_PAYLOAD_TRUNCATED=""
+    VERIFY_LEDGER_TRUNCATED=""
     if [ "${#vpayload}" -gt "$vmaxb" ]; then
       vpayload="${vpayload:0:$vmaxb}"
+      VERIFY_PAYLOAD_TRUNCATED=1
       vtrunc_note="
-NOTE: fix-diff payload TRUNCATED to ${vmaxb} bytes (PLINTH_VERIFY_MAX_BYTES). Prefer smaller
-commits or raise the cap; unresolved opens outside the truncated tail stay open."
+NOTE: fix-diff payload TRUNCATED to ${vmaxb} bytes (PLINTH_VERIFY_MAX_BYTES). This round
+CANNOT bind APPROVED; unsent tail is fail-closed. Prefer smaller commits or raise the cap."
     fi
     if printf '%s' "$prior_meta" | jq -e '.truncated == true' >/dev/null 2>&1; then
+      VERIFY_LEDGER_TRUNCATED=1
       vtrunc_note="${vtrunc_note}
 NOTE: open-findings ledger capped to ${vmaxf} (prefer blockers/majors; total was $(printf '%s' "$prior_meta" | jq -r '.total')).
-Other open findings remain open — do not invent resolutions for items not listed."
+Unsent prior opens are re-carried as open after this round (fail closed) — do not invent resolutions."
     fi
     # Full reviewer contract (never truncate — binding criteria live past byte 12000).
     prompt="Fix-verification round ${r} (fresh session, COMPACT scope on DIFF only). ${phase_note}
@@ -1997,6 +2001,54 @@ ${diff}"
   case "$demoted_n" in ''|*[!0-9]*) demoted_n=0 ;; esac
   if [ "$demoted_n" -gt 0 ]; then
     echo "Plinth review: thrash/delta policy demoted ${demoted_n} finding(s) to minor (mode=${m}, phase=${rphase})."
+  fi
+
+  # VERIFY fail-closed: re-inject prior open findings the capped ledger never
+  # showed the model (and that the model did not adjudicate by id). After thrash
+  # so demotions already applied. Prevents APPROVED while unsent blockers drop.
+  if [ "$m" = "verify" ] && [ "$r" -gt 1 ] && [ -f "$SDIR/findings-$((r - 1)).json" ]; then
+    local _vf_prev _vf_tmp _vf_n=0
+    _vf_prev="$SDIR/findings-$((r - 1)).json"
+    _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-merge.XXXXXX")" || die_infra "mktemp failed for verify prior re-merge"
+    if ! jq -c --slurpfile prev "$_vf_prev" '
+      . as $cur
+      | ($cur.findings // []) as $cf
+      | ([ $cf[] | select(.id != null) | .id ] | unique) as $seen_ids
+      | ([ $cf[] | select(.id == null) | ((.file//"") + "|" + (.severity//"") + "|" + (.description//"")) ] | unique) as $seen_fp
+      | [ ($prev[0].findings // [])[]
+          | select(.status == "open")
+          | select(
+              ( (.id != null) and ((.id as $i | $seen_ids | index($i)) == null) )
+              or ( (.id == null) and (((.file//"") + "|" + (.severity//"") + "|" + (.description//"")) as $fp
+                    | ($seen_fp | index($fp)) == null) )
+            )
+          | . + {status:"open", description: ((.description // "") + " [VERIFY-CARRY: not in capped ledger / not re-adjudicated — remains open]")}
+        ] as $carry
+      | $cur
+      | .findings = (($cf + $carry))
+      | if ($carry | length) > 0 and .verdict == "APPROVED" then .verdict = "CHANGES_NEEDED" else . end
+      | . + {verify_carried: ($carry | length)}
+    ' "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null; then
+      rm -f "$_vf_tmp"
+      die_infra "verify prior re-merge failed — refusing to approve with a capped ledger (see findings-$((r-1)).json)"
+    fi
+    mv "$_vf_tmp" "$SDIR/findings-$r.json"
+    _vf_n="$(jq -r '.verify_carried // 0' "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
+    case "$_vf_n" in ''|*[!0-9]*) _vf_n=0 ;; esac
+    if [ "$_vf_n" -gt 0 ]; then
+      echo "Plinth review: verify re-carried ${_vf_n} prior open finding(s) not in the capped ledger (fail closed)."
+      RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
+    fi
+    if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ] && [ "$RVERDICT" = "APPROVED" ]; then
+      RVERDICT="CHANGES_NEEDED"
+      _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-trunc.XXXXXX")" || die_infra "mktemp failed for verify trunc"
+      jq -c '.verdict = "CHANGES_NEEDED" | .summary = ((.summary // "") + " [VERIFY: fix-diff truncated — cannot APPROVE]")' \
+        "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null \
+        && mv "$_vf_tmp" "$SDIR/findings-$r.json" || rm -f "$_vf_tmp"
+      echo "Plinth review: verify fix-diff was truncated (PLINTH_VERIFY_MAX_BYTES) — refusing APPROVED this round."
+    fi
+    validate_findings "$SDIR/findings-$r.json" \
+      || die_infra "findings invalid after verify prior re-merge — see $SDIR/findings-$r.json"
   fi
 
   # Verdict arithmetic is the instrument's job, not the reviewer's judgment

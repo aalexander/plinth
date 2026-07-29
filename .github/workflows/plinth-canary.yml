@@ -3636,7 +3636,7 @@ jobs:
           [ -s "$dart" ] || { echo "::error::delegation artifact missing"; exit 1; }
           case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::artifact not under session/lanes ($dart)"; exit 1 ;; esac
           hdr="$(head -n1 "$dart")"
-          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 recorded=" \
+          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 before=unbound recorded=" \
             || { echo "::error::artifact header not exact (got: $hdr)"; exit 1; }
           tail -n +2 "$dart" > "$LDR/body.got"; cmp -s "$LDR/out.txt" "$LDR/body.got" \
             || { echo "::error::artifact body not byte-identical to transcript"; exit 1; }

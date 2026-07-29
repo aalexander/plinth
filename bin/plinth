@@ -229,8 +229,12 @@ OLDSTOCK
 _driver_project_is_scaffold() {
   local f="$1" body
   [ -f "$f" ] || return 0
+  # Fail closed without python3: never treat an existing file as disposable.
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
   # Strip multi-line HTML comments + blank lines; scaffold is title-only.
-  body="$(python3 - "$f" <<'PY' 2>/dev/null || true
+  body="$(python3 - "$f" <<'PY' 2>/dev/null || echo __SCAFFOLD_PROBE_FAILED__
 import re, sys
 t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
@@ -239,6 +243,7 @@ print("\n".join(lines))
 PY
 )"
   case "$body" in
+    __SCAFFOLD_PROBE_FAILED__) return 1 ;;  # fail closed → append, never overwrite
     ''|'# Project-Specific Driver Notes') return 0 ;;
     *) return 1 ;;
   esac
@@ -249,36 +254,28 @@ PY
 _migrate_custom_claude_into_driver_project() {
   local claude="$1" dest="$2" ts extracted
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$(dirname "$dest")"
+  mkdir -p "$(dirname "$dest")" || return 1
   extracted="$(mktemp "${TMPDIR:-/tmp}/plinth-claude-mig.XXXXXX")" || return 1
+  # Prefer ## Project-specific notes body; else full custom file (never drop pre-H1 rules).
   {
     echo "# Project-Specific Driver Notes"
     echo
     echo "<!-- Migrated from CLAUDE.md on $ts by plinth update (driver-shell v4.4+)."
     echo "     Review and trim; this file is never overwritten by later updates. -->"
     echo
-    # Drop the stock "You are the implementer…" preamble / @import / Precedence
-    # block when present; keep Project-specific notes and any freeform body.
-    awk '
-      BEGIN { keep=0 }
-      /^## Project-specific notes/ { keep=1 }
-      keep { print; next }
-      # Freeform files with no notes heading: keep everything after a blank
-      # following the first H1, or the whole file if no H1.
-      /^# / && !seen_h1 { seen_h1=1; next }
-      seen_h1 && !keep && NF { keep=1; print; next }
-      seen_h1 && keep { print }
-    ' "$claude" 2>/dev/null
-  } > "$extracted"
-  # If awk found almost nothing, fall back to the full custom file under a banner.
-  if [ "$(wc -l <"$extracted" | tr -d ' ')" -lt 6 ]; then
-    {
-      echo "# Project-Specific Driver Notes"
-      echo
-      echo "<!-- Migrated FULL custom CLAUDE.md on $ts (could not isolate a notes section). -->"
-      echo
+    if grep -qE '^## Project-specific notes' "$claude" 2>/dev/null; then
+      awk '
+        /^## Project-specific notes/ { keep=1 }
+        keep { print }
+      ' "$claude" 2>/dev/null
+    else
+      # Full file — preserve every custom line (including text before first H1).
       cat "$claude"
-    } > "$extracted"
+    fi
+  } > "$extracted" || { rm -f "$extracted"; return 1; }
+  if [ ! -s "$extracted" ]; then
+    rm -f "$extracted"
+    return 1
   fi
   if [ -f "$dest" ] && ! _driver_project_is_scaffold "$dest"; then
     {
@@ -286,12 +283,11 @@ _migrate_custom_claude_into_driver_project() {
       echo "---"
       echo
       cat "$extracted"
-    } >> "$dest"
+    } >> "$dest" || { rm -f "$extracted"; return 1; }
+    rm -f "$extracted"
   else
-    mv "$extracted" "$dest"
-    extracted=""
+    mv "$extracted" "$dest" || { rm -f "$extracted"; return 1; }
   fi
-  [ -n "$extracted" ] && rm -f "$extracted"
   return 0
 }
 
@@ -302,7 +298,7 @@ materialize_driver_shell() {
     copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
   else
     # Custom pre-shell CLAUDE.md (upstream #21): migrate notes into DRIVER-project
-    # then install the pinned shell so project rules are not deleted.
+    # then install the pinned shell. On migration failure, PRESERVE custom CLAUDE.md.
     if _migrate_custom_claude_into_driver_project "$c" "$dp"; then
       echo "  migrated: custom CLAUDE.md project notes → .plinth/DRIVER-project.md"
       copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"
@@ -2750,10 +2746,12 @@ snapshot_one_project() {
        then true else false end) as $running
     | (if $V == null then null
        else (sha_match($V.sha // ""; $head_full) | not) end) as $stale
-    # When verdict.json is missing but findings-N carries a verdict enum, surface it
-    # (dual-pass hang / crash after primary findings were written).
+    # When verdict.json is missing but findings-N carries a non-APPROVED enum,
+    # surface CHANGES_NEEDED/UNBOUND only — never promote raw APPROVED without
+    # the instrument verdict arithmetic (sticky/thrash/tamper).
     | (if $V != null then ($V.verdict // null)
        elif ($findings_verdict | length) > 0 and verdict_ok($findings_verdict)
+            and $findings_verdict != "APPROVED"
        then $findings_verdict
        else null end) as $disp_verdict
     | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
@@ -2848,7 +2846,9 @@ snapshot_one_project() {
                    elif $V != null then ($V.mode // null)
                    else ($RQ.mode // null) end),
             tier: (if $V != null then ($V.risk.tier // null) else null end),
-            last_error: (if $has_primary_findings then false else $has_last_error end),
+            # Never mask a real last-error just because findings exist (infra
+            # can die_infra after writing findings-N). Surface both.
+            last_error: $has_last_error,
             summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
             findings_open: $findings_open,
             findings_truncated: $findings_trunc,
@@ -3112,8 +3112,9 @@ def http_get_body(url, headers, timeout):
                     hf.write("%s: %s\n" % (k, v))
                 hpath = hf.name
             # No -L: do not follow redirects (same bearer isolation as urllib).
+            # -q/--disable first: never load ~/.curlrc (trace/insecure/location).
             r = subprocess.run(
-                ["curl", "-sS", "--max-time", str(int(timeout)),
+                ["curl", "-q", "-sS", "--max-time", str(int(timeout)),
                  "-H", "@" + hpath, "-w", "\n%{http_code}", url],
                 capture_output=True, text=True, timeout=int(timeout) + 5,
             )
@@ -3489,7 +3490,7 @@ def curl_json(url, required=True):
                     hf.write("%s: %s\n" % (k, v))
                 hpath = hf.name
             r = subprocess.run(
-                ["curl", "-sS", "--max-time", str(int(to_s)),
+                ["curl", "-q", "-sS", "--max-time", str(int(to_s)),
                  "-H", "@" + hpath, "-w", "\n%{http_code}", url],
                 capture_output=True, text=True, timeout=int(to_s) + 5,
             )
@@ -5204,11 +5205,13 @@ _plan_seat_classify() {
   fi
 }
 
-# True when seat output is a usable review body (JSON fence or ### Seat), not an error.
+# True when seat output is a usable review body (JSON fence or ### Seat).
+# Only treat OUR unavailability markers as failure — never model prose that
+# happens to say "not logged in" (security_ops blockers) as CLI auth failure.
 _plan_seat_output_ok() {
   local text="$1"
   [ -n "$text" ] || return 1
-  printf '%s' "$text" | grep -qiE 'not logged in|please run /login|seat .+ unavailable' && return 1
+  printf '%s' "$text" | grep -qE '^\(seat .+ unavailable' && return 1
   printf '%s' "$text" | grep -qE '### Seat:|```json' || return 1
   return 0
 }
@@ -5395,9 +5398,10 @@ run_plan() {
 import json, re, sys
 paths, outj = sys.argv[1:4], sys.argv[4]
 roles_default = ["security_ops", "completeness", "delete_simplify"]
+# Only instrument-emitted unavailability markers (not model prose about login).
 unavail_re = re.compile(
-    r"seat \w+ unavailable|not logged in|please run /login|binary not found",
-    re.I,
+    r"^\(seat \w+ unavailable|binary not found on PATH",
+    re.I | re.M,
 )
 
 def section(text, name):
