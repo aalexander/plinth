@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "2892c294860700cb6ed43cdab57d98e145e718c7",
+  "sha": "9a08bc8c943b60093f8b7c3dd8819da0424ad406",
   "by": "austin",
-  "ts": "2026-07-29T04:16:51Z",
-  "note": "bind PR #57 ship residual at HEAD after product fail-closed fixes",
+  "ts": "2026-07-29T04:19:28Z",
+  "note": "PR #57 residual ship at HEAD after fail-closed fixes; thrash/UPSTREAM residual items follow-up",
   "findings": [
     {
       "severity": "blocker",
