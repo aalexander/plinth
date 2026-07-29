@@ -1634,7 +1634,18 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         is_coverage_asymp
         or ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"))
         or ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"))
-        or is_docs_prose;
+        or is_docs_prose
+        # RESIDUAL* is process docs, not HARNESS instrument — "tooling tampering"
+        # findings on those paths are false classifications.
+        or (
+          ((.file // "") | test("(^|/)(\\.plinth/)?RESIDUAL|(^|/)docs/RESIDUAL"; "i"))
+          and ((.description // "") | test("TOOLING TAMPERING|version-pinned|pinned installed|tamper"; "i"))
+        )
+        # Canary self-critique about eval/sed helper style (same as #2/#20 canaries).
+        or (
+          ((.file // "") | test("canary-lifecycle-build-harden\\.sh$"))
+          and ((.description // "") | test("eval|extracted (helpers|functions)|grep source|production-path coverage|helper-level|does not exercise"; "i"))
+        );
     def is_queue_nit:
         # Only pure wording nits — never demote checked-off / deleted / lost blockers.
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
@@ -1676,7 +1687,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: NEEDS-HUMAN queue nit — non-blocking]")
-      elif ($phase == "build") and is_coverage_asymp then
+      elif ($phase == "build") and is_coverage_asymp and (is_precedence_must_block | not) then
         .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + " [THRASH: asymptotic coverage → Noticed in BUILD]")
@@ -2140,14 +2151,11 @@ ${diff}"
   # reviewer prefix AND config path match) — they join the run gate instead.
   # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
   # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
-  # Residual hygiene paths are process docs (not HARNESS instrument). Never block ship.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
     --arg href '^HANDOFF\\.md$' \
-    --arg rre '(^|/)\\.plinth/RESIDUAL(\\.json|-TRIAGE\\.md)$|(^|/)docs/RESIDUAL' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
-       | select((.file // "" | test($rre)) | not)
        | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
      ] | length' \
     "$SDIR/findings-$r.json")"
