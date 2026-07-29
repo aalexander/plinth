@@ -1710,10 +1710,10 @@ $question"
   _advise_on_signal() {
     local _sig="$1"
     if [ -n "${_advise_child:-}" ]; then
-      # Kill the whole process group (pipeline: shell + CLI), not just the wrapper.
+      # setsid child is session/process-group leader — negative pid reaps the group.
       kill -TERM -"$_advise_child" 2>/dev/null || kill -TERM "$_advise_child" 2>/dev/null || true
-      # Also walk children (pipeline leaves under the subshell).
-      pkill -TERM -P "$_advise_child" 2>/dev/null || true
+      # Non-blocking wait: do not hang if child ignores TERM.
+      ( sleep 0.2; kill -KILL -"$_advise_child" 2>/dev/null || kill -KILL "$_advise_child" 2>/dev/null || true ) &
       wait "$_advise_child" 2>/dev/null || true
       _advise_child=""
     fi
@@ -1729,6 +1729,20 @@ $question"
   trap '_advise_on_signal INT' INT
   trap '_advise_on_signal TERM' TERM
   trap '_advise_on_signal HUP' HUP
+  # Spawn CLI as its own process-group leader (portable: setsid or perl setpgrp).
+  _advise_spawn() {
+    set +e
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$@" >"$outf" 2>"$errf" &
+    else
+      perl -e 'setpgrp(0,0); exec {$ARGV[0]} @ARGV' -- "$@" >"$outf" 2>"$errf" &
+    fi
+    _advise_child=$!
+    wait "$_advise_child"
+    rc=$?
+    _advise_child=""
+    set -e
+  }
   _advise_fail() {
     local why="$1"
     echo "(advisor unavailable: $why — proceed on your own judgment)" >&2
@@ -1787,17 +1801,11 @@ $question"
       # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
       # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
       # from a missing binary (#62).
-      set +e
-      (
-        set -m
-        printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-          --allowed-tools "Read,Grep,Glob"
-      ) >"$outf" 2>"$errf" &
-      _advise_child=$!
-      wait "$_advise_child"
-      rc=$?
-      _advise_child=""
-      set -e
+      _apf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-prompt.XXXXXX")" || _apf=""
+      printf '%s' "$aprompt" >"$_apf"
+      # Redirect stdin from prompt file via fd (spawn helper owns out/err).
+      _advise_spawn bash -c 'exec "$@" <"$0"' "$_apf" "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk --allowed-tools "Read,Grep,Glob"
+      rm -f "$_apf"
       if _advise_auth_hit "$rc"; then
         _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
         return 0
@@ -1819,16 +1827,10 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
-      set +e
-      (
-        set -m
-        printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only -
-      ) >"$outf" 2>"$errf" &
-      _advise_child=$!
-      wait "$_advise_child"
-      rc=$?
-      _advise_child=""
-      set -e
+      _apf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-prompt.XXXXXX")" || _apf=""
+      printf '%s' "$aprompt" >"$_apf"
+      _advise_spawn bash -c 'exec "$@" <"$0"' "$_apf" "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only -
+      rm -f "$_apf"
       if _advise_auth_hit "$rc"; then
         _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
@@ -1848,16 +1850,7 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
-      set +e
-      (
-        set -m
-        "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"}
-      ) >"$outf" 2>"$errf" &
-      _advise_child=$!
-      wait "$_advise_child"
-      rc=$?
-      _advise_child=""
-      set -e
+      _advise_spawn "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"}
       if _advise_auth_hit "$rc"; then
         _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
@@ -1877,16 +1870,7 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(--model "$use")
-      set +e
-      (
-        set -m
-        "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"}
-      ) >"$outf" 2>"$errf" &
-      _advise_child=$!
-      wait "$_advise_child"
-      rc=$?
-      _advise_child=""
-      set -e
+      _advise_spawn "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"}
       if _advise_auth_hit "$rc"; then
         _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
@@ -6414,10 +6398,19 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
-          # Open work: never clobber explicit non-done operator status (blocked/reviewing).
-          # Re-open prior/env done when PLAN still has open leaves.
-          if [ "$_user_set_status" = 1 ] && [ "${PLINTH_CHECKPOINT_STATUS:-}" != "done" ]; then
-            : # keep blocked/reviewing/ready/implementing
+          # Status policy on open-plan seed:
+          # - env non-done (blocked/ready/…) sticks
+          # - env/prior done → reopen implementing
+          # - prior ready/reviewing/blocked (fence only) is preserved
+          # - no prior/env → implementing
+          if [ "$_user_set_status" = 1 ]; then
+            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ]; then
+              export PLINTH_CHECKPOINT_STATUS=implementing
+            fi
+          elif [ "$_prev_status" = "done" ]; then
+            export PLINTH_CHECKPOINT_STATUS=implementing
+          elif [ -n "$_prev_status" ]; then
+            export PLINTH_CHECKPOINT_STATUS="$_prev_status"
           else
             export PLINTH_CHECKPOINT_STATUS=implementing
           fi

@@ -923,6 +923,12 @@ installed copies.
   remaining edge cases may need PLAN.md checklist polish rather than perfect NLP.
   Spec-dir entry files beyond SPEC/README/index/OVERVIEW/REQUIREMENTS/API still
   need an explicit `spec_path` file.
+- **Review dual first-pass e2e (v5.0.8):** canaries exercise `stamp_request_json` and
+  the dual_ok eligibility×policy matrix; full `run_round` + `run_auditor` merge still
+  needs a live dual-vendor seat and is not free-canary covered end-to-end.
+- **Dashboard openPlan click (v5.0.8):** canary seeds projects and calls `openPlan`
+  directly (plan-wide/track classes + stage rows). Document-level delegated
+  `data-plan` click wiring is still thinner than a full browser interaction test.
 - **Every seat-swap path re-anchors coverage except a swap that lands on a fresh
   round anyway** (`shared/.plinth/review.sh`, #26 fix). The vendor check compares
   only the IMMEDIATELY preceding round's vendor, which is sound today because the

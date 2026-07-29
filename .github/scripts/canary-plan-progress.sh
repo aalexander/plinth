@@ -862,4 +862,52 @@ echo "$cj" | jq -e '(.slice_id==null or .slice_id=="") and (.status!="done")' >/
 unset PLINTH_CHECKPOINT_SLICE_INDEX
 pass "orphan PLAN clears ghost id/done even with index env"
 
+# Inherited fence status ready/blocked/reviewing preserved when seed advances
+mkdir -p "$TMP/seed8/.plinth"
+cd "$TMP/seed8"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [x] First leaf completed now
+- [ ] Second still open
+P
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","slice_index":1,"slice_total":2,"status":"blocked","plan_ref":"PLAN.md","slice_title":"First leaf completed now"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="blocked" and .slice_index==2' >/dev/null \
+  || fail "inherited blocked must stick while advancing: $cj"
+pass "inherited fence status blocked preserved on seed advance"
+
+# numeric index cursor: matching total, no title/id
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [ ] One
+- [ ] Two
+- [ ] Three
+P
+printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"
+rt='{"slice_index":2,"slice_total":3,"status":"implementing"}'
+outn=$(_plan_progress_json "$TMP/a" "$rt")
+echo "$outn" | jq -e '.progress_mode=="checkpoint" and .current.via=="slice_index" and (.current.title|test("Two"))' >/dev/null \
+  || fail "numeric cursor: $(echo "$outn"|jq '{mode:.progress_mode,current}')"
+# mismatched total refuses numeric
+rt='{"slice_index":2,"slice_total":9,"status":"implementing"}'
+outm=$(_plan_progress_json "$TMP/a" "$rt")
+via=$(echo "$outm" | jq -r '.current.via // empty')
+[ "$via" != "slice_index" ] || fail "mismatched total must not use slice_index: $(echo "$outm"|jq .current)"
+pass "numeric index cursor + mismatched total refuse"
+
 echo "canary-plan-progress: ALL PASS"
