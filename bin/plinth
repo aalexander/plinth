@@ -224,17 +224,94 @@ OLDSTOCK
 )"
   [ -n "$norm" ] && [ "$norm" = "$ref" ]
 }
+# True if DRIVER-project is missing or still the empty scaffold template (only
+# the stock heading/comment — no operator notes yet).
+_driver_project_is_scaffold() {
+  local f="$1" body
+  [ -f "$f" ] || return 0
+  # Strip multi-line HTML comments + blank lines; scaffold is title-only.
+  body="$(python3 - "$f" <<'PY' 2>/dev/null || true
+import re, sys
+t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
+lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+print("\n".join(lines))
+PY
+)"
+  case "$body" in
+    ''|'# Project-Specific Driver Notes') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Extract non-shell project content from a custom CLAUDE.md into DRIVER-project.md
+# so the pinned shell can replace CLAUDE.md without losing domain rules (upstream #21).
+_migrate_custom_claude_into_driver_project() {
+  local claude="$1" dest="$2" ts extracted
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$dest")"
+  extracted="$(mktemp "${TMPDIR:-/tmp}/plinth-claude-mig.XXXXXX")" || return 1
+  {
+    echo "# Project-Specific Driver Notes"
+    echo
+    echo "<!-- Migrated from CLAUDE.md on $ts by plinth update (driver-shell v4.4+)."
+    echo "     Review and trim; this file is never overwritten by later updates. -->"
+    echo
+    # Drop the stock "You are the implementer…" preamble / @import / Precedence
+    # block when present; keep Project-specific notes and any freeform body.
+    awk '
+      BEGIN { keep=0 }
+      /^## Project-specific notes/ { keep=1 }
+      keep { print; next }
+      # Freeform files with no notes heading: keep everything after a blank
+      # following the first H1, or the whole file if no H1.
+      /^# / && !seen_h1 { seen_h1=1; next }
+      seen_h1 && !keep && NF { keep=1; print; next }
+      seen_h1 && keep { print }
+    ' "$claude" 2>/dev/null
+  } > "$extracted"
+  # If awk found almost nothing, fall back to the full custom file under a banner.
+  if [ "$(wc -l <"$extracted" | tr -d ' ')" -lt 6 ]; then
+    {
+      echo "# Project-Specific Driver Notes"
+      echo
+      echo "<!-- Migrated FULL custom CLAUDE.md on $ts (could not isolate a notes section). -->"
+      echo
+      cat "$claude"
+    } > "$extracted"
+  fi
+  if [ -f "$dest" ] && ! _driver_project_is_scaffold "$dest"; then
+    {
+      echo
+      echo "---"
+      echo
+      cat "$extracted"
+    } >> "$dest"
+  else
+    mv "$extracted" "$dest"
+    extracted=""
+  fi
+  [ -n "$extracted" ] && rm -f "$extracted"
+  return 0
+}
+
 materialize_driver_shell() {
   copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
-  local c="$target/CLAUDE.md"
+  local c="$target/CLAUDE.md" dp="$target/.plinth/DRIVER-project.md"
   if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null || is_stock_old_claude "$c"; then
     copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
   else
-    echo "  NOTE: $c has CUSTOM content — NOT overwritten. The v4.4.0 driver contract"
-    echo "        is a pinned shell (CLAUDE.md + AGENTS.md, regenerated) plus"
-    echo "        .plinth/DRIVER-project.md for your notes. Move your"
-    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
-    echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+    # Custom pre-shell CLAUDE.md (upstream #21): migrate notes into DRIVER-project
+    # then install the pinned shell so project rules are not deleted.
+    if _migrate_custom_claude_into_driver_project "$c" "$dp"; then
+      echo "  migrated: custom CLAUDE.md project notes → .plinth/DRIVER-project.md"
+      copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"
+      echo "  regenerated: CLAUDE.md as pinned driver shell (project rules preserved in DRIVER-project.md)"
+    else
+      echo "  NOTE: $c has CUSTOM content — NOT overwritten (migration to DRIVER-project.md failed)."
+      echo "        Move your '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
+      echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+    fi
   fi
 }
 

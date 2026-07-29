@@ -208,7 +208,8 @@ REVIEWED_FILES_FULL="$(git diff --name-only "${base_tip}...HEAD" -- "${REVIEW_PA
 #                on every Tier-2 approval (and every 5th otherwise). Disagreement
 #                reported, not adjudicated.
 #   audit_model  optional MODEL OVERRIDE for audit_vendor (not a trigger)
-cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
+# head/tail close early under pipefail → writer gets SIGPIPE (exit 141). Drain or avoid.
+cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | { head -n1; cat >/dev/null 2>&1 || true; }; }
 # Reviewer model (for the dashboard): whatever codex actually runs — the model
 # line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
 # alongside the driver model without reading the user's codex config.
@@ -234,7 +235,7 @@ base_has_config=0; git cat-file -e "${base_tip}:.plinth/config" 2>/dev/null && b
 # review (pick a weak reviewer model, set audit_vendor to the primary's own vendor to
 # drop the cross-vendor audit, route its own findings to the run gate). Mirrors
 # risk-classify.sh + spec_path.
-bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
+bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | { head -n1; cat >/dev/null 2>&1 || true; }; }
 SPEC_PATH="$(bcfg spec_path)"
 # First ADOPTION only (base config FILE absent): honor the working-tree spec_path. If the base
 # config FILE exists but omits spec_path (valid — it defaults to SPEC.md, even when the file is
@@ -1241,13 +1242,30 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
   else
     printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
-      || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+      || die_infra "codex exec failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"
   fi
-  RSID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$evfile" | head -1)"
+  # jq|head / jq|tail SIGPIPE under pipefail ends the confirmation pass with 141
+  # after a valid APPROVED was already written (upstream #2). Slurp instead.
+  RSID="$(jq -rs '[.[] | select(.type=="thread.started") | .thread_id // empty] | first // empty' "$evfile" 2>/dev/null || true)"
   [ -n "$RSID" ] || die_infra "no thread id in $evfile — codex --json output changed?"
   jq . "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
     || die_infra "reviewer's final message is not valid JSON — see $raw"
-  RUSAGE="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"; [ -n "$RUSAGE" ] || RUSAGE="null"
+  RUSAGE="$(jq -rcs '[.[] | select(.type=="turn.completed") | .usage] | last // null' "$evfile" 2>/dev/null || true)"
+  [ -n "$RUSAGE" ] || RUSAGE="null"
+}
+
+# Bounded fail detail for die_infra (empty stderr on verify often = payload/CLI capacity).
+_reviewer_fail_detail() {
+  local errlog="$1" mode="$2" bits="" elen=0 plen=0
+  [ -f "$errlog" ] && elen="$(wc -c <"$errlog" 2>/dev/null | tr -d ' ' || echo 0)"
+  plen="${#prompt}"
+  bits="prompt_bytes=${plen} stderr_bytes=${elen} mode=${mode}"
+  if [ -f "$errlog" ] && [ "${elen:-0}" -gt 0 ] 2>/dev/null; then
+    bits="$bits err=$(tail -c 600 "$errlog" 2>/dev/null | tr '\n' ' ' | tr -cd '\11\12\15\40-\176')"
+  else
+    bits="$bits err=(empty — often payload/thread capacity on long verify; see PLINTH_VERIFY_MAX_*)"
+  fi
+  printf '%s' "$bits"
 }
 
 _reviewer_claude() {  # hard --json-schema -> .structured_output
@@ -1262,7 +1280,7 @@ _reviewer_claude() {  # hard --json-schema -> .structured_output
   printf '%s' "$prompt" | claude -p --safe-mode --output-format json \
     --json-schema "$(cat "$SCHEMA")" --allowed-tools "Read,Grep,Glob" --permission-mode dontAsk \
     ${margs[@]+"${margs[@]}"} ${rargs[@]+"${rargs[@]}"} > "$raw" 2> "$errlog" \
-    || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"; }
+    || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"; }
   jq -e '.structured_output | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
     || die_infra "claude returned no schema-structured verdict — see $raw"
   RSID="$(jq -r '.session_id // empty' "$raw" 2>/dev/null)"
@@ -1279,7 +1297,7 @@ _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else 
   grok --prompt-file "$pf" --output-format json --json-schema "$(cat "$SCHEMA")" \
     --rules "$GROK_ROLE_RULE" \
     --sandbox read-only ${margs[@]+"${margs[@]}"} > "$raw" 2> "$errlog" \
-    || die_infra "grok failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+    || die_infra "grok failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"
   if ! jq -e '.structuredOutput | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null; then
     jq -r '.text // empty' "$raw" | python3 -c 'import sys,re
 m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
@@ -1778,11 +1796,25 @@ ${diff}${evidence}${commits}"
   elif [ "$m" = "verify" ]; then
     # SCOPED + COMPACT verify: open findings as a one-line ledger; fix diff only;
     # do not free-explore the whole repo (anti-thrash).
+    # Cap ledger + fix-diff size so long threads do not kill codex with empty
+    # stderr (upstream #20). Override: PLINTH_VERIFY_MAX_FINDINGS / PLINTH_VERIFY_MAX_BYTES.
     local prior vanchor="" vinc="" vscope vlabel vpayload vrule
-    # Full descriptions + ids — never truncate finding text (siblings live in the tail).
-    prior="$(jq -c '[.findings[] | select(.status == "open")
-      | {id:(.id//null),file,line,severity,description}]' \
-      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
+    local vmaxf="${PLINTH_VERIFY_MAX_FINDINGS:-40}" vmaxb="${PLINTH_VERIFY_MAX_BYTES:-400000}"
+    case "$vmaxf" in ''|*[!0-9]*) vmaxf=40 ;; esac
+    case "$vmaxb" in ''|*[!0-9]*) vmaxb=400000 ;; esac
+    # Prefer blockers/majors; cap count (ids preserved; note truncation in prompt).
+    prior="$(jq -c --argjson n "$vmaxf" '
+      [.findings[] | select(.status == "open")
+        | {id:(.id//null),file,line,severity,description,
+           _rank:(if .severity=="blocker" then 0 elif .severity=="major" then 1 else 2 end)}]
+      | sort_by(._rank) | map(del(._rank))
+      | .[0:$n]
+      ' "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
+    local prior_meta
+    prior_meta="$(jq -c --argjson n "$vmaxf" '
+      [.findings[] | select(.status == "open")]
+      | {total: length, capped: ([length, $n] | min), truncated: (length > $n)}
+      ' "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '{}')"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
       vinc="$(git diff "${vanchor}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
@@ -1799,15 +1831,28 @@ Do NOT re-read the whole branch. Prefer opening only files cited in open finding
       vlabel="DIFF (${baseref}...HEAD at ${sha})"
       vpayload="$diff"
     fi
+    local vtrunc_note=""
+    if [ "${#vpayload}" -gt "$vmaxb" ]; then
+      vpayload="${vpayload:0:$vmaxb}"
+      vtrunc_note="
+NOTE: fix-diff payload TRUNCATED to ${vmaxb} bytes (PLINTH_VERIFY_MAX_BYTES). Prefer smaller
+commits or raise the cap; unresolved opens outside the truncated tail stay open."
+    fi
+    if printf '%s' "$prior_meta" | jq -e '.truncated == true' >/dev/null 2>&1; then
+      vtrunc_note="${vtrunc_note}
+NOTE: open-findings ledger capped to ${vmaxf} (prefer blockers/majors; total was $(printf '%s' "$prior_meta" | jq -r '.total')).
+Other open findings remain open — do not invent resolutions for items not listed."
+    fi
     # Full reviewer contract (never truncate — binding criteria live past byte 12000).
     prompt="Fix-verification round ${r} (fresh session, COMPACT scope on DIFF only). ${phase_note}
 ${vscope}
+${vtrunc_note}
 
 === REVIEWER CONTRACT (.plinth/reviewer.md + project rules — FULL, not summarized) ===
 $(inline_contract)
 === END REVIEWER CONTRACT ===
 
-OPEN PRIOR FINDINGS (full ledger — preserve ids; do not resolve without evidence):
+OPEN PRIOR FINDINGS (ledger — preserve ids; do not resolve without evidence):
 ${prior}
 
 1) For each open finding, status \"resolved\" or \"open\" — resolved requires ${vrule}.

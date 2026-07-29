@@ -871,4 +871,92 @@ printf '%s' "$reasons" | grep -qi 'diff --raw failed' \
   || fail "plinth#11: expected raw-failed reason, got: $reasons"
 pass "plinth#11 git diff --raw failure fails closed to Tier 2"
 
+# plinth#2: codex event-stream parse must not use jq|head (SIGPIPE under pipefail)
+bash -c '
+  set -euo pipefail
+  f=$(mktemp)
+  for i in $(seq 1 50); do
+    printf "%s\n" "{\"type\":\"other\",\"n\":$i}"
+  done > "$f"
+  printf "%s\n" "{\"type\":\"thread.started\",\"thread_id\":\"tid-abc\"}" >> "$f"
+  for i in $(seq 1 50); do
+    printf "%s\n" "{\"type\":\"item\",\"n\":$i}"
+  done >> "$f"
+  printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":9}}" >> "$f"
+  RSID="$(jq -rs "[.[] | select(.type==\"thread.started\") | .thread_id // empty] | first // empty" "$f")"
+  RUSAGE="$(jq -rcs "[.[] | select(.type==\"turn.completed\") | .usage] | last // null" "$f")"
+  rm -f "$f"
+  [ "$RSID" = "tid-abc" ] || { echo "RSID=$RSID"; exit 1; }
+  echo "$RUSAGE" | jq -e ".input_tokens == 9" >/dev/null
+'
+pass "plinth#2 codex event slurp avoids SIGPIPE (jq|head)"
+
+# plinth#20: verify open-findings ledger caps prefer blockers
+bash -c '
+  set -euo pipefail
+  f=$(mktemp)
+  jq -n "{findings: ([range(1;60)] | map({status:\"open\",severity:(if . < 3 then \"blocker\" elif . < 10 then \"major\" else \"minor\" end),file:(\"f\"+tostring+\".go\"),line:.,description:(\"d\"+tostring),id:(\"id\"+tostring)}))}" > "$f"
+  out="$(jq -c --argjson n 40 "
+    [.findings[] | select(.status == \"open\")
+      | {id:(.id//null),file,line,severity,description,
+         _rank:(if .severity==\"blocker\" then 0 elif .severity==\"major\" then 1 else 2 end)}]
+    | sort_by(._rank) | map(del(._rank))
+    | .[0:\$n]
+  " "$f")"
+  rm -f "$f"
+  n="$(printf "%s" "$out" | jq "length")"
+  [ "$n" = "40" ] || { echo "cap len=$n"; exit 1; }
+  b="$(printf "%s" "$out" | jq "[.[]|select(.severity==\"blocker\")]|length")"
+  [ "$b" = "2" ] || { echo "blockers first expected 2 got $b"; exit 1; }
+'
+pass "plinth#20 verify findings ledger cap prefers blockers"
+
+# plinth#21: custom CLAUDE.md migrates into DRIVER-project.md then shell regenerates
+setup_proj "$TMP/p21mig"
+"$PLINTH" init "$TMP/p21mig" >/dev/null 2>&1 || true
+cat > "$TMP/p21mig/CLAUDE.md" <<'EOF'
+# CLAUDE.md
+
+You are the implementer for this repository.
+
+## Project-specific notes
+- NEVER invent regulatory rates
+- toolchain: go 1.22 pinned
+- domain: texas affordable housing only
+EOF
+# Reset DRIVER-project to scaffold so migration replaces (not appends) once
+cp "$ROOT/templates/DRIVER-project.md" "$TMP/p21mig/.plinth/DRIVER-project.md"
+out21="$("$PLINTH" update "$TMP/p21mig" 2>&1)" || fail "plinth update for #21 migration failed: $out21"
+printf '%s' "$out21" | grep -q 'migrated: custom CLAUDE.md' \
+  || fail "expected migrate note: $out21"
+grep -q "NEVER invent regulatory rates" "$TMP/p21mig/.plinth/DRIVER-project.md" \
+  || fail "DRIVER-project missing migrated notes: $(cat "$TMP/p21mig/.plinth/DRIVER-project.md")"
+# Scaffold heading alone must not remain as the only content before migration body
+grep -qF "Plinth driver shell (version-pinned)" "$TMP/p21mig/CLAUDE.md" \
+  || fail "CLAUDE.md not regenerated as shell: $(head -5 "$TMP/p21mig/CLAUDE.md")"
+# No double scaffold dump: at most one "# Project-Specific Driver Notes" title
+titles="$(grep -c '^# Project-Specific Driver Notes' "$TMP/p21mig/.plinth/DRIVER-project.md" || true)"
+[ "$titles" = "1" ] || fail "expected single DRIVER-project title after scaffold replace, got $titles"
+pass "plinth#21 custom CLAUDE.md migrates into DRIVER-project.md"
+
+# plinth#32: delegation requires non-empty transcript; optional before-sha binds
+setup_proj "$TMP/p32del"
+mkdir -p "$TMP/p32del/.plinth"
+cp "$ROOT/shared/.plinth/lane-guard.sh" "$TMP/p32del/.plinth/lane-guard.sh"
+chmod +x "$TMP/p32del/.plinth/lane-guard.sh"
+trf=$(mktemp)
+echo "MODEL: grok-test-delegate" > "$trf"
+set +e
+out="$("$TMP/p32del/.plinth/lane-guard.sh" delegation grok 0 /nonexistent/out 2>&1)"
+rc=$?
+set -e
+[ "$rc" = "3" ] || fail "empty/missing transcript must exit 3, got $rc $out"
+printf '%s' "$out" | grep -qi unavailable || fail "expected unavailable for missing transcript: $out"
+bsha=$(git -C "$TMP/p32del" rev-parse HEAD)
+out2="$("$TMP/p32del/.plinth/lane-guard.sh" delegation grok 0 "$trf" "$bsha" 2>&1)" || fail "delegation with transcript+before failed: $out2"
+printf '%s' "$out2" | grep -q "delegation recorded:" || fail "expected receipt line: $out2"
+printf '%s' "$out2" | grep -q "before=$bsha" || fail "expected before= binding: $out2"
+rm -f "$trf"
+pass "plinth#32 delegation receipt requires transcript + optional before-sha"
+
 echo "canary-lifecycle-build-harden: ALL PASS"
