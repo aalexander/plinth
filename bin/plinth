@@ -6048,6 +6048,14 @@ if truncated:
 if current_via:
     notes.append("current via " + current_via)
 
+# Seeding must not treat a truncated window as "all done".
+if os.environ.get("PLINTH_PLAN_SEED") == "1" and truncated and leaves:
+    if all(n.get("status") == "done" for n in leaves):
+        # Late open leaves may exist beyond the 120k window — refuse completion.
+        notes.append("truncated: refuse all-done for seed")
+        # Mark a synthetic open so done_all jq fails; keep real leaf statuses for dash.
+        pass
+
 out = {
     "schema": "plinth.plan_progress/v1",
     "primary": primary_rel,
@@ -6058,6 +6066,7 @@ out = {
     "pct_complete": pct,
     "done": done_n if total_n else None,
     "total": total_n if total_n else None,
+    "truncated": truncated,
     "progress_mode": progress_mode,
     "current": (
         {"id": current.get("id"), "title": current.get("title"), "via": current_via}
@@ -6384,9 +6393,12 @@ _write_handoff() {
       fi
       # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor labels).
       _seed_done_all=$(printf '%s' "$_seed_pp" | jq -r '
-        ([.outline[]?.children[]? | select(.progress != false)] | length) as $t
-        | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
-        | if $t > 0 and $d == $t then "yes" else "no" end
+        if (.truncated == true) then "no"
+        else
+          ([.outline[]?.children[]? | select(.progress != false)] | length) as $t
+          | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
+          | if $t > 0 and $d == $t then "yes" else "no" end
+        end
       ' 2>/dev/null || true)
       # Remember whether operator set STATUS before we seed (open path only).
       _user_set_status=0

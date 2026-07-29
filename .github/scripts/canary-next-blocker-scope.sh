@@ -183,4 +183,24 @@ echo "$out" | grep -q 'status: work' || fail "leading ship must stay deferred in
 [ "$rc" -eq 0 ] || fail "exit 0 for leading ship in BUILD, got $rc"
 pass "leading BLOCKING scope wins over later tags in prose"
 
+# Bold explicit scope must strip ** and keep ship deferred in BUILD
+setup "$TMP/boldship"
+mkdir -p "$TMP/boldship/.plinth"
+cat > "$TMP/boldship/.plinth/NEEDS-HUMAN.md" <<'EOF'
+# NH
+- [ ] **[BLOCKING:ship] Choose receipt gate** for merge
+EOF
+cat > "$TMP/boldship/CHECKPOINT.md" <<'EOF'
+# Checkpoint
+## Next
+1. implement the feature work
+EOF
+set +e
+out=$("$PLINTH" next "$TMP/boldship" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q 'status: work' || fail "bold BLOCKING:ship must defer in BUILD: $out"
+[ "$rc" -eq 0 ] || fail "exit 0 for bold ship, got $rc"
+pass "bold BLOCKING:ship strips markdown and stays deferred in BUILD"
+
 echo "canary-next-blocker-scope: ALL PASS"

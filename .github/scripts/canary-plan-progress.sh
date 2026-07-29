@@ -464,8 +464,10 @@ echo "$outph" | jq -e '([.outline[].title] | index("Phase 0") != null)
   and ([.outline[].title] | index("Foundation") != null)
   and ([.outline[].title] | map(test("Acceptance")) | any)' >/dev/null \
   || fail "Phase/Foundation majors: $(echo "$outph"|jq '[.outline[].title]')"
-echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("sign-off workflow|sign-off API")) | any' >/dev/null \
-  || fail "coding sign-off kept: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
+echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("sign-off workflow")) | any' >/dev/null \
+  || fail "sign-off workflow missing: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
+echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("sign-off API")) | any' >/dev/null \
+  || fail "sign-off API missing: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
 echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("owner explicitly agrees")) | any | not' >/dev/null \
   || fail "human sign-off gate should drop: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
 cat > "$TMP/a/PLAN.md" <<'P'
@@ -1128,5 +1130,32 @@ cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 echo "$cj" | jq -e '.status=="blocked" and .slice_index==1' >/dev/null \
   || fail "blocked first-open: $cj"
 pass "ready/reviewing advance + blocked first-open preserved"
+
+# Huge PLAN: early checked + late open beyond 120k must NOT seed all-done
+mkdir -p "$TMP/huge/.plinth"
+cd "$TMP/huge"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+{
+  echo "# Huge"
+  echo "## Acceptance criteria"
+  echo "- [x] Early checked leaf only in first window"
+  # pad >120k of non-leaf noise
+  python3 -c 'print("\n".join(["note padding line %d" % i for i in range(8000)]))'
+  echo "- [ ] Late open leaf after truncation window"
+} > PLAN.md
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status != "done"' >/dev/null \
+  || fail "truncated must not all-done: $cj"
+# progress marks truncated
+outh=$(_plan_progress_json "$TMP/huge" '{}')
+# seed path uses PLINTH_PLAN_SEED
+outh2=$(PLINTH_PLAN_SEED=1 _plan_progress_json "$TMP/huge" '{}')
+echo "$outh2" | jq -e '.truncated==true' >/dev/null \
+  || fail "seed progress should set truncated: $(echo "$outh2"|jq '{truncated,done,total}')"
+pass "truncated refuse all-done seed"
 
 echo "canary-plan-progress: ALL PASS"
