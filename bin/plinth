@@ -233,19 +233,55 @@ _driver_project_is_scaffold() {
   if ! command -v python3 >/dev/null 2>&1; then
     return 1
   fi
-  # Strip multi-line HTML comments + blank lines; scaffold is title-only.
+  # Scaffold = title-only (optional stock comments). Comment-only CUSTOM notes
+  # (HTML comments with operator text) are NOT scaffold — preserve them.
   body="$(python3 - "$f" <<'PY' 2>/dev/null || echo __SCAFFOLD_PROBE_FAILED__
 import re, sys
-t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
-print("\n".join(lines))
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+stripped = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
+lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+title_only = (not lines) or lines == ["# Project-Specific Driver Notes"]
+if not title_only:
+    print("CUSTOM"); sys.exit(0)
+# Stock scaffold = title + optional comment matching the stock template body
+# (normalized). Any other comment text is custom — preserve (including short tokens).
+def norm_comment(s):
+    # Collapse whitespace only — keep letters from any script (CJK/Cyrillic/etc).
+    return re.sub(r"\s+", " ", s).strip().lower()
+# Exact stock body from templates/DRIVER-project.md (keep in sync).
+STOCK = norm_comment("""
+Anything unique to THIS project the DRIVER must know: domain constraints,
+hard "never do" rules, stack quirks. The shared plinth-rules import via the
+CLAUDE.md / AGENTS.md driver shell; this file is yours and is never
+overwritten by `plinth update`. The symmetric twin of AGENTS-project.md
+(which carries project-specific REVIEWER rules). Delete this comment when
+you add real notes.
+""")
+for c in re.findall(r"<!--(.*?)-->", raw, flags=re.S):
+    text = " ".join(c.split())
+    if not text:
+        continue
+    n = norm_comment(text)
+    if not n or n == STOCK:
+        continue
+    # Stock body with operator text appended/prepended → custom
+    if STOCK and (n.startswith(STOCK) or n.endswith(STOCK)):
+        extra = n[len(STOCK):].strip() if n.startswith(STOCK) else n[:-len(STOCK)].strip()
+        if extra:
+            print("CUSTOM_COMMENTS"); sys.exit(0)
+        continue
+    # Any non-empty normalized comment that is not pure stock is custom
+    # (includes CJK/Cyrillic/emoji operator notes — do not require ASCII).
+    if n:
+        print("CUSTOM_COMMENTS"); sys.exit(0)
+print("SCAFFOLD")
 PY
 )"
   case "$body" in
     __SCAFFOLD_PROBE_FAILED__) return 1 ;;  # fail closed → append, never overwrite
-    ''|'# Project-Specific Driver Notes') return 0 ;;
-    *) return 1 ;;
+    SCAFFOLD) return 0 ;;
+    CUSTOM|CUSTOM_COMMENTS) return 1 ;;
+    *) return 1 ;;  # unexpected → preserve
   esac
 }
 
@@ -1490,7 +1526,7 @@ statusline_render() {
   local nhblk="" nhf; nhf="$(needs_human_file "$dir")"
   if [ -s "$nhf" ]; then
     nh="$(grep -cE '^- \[ \]' "$nhf" 2>/dev/null || echo 1)"
-    nhblk="$(grep -cE '^- \[ \] \[BLOCKING\]' "$nhf" 2>/dev/null || true)"
+    nhblk="$(grep -cE '^- \[ \] (\*\*)?\[BLOCKING(\]|[[:space:]—–-])' "$nhf" 2>/dev/null || true)"
     [ "$nhblk" != "0" ] && [ -n "$nhblk" ] && nh="${nh}⛔${nhblk}"
   fi
   jq -rn --slurpfile ev "$EV" --slurpfile vd "$vfile" --arg head "$head" --arg nh "$nh" '
@@ -5183,14 +5219,15 @@ _plan_model_for_vendor() {
 _plan_seat_classify() {
   local vendor="$1" out="$2" err="$3"
   local blob
-  blob="$(printf '%s\n%s' "$out" "$err" | head -c 4000)"
-  if printf '%s' "$blob" | grep -qiE 'not logged in|please run /login|auth.*(fail|required)|unauthorized|401'; then
+  blob="${out}"$'\n'"${err}"; blob="${blob:0:4000}"
+  # No grep -q (SIGPIPE under pipefail on large blobs).
+  if printf '%s' "$blob" | grep -iE 'not logged in|please run /login|auth.*(fail|required)|unauthorized|401' >/dev/null 2>&1; then
     echo "unauthenticated"
-  elif printf '%s' "$blob" | grep -qiE 'model.*not (found|supported)|invalid.*(model|request)|unknown model'; then
+  elif printf '%s' "$blob" | grep -iE 'model.*not (found|supported)|invalid.*(model|request)|unknown model' >/dev/null 2>&1; then
     echo "invalid_model"
-  elif printf '%s' "$blob" | grep -qiE 'rate.?limit|429|quota|capacity|overloaded|timeout|timed out|ECONN|connection reset|temporarily'; then
+  elif printf '%s' "$blob" | grep -iE 'rate.?limit|429|quota|capacity|overloaded|timeout|timed out|ECONN|connection reset|temporarily' >/dev/null 2>&1; then
     echo "transient"
-  elif printf '%s' "$blob" | grep -qiE 'command not found|No such file'; then
+  elif printf '%s' "$blob" | grep -iE 'command not found|No such file' >/dev/null 2>&1; then
     echo "missing_binary"
   else
     echo "cli_failed"
@@ -5201,10 +5238,79 @@ _plan_seat_classify() {
 # Only treat OUR unavailability markers as failure — never model prose that
 # happens to say "not logged in" (security_ops blockers) as CLI auth failure.
 _plan_seat_output_ok() {
+  # Usable seat body: not our unavailability marker, and not a hollow shell
+  # (header-only or empty/{} JSON fence with no blockers/questions/nits/- none).
   local text="$1"
   [ -n "$text" ] || return 1
-  printf '%s' "$text" | grep -qE '^\(seat .+ unavailable' && return 1
-  printf '%s' "$text" | grep -qE '### Seat:|```json' || return 1
+  # Avoid grep -q under pipefail (SIGPIPE on large seat output).
+  if printf '%s' "$text" | grep -E '^\(seat .+ unavailable' >/dev/null 2>&1; then
+    return 1
+  fi
+  printf '%s' "$text" | python3 -c '
+import re, sys, json
+t = sys.stdin.read()
+if not re.search(r"### Seat:|```json", t):
+    sys.exit(1)
+
+def section_bullets(name):
+    mm = re.search(
+        rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)",
+        t, re.S | re.I,
+    )
+    if not mm:
+        return []
+    items = []
+    for line in mm.group(1).splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            items.append(line[2:].strip())
+    return items
+
+# Require ALL three review sections with at least one bullet each (- none OK).
+# A single #### Blockers / - none alone is a truncated hollow seat.
+required = ("Blockers", "Questions for human", "Nits")
+by_sec = {name: section_bullets(name) for name in required}
+all_sections = all(len(by_sec[n]) > 0 for n in required)
+sec_items = [i for n in required for i in by_sec[n]]
+has_section_real = any(
+    i and i.lower() not in ("none", "n/a", "…", "...") for i in sec_items
+)
+has_all_none_or_real = all_sections  # each section has >=1 bullet (none or real)
+
+def list_of_strings(v):
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+def has_real(v):
+    return any(
+        isinstance(x, str) and x.strip().lower() not in ("", "none", "n/a", "…", "...")
+        for x in (v or [])
+    )
+
+m = re.search(r"```json\s*(\{.*?\})\s*```", t, re.S)
+if m:
+    try:
+        d = json.loads(m.group(1))
+    except Exception:
+        d = None
+    if not isinstance(d, dict):
+        sys.exit(1)
+    if not all(list_of_strings(d.get(k)) for k in ("blockers", "questions", "nits")):
+        sys.exit(1)  # mixed/non-string arrays → hollow/malformed
+    ver = d.get("verdict")
+    if not isinstance(ver, str):
+        sys.exit(1)  # non-string verdict → hollow
+    ver_s = ver.strip()
+    if any(has_real(d.get(k)) for k in ("blockers", "questions", "nits")):
+        sys.exit(0)
+    if ver_s and ver_s.lower() not in ("none", "n/a", "…", "..."):
+        sys.exit(0)
+    if has_all_none_or_real:
+        sys.exit(0)
+    sys.exit(1)
+if has_all_none_or_real:
+    sys.exit(0)
+sys.exit(1)
+' || return 1
   return 0
 }
 
@@ -5283,7 +5389,10 @@ $plan_body"
   esac
   err=""
   if [ -n "$errf" ] && [ -f "$errf" ]; then
-    err="$(head -c 1200 "$errf" 2>/dev/null | tr -d '\0' || true)"
+    err="$(python3 -c 'import sys,os
+p=sys.argv[1]
+d=open(p,"rb").read(1200) if os.path.isfile(p) else b""
+sys.stdout.buffer.write(d.replace(b"\x00", b""))' "$errf" 2>/dev/null || true)"
     rm -f "$errf"
   fi
 
@@ -5303,12 +5412,12 @@ $plan_body"
   # Bounded stdout/stderr for diagnosis (no full prompt echo).
   if [ -n "$out" ]; then
     echo "--- seat stdout (bounded) ---"
-    printf '%s\n' "$out" | head -c 800
+    printf '%s\n' "${out:0:800}"
     echo
   fi
   if [ -n "$err" ]; then
     echo "--- seat stderr (bounded) ---"
-    printf '%s\n' "$err" | head -c 800
+    printf '%s\n' "${err:0:800}"
     echo
   fi
   return 1
@@ -5441,8 +5550,15 @@ for i, p in enumerate(paths):
         for k in ("blockers", "questions", "nits"):
             if not isinstance(data.get(k), list):
                 data[k] = []
+        # Hollow {} / all-empty arrays without a real verdict is not a complete seat.
+        _nonempty = any(
+            isinstance(data.get(k), list) and any(str(x).strip() for x in data.get(k))
+            for k in ("blockers", "questions", "nits")
+        )
+        _ver = str(data.get("verdict") or "").strip()
+        _has_ver = bool(_ver) and _ver.lower() not in ("none", "n/a", "…", "...")
         data["raw_ok"] = True
-        data["available"] = not unavailable
+        data["available"] = (not unavailable) and (_nonempty or _has_ver)
     if unavailable:
         data["available"] = False
         data["raw_ok"] = False

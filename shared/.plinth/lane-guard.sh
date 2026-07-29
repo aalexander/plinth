@@ -497,6 +497,8 @@ case "$sub" in
     [ -n "$dtr" ] || _dusage
     # Optional BEFORE sha binds the receipt to THIS run (upstream #32).
     # When supplied: must resolve to a commit that is exactly HEAD (lane does not commit).
+    # Transcript correlation: if the transcript self-reports BEFORE:/HEAD: lines, they
+    # must match the before-sha (rejects stale paste of an older run's transcript).
     if [ -n "$dbefore" ]; then
       printf '%s' "$dbefore" | grep -Eq '^[0-9a-fA-F]{7,64}$' || {
         echo "unavailable: before-sha must be a 7–64 hex git object id (got '$dbefore')"; exit 3; }
@@ -513,6 +515,17 @@ case "$sub" in
     # THE GATE. A missing or EMPTY transcript means nothing shows the delegate ran at all.
     { [ -f "$dtr" ] && [ -s "$dtr" ]; } || {
       echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
+    if [ -n "$dbefore" ] && [ -n "${_dfull:-}" ]; then
+      # Last self-report wins (same posture as MODEL:). Accept short or full SHAs.
+      _tbefore="$(grep -E '^[[:space:]]*(BEFORE|HEAD):' "$dtr" 2>/dev/null | tail -n1 \
+        | sed -E 's/^[[:space:]]*(BEFORE|HEAD):[[:space:]]*//' | tr -cd '0-9a-fA-F' | cut -c1-64 || true)"
+      if [ -n "$_tbefore" ]; then
+        _tfull="$(git rev-parse --verify "${_tbefore}^{commit}" 2>/dev/null || true)"
+        if [ -z "$_tfull" ] || [ "$_tfull" != "$_dfull" ]; then
+          echo "unavailable: transcript BEFORE/HEAD '$_tbefore' does not match before-sha $_dfull — stale or mismatched transcript"; exit 3
+        fi
+      fi
+    fi
     droot="$(git rev-parse --show-toplevel 2>/dev/null)"
     [ -n "$droot" ] || { echo "unavailable: not inside a git repo — cannot record the delegation artifact"; exit 3; }
     # CONTAINMENT BEFORE ANY WRITE. A symlinked `.plinth`, `.plinth/session`, or session
