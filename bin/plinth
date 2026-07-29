@@ -5356,10 +5356,10 @@ primary_rel = rel_to_root(primary_path)
 
 # Prefer product plan outline; when only spec exists, still derive stages.
 text = primary_path.read_text(encoding="utf-8", errors="replace")
-# Cap huge specs for dashboard outline only. Seeding (PLINTH_PLAN_SEED=1) reads the
-# full PLAN so late open leaves cannot be invisible (false all-done / wrong totals).
+# Cap huge SPECs (e.g. MANUAL.md) for dashboard outline. Operational PLAN.md is
+# always fully read so late leaves never disappear from progress/seed.
 truncated = False
-if len(text) > 120_000 and os.environ.get("PLINTH_PLAN_SEED") != "1":
+if primary_kind != "plan" and len(text) > 120_000:
     text = text[:120_000]
     truncated = True
 
@@ -5914,7 +5914,7 @@ current = None
 current_via = None
 checkpoint_cursor = False
 
-if cp_status == "done" and leaves:
+if cp_status == "done" and leaves and not truncated:
     current = leaves[-1]
     current_via = "checkpoint_status_done"
     checkpoint_cursor = True

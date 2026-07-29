@@ -82,6 +82,10 @@ case "$mode" in
   empty)
     exit 0
     ;;
+  whitespace)
+    printf '   \n\t  \n'
+    exit 0
+    ;;
   fail_nz)
     echo "model overloaded" >&2
     exit 7
@@ -166,6 +170,9 @@ run_advise_vendor agy empty
 [ "$_adv_rc" -eq 0 ] || fail "empty must be non-blocking"
 echo "$_adv_out" | grep -qi 'empty output\|advisor unavailable' || fail "empty: $_adv_out"
 pass "agy empty stdout → unavailable"
+run_advise_vendor claude whitespace
+echo "$_adv_out" | grep -qi 'empty output\|advisor unavailable' || fail "whitespace: $_adv_out"
+pass "whitespace-only stdout is empty (not advice)"
 
 run_advise_vendor claude fail_nz
 [ "$_adv_rc" -eq 0 ] || fail "fail_nz must be non-blocking"
