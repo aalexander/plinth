@@ -1048,13 +1048,30 @@ open_items() {  # open_items <needs-human-file>
   ' "$1" 2>/dev/null
 }
 
+# Blocking marker after open_items strips "- [ ] ".
+# Canonical:  [BLOCKING] text
+# Also accept common human/markdown forms:
+#   **[BLOCKING] text
+#   **[BLOCKING — title] text
+#   [BLOCKING — title] text
+# Used by queue, watch, and dash so counts and sort agree.
+_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-])'
+_nh_item_is_blocking() {  # <logical-item-text> → 0 if blocking
+  printf '%s' "$1" | grep -qE "$_nh_blocking_re"
+}
+_nh_count_blocking() {  # stdin logical items → count
+  grep -cE "$_nh_blocking_re" || true
+}
+# jq expression (string): true when . is a blocking logical item text.
+_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")'
+
 # Blocking items first (order preserved within each group), so the human sees
 # what's stalling work RIGHT NOW at the top. Reads logical items on stdin.
 sort_blocking_first() {
   local all blk non
   all="$(cat)"
-  blk="$(printf '%s\n' "$all" | grep '^\[BLOCKING\]' || true)"
-  non="$(printf '%s\n' "$all" | grep -v '^\[BLOCKING\]' || true)"
+  blk="$(printf '%s\n' "$all" | grep -E "$_nh_blocking_re" || true)"
+  non="$(printf '%s\n' "$all" | grep -vE "$_nh_blocking_re" || true)"
   [ -n "$blk" ] && printf '%s\n' "$blk"
   [ -n "$non" ] && printf '%s\n' "$non"
   return 0   # never fail the caller's `x="$(... | sort_blocking_first)"` under set -e:
@@ -1073,16 +1090,17 @@ run_queue() {
   wrapw=$((cols - 4))
   items="$(open_items "$f")"
   [ -n "$items" ] || items="$(grep -v '^[[:space:]]*$' "$f")"
-  local qb; qb="$(printf '%s\n' "$items" | grep -c '^\[BLOCKING\]' || true)"
+  local qb; qb="$(printf '%s\n' "$items" | _nh_count_blocking)"
   items="$(printf '%s\n' "$items" | sort_blocking_first)"
   echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open, $qb blocking; blocking first)"
   local RD=$'\033[1;31m' Z=$'\033[0m'
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    case "$item" in
-      '[BLOCKING]'*) printf '%s· %s%s\n' "$RD" "$item" "$Z" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
-      *)             printf '· %s\n' "$item" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
-    esac
+    if _nh_item_is_blocking "$item"; then
+      printf '%s· %s%s\n' "$RD" "$item" "$Z" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+    else
+      printf '· %s\n' "$item" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+    fi
   done <<< "$items"
 }
 
@@ -1135,7 +1153,7 @@ render_frame() {
     raw="$(open_items "$nhf")"
     [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
-    nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    nhb="$(printf '%s\n' "$raw" | _nh_count_blocking)"
     raw="$(printf '%s\n' "$raw" | sort_blocking_first)"   # blocking to the top
     cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
     [ "$cols" -ge 40 ] 2>/dev/null || cols=100
@@ -1152,7 +1170,7 @@ render_frame() {
     local tag
     while IFS= read -r item; do
       [ -n "$item" ] || continue
-      case "$item" in '[BLOCKING]'*) tag='!' ;; *) tag=' ' ;; esac
+      if _nh_item_is_blocking "$item"; then tag='!'; else tag=' '; fi
       folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
       flines="$(printf '%s\n' "$folded" | wc -l | tr -d ' ')"
       if [ $((used + flines)) -gt "$budget" ] && [ "$shown" -gt 0 ]; then break; fi
@@ -2072,13 +2090,37 @@ snapshot_one_project() {
   # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
   branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [ -z "$branch" ]; then branch="detached"; fi
-  slug="$(_lifecycle_slug "$dir")"
-  if [ ! -f "$dir/.plinth/session/review/$slug/verdict.json" ] \
-     && [ ! -d "$dir/.plinth/session/review/$slug" ]; then
-    slug="$(_lifecycle_slug_legacy "$dir")"
+  # Prefer a review dir with real work: encoded first when it has a verdict OR
+  # request/findings (in-flight / findings-without-verdict); else legacy if it
+  # has a verdict. Empty encoded dirs must not mask legacy verdicts.
+  local rev_dir enc_slug leg_slug enc_dir leg_dir enc_has_work=0
+  enc_slug="$(_lifecycle_slug "$dir")"
+  leg_slug="$(_lifecycle_slug_legacy "$dir")"
+  enc_dir="$dir/.plinth/session/review/$enc_slug"
+  leg_dir="$dir/.plinth/session/review/$leg_slug"
+  if [ -d "$enc_dir" ]; then
+    local _encf
+    for _encf in "$enc_dir"/request-*.json "$enc_dir"/findings-*.json; do
+      [ -f "$_encf" ] || continue
+      enc_has_work=1
+      break
+    done
+  fi
+  if [ -f "$enc_dir/verdict.json" ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ "$enc_has_work" -eq 1 ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ -f "$leg_dir/verdict.json" ]; then
+    slug="$leg_slug"; rev_dir="$leg_dir"
+  elif [ -d "$enc_dir" ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ -d "$leg_dir" ]; then
+    slug="$leg_slug"; rev_dir="$leg_dir"
+  else
+    slug="$enc_slug"; rev_dir="$enc_dir"
   fi
 
-  local vfile="$dir/.plinth/session/review/$slug/verdict.json"
+  local vfile="$rev_dir/verdict.json"
   local verdict_file_bad=false
   if [ -f "$vfile" ]; then
     # Exactly one JSON document and it must be an object (rejects null/false,
@@ -2098,7 +2140,7 @@ snapshot_one_project() {
   # means a retry is in flight (review.sh writes request, then on fail last-error;
   # a later retry rewrites request). Same mtime or older request → keep error.
   local has_last_error=false
-  local errfile="$dir/.plinth/session/review/$slug/last-error"
+  local errfile="$rev_dir/last-error"
   if [ -f "$errfile" ]; then
     if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ] \
        && _dash_file_newer "$rqfile" "$errfile"; then
@@ -2106,6 +2148,22 @@ snapshot_one_project() {
     else
       has_last_error=true
     fi
+  fi
+  # Primary findings for the in-flight request round mean the reviewer finished
+  # even when verdict.json was not written (e.g. dual-pass hang). Not RUNNING.
+  local has_primary_findings=false
+  local findings_for_rq=""
+  if [ -n "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
+    local _rqn _ftry
+    _rqn="${rqfile##*/request-}"
+    _rqn="${_rqn%.json}"
+    case "$_rqn" in ''|*[!0-9]*) ;; *)
+      _ftry="$rev_dir/findings-${_rqn}.json"
+      if [ -f "$_ftry" ] && jq -e 'type == "object"' "$_ftry" >/dev/null 2>&1; then
+        has_primary_findings=true
+        findings_for_rq="$_ftry"
+      fi
+    ;; esac
   fi
 
   local activity_ago=null events_mtime=0
@@ -2130,15 +2188,17 @@ snapshot_one_project() {
     # do NOT fall back to counting headings / checked lines as open.
     if [ -n "$raw" ]; then
       nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
-      nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+      nhb="$(printf '%s\n' "$raw" | _nh_count_blocking)"
       # Drill-down list for the wallboard (cap 50; full queue via `plinth queue`).
       # Avoid printf|head SIGPIPE under pipefail: materialize then slice in jq.
+      # Blocking: canonical [BLOCKING] plus markdown **[BLOCKING — …] forms.
       nh_items_json="$(printf '%s\n' "$raw" | jq -Rsc --argjson open "$nhn" '
         split("\n")
         | map(select(length > 0))
         | . as $all
         | ($all[:50]) as $items
-        | {items: ($items | map({text: ., blocking: startswith("[BLOCKING]")})),
+        | {items: ($items | map({text: .,
+            blocking: test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")})),
            truncated: (($items | length) < $open)}
       ' 2>/dev/null || echo '{"items":[],"truncated":true}')"
     fi
@@ -2386,7 +2446,6 @@ snapshot_one_project() {
   # Separate review-round wall time (request-N → findings-N mtimes). NOT folded into
   # phases.reviewing (that would double-count Bash review.sh event gaps).
   local review_round_secs=0
-  local rev_dir="$dir/.plinth/session/review/$slug"
   if [ -d "$rev_dir" ]; then
     local n rqff fnd t0 t1
     for fnd in "$rev_dir"/findings-*.json; do
@@ -2406,16 +2465,23 @@ snapshot_one_project() {
     done
   fi
 
-  # Open findings for CHANGES click-through (latest findings-N for verdict round).
+  # Open findings for CHANGES click-through. Prefer findings for the request
+  # round (covers findings-without-verdict), else verdict.round, else highest N.
   local findings_items='[]' findings_summary='' findings_open=0 findings_trunc=false
-  if [ -d "$rev_dir" ] && [ -f "$vfile" ] && [ "$vfile" != /dev/null ] \
-     && [ "$verdict_file_bad" != true ]; then
+  local findings_verdict=''  # when no verdict.json, surface findings.verdict
+  if [ -d "$rev_dir" ] && [ "$verdict_file_bad" != true ]; then
     local fround fpath
-    fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
-    case "$fround" in ''|*[!0-9]*) fround="" ;; esac
-    if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
-      fpath="$rev_dir/findings-$fround.json"
-    else
+    fpath=""
+    if [ -n "$findings_for_rq" ] && [ -f "$findings_for_rq" ]; then
+      fpath="$findings_for_rq"
+    elif [ -f "$vfile" ] && [ "$vfile" != /dev/null ]; then
+      fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
+      case "$fround" in ''|*[!0-9]*) fround="" ;; esac
+      if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
+        fpath="$rev_dir/findings-$fround.json"
+      fi
+    fi
+    if [ -z "$fpath" ] || [ ! -f "$fpath" ]; then
       # Fall back to highest-numbered findings-N.json
       fpath=""
       local cand maxn=-1
@@ -2437,6 +2503,8 @@ snapshot_one_project() {
           if type != "string" then ""
           elif length > 280 then .[0:277] + "…"
           else . end;
+        def verdict_ok($v):
+          $v == "APPROVED" or $v == "CHANGES_NEEDED" or $v == "UNBOUND";
         (.summary // null) as $sum
         | [(.findings // [])[]
            | select((.status // "open") != "resolved")
@@ -2451,7 +2519,9 @@ snapshot_one_project() {
             summary: (if $sum == null then null else ($sum|tostring|clip) end),
             open: ($all|length),
             truncated: (($all|length) > 25),
-            items: $all[0:25]
+            items: $all[0:25],
+            verdict: (if ((.verdict // null) | type) == "string"
+                         and verdict_ok(.verdict) then .verdict else null end)
           }
       ' "$fpath" 2>/dev/null || true)"
       if [ -n "$fparsed" ]; then
@@ -2462,6 +2532,7 @@ snapshot_one_project() {
         if printf '%s' "$fparsed" | jq -e '.truncated == true' >/dev/null 2>&1; then
           findings_trunc=true
         fi
+        findings_verdict="$(printf '%s' "$fparsed" | jq -r '.verdict // empty' 2>/dev/null || true)"
       fi
     fi
   fi
@@ -2489,7 +2560,7 @@ snapshot_one_project() {
         error:"snapshot_render_failed",
         lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
                    handoff:$handoff_present,handoff_age_secs:$handoff_age,
-                   dual_degraded:$dual_degraded,next_action:(if $next_action=="" then null else $next_action end)},
+                   dual_degraded:$dual_degraded,next:(if $next_action=="" then null else $next_action end)},
         needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
         phases:($phases // {}),
         review_round_secs:$review_round_secs,
@@ -2550,6 +2621,8 @@ snapshot_one_project() {
         --arg seat_advm "${seat_advisor_model:-}" \
         --arg seat_advx "${seat_advisor_max:-}" \
         --argjson has_last_error "$has_last_error" \
+        --argjson has_primary_findings "$has_primary_findings" \
+        --arg findings_verdict "${findings_verdict:-}" \
         --argjson rq_round_from_name "$rq_round_from_name" \
         --arg life_phase "$life_phase" \
         --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
@@ -2591,12 +2664,19 @@ snapshot_one_project() {
        elif ($rq_round_from_name != null)
             and (($RQ0.round | floor) != $rq_round_from_name) then error("bad_request_round_mismatch")
        else $RQ0 end) as $RQ
-    # RUNNING only when a newer request exists AND no last-error (infra failure
-    # leaves request-N behind without a live reviewer).
-    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) and ($has_last_error | not)
+    # RUNNING only when a newer request exists, no last-error, AND primary
+    # findings for that round are not yet on disk (findings-without-verdict is done).
+    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0))
+            and ($has_last_error | not) and ($has_primary_findings | not)
        then true else false end) as $running
     | (if $V == null then null
        else (sha_match($V.sha // ""; $head_full) | not) end) as $stale
+    # When verdict.json is missing but findings-N carries a verdict enum, surface it
+    # (dual-pass hang / crash after primary findings were written).
+    | (if $V != null then ($V.verdict // null)
+       elif ($findings_verdict | length) > 0 and verdict_ok($findings_verdict)
+       then $findings_verdict
+       else null end) as $disp_verdict
     | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
         | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
            i: (.message.usage.input_tokens // 0),
@@ -2668,26 +2748,33 @@ snapshot_one_project() {
                   } else {
                     guard_blocks:0, gate_releases:0, compactions:0, subagents:0
                   } end),
-        review: (if $V == null and ($running | not) and ($has_last_error | not) then null
-                 elif $V == null and $has_last_error then {
-                   verdict: null, round: ($RQ.round // null), sha7: null,
-                   stale: null, running: false, mode: ($RQ.mode // null),
-                   tier: null, last_error: true
-                 }
-                 else {
-          verdict: ($V.verdict // null),
-          round: (if $running then ($RQ.round // null) else ($V.round // null) end),
-          sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
-          stale: $stale,
-          running: $running,
-          mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
-          tier: ($V.risk.tier // null),
-          last_error: $has_last_error,
-          summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
-          findings_open: $findings_open,
-          findings_truncated: $findings_trunc,
-          findings: $findings_items
-        } end),
+        review: (
+          if $V == null and ($running | not) and ($has_last_error | not)
+             and $disp_verdict == null then null
+          elif $V == null and $has_last_error and ($has_primary_findings | not) then {
+            verdict: null, round: ($RQ.round // null), sha7: null,
+            stale: null, running: false, mode: ($RQ.mode // null),
+            tier: null, last_error: true,
+            summary: null, findings_open: 0, findings_truncated: false, findings: []
+          }
+          else {
+            verdict: $disp_verdict,
+            round: (if $running then ($RQ.round // null)
+                    elif $V != null then ($V.round // null)
+                    else ($RQ.round // null) end),
+            sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
+            stale: $stale,
+            running: $running,
+            mode: (if $running then ($RQ.mode // null)
+                   elif $V != null then ($V.mode // null)
+                   else ($RQ.mode // null) end),
+            tier: (if $V != null then ($V.risk.tier // null) else null end),
+            last_error: (if $has_primary_findings then false else $has_last_error end),
+            summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
+            findings_open: $findings_open,
+            findings_truncated: $findings_trunc,
+            findings: $findings_items
+          } end),
         needs_human: {
           open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc,
           source: $nh_source
@@ -5235,7 +5322,7 @@ run_next() {
   nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
   local blocking=""
   if [ -n "$nhf" ] && [ -s "$nhf" ]; then
-    blocking=$(open_items "$nhf" 2>/dev/null | grep '^\[BLOCKING\]' | head -1 || true)
+    blocking=$(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" | head -1 || true)
   fi
   if [ -n "$blocking" ]; then
     echo "status: human_blocked"

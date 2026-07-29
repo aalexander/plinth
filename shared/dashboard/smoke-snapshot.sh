@@ -575,6 +575,56 @@ os.utime(sys.argv[1], (t, t))
 os.utime(sys.argv[2], (t, t))  # equal age → stuck error, not RUNNING
 PY
 
+# ── Fixture S: findings-without-verdict (primary done, dual hang) ────────────
+# request-1 + findings-1 with CHANGES_NEEDED, no verdict.json, stale last-error
+# older than request → must NOT show running forever; surface CHANGES + findings.
+S="$FIX/sigma-findings-only"
+mk_git "$S"
+git -C "$S" checkout -qb feat/findings-only
+echo s > "$S/s.txt"
+git -C "$S" add -A
+git -C "$S" commit -qm "work"
+mkdir -p "$S/.plinth/session/review/feat%2Ffindings-only"
+jq -nc '{round:1,mode:"fresh",model:"gpt-test"}' \
+  > "$S/.plinth/session/review/feat%2Ffindings-only/request-1.json"
+printf 'old infra error\n' \
+  > "$S/.plinth/session/review/feat%2Ffindings-only/last-error"
+jq -nc '{
+  verdict:"CHANGES_NEEDED",
+  summary:"primary finished without verdict.json",
+  findings:[
+    {severity:"blocker",file:"a.go",line:1,description:"must fix auth"},
+    {severity:"major",file:"b.go",line:2,description:"nit"}
+  ]
+}' > "$S/.plinth/session/review/feat%2Ffindings-only/findings-1.json"
+# last-error older than request (retry wrote request, then primary finished)
+python3 - "$S/.plinth/session/review/feat%2Ffindings-only/last-error" \
+  "$S/.plinth/session/review/feat%2Ffindings-only/request-1.json" \
+  "$S/.plinth/session/review/feat%2Ffindings-only/findings-1.json" <<'PY'
+import os, sys, time
+base = time.time() - 30
+os.utime(sys.argv[1], (base, base))
+os.utime(sys.argv[2], (base + 5, base + 5))
+os.utime(sys.argv[3], (base + 10, base + 10))
+PY
+# Stale legacy dir with old verdict must not win over encoded findings work
+mkdir -p "$S/.plinth/session/review/feat-findings-only"
+jq -nc --arg sha "$(git -C "$S" rev-parse HEAD)" \
+  '{verdict:"APPROVED",sha:$sha,round:1,mode:"fresh",model:"old",
+    risk:{tier:1,files:1,reasons:["stale"]},ts:"2026-01-01T00:00:00Z"}' \
+  > "$S/.plinth/session/review/feat-findings-only/verdict.json"
+
+# ── Fixture T: markdown-wrapped BLOCKING items ───────────────────────────────
+T="$FIX/tau-md-blocking"
+mk_git "$T"
+printf '%s\n' \
+  '# Queue' \
+  '- [ ] **[BLOCKING — title] must count as blocking**' \
+  '- [ ] **[BLOCKING] also bold-wrapped**' \
+  '- [ ] [BLOCKING] canonical form' \
+  '- [ ] plain non-blocking follow-up' \
+  > "$T/.plinth/NEEDS-HUMAN.md"
+
 # Never hit live vendor CLIs in smoke (quota is optional / cached separately).
 export PLINTH_DASH_QUOTA=0
 # Quota cache is /tmp/plinth-dash-quota-$UID/ (product fixed path)
@@ -608,7 +658,7 @@ export PLINTH_DASH_ROOTS="$A:$B:$C:$C2:$D:$E:$F:$G:$H:$I:$J:$J2:$K:$L:$L2:$L3:$L
 if [ "${HAVE_SHA256:-0}" = "1" ]; then
   export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L17"
 fi
-export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L18:$L19:$L20:$L21:$L22:$L23:$L24:$L25:$M:$N:$N2:$O:$P:$Q"
+export PLINTH_DASH_ROOTS="$PLINTH_DASH_ROOTS:$L18:$L19:$L20:$L21:$L22:$L23:$L24:$L25:$M:$N:$N2:$O:$P:$Q:$S:$T"
 OUT="$FIX/out.json"
 "$PLINTH" dash --snapshot > "$OUT"
 # Alias parity: `dashboard` must accept --snapshot the same way.
@@ -624,9 +674,9 @@ jq -e . "$OUT" >/dev/null
 # Top-level shape
 jq -e 'has("generated_at") and has("discovery") and has("projects")' "$OUT" >/dev/null
 jq -e '.discovery == "env:PLINTH_DASH_ROOTS"' "$OUT" >/dev/null
-# Base 35 (incl. gamma-unbound) + 8 extra protocol fixtures (L18–L25) + optional sha256
-EXPECTED_N=43
-[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=44
+# Base 35 (incl. gamma-unbound) + 8 extra protocol fixtures (L18–L25) + S/T + optional sha256
+EXPECTED_N=45
+[ "${HAVE_SHA256:-0}" = "1" ] && EXPECTED_N=46
 jq -e --argjson n "$EXPECTED_N" '(.projects | length) == $n' "$OUT" >/dev/null
 
 # Top-level vendor quota: smoke disables probes; snapshot never spawns CLIs.
@@ -1265,6 +1315,25 @@ jq -e '
   | .review.running == false
   and .review.last_error == true
   and .review.verdict == "CHANGES_NEEDED"
+' "$OUT" >/dev/null
+
+# findings-without-verdict: primary findings on disk → not running; surface CHANGES
+jq -e '
+  .projects[] | select(.name == "sigma-findings-only")
+  | .review.running == false
+  and .review.last_error == false
+  and .review.verdict == "CHANGES_NEEDED"
+  and .review.findings_open == 2
+  and (.review.summary | type == "string")
+  and (.review.findings | length) == 2
+' "$OUT" >/dev/null
+
+# markdown-wrapped BLOCKING markers count (canonical + **[BLOCKING — …] + **[BLOCKING])
+jq -e '
+  .projects[] | select(.name == "tau-md-blocking")
+  | .needs_human.open == 4
+  and .needs_human.blocking == 3
+  and ([.needs_human.items[] | select(.blocking == true)] | length) == 3
 ' "$OUT" >/dev/null
 
 # Explicit stale=true
