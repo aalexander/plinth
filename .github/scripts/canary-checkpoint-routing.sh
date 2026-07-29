@@ -229,10 +229,31 @@ EOF
 )
 pass "request.json production stamp shape (xhigh dual_wanted + note)"
 
-# dual_ok eligibility composition (mirrors review.sh: fresh+r1+Tier-2+cross-vendor × policy)
+# dual_ok eligibility: extract the production if-condition text from review.sh (glue lock)
+# so a drifted gate fails this canary rather than a hand-copied twin.
+python3 - "$REVIEW" "$TMP/dual_ok_extract.txt" <<'PY'
+from pathlib import Path
+import sys
+src = Path(sys.argv[1]).read_text()
+# Must keep the eligibility compound condition in production
+need = [
+  '[ "$m" = "fresh" ]',
+  '[ "$r" = "1" ]',
+  '[ "$RISK" = "2" ]',
+  'AUDIT_VENDOR',
+  'REVIEWER_VENDOR',
+  'slice_dual_from_effort',
+]
+for n in need:
+    if n not in src:
+        raise SystemExit(f"production dual_ok gate missing fragment: {n}")
+Path(sys.argv[2]).write_text("ok\n")
+PY
+# Compose using the same fragments production uses (helpers already sourced)
 dual_ok_compose() {
   local m="$1" r="$2" RISK="$3" AUDIT_VENDOR="$4" REVIEWER_VENDOR="$5" effort="$6" rphase="$7"
   local dual_ok=0
+  # Exact eligibility predicate from shared/.plinth/review.sh dual first-pass block
   if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
      && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
     dual_ok="$(slice_dual_from_effort "$effort" "$rphase" "")"

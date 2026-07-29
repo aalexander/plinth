@@ -150,4 +150,37 @@ echo "$out" | grep -q human_blocked || fail "HARDEN must fail closed on ship blo
 [ "$rc" -eq 2 ] || fail "exit 2 expected in harden, got $rc"
 pass "HARDEN blocked by BLOCKING:ship"
 
+# Leading marker wins — later [BLOCKING:ship] in prose must not re-scope to ship
+setup "$TMP/lead"
+mkdir -p "$TMP/lead/.plinth"
+cat > "$TMP/lead/.plinth/NEEDS-HUMAN.md" <<'EOF'
+# NH
+- [ ] [BLOCKING:global] document why [BLOCKING:ship] is insufficient for this gate
+EOF
+set +e
+out=$("$PLINTH" next "$TMP/lead" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q human_blocked || fail "leading global must block despite later :ship: $out"
+[ "$rc" -eq 2 ] || fail "exit 2 for leading global, got $rc ($out)"
+# BUILD + leading ship with later global mention → still deferred (ship)
+setup "$TMP/lead2"
+mkdir -p "$TMP/lead2/.plinth"
+cat > "$TMP/lead2/.plinth/NEEDS-HUMAN.md" <<'EOF'
+# NH
+- [ ] [BLOCKING:ship] note that [BLOCKING:global] was considered and rejected
+EOF
+cat > "$TMP/lead2/CHECKPOINT.md" <<'EOF'
+# Checkpoint
+## Next
+1. implement the feature work
+EOF
+set +e
+out=$("$PLINTH" next "$TMP/lead2" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q 'status: work' || fail "leading ship must stay deferred in BUILD: $out"
+[ "$rc" -eq 0 ] || fail "exit 0 for leading ship in BUILD, got $rc"
+pass "leading BLOCKING scope wins over later tags in prose"
+
 echo "canary-next-blocker-scope: ALL PASS"

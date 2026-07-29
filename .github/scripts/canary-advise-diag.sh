@@ -29,7 +29,7 @@ echo "$out" | grep -qi 'missing or not signed in' \
 pass "missing claude → PATH diagnostic (not conflated)"
 
 grep -q '_advise_auth_hit' "$ROOT/bin/plinth" || fail "missing _advise_auth_hit helper"
-grep -q '_advise_banner_re' "$ROOT/bin/plinth" || fail "missing narrow banner re"
+grep -q '_advise_banner_line_re' "$ROOT/bin/plinth" || fail "missing anchored banner line re"
 pass "advise diagnostic helpers present in product"
 
 install_fake() {
@@ -57,6 +57,15 @@ case "$mode" in
   ok_short_auth_phrase)
     # Concise valid advice containing generic auth phrases — must NOT auth-fail
     echo "Sound: require authentication; authentication required before protected-route rollout."
+    exit 0
+    ;;
+  ok_embed_banner)
+    # Legitimate advice embedding banner tokens mid-sentence
+    echo "Keep public routes visible when not logged in."
+    exit 0
+    ;;
+  ok_embed_sign_in)
+    echo "Docs: operators please sign in only after staging is up."
     exit 0
     ;;
   empty)
@@ -110,19 +119,46 @@ echo "$_adv_out" | grep -qi 'Sound: the request is not authenticated' \
 pass "grok exit-0 prose with 'not authenticated until' is advice"
 
 run_advise_vendor claude ok_short_auth_phrase
+[ "$_adv_rc" -eq 0 ] || fail "ok_short rc"
 echo "$_adv_out" | grep -qi 'not signed in\|advisor unavailable' \
   && fail "short advice with authentication required must not auth-fail: $_adv_out" || true
 echo "$_adv_out" | grep -qi 'Sound: require authentication' \
   || fail "short advice should print: $_adv_out"
 pass "short exit-0 advice with authentication required is advice"
 
+run_advise_vendor claude ok_embed_banner
+[ "$_adv_rc" -eq 0 ] || fail "embed banner rc"
+echo "$_adv_out" | grep -qi 'not signed in\|advisor unavailable' \
+  && fail "embedded not logged in must be advice: $_adv_out" || true
+echo "$_adv_out" | grep -qi 'Keep public routes visible when not logged in' \
+  || fail "embed advice print: $_adv_out"
+pass "advice embedding 'not logged in' mid-sentence is advice"
+
+run_advise_vendor grok ok_embed_sign_in
+[ "$_adv_rc" -eq 0 ] || fail "embed sign-in rc"
+echo "$_adv_out" | grep -qi 'not signed in\|advisor unavailable' \
+  && fail "embedded please sign in must be advice: $_adv_out" || true
+pass "advice embedding please sign in mid-sentence is advice"
+
+run_advise_vendor codex auth_stdout_nz
+[ "$_adv_rc" -eq 0 ] || fail "codex auth must be non-blocking rc=0"
+echo "$_adv_out" | grep -qi 'not signed in' || fail "auth_stdout_nz recheck: $_adv_out"
+
 run_advise_vendor agy empty
+[ "$_adv_rc" -eq 0 ] || fail "empty must be non-blocking"
 echo "$_adv_out" | grep -qi 'empty output\|advisor unavailable' || fail "empty: $_adv_out"
 pass "agy empty stdout → unavailable"
 
 run_advise_vendor claude fail_nz
+[ "$_adv_rc" -eq 0 ] || fail "fail_nz must be non-blocking"
 echo "$_adv_out" | grep -qiE 'exited 7|advisor unavailable' || fail "fail_nz: $_adv_out"
 echo "$_adv_out" | grep -qi 'not signed in' && fail "fail_nz must not be auth: $_adv_out" || true
 pass "claude nonzero non-auth → exited (not auth)"
+
+# grok failure path
+run_advise_vendor grok fail_nz
+[ "$_adv_rc" -eq 0 ] || fail "grok fail non-blocking"
+echo "$_adv_out" | grep -qiE 'exited 7|advisor unavailable' || fail "grok fail_nz: $_adv_out"
+pass "grok nonzero non-auth → exited (not auth)"
 
 echo "canary-advise-diag: ALL PASS"

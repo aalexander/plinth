@@ -1172,7 +1172,9 @@ _nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-]|:)")'
 # Bare [BLOCKING] / [BLOCKING — title] → always global (MANUAL contract; no heuristics).
 _nh_blocker_scope() {
   local t="$1" s
-  s=$(printf '%s' "$t" | sed -nE 's/.*\[BLOCKING[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]*(\]|[—–-]).*/\1/p' | head -1 | tr '[:upper:]' '[:lower:]')
+  # Leading marker only — never a later [BLOCKING:…] mentioned in item prose.
+  # Strip optional markdown bold, then require BLOCKING at start of the item.
+  s=$(printf '%s' "$t" | sed -E 's/^\*\*//' | sed -nE 's/^\[BLOCKING[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]*(\]|[—–-]).*/\1/p' | head -1 | tr '[:upper:]' '[:lower:]')
   case "$s" in
     global|build|harden|ship) printf '%s\n' "$s"; return 0 ;;
   esac
@@ -1702,8 +1704,23 @@ $question"
   errf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-err.XXXXXX")" || errf=""
   outf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-out.XXXXXX")" || outf=""
   # Best-effort cleanup on interrupt (success paths also rm explicitly).
+  # Re-raise after cleanup — never swallow cancellation as empty-output success.
   _advise_cleanup() { [ -n "${errf:-}" ] && rm -f "$errf"; [ -n "${outf:-}" ] && rm -f "$outf"; }
-  trap '_advise_cleanup' INT TERM HUP
+  _advise_on_signal() {
+    local _sig="$1"
+    _advise_cleanup
+    trap - INT TERM HUP
+    # 128+signum style exit for interactive shells; kill re-delivers when possible.
+    case "$_sig" in
+      INT) exit 130 ;;
+      TERM) exit 143 ;;
+      HUP) exit 129 ;;
+      *) exit 1 ;;
+    esac
+  }
+  trap '_advise_on_signal INT' INT
+  trap '_advise_on_signal TERM' TERM
+  trap '_advise_on_signal HUP' HUP
   _advise_fail() {
     local why="$1"
     echo "(advisor unavailable: $why — proceed on your own judgment)" >&2
@@ -1719,11 +1736,11 @@ $question"
   # NARROW banner re and rejects advice cues so "authentication required before…" is
   # not treated as a login prompt.
   _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
-  # Banner-only tokens for exit-0 short stdout (no bare "authentication required").
-  _advise_banner_re='not logged in|please run /login|please sign in|not authenticated\.|unauthorized \(401\)|401 unauthorized'
-  _advise_advice_cue_re='sound:|because |until |before |middleware|recommend|should |require authentication|protected.route|rollout'
+  # Exit-0 short path: each non-empty line must be a WHOLE-LINE CLI banner
+  # (anchored), not an advice sentence that embeds "not logged in" mid-prose.
+  _advise_banner_line_re='^[[:space:]]*(not logged in|please run /login|please sign in|not authenticated\.?|unauthorized \(401\)|401 unauthorized)[.![:space:]]*$'
   _advise_auth_hit() {
-    local _rc="$1" _al _ac
+    local _rc="$1" _al _ac _line _any=0
     if [ -n "$errf" ] && [ -s "$errf" ] && grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null; then
       return 0
     fi
@@ -1734,11 +1751,16 @@ $question"
     if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
       _al=$(wc -l <"$outf" | tr -d ' ')
       _ac=$(wc -c <"$outf" | tr -d ' ')
-      # Short CLI banner only — not concise advice that happens to mention auth.
-      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ] \
-         && grep -qiE "$_advise_banner_re" "$outf" 2>/dev/null \
-         && ! grep -qiE "$_advise_advice_cue_re" "$outf" 2>/dev/null; then
-        return 0
+      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ]; then
+        while IFS= read -r _line || [ -n "$_line" ]; do
+          [ -z "${_line//[[:space:]]/}" ] && continue
+          if printf '%s\n' "$_line" | grep -qiE "$_advise_banner_line_re"; then
+            _any=1
+          else
+            return 1
+          fi
+        done <"$outf"
+        [ "$_any" = 1 ] && return 0
       fi
     fi
     return 1
@@ -5131,8 +5153,19 @@ if status not in ("ready", "implementing", "reviewing", "blocked", "done"):
     status = prev.get("status") if prev.get("status") in (
         "ready", "implementing", "reviewing", "blocked", "done"
     ) else "implementing"
-# plan_ref: env wins; else prev; else PLAN.md only when that file exists (never invent).
-_plan_ref = env("PLINTH_CHECKPOINT_PLAN_REF", prev.get("plan_ref"))
+# plan_ref: env wins; else prev only if that path still exists; else PLAN.md if present.
+_plan_ref = env("PLINTH_CHECKPOINT_PLAN_REF")
+if _plan_ref is None and "PLINTH_CHECKPOINT_PLAN_REF" not in os.environ:
+    _prev_ref = prev.get("plan_ref")
+    if isinstance(_prev_ref, str) and _prev_ref:
+        _cand = root / _prev_ref if not Path(_prev_ref).is_absolute() else Path(_prev_ref)
+        # Basename PLAN.md and file must still exist — never keep a ghost plan_ref.
+        if _cand.is_file() and Path(_prev_ref).name == "PLAN.md":
+            _plan_ref = _prev_ref
+        else:
+            _plan_ref = None
+    else:
+        _plan_ref = None
 if not _plan_ref:
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
@@ -6303,8 +6336,13 @@ _write_handoff() {
         | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
         | if $t > 0 and $d == $t then "yes" else "no" end
       ' 2>/dev/null || true)
+      # Remember whether operator set STATUS before we seed (do not clobber blocked/etc.).
+      _user_set_status=0
+      if [ "${PLINTH_CHECKPOINT_STATUS+x}" = x ]; then _user_set_status=1; fi
       if [ "$_seed_is_plan" = 1 ] && [ "$_seed_done_all" = "yes" ]; then
-        export PLINTH_CHECKPOINT_STATUS=done
+        if [ "$_user_set_status" != 1 ]; then
+          export PLINTH_CHECKPOINT_STATUS=done
+        fi
         _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
           [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
         ' 2>/dev/null || true)
@@ -6324,8 +6362,16 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
-          # Re-open if prior fence was done but PLAN now has open work.
-          export PLINTH_CHECKPOINT_STATUS=implementing
+          # Re-open prior done when PLAN has open work — never clobber explicit env status
+          # (e.g. operator PLINTH_CHECKPOINT_STATUS=blocked must stick).
+          if [ "$_user_set_status" != 1 ]; then
+            if [ "$_prev_status" = "done" ] || [ -z "${PLINTH_CHECKPOINT_STATUS:-}" ]; then
+              export PLINTH_CHECKPOINT_STATUS=implementing
+            fi
+          elif [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ -n "$_seed_idx" ]; then
+            # Explicit done but open leaf exists — leave 100% honestly.
+            export PLINTH_CHECKPOINT_STATUS=implementing
+          fi
           echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
         ;; esac
       fi

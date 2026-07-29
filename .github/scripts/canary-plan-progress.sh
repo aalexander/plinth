@@ -283,6 +283,138 @@ console.log("cardHTML ok");
 NODE
 pass "cardHTML plan meter + chip"
 
+# openPlan + delegated data-plan click + details collapse (classList guards)
+PLINTH_DASH_HTML="$ROOT/shared/dashboard/index.html" node <<'NODE'
+const fs = require("fs");
+const vm = require("vm");
+const html = fs.readFileSync(process.env.PLINTH_DASH_HTML, "utf8");
+const m = html.match(/<script>\s*([\s\S]*?)\s*<\/script>\s*<\/body>/i);
+if (!m) { console.error("no script"); process.exit(1); }
+const elsById = Object.create(null);
+const classSets = Object.create(null);
+function makeEl(id) {
+  const cs = new Set();
+  classSets[id || Math.random()] = cs;
+  const o = {
+    textContent: "", className: "", innerHTML: "",
+    style: { display: "", cssText: "" },
+    classList: {
+      add(c) { cs.add(c); },
+      remove(c) { cs.delete(c); },
+      contains(c) { return cs.has(c); },
+      toggle(c, force) {
+        if (force === true) { cs.add(c); return true; }
+        if (force === false) { cs.delete(c); return false; }
+        if (cs.has(c)) { cs.delete(c); return false; }
+        cs.add(c); return true;
+      },
+    },
+    addEventListener() {}, removeEventListener() {},
+    getAttribute() { return null; }, setAttribute() {},
+    closest() { return null; },
+    querySelector() { return null; },
+  };
+  if (id) elsById[id] = o;
+  return o;
+}
+["grid", "live-dot", "live-label", "gen-ago", "discovery", "count",
+ "quota-bar", "nh-modal", "nh-panel", "nh-title", "nh-sub", "nh-list", "nh-close",
+ "filters", "toast"
+].forEach((id) => { elsById[id] = makeEl(id); });
+const listeners = [];
+const sandbox = {
+  console, Date, Math, String, Number, JSON, Array, Object, parseInt, isNaN,
+  setInterval: () => 0, clearInterval: () => {},
+  fetch: async () => ({ ok: true, json: async () => ({ projects: [] }) }),
+  document: {
+    getElementById: (id) => (Object.prototype.hasOwnProperty.call(elsById, id) ? elsById[id] : null),
+    createElement: () => makeEl(),
+    addEventListener(type, fn) { listeners.push({ type, fn }); },
+    querySelector: () => ({ parentNode: { insertBefore() {} } }),
+  },
+};
+sandbox.globalThis = sandbox;
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(m[1], sandbox);
+const api = sandbox.__plinthDash;
+if (!api || typeof api.openPlan !== "function") {
+  console.error("no __plinthDash.openPlan");
+  process.exit(1);
+}
+const proj = {
+  name: "demo", path: "/tmp/demo", branch: "feat", head: "abc1234",
+  feedless: true,
+  lifecycle: {
+    phase: "build", plan: true,
+    plan_progress: {
+      schema: "plinth.plan_progress/v1",
+      primary: "PLAN.md", primary_kind: "plan",
+      pct_complete: 50, done: 1, total: 2,
+      current: { id: "x", title: "Second" },
+      outline: [{ title: "AC", status: "active", weight_pct: 100,
+        children: [
+          { title: "First", status: "done", weight_pct: 50 },
+          { title: "Second", status: "active", weight_pct: 50 },
+        ] }],
+      note: "test",
+    },
+  },
+};
+if (typeof api.seedProjects !== "function") {
+  console.error("no seedProjects on __plinthDash:", Object.keys(api));
+  process.exit(1);
+}
+api.seedProjects([proj]);
+try {
+  api.openPlan("/tmp/demo");
+} catch (e) {
+  console.error("openPlan throw", e);
+  process.exit(1);
+}
+const modal = elsById["nh-modal"];
+const panel = elsById["nh-panel"];
+const list = elsById["nh-list"];
+const title = elsById["nh-title"];
+if (!modal.classList.contains("open")) {
+  console.error("modal not open after openPlan");
+  process.exit(1);
+}
+if (!panel.classList.contains("plan-wide")) {
+  console.error("panel missing plan-wide");
+  process.exit(1);
+}
+if (!list.classList.contains("plan-track")) {
+  console.error("list missing plan-track");
+  process.exit(1);
+}
+if (!String(title.textContent).includes("PLAN")) {
+  console.error("title not PLAN:", title.textContent);
+  process.exit(1);
+}
+if (!String(list.innerHTML).includes("plan-done-group") && !String(list.innerHTML).includes("completed")) {
+  // may still have leaf rows
+  if (!String(list.innerHTML).includes("First") && !String(list.innerHTML).includes("Second")) {
+    console.error("no stage rows:", list.innerHTML.slice(0, 200));
+    process.exit(1);
+  }
+}
+// Delegated click on data-plan
+const btn = makeEl();
+btn.getAttribute = (k) => (k === "data-plan" ? "/tmp/demo" : null);
+btn.closest = (sel) => (sel === "[data-plan]" ? btn : null);
+const click = listeners.find((l) => l.type === "click");
+if (click) {
+  click.fn({ target: btn, preventDefault() {} });
+}
+// details collapse present for completed group
+if (!String(list.innerHTML).includes("<details") && !String(list.innerHTML).includes("leaf")) {
+  console.error("expected details or leaf markup");
+  process.exit(1);
+}
+console.log("openPlan+click+details ok");
+NODE
+pass "openPlan / data-plan click / plan-wide + stage rows"
 
 # --- r3: Phase 0 / Foundation / sign-off coding work / conflict cursor / all-done ---
 cat > "$TMP/a/PLAN.md" <<'P'
@@ -548,5 +680,56 @@ cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 echo "$cj" | jq -e '.status=="done" and .slice_index==2 and (.slice_id==null or .slice_id=="") and (.slice_title==null or .slice_title=="")' >/dev/null \
   || fail "all-done clear labels: $cj"
 pass "all-done clears stale slice_id/title"
+
+# plan_ref must not stick after PLAN.md is deleted
+mkdir -p "$TMP/seed3/.plinth"
+cd "$TMP/seed3"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [ ] Open A
+P
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS PLINTH_CHECKPOINT_PLAN_REF 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.plan_ref=="PLAN.md"' >/dev/null || fail "expected plan_ref with PLAN: $cj"
+rm -f PLAN.md
+cat > SPEC.md <<'S'
+# Spec
+## Requirements
+The system shall remain after plan delete.
+S
+printf 'spec_path = SPEC.md\n' > .plinth/config
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS PLINTH_CHECKPOINT_PLAN_REF 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+pr=$(echo "$cj" | jq -r '.plan_ref // empty')
+[ -z "$pr" ] || fail "stale plan_ref after PLAN delete: $cj"
+pass "plan_ref cleared when PLAN.md deleted"
+
+# explicit STATUS=blocked must not be overwritten by open-plan seed
+mkdir -p "$TMP/seed4/.plinth"
+cd "$TMP/seed4"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [ ] Still open
+- [ ] Also open
+P
+rm -f CHECKPOINT.md
+export PLINTH_CHECKPOINT_STATUS=blocked
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="blocked" and .slice_index==1' >/dev/null \
+  || fail "blocked status must stick with seed position: $cj"
+unset PLINTH_CHECKPOINT_STATUS
+pass "explicit STATUS=blocked preserved during auto-seed"
 
 echo "canary-plan-progress: ALL PASS"
