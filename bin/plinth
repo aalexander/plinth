@@ -5378,26 +5378,32 @@ migrate_lifecycle_phases() {
 
 # ── Residual land (human-adjudicated ship without model APPROVED@HEAD) ──────
 # File: .plinth/RESIDUAL.json  schema plinth.residual/v1
-# Ship when bound=true and residual.sha is ancestor of HEAD and only residual-
-# allowed paths changed since residual.sha (RESIDUAL.json, HANDOFF, NEEDS-HUMAN).
+# Ship when bound=true and residual.sha is ancestor of tip and only residual-
+# allowed paths changed since residual.sha (RESIDUAL.json, HANDOFF.md only —
+# NEEDS-HUMAN is project queue and invalidates residual).
 residual_path() { printf '%s' "${1:-.}/.plinth/RESIDUAL.json"; }
 
-# Exit 0 if residual authorizes shipping HEAD of $1.
+# Exit 0 if residual authorizes shipping tip of $1 (default: HEAD).
+# residual_ship_ok <root> [tip-sha]
 residual_ship_ok() {
-  local root="${1:-.}" rf rsha bound
+  local root="${1:-.}" tip="${2:-}" rf rsha bound
   rf="$(residual_path "$root")"
   [ -f "$rf" ] || return 1
   bound="$(jq -r '.bound // false' "$rf" 2>/dev/null || echo false)"
   rsha="$(jq -r '.sha // empty' "$rf" 2>/dev/null || true)"
   [ "$bound" = "true" ] || return 1
   [ -n "$rsha" ] || return 1
+  if [ -z "$tip" ]; then
+    tip="$(git -C "$root" rev-parse HEAD 2>/dev/null)" || return 1
+  fi
   git -C "$root" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 || return 1
-  git -C "$root" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null || return 1
+  git -C "$root" rev-parse --verify --quiet "$tip^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$root" merge-base --is-ancestor "$rsha" "$tip" 2>/dev/null || return 1
   # Product must not change after residual bind (only residual hygiene files).
   local changed
-  changed="$(git -C "$root" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
+  changed="$(git -C "$root" diff --name-only "$rsha" "$tip" 2>/dev/null || true)"
   if [ -n "$changed" ]; then
-    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
       return 1
     fi
   fi
@@ -5432,7 +5438,7 @@ run_residual() {
     jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
       '{schema:"plinth.residual/v1", bound:true, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
     echo "Wrote $rf (BOUND residual for $sha)."
-    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL/HANDOFF/NEEDS-HUMAN change after."
+    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL.json and HANDOFF.md change after (NEEDS-HUMAN invalidates)."
   else
     jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
       '{schema:"plinth.residual/v1", bound:false, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"

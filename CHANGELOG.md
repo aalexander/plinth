@@ -1,5 +1,14 @@
 # Plinth changelog
 
+## v5.0.1 — Residual ship fail-closed + classifier holes — July 29, 2026
+- **Residual ship:** authorize the resolved tip (`$head`), not checkout `HEAD` on
+  targeted `gh pr merge` (local residual cannot authorize an unrelated PR).
+- **Residual allowlist:** only `.plinth/RESIDUAL.json` and `HANDOFF.md` after bind —
+  **NEEDS-HUMAN** edits invalidate residual (project-owned queue).
+- **risk-classify:** root-only `VERSION` Tier 0; renames into `HANDOFF.md` still
+  classify the source path (no product-deletion launder).
+- **Canary:** residual hygiene window + tip binding; nested VERSION; HANDOFF rename.
+
 ## v5.0.0 — Lifecycle + dashboard ops visibility — July 28, 2026
 - **Breaking (behavior):** default **BUILD** phase — Stop no longer requires
   APPROVED@HEAD on feature branches unless harden is active. Logs `build_defer`.
@@ -55,7 +64,7 @@
 - **Residual-binding land + hard delta scope:**
   - `plinth residual [--bind] [--note …] [--from-findings f]` → `.plinth/RESIDUAL.json`
     (`plinth.residual/v1`). Bound residual authorizes ship/Stop when `sha` is an
-    ancestor of HEAD and only RESIDUAL/HANDOFF/NEEDS-HUMAN changed since.
+    ancestor of HEAD and only RESIDUAL/HANDOFF changed since (NEEDS-HUMAN invalidates).
     Same-open soft cap drafts residual automatically.
   - BUILD **verify/resume strict delta**: new non-security majors outside the fix
     pathspec are non-blocking (monotonic open-set). Fresh r1 still full branch.

@@ -30,8 +30,11 @@ do not invent “clever driver” majors.
 
 **Residual land:** when the loop cannot converge without thrash, a human may
 bind `.plinth/RESIDUAL.json` (`plinth residual --bind`). That authorizes ship/Stop
-for this tip without model APPROVED@HEAD, provided product files do not change
-after the residual SHA. Prefer residual over infinite rounds on canary depth.
+for this tip without model APPROVED@HEAD, provided only residual hygiene changes
+after the residual SHA (`.plinth/RESIDUAL.json`, `HANDOFF.md`). **NEEDS-HUMAN**
+edits invalidate residual (project-owned queue). Targeted `gh pr merge` residual
+must authorize the **resolved PR head**, not a different checkout tip. Prefer
+residual over infinite rounds on canary depth.
 
 **BUILD verify/resume (strict delta):** new non-security majors outside the fix
 pathspec are non-blocking so the open set can shrink monotonically. Fresh round 1

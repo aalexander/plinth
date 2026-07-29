@@ -118,14 +118,17 @@ if [ -f "$vfile" ]; then
   fi
 fi
 # Bound residual land (human adjudicated) — same rules as ship residual.
+# Authorize checkout tip ($head). Only RESIDUAL.json + HANDOFF.md may change
+# after bind; NEEDS-HUMAN edits invalidate (project-owned queue).
 if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
   rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
   rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
-  if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+  if [ "$rb" = "true" ] && [ -n "$rsha" ] && [ -n "$head" ] \
      && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
-     && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
-    ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
-    if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+     && git -C "$proj" rev-parse --verify --quiet "$head^{commit}" >/dev/null 2>&1 \
+     && git -C "$proj" merge-base --is-ancestor "$rsha" "$head" 2>/dev/null; then
+    ch="$(git -C "$proj" diff --name-only "$rsha" "$head" 2>/dev/null || true)"
+    if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
       log_release "residual land bound at $rsha (HEAD $head)"
       exit 0
     fi
