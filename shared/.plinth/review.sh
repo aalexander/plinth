@@ -1634,18 +1634,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         is_coverage_asymp
         or ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"))
         or ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"))
-        or is_docs_prose
-        # RESIDUAL* is process docs, not HARNESS instrument — "tooling tampering"
-        # findings on those paths are false classifications.
-        or (
-          ((.file // "") | test("(^|/)(\\.plinth/)?RESIDUAL|(^|/)docs/RESIDUAL"; "i"))
-          and ((.description // "") | test("TOOLING TAMPERING|version-pinned|pinned installed|tamper"; "i"))
-        )
-        # Canary self-critique about eval/sed helper style (same as #2/#20 canaries).
-        or (
-          ((.file // "") | test("canary-lifecycle-build-harden\\.sh$"))
-          and ((.description // "") | test("eval|extracted (helpers|functions)|grep source|production-path coverage|helper-level|does not exercise"; "i"))
-        );
+        or is_docs_prose;
     def is_queue_nit:
         # Only pure wording nits — never demote checked-off / deleted / lost blockers.
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
@@ -1665,7 +1654,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         is_external_security
         or is_real_test_gap
         or ((.description // "") | test(
-          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty"; "i"
+          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not"; "i"
         ));
     # Outside fix pathspec: demote thrash classes only. Never demote arbitrary
     # new majors/blockers in BUILD verify/resume solely for being out-of-delta —
