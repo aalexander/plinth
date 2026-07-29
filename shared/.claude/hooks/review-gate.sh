@@ -25,7 +25,19 @@ git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 [ -n "$sid" ] || exit 0
 [ -f "$SDIR/start-head-$sid" ] || exit 0
 head=$(git -C "$proj" rev-parse HEAD 2>/dev/null) || exit 0
-[ "$(cat "$SDIR/start-head-$sid")" != "$head" ] || exit 0
+start_head=$(cat "$SDIR/start-head-$sid" 2>/dev/null || true)
+[ -n "$start_head" ] || exit 0
+[ "$start_head" != "$head" ] || exit 0
+# plinth#31: only gate real commits on this line of history. A branch switch
+# moves HEAD without start-head being an ancestor — that is not "session committed".
+if ! git -C "$proj" merge-base --is-ancestor "$start_head" "$head" 2>/dev/null; then
+  exit 0
+fi
+# No commits between baseline and HEAD → nothing to gate (shouldn't happen if SHAs differ
+# and ancestor holds, but be defensive).
+if [ "$(git -C "$proj" rev-list --count "${start_head}..${head}" 2>/dev/null || echo 0)" = "0" ]; then
+  exit 0
+fi
 
 log_event() {
   local event="$1" detail="$2"

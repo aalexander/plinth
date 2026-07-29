@@ -815,4 +815,39 @@ residual_ship_ok "$TMP/p22" "$tip_a" || fail "residual should authorize its own 
 residual_ship_ok "$TMP/p22" "$tip_b" && fail "residual for tip_a must NOT authorize unrelated tip_b" || true
 pass "residual authorizes bound tip only (not unrelated tip)"
 
+# plinth#11: git diff --raw failure → Tier 2 (not empty/Tier 0)
+setup_proj "$TMP/p23"
+(
+  cd "$TMP/p23"
+  cp "$ROOT/shared/.plinth/risk-classify.sh" .plinth/risk-classify.sh
+  chmod +x .plinth/risk-classify.sh
+  # Break git by unsetting GIT_DIR after init — simpler: invoke with bad base via PATH
+  # Use a wrapper: rename git temporarily
+  mkdir -p "$TMP/badgit"
+  printf '#!/bin/bash\nif [ "$1" = "diff" ]; then exit 128; fi\nexec /usr/bin/git "$@"\n' > "$TMP/badgit/git"
+  chmod +x "$TMP/badgit/git"
+  # Only shadow when we call classifier — inject via env is hard; call git diff fail by broken base
+  out="$(./.plinth/risk-classify.sh "nonexistent-base-xyz" 2>/dev/null || true)"
+  # nonexistent base returns tier 1 "base ref not found" — need raw failure
+)
+# Shadow git for classifier subprocess only
+setup_proj "$TMP/p23b"
+mkdir -p "$TMP/p23b/.plinth" "$TMP/badgit2"
+cp "$ROOT/shared/.plinth/risk-classify.sh" "$TMP/p23b/.plinth/risk-classify.sh"
+chmod +x "$TMP/p23b/.plinth/risk-classify.sh"
+# Create a git that fails only on diff --raw
+REALGIT="$(command -v git)"
+cat > "$TMP/badgit2/git" <<G
+#!/bin/bash
+if [ "\$1" = "diff" ] && [ "\$2" = "--raw" ]; then exit 128; fi
+exec "$REALGIT" "\$@"
+G
+chmod +x "$TMP/badgit2/git"
+# Need real git for rev-parse inside classifier - the script calls git rev-parse and git diff
+# Put real git first for most, only fail raw - already does
+out="$(cd "$TMP/p23b" && PATH="$TMP/badgit2:$PATH" ./.plinth/risk-classify.sh main 2>/dev/null || true)"
+tier="$(printf '%s' "$out" | jq -r .tier 2>/dev/null || echo x)"
+[ "$tier" = "2" ] || fail "plinth#11: git diff --raw failure must be Tier 2, got tier=$tier out=$out"
+pass "plinth#11 git diff --raw failure fails closed to Tier 2"
+
 echo "canary-lifecycle-build-harden: ALL PASS"

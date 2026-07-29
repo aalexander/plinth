@@ -1,5 +1,17 @@
 # Plinth changelog
 
+## v5.0.3 — UPSTREAM debt paydown — July 29, 2026
+- **#11:** `risk-classify` — `git diff --raw` failure → Tier 2 (not empty/Tier 0)
+- **#12:** `review.sh` — `git status` failure fails closed; porcelain -z rename second path
+- **#13/#15:** classifier runs from **base blob** when possible; refuse working-tree
+  classifier if `risk-classify.sh` changed; tooling name-only fail → Tier 2
+- **#5:** resume/verify requires prev SHA be ancestor of HEAD (rebase-safe)
+- **#31:** Stop gate only treats HEAD moves that are ancestry commits (not branch switch)
+- **#29:** plinth-rules override-disclosure wording
+- **#14:** agy audit avoids huge argv (size cap + file/stdin)
+- **#17:** lane-guard `git ls-files -z` enumeration (tabs preserved)
+- Closed fixed issues: #49 #30 #3 #4
+
 ## v5.0.2 — Residual triage + bare merge refuse (plinth#49) — July 29, 2026
 - **Residual triage:** document dispositions in `.plinth/RESIDUAL-TRIAGE.md`; fix remaining
   easy items (error-card `lifecycle`, deep-plan seat authority, HANDOFF Next parse,
