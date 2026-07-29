@@ -1150,13 +1150,13 @@ unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
 cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 echo "$cj" | jq -e '.status != "done"' >/dev/null \
   || fail "truncated must not all-done: $cj"
-# progress marks truncated
+# Dashboard path may truncate; seed path must see the late leaf (full file).
 outh=$(_plan_progress_json "$TMP/huge" '{}')
-# seed path uses PLINTH_PLAN_SEED
 outh2=$(PLINTH_PLAN_SEED=1 _plan_progress_json "$TMP/huge" '{}')
-echo "$outh2" | jq -e '.truncated==true' >/dev/null \
-  || fail "seed progress should set truncated: $(echo "$outh2"|jq '{truncated,done,total}')"
-pass "truncated refuse all-done seed"
+echo "$outh2" | jq -e '.total==2 and .done==1 and .truncated!=true' >/dev/null \
+  || fail "seed must see late open leaf without trunc: $(echo "$outh2"|jq '{truncated,done,total}')"
+# dash may truncate but seed checkpoint already asserted status != done
+pass "truncation refuse all-done seed (full-file seed parse)"
 
 # No PLAN.md + prior status=done (no plan_ref) must not leave 100% SPEC
 mkdir -p "$TMP/nopref/.plinth"

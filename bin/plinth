@@ -1778,7 +1778,8 @@ $question"
     fi
     if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
       # Logical non-empty lines (wc -l undercounts when no final newline).
-      _al=$(grep -cve '^[[:space:]]*$' "$outf" 2>/dev/null || echo 0)
+      _al=$(grep -cve '^[[:space:]]*$' "$outf" 2>/dev/null | head -1)
+      case "$_al" in ''|*[!0-9]*) _al=0 ;; esac
       _ac=$(wc -c <"$outf" | tr -d ' ')
       if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ]; then
         while IFS= read -r _line || [ -n "$_line" ]; do
@@ -5193,21 +5194,26 @@ if not _plan_ref:
 # Never preserve a nested *PLAN.md path as operational plan_ref.
 if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# Orphan PLAN cursor: root PLAN.md absent AND prior fence had plan position
-# (any *PLAN.md ref, OR status=done with an index — ghost 100% on SPEC).
+# Orphan PLAN cursor: no root PLAN.md and any inherited plan position (or done).
+# Never leave a plan cursor authoritative over SPEC when PLAN is absent.
 _prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
 _no_root_plan = not (root / "PLAN.md").is_file()
 _orphan_plan = (
-    _plan_ref is None
-    and _no_root_plan
+    _no_root_plan
     and (
-        (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
-        or (
-            prev.get("status") == "done"
-            and isinstance(prev.get("slice_index"), int)
+        (_plan_ref is None or _plan_ref in ("PLAN.md", "./PLAN.md"))
+        and (
+            isinstance(prev.get("slice_index"), int)
+            or isinstance(prev.get("slice_id"), str)
+            or isinstance(prev.get("slice_title"), str)
+            or prev.get("status") == "done"
+            or (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
         )
     )
 )
+# Explicit env plan_ref=PLAN.md without a real file → null (never invent).
+if _plan_ref in ("PLAN.md", "./PLAN.md") and _no_root_plan:
+    _plan_ref = None
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
     _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
 elif _orphan_plan:
@@ -5344,9 +5350,10 @@ primary_rel = rel_to_root(primary_path)
 
 # Prefer product plan outline; when only spec exists, still derive stages.
 text = primary_path.read_text(encoding="utf-8", errors="replace")
-# Cap huge specs (MANUAL.md) for dashboard — first 120k chars is enough for outline.
+# Cap huge specs for dashboard outline only. Seeding (PLINTH_PLAN_SEED=1) reads the
+# full PLAN so late open leaves cannot be invisible (false all-done / wrong totals).
 truncated = False
-if len(text) > 120_000:
+if len(text) > 120_000 and os.environ.get("PLINTH_PLAN_SEED") != "1":
     text = text[:120_000]
     truncated = True
 
