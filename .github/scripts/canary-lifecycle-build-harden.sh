@@ -642,11 +642,45 @@ mj="$TMP/p16/.plinth/session/plan-review-merge.json"
 [ -f "$mj" ] || fail "plan-review-merge.json missing"
 jq -e '.nits | length >= 2' "$mj" >/dev/null \
   || fail "expected >=2 nits from completeness+delete seats: $(cat "$mj")"
+jq -e '.status == "complete" and .available_seats == 3' "$mj" >/dev/null \
+  || fail "expected complete/3 available: $(cat "$mj")"
 grep -qE 'auth gap|security_ops|completeness|delete_simplify' "$TMP/p16/PLAN-REVIEW.md" \
   || fail "PLAN-REVIEW missing seat/blocker content"
 # Security blocker should appear in PLAN-REVIEW and preferably NEEDS-HUMAN
 grep -q 'auth gap' "$TMP/p16/PLAN-REVIEW.md" || fail "security blocker missing from PLAN-REVIEW"
 pass "plinth plan --deep multi-seat nits + security blocker"
+
+# plan --deep: all seats fail → status empty, never looks like a clean 0/0/0 review
+setup_proj "$TMP/p16b"
+mkdir -p "$TMP/p16b/.plinth" "$TMP/fakebin-fail"
+echo "spec_path = PLAN.md" > "$TMP/p16b/.plinth/config"
+# advisor_vendor unset → default claude (not primary codex); still all fail via fakes
+printf 'reviewer_vendor = codex\naudit_vendor = claude\n# advisor_vendor intentionally unset\nadvisor_model_max = fable\n' \
+  >> "$TMP/p16b/.plinth/config"
+"$PLINTH" plan "$TMP/p16b" >/dev/null
+for cli in claude codex grok; do
+  cat > "$TMP/fakebin-fail/$cli" <<'FAKE'
+#!/usr/bin/env bash
+echo "Not logged in · Please run /login" >&2
+echo "Not logged in · Please run /login"
+exit 1
+FAKE
+  chmod +x "$TMP/fakebin-fail/$cli"
+done
+PATH="$TMP/fakebin-fail:$PATH" "$PLINTH" plan --deep "$TMP/p16b" >/dev/null 2>&1 \
+  || true  # empty status is success of the command; credit is withheld in merge
+mj2="$TMP/p16b/.plinth/session/plan-review-merge.json"
+[ -f "$mj2" ] || fail "plan-review-merge.json missing after failed seats"
+jq -e '.status == "empty" and .unavailable_seats == 3 and .available_seats == 0' "$mj2" >/dev/null \
+  || fail "expected empty/3 unavailable: $(cat "$mj2")"
+jq -e '.open_blocker_count == 0 and .blockers == []' "$mj2" >/dev/null \
+  || fail "empty merge must not invent blockers: $(cat "$mj2")"
+grep -qE 'No full review credit|INCOMPLETE|empty|Status: \*\*empty\*\*' "$TMP/p16b/PLAN-REVIEW.md" \
+  || fail "PLAN-REVIEW must flag no review credit: $(head -20 "$TMP/p16b/PLAN-REVIEW.md")"
+# Seat header should use claude default for delete_simplify when advisor_vendor unset
+grep -q 'delete_simplify (claude' "$TMP/p16b/PLAN-REVIEW.md" \
+  || fail "unset advisor_vendor should default delete_simplify to claude: $(grep Seats "$TMP/p16b/PLAN-REVIEW.md")"
+pass "plinth plan --deep empty merge + advisor_vendor default claude"
 
 # Legacy verdict path: plinth next reads encoded OR legacy review dir
 setup_proj "$TMP/p17"

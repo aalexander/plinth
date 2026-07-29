@@ -4993,11 +4993,64 @@ EOF
   echo "Wrote $f (light scaffold). Fill AC, then build — or: plinth plan --deep"
 }
 
+# Drop models that are clearly the wrong vendor family (e.g. fable on codex).
+# Empty → vendor default model.
+_plan_model_for_vendor() {
+  local vendor="$1" model="$2"
+  [ -n "$model" ] || { printf ''; return 0; }
+  case "$vendor" in
+    codex)
+      case "$model" in
+        fable*|opus*|sonnet*|haiku*|claude*|gemini*|flash*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    claude)
+      case "$model" in
+        gpt-*|o[0-9]*|o1*|o3*|o4*|codex*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    grok)
+      case "$model" in
+        gpt-*|opus*|sonnet*|fable*|claude*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    *) printf '%s' "$model" ;;
+  esac
+}
+
+# Classify a failed seat from stdout+stderr (bounded, secret-safe).
+_plan_seat_classify() {
+  local vendor="$1" out="$2" err="$3"
+  local blob
+  blob="$(printf '%s\n%s' "$out" "$err" | head -c 4000)"
+  if printf '%s' "$blob" | grep -qiE 'not logged in|please run /login|auth.*(fail|required)|unauthorized|401'; then
+    echo "unauthenticated"
+  elif printf '%s' "$blob" | grep -qiE 'model.*not (found|supported)|invalid.*(model|request)|unknown model'; then
+    echo "invalid_model"
+  elif printf '%s' "$blob" | grep -qiE 'rate.?limit|429|quota|capacity|overloaded|timeout|timed out|ECONN|connection reset|temporarily'; then
+    echo "transient"
+  elif printf '%s' "$blob" | grep -qiE 'command not found|No such file'; then
+    echo "missing_binary"
+  else
+    echo "cli_failed"
+  fi
+}
+
+# True when seat output is a usable review body (JSON fence or ### Seat), not an error.
+_plan_seat_output_ok() {
+  local text="$1"
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" | grep -qiE 'not logged in|please run /login|seat .+ unavailable' && return 1
+  printf '%s' "$text" | grep -qE '### Seat:|```json' || return 1
+  return 0
+}
+
 # One plan-review seat via a vendor CLI (read-only). Prints body to stdout.
+# Exit 0 = usable seat output; 1 = unavailable/failed (stdout still holds a diagnostic).
 _plan_seat_call() {
   local vendor="$1" model="$2" role="$3" plan_body="$4"
-  local prompt margs=() unavail
-  unavail="(seat $role unavailable: $vendor CLI missing or failed)"
+  local prompt margs=() out="" err="" rc=0 class bin errf
+  model="$(_plan_model_for_vendor "$vendor" "$model")"
   prompt="You are an independent PLAN REVIEWER (role: $role), not the author and not the driver.
 Read-only. Do not implement. Critique the PRODUCT PLAN only.
 
@@ -5025,27 +5078,77 @@ Use empty arrays when none.
 
 PLAN:
 $plan_body"
+
+  case "$vendor" in
+    claude) bin=claude ;;
+    codex) bin=codex ;;
+    grok) bin=grok ;;
+    agy|gemini) bin=agy ;;
+    *)
+      echo "(seat $role unavailable: unsupported vendor '$vendor')"
+      return 1
+      ;;
+  esac
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "(seat $role unavailable: $vendor binary not found on PATH)"
+    return 1
+  fi
+
+  errf="$(mktemp "${TMPDIR:-/tmp}/plinth-plan-seat.XXXXXX")" || errf=""
   case "$vendor" in
     claude)
       [ -n "$model" ] && margs=(--model "$model")
-      printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" 2>/dev/null || echo "$unavail"
+      # Prompt via STDIN (allowed-tools is variadic — same as run_advise / review.sh).
+      out="$(printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} \
+        --permission-mode dontAsk --allowed-tools "Read,Grep,Glob" 2>"${errf:-/dev/null}")" || rc=$?
       ;;
     codex)
       [ -n "$model" ] && margs=(-m "$model")
-      printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
-        --sandbox read-only - 2>/dev/null || echo "$unavail"
+      out="$(printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
+        --sandbox read-only - 2>"${errf:-/dev/null}")" || rc=$?
       ;;
     grok)
       [ -n "$model" ] && margs=(-m "$model")
-      grok -p "$prompt" --sandbox read-only \
+      out="$(grok -p "$prompt" --sandbox read-only \
         --rules 'You are a read-only plan reviewer. Advise only — never implement.' \
-        ${margs[@]+"${margs[@]}"} 2>/dev/null || echo "$unavail"
+        ${margs[@]+"${margs[@]}"} 2>"${errf:-/dev/null}")" || rc=$?
       ;;
-    *)
-      echo "(seat $role: unsupported vendor '$vendor')"
+    agy|gemini)
+      [ -n "$model" ] && margs=(--model "$model")
+      out="$(agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} 2>"${errf:-/dev/null}")" || rc=$?
       ;;
   esac
+  err=""
+  if [ -n "$errf" ] && [ -f "$errf" ]; then
+    err="$(head -c 1200 "$errf" 2>/dev/null | tr -d '\0' || true)"
+    rm -f "$errf"
+  fi
+
+  if [ "$rc" -eq 0 ] && _plan_seat_output_ok "$out"; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  class="$(_plan_seat_classify "$vendor" "$out" "$err")"
+  case "$class" in
+    missing_binary) echo "(seat $role unavailable: $vendor binary not found on PATH)" ;;
+    unauthenticated) echo "(seat $role unavailable: $vendor unauthenticated — run vendor login; class=unauthenticated)" ;;
+    invalid_model) echo "(seat $role unavailable: $vendor invalid model${model:+ ($model)}; class=invalid_model)" ;;
+    transient) echo "(seat $role unavailable: $vendor transient failure; class=transient — will retry sequential if parallel)" ;;
+    *) echo "(seat $role unavailable: $vendor CLI failed; class=$class)" ;;
+  esac
+  # Bounded stdout/stderr for diagnosis (no full prompt echo).
+  if [ -n "$out" ]; then
+    echo "--- seat stdout (bounded) ---"
+    printf '%s\n' "$out" | head -c 800
+    echo
+  fi
+  if [ -n "$err" ]; then
+    echo "--- seat stderr (bounded) ---"
+    printf '%s\n' "$err" | head -c 800
+    echo
+  fi
+  return 1
 }
 
 run_plan() {
@@ -5071,39 +5174,78 @@ run_plan() {
     [ -f "$cfg" ] || { printf ''; return 0; }
     sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1 || true
   }
-  local rv am av rm amodel
+  local rv av rm amodel
   rv="$(aval reviewer_vendor)"; [ -n "$rv" ] || rv=codex
   av="$(aval audit_vendor)"; [ -n "$av" ] || av=claude
   rm="$(aval reviewer_model_tier2)"; [ -n "$rm" ] || rm="$(aval reviewer_model_tier1)"
   amodel="$(aval audit_model)"
-  # Third seat: advisor vendor if distinct, else same as primary with different role.
+  # Third seat: same default as run_advise (claude), not primary reviewer.
+  # Falling back to primary made two concurrent codex processes and often
+  # paired codex with fable (advisor_model_max) → invalid_model.
   local tv tm
-  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv="$rv"
+  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv=claude
   tm="$(aval advisor_model_max)"; [ -n "$tm" ] || tm="$(aval advisor_model)"
+  rm="$(_plan_model_for_vendor "$rv" "$rm")"
+  amodel="$(_plan_model_for_vendor "$av" "$amodel")"
+  tm="$(_plan_model_for_vendor "$tv" "$tm")"
 
   body="$(cat "$planf")"
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  local d1 d2 d3 o1 o2 o3
-  d1="$(mktemp)"; d2="$(mktemp)"; d3="$(mktemp)"
+  local o1 o2 o3
   o1="$(mktemp)"; o2="$(mktemp)"; o3="$(mktemp)"
-  trap 'rm -f "$d1" "$d2" "$d3" "$o1" "$o2" "$o3"' RETURN
+  trap 'rm -f "$o1" "$o2" "$o3"' RETURN
 
   echo "plinth plan --deep: launching 3 independent seats (parallel)…" >&2
-  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" 2>"$d1" ) &
+  echo "  security_ops=$rv${rm:+/$rm}  completeness=$av${amodel:+/$amodel}  delete_simplify=$tv${tm:+/$tm}" >&2
+  # Capture only stdout from seats (stderr is already folded into the body on fail).
+  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" ) &
   local p1=$!
-  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" 2>"$d2" ) &
+  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" ) &
   local p2=$!
-  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" 2>"$d3" ) &
+  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" ) &
   local p3=$!
   wait "$p1" "$p2" "$p3" || true
+
+  # Sequential retry for seats that failed (parallel auth/session/rate races).
+  _plan_seat_retry_if_needed() {
+    local vendor="$1" model="$2" role="$3" of="$4"
+    if _plan_seat_output_ok "$(cat "$of" 2>/dev/null || true)"; then
+      return 0
+    fi
+    echo "plinth plan --deep: retrying $role sequentially ($vendor)…" >&2
+    ( cd "$root" && _plan_seat_call "$vendor" "$model" "$role" "$body" >"$of" ) || true
+  }
+  _plan_seat_retry_if_needed "$rv" "$rm" "security_ops" "$o1"
+  _plan_seat_retry_if_needed "$av" "$amodel" "completeness" "$o2"
+  _plan_seat_retry_if_needed "$tv" "$tm" "delete_simplify" "$o3"
 
   local out="$root/PLAN-REVIEW.md" merge_json="$root/.plinth/session/plan-review-merge.json"
   mkdir -p "$root/.plinth/session"
   # Structured merge: extract JSON fences if present, else scrape markdown #### Blockers bullets.
+  # Marks overall status incomplete when any seat is unavailable — never look "clean" at 0/0/0.
   python3 - "$o1" "$o2" "$o3" "$merge_json" <<'PY'
 import json, re, sys
 paths, outj = sys.argv[1:4], sys.argv[4]
 roles_default = ["security_ops", "completeness", "delete_simplify"]
+unavail_re = re.compile(
+    r"seat \w+ unavailable|not logged in|please run /login|binary not found",
+    re.I,
+)
+
+def section(text, name):
+    mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
+    if not mm:
+        return []
+    body = mm.group(1)
+    items = []
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            item = line[2:].strip()
+            if item and item.lower() not in ("none", "n/a", "…", "..."):
+                items.append(item)
+    return items
+
 seats = []
 for i, p in enumerate(paths):
     text = open(p, encoding="utf-8", errors="replace").read()
@@ -5115,28 +5257,23 @@ for i, p in enumerate(paths):
             data = json.loads(m.group(1))
         except Exception:
             data = None
+    unavailable = bool(unavail_re.search(text))
     if not isinstance(data, dict):
-        def section(name):
-            mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
-            if not mm:
-                return []
-            body = mm.group(1)
-            items = []
-            for line in body.splitlines():
-                line = line.strip()
-                if line.startswith("- "):
-                    item = line[2:].strip()
-                    if item and item.lower() not in ("none", "n/a", "…", "..."):
-                        items.append(item)
-            return items
         data = {
             "seat": role,
-            "blockers": section("Blockers"),
-            "questions": section("Questions for human"),
-            "nits": section("Nits"),
+            "blockers": [] if unavailable else section(text, "Blockers"),
+            "questions": [] if unavailable else section(text, "Questions for human"),
+            "nits": [] if unavailable else section(text, "Nits"),
             "verdict": "",
             "raw_ok": False,
+            "available": False if unavailable else bool(
+                re.search(r"### Seat:", text) and not unavailable
+            ),
         }
+        if not data["available"] and not unavailable and (
+            data["blockers"] or data["questions"] or data["nits"]
+        ):
+            data["available"] = True
     else:
         # Caller-assigned role is authoritative — model output cannot relabel seats.
         data["seat"] = role
@@ -5144,6 +5281,10 @@ for i, p in enumerate(paths):
             if not isinstance(data.get(k), list):
                 data[k] = []
         data["raw_ok"] = True
+        data["available"] = not unavailable
+    if unavailable:
+        data["available"] = False
+        data["raw_ok"] = False
     seats.append(data)
 
 def norm(s):
@@ -5152,6 +5293,8 @@ def norm(s):
 blockers, questions, nits = [], [], []
 seen_b, seen_q, seen_n = set(), set(), set()
 for s in seats:
+    if not s.get("available"):
+        continue  # do not harvest "blockers" from error text
     seat = s.get("seat") or "?"
     for b in s.get("blockers") or []:
         k = norm(str(b))
@@ -5183,6 +5326,10 @@ for b in blockers:
     if b.get("security"):
         b["label"] = "security_" + b["label"]
 
+available_n = sum(1 for s in seats if s.get("available"))
+unavailable_n = len(seats) - available_n
+status = "complete" if unavailable_n == 0 else ("empty" if available_n == 0 else "incomplete")
+
 merge = {
     "seats": seats,
     "blockers": blockers,
@@ -5190,14 +5337,25 @@ merge = {
     "nits": nits,
     "open_blocker_count": len(blockers),
     "open_question_count": len(questions),
+    "available_seats": available_n,
+    "unavailable_seats": unavailable_n,
+    "status": status,
 }
 with open(outj, "w", encoding="utf-8") as f:
     json.dump(merge, f, indent=2)
-print(json.dumps({"blockers": len(blockers), "questions": len(questions), "nits": len(nits)}))
+print(json.dumps({
+    "blockers": len(blockers),
+    "questions": len(questions),
+    "nits": len(nits),
+    "status": status,
+    "available": available_n,
+    "unavailable": unavailable_n,
+}))
 PY
 
-  local merge_stats
-  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []))' 2>/dev/null || echo "0 0 0")
+  local merge_stats merge_status
+  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []), d.get("status","?"), d.get("unavailable_seats",0))' 2>/dev/null || echo "0 0 0 unknown 0")
+  merge_status=$(python3 -c 'import json; print(json.load(open("'"$merge_json"'")).get("status","unknown"))' 2>/dev/null || echo unknown)
 
   {
     echo "# Plan review — deep (structured merge)"
@@ -5205,6 +5363,13 @@ PY
     echo "Updated: $ts"
     echo "Seats: security_ops ($rv${rm:+ /$rm}) · completeness ($av${amodel:+ /$amodel}) · delete_simplify ($tv${tm:+ /$tm})"
     echo "Machine merge: \`.plinth/session/plan-review-merge.json\`"
+    echo "Status: **$merge_status** (stats: $merge_stats)"
+    if [ "$merge_status" != "complete" ]; then
+      echo
+      echo "> **No full review credit.** One or more seats were unavailable. Zero merged"
+      echo "> blockers is **not** a clean bill of health — read Raw seats and re-run"
+      echo "> \`plinth plan --deep\` after fixing CLI/login issues (or run seats sequentially)."
+    fi
     echo
     echo "Human: resolve **Merged blockers** and **Questions** before treating the plan as ratified."
     echo "Labels are advisory (majority = 2+ seats); you adjudicate. Security-tagged items stay visible even if minority."
@@ -5215,7 +5380,9 @@ PY
 import json, sys
 d = json.load(open(sys.argv[1]))
 bs = d.get("blockers") or []
-if not bs:
+if d.get("status") in ("empty", "incomplete") and not bs:
+    print("- [ ] _(no blockers extracted — seats incomplete; see Status / Raw)_")
+elif not bs:
     print("- [ ] _(none extracted — read raw seats below)_")
 else:
     for b in bs:
@@ -5272,13 +5439,21 @@ PY
     echo "---"
     echo
     echo "## Human adjudication"
+    if [ "$merge_status" != "complete" ]; then
+      echo "- [ ] **Tooling:** seats were incomplete — re-run \`plinth plan --deep\` or sequential CLIs before treating merge as review credit"
+    fi
     echo "- [ ] All merged blockers addressed or dismissed with reason"
     echo "- [ ] Product tradeoffs decided"
     echo "- [ ] PLAN.md updated (bump product_rev if AC/scope changed)"
   } > "$out"
 
   echo "Wrote $out (merged blockers/questions; stats: $merge_stats)"
+  if [ "$merge_status" != "complete" ]; then
+    echo "plinth plan --deep: WARNING — status=$merge_status (unavailable seats; merge is not a clean review)" >&2
+  fi
   # Security-tagged majority blockers → NEEDS-HUMAN [BLOCKING] so plinth next stops that path.
+  # Skip when empty/incomplete so we do not invent queue noise from failed seats.
+  if [ "$merge_status" = "complete" ] || [ "$merge_status" = "incomplete" ]; then
   local nhf
   nhf="$(needs_human_file "$root")"
   mkdir -p "$(dirname "$nhf")"
@@ -5286,6 +5461,8 @@ PY
 import json, sys, os
 merge, nhf = sys.argv[1], sys.argv[2]
 d = json.load(open(merge))
+if d.get("status") == "empty":
+    sys.exit(0)
 items = []
 for b in d.get("blockers") or []:
     lab = b.get("label") or ""
@@ -5302,8 +5479,14 @@ for it in items:
 open(nhf, "w", encoding="utf-8").write(existing)
 print(f"NEEDS-HUMAN: appended {len(items)} plan-review item(s)")
 PY
-  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
-  echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  fi
+  if [ "$merge_status" = "empty" ]; then
+    _write_handoff "$root" "plan-deep" "Re-run plinth plan --deep (all seats unavailable — no review credit); fix vendor CLIs/login if needed."
+    echo "Next: fix seat CLIs / re-run plinth plan --deep — empty merge is not ratification."
+  else
+    _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
+    echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  fi
   echo "Or: plinth next \"$root\""
 }
 
