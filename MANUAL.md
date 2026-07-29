@@ -107,6 +107,9 @@ Everything between is the model's call.
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
+  NEEDS-HUMAN scopes: `[BLOCKING]`/`[BLOCKING:global]` always stop next;
+  `[BLOCKING:build]` stops BUILD; `[BLOCKING:harden]`/`[BLOCKING:ship]` stop
+  HARDEN but only **note** (do not block) during BUILD.
 - Lifecycle reference: `docs/LIFECYCLE.md`.
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
@@ -187,7 +190,9 @@ Everything between is the model's call.
   `.plinth/reviewer.md`, which the review harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
-  the dashboard shows a red banner while it's non-empty.
+  the dashboard shows a red banner while it's non-empty. Tag items
+  `[BLOCKING]`, `[BLOCKING:build]`, `[BLOCKING:harden]`, or `[BLOCKING:ship]`
+  so `plinth next` can keep BUILD cooking when only a ship/harden control is open.
 
 ## Quick start (first time on a project — follow exactly)
 0. Once per machine (SETUP.md has details): install Claude Code (the resident

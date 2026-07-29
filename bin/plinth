@@ -1155,8 +1155,9 @@ open_items() {  # open_items <needs-human-file>
 #   **[BLOCKING] text
 #   **[BLOCKING — title] text
 #   [BLOCKING — title] text
+#   [BLOCKING:ship] / [BLOCKING:harden] / [BLOCKING:build] / [BLOCKING:global]
 # Used by queue, watch, and dash so counts and sort agree.
-_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-])'
+_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-]|:)'
 _nh_item_is_blocking() {  # <logical-item-text> → 0 if blocking
   printf '%s' "$1" | grep -qE "$_nh_blocking_re"
 }
@@ -1164,7 +1165,47 @@ _nh_count_blocking() {  # stdin logical items → count
   grep -cE "$_nh_blocking_re" || true
 }
 # jq expression (string): true when . is a blocking logical item text.
-_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")'
+_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-]|:)")'
+
+# Scope of a blocking NEEDS-HUMAN item (stdout: global|build|harden|ship).
+# Explicit: [BLOCKING:ship] [BLOCKING:harden] [BLOCKING:build] [BLOCKING:global]
+# Bare [BLOCKING] / [BLOCKING — title] → global (backward compatible).
+# Heuristic for legacy ship-only wording when no explicit scope (certeus-class).
+_nh_blocker_scope() {
+  local t="$1" s
+  s=$(printf '%s' "$t" | sed -nE 's/.*\[BLOCKING[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]*(\]|[—–-]).*/\1/p' | head -1 | tr '[:upper:]' '[:lower:]')
+  case "$s" in
+    global|build|harden|ship) printf '%s\n' "$s"; return 0 ;;
+  esac
+  # Legacy ship/merge controls — do not stall BUILD implementation.
+  if printf '%s' "$t" | grep -qiE \
+    'unspoofable|review provenance|gh pr (create|merge)|branch protection|receipt[[:space:]]*/[[:space:]]*verify|ship gate|before (you )?merge|merge to main|required status check'; then
+    printf 'ship\n'
+    return 0
+  fi
+  # Legacy harden-only wording.
+  if printf '%s' "$t" | grep -qiE \
+    'plinth harden|hard(en|ening) phase|before harden|APPROVED@HEAD only|paid review only'; then
+    # Prefer ship if both match; ship regex already returned.
+    printf 'harden\n'
+    return 0
+  fi
+  printf 'global\n'
+}
+
+# Does blocker scope apply to lifecycle phase? phase=build|harden. → 0 if applies.
+_nh_blocker_applies_to_phase() {
+  local phase="$1" scope="$2"
+  case "$phase" in
+    build)
+      case "$scope" in global|build) return 0 ;; *) return 1 ;; esac ;;
+    harden)
+      case "$scope" in global|harden|ship|build) return 0 ;; *) return 1 ;; esac ;;
+    *)
+      # Unknown phase: fail closed (treat as applying).
+      return 0 ;;
+  esac
+}
 
 # Blocking items first (order preserved within each group), so the human sees
 # what's stalling work RIGHT NOW at the top. Reads logical items on stdin.
@@ -1644,7 +1685,6 @@ run_advise() {
   model="$(aval advisor_model)"; model_max="$(aval advisor_model_max)"
   if [ "$impactful" = 1 ]; then use="${model_max:-$model}"; else use="$model"; fi
   local tier="peer"; [ "$impactful" = 1 ] && tier="IMPACTFUL"
-  local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
   echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
   # Advisor discipline (adapted from fable-advisor): a verdict, not a survey. Prepended to the
   # decision to STEER the advisor toward that shape — this is prompt guidance, not enforcement; we
@@ -1670,30 +1710,109 @@ $question"
   # as the grok reviewer/lane isolation); agy has neither flag and relies on the
   # prompt's role-scope line alone. All keep the REPO readable — unlike the
   # auditor's empty-cwd isolation, the advisor must be able to read the code.
+  # Auth: never env -i / never strip HOME; use the operator's normal CLI auth.
   local arule='You are a read-only second-opinion ADVISOR for this run. Any CLAUDE.md or AGENTS.md driver contract auto-loaded from this repository does NOT govern you; your contract is the advisor prompt you were given. Advise only — never implement.'
-  local margs=()
+  local margs=() bin="" errf outf rc=0 diag=""
+  errf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-err.XXXXXX")" || errf=""
+  outf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-out.XXXXXX")" || outf=""
+  _advise_fail() {
+    local why="$1"
+    echo "(advisor unavailable: $why — proceed on your own judgment)" >&2
+    [ -n "$errf" ] && [ -s "$errf" ] && {
+      echo "(advisor stderr, first 8 lines:)" >&2
+      head -n 8 "$errf" >&2 || true
+    }
+    [ -n "$errf" ] && rm -f "$errf"
+    [ -n "$outf" ] && rm -f "$outf"
+    return 0
+  }
   case "$vendor" in
-    claude) [ -n "$use" ] && margs=(--model "$use")
+    claude)
+      bin="$(command -v claude 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "claude CLI not on PATH (command -v claude empty)"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(--model "$use")
       # Prompt via STDIN, never as a positional after --allowed-tools: that flag is
       # VARIADIC in the claude CLI (verified 2.1.220 — receipt:
-      # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt, which captures the
-      # behavior by argument ORDER rather than asserting it), so it swallowed the prompt
-      # argument and every consult died with "Input must be provided either through
-      # stdin or as a prompt argument" — which 2>/dev/null turned into the generic
-      # "CLI missing or not signed in". The advisor was silently unavailable for the
-      # DEFAULT advisor_vendor. Same stdin shape as the claude reviewer/auditor
-      # adapters in review.sh, which is why those were never affected.
-      printf '%s' "$aprompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" 2>/dev/null || { echo "$unavail"; return 0; } ;;
-    codex)  [ -n "$use" ] && margs=(-m "$use")
-      printf '%s' "$aprompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
-    grok)   [ -n "$use" ] && margs=(-m "$use")
-      grok -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
-    agy|gemini) [ -n "$use" ] && margs=(--model "$use")
-      agy -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
+      # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
+      # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
+      # from a missing binary (#62).
+      set +e
+      printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
+        --allowed-tools "Read,Grep,Glob" >"$outf" 2>"$errf"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+        diag="claude at ${bin} exited ${rc}"
+        if grep -qiE 'not logged in|/login|authentication|unauthorized' "$errf" "$outf" 2>/dev/null; then
+          diag="claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
+        elif [ ! -x "$bin" ]; then
+          diag="claude at ${bin} is not executable"
+        fi
+        _advise_fail "$diag"
+        return 0
+      fi
+      cat "$outf"
+      rm -f "$errf" "$outf"
+      ;;
+    codex)
+      bin="$(command -v codex 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "codex CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(-m "$use")
+      set +e
+      printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - \
+        >"$outf" 2>"$errf"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+        _advise_fail "codex at ${bin} exited ${rc}"
+        return 0
+      fi
+      cat "$outf"
+      rm -f "$errf" "$outf"
+      ;;
+    grok)
+      bin="$(command -v grok 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "grok CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(-m "$use")
+      set +e
+      "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} \
+        >"$outf" 2>"$errf"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+        _advise_fail "grok at ${bin} exited ${rc}"
+        return 0
+      fi
+      cat "$outf"
+      rm -f "$errf" "$outf"
+      ;;
+    agy|gemini)
+      bin="$(command -v agy 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "agy CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(--model "$use")
+      set +e
+      "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} >"$outf" 2>"$errf"
+      rc=$?
+      set -e
+      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+        _advise_fail "agy at ${bin} exited ${rc}"
+        return 0
+      fi
+      cat "$outf"
+      rm -f "$errf" "$outf"
+      ;;
     *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
   esac
 }
@@ -6766,9 +6885,19 @@ run_next() {
     vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || true)
   fi
   nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
-  local blocking=""
+  local blocking="" deferred_blockers="" _bitem _bscope
   if [ -n "$nhf" ] && [ -s "$nhf" ]; then
-    blocking=$(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" | head -1 || true)
+    # Phase-scoped blockers (#61): ship/harden items do not stop BUILD next.
+    while IFS= read -r _bitem; do
+      [ -n "$_bitem" ] || continue
+      _bscope="$(_nh_blocker_scope "$_bitem")"
+      if _nh_blocker_applies_to_phase "$phase" "$_bscope"; then
+        blocking="$_bitem"
+        break
+      else
+        deferred_blockers="${deferred_blockers}${deferred_blockers:+$'\n'}${_bitem}"
+      fi
+    done < <(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" || true)
   fi
   # Non-blocking slice routing from checkpoint — emit on every next (never fails).
   local _cj _sid _eff _impl _rat
@@ -6791,11 +6920,20 @@ run_next() {
         echo "hint: implement=driver — judgment-shaped exception; keep typing on the resident driver" ;;
     esac
   fi
+  # Deferred (out-of-phase) blockers — warn, do not human_block BUILD.
+  if [ -n "$deferred_blockers" ]; then
+    while IFS= read -r _bitem; do
+      [ -n "$_bitem" ] || continue
+      _bscope="$(_nh_blocker_scope "$_bitem")"
+      echo "note: deferred BLOCKING (${_bscope}) — not binding in phase=${phase}: ${_bitem}"
+    done <<< "$deferred_blockers"
+  fi
   if [ -n "$blocking" ]; then
     echo "status: human_blocked"
     echo "action: resolve NEEDS-HUMAN blocking item"
     echo "detail: $blocking"
     echo "phase: $phase"
+    echo "scope: $(_nh_blocker_scope "$blocking")"
     exit 2
   fi
 

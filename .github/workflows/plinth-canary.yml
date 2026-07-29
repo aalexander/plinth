@@ -167,6 +167,11 @@ jobs:
         run: |
           set -euo pipefail
           ./.github/scripts/canary-plan-progress.sh
+      - name: Next phase-scoped BLOCKING + advise diagnostics canaries
+        run: |
+          set -euo pipefail
+          ./.github/scripts/canary-next-blocker-scope.sh
+          ./.github/scripts/canary-advise-diag.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

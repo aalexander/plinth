@@ -30,3 +30,9 @@
 - [x] **plinth#51 / UPSTREAM fail-open class (2026-07-29)** — v5.0.3 paid #11/#12/#13/#15/#5/#31/#29/#14/#17
   (+ #49 in 5.0.2). Remaining optional: #2 SIGPIPE, #20 long verify, #21 shell migration notes,
   #32 lane honesty bound. Residual canary-depth still in RESIDUAL-TRIAGE.
+
+- [x] **plinth#61 / next phase-scoped BLOCKING (2026-07-29)** — ship/harden blockers no longer
+  global-stop BUILD `plinth next`; explicit `[BLOCKING:ship|harden|build|global]` + heuristics.
+
+- [x] **plinth#62 / advise auth diagnostics (2026-07-29)** — distinguish CLI missing vs not signed
+  in vs nonzero exit; keep stderr sample; no conflated “missing or not signed in.”

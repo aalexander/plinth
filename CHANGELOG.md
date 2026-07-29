@@ -1,6 +1,11 @@
 # Plinth changelog
 
 ## v5.0.8 — effort/seat live wiring — July 29, 2026
+- **#61 next blockers:** phase-scoped NEEDS-HUMAN — `[BLOCKING:ship|harden|build|global]`;
+  bare `[BLOCKING]` stays global. Ship/harden items do not stop BUILD `plinth next`
+  (deferred note); HARDEN still fails closed on ship/harden/global.
+- **#62 advise diagnostics:** distinguish CLI missing vs not signed in vs nonzero exit;
+  preserve stderr sample; never conflate into “missing or not signed in.”
 - **Effort → dual-pass:** checkpoint `effort=xhigh` enables dual first-pass in
   BUILD (Tier-2 · fresh r1 · cross-vendor audit); HARDEN dual unchanged; medium/high
   keep cooperative-driver BUILD posture. Default missing effort → high (no behavior
