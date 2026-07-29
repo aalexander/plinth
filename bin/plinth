@@ -5047,10 +5047,13 @@ def resolve_file(rel):
     return None
 
 # Coordinated source preference: product plan → implementation plan → canonical spec.
+# (gene.us uses IMPLEMENTATION-PLAN.md; wren-style uses PLAN.md as the impl plan.)
 impl_candidates = [
-    "IMPLEMENTATION.md",
+    "IMPLEMENTATION-PLAN.md",
     "IMPLEMENTATION_PLAN.md",
+    "IMPLEMENTATION.md",
     "PLAN-IMPLEMENTATION.md",
+    "docs/IMPLEMENTATION-PLAN.md",
     "docs/IMPLEMENTATION.md",
     "docs/implementation-plan.md",
 ]
@@ -5115,15 +5118,22 @@ SKIP_H2 = {
 # Coding-milestone sections (operational build work).
 CODING_SECTION_RE = re.compile(
     r"acceptance|criteria|phase\b|module|build order|build status|"
-    r"implement|milestone|deliver|roadmap|feature work|engineering|"
-    r"sprint|slice|coding|work items|todo|next steps",
+    r"implement(?:ation)?\s+sequence|implement|milestone|deliver|roadmap|"
+    r"feature work|engineering|sprint|slice\s*\d|slice\b|coding|work items|"
+    r"todo|next steps|remaining .+ roadmap|foundation\b|release\s*\d",
     re.I,
 )
 NON_CODING_SECTION_RE = re.compile(
     r"risk|tradeoff|non-?goal|gate register|freeze definition|ratification|"
     r"users?\s*/|problem\b|dependenc|design decision|spec review|deficienc|"
     r"external gate|open question|noticed|background|context\b|"
-    r"inventory|invariants?\b|annex|rationale|how plinth|process\b",
+    r"inventory|invariants?\b|annex|rationale|how plinth|process\b|"
+    r"\bdecisions\b|success criteria|assumptions|deferrals|testing strategy|"
+    r"repository and deployment|core contracts|dependency rules|gcp services|"
+    r"simplicity constraints|branch protocol|product and delivery|architecture\b|"
+    r"pin unresolved|resolve specification|merge the browser|specification conflicts|"
+    r"external and clinical decision|phase 0\b|specification ratification|"
+    r"release gates|^foundation$|^release\s*\d+\s*$",
     re.I,
 )
 # Leaf titles that are not coding milestones (INV inventory, pure gates, human sign-off).
@@ -5157,8 +5167,8 @@ def is_coding_section(ht: str) -> bool:
     """True only for sections that are operational coding milestones."""
     if not ht:
         return False
-    # Strong positive: module build status / build order always count.
-    if re.search(r"\bbuild status\b|\bbuild order\b", ht, re.I):
+    # Strong positive: module build status / build order / Slice N always count.
+    if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b", ht, re.I):
         return True
     if re.search(r"\bmodule[- ]?\d+", ht, re.I) and re.search(
         r"\b(build|status|implement|complete|underway)\b", ht, re.I
@@ -5301,9 +5311,13 @@ for sec in outline:
         continue
     if re.search(r"\bbuild order\b", ht, re.I):
         continue
+    # Only collapse real coding units — not "6. Implementation sequence" shells.
     collapse = bool(
-        re.search(r"\bbuild status\b|\bmodule\b|\bthis pass\b", ht, re.I)
-        or re.match(r"^\d+[a-z]?[.)]\s", ht)
+        re.search(r"\bbuild status\b|\bthis pass\b|\bslice\s*\d+\b", ht, re.I)
+        or (
+            re.search(r"\bmodule\b", ht, re.I)
+            and re.search(r"\b(build|status|wiring|shell|adapter|complete|underway)\b", ht, re.I)
+        )
     )
     if collapse:
         st = "done" if section_done_from_title(ht) else "open"
@@ -5487,6 +5501,45 @@ cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) els
 # tell the dashboard where they are). status=done on the whole plan is a special case.
 cp_status = routing.get("status") if isinstance(routing.get("status"), str) else None
 
+# Infer Slice N from HANDOFF/CHECKPOINT prose when no routing fence (legacy handoffs).
+# e.g. gene.us "Continue **Slice 1** from IMPLEMENTATION-PLAN.md".
+inferred_partial = False
+if not si and not cur_title and not cur_id:
+    for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
+        cp = root / cp_name
+        if not cp.is_file():
+            continue
+        raw_cp = cp.read_text(encoding="utf-8", errors="replace")
+        # Prefer ## Next section
+        nxt = ""
+        m = re.search(r"^## Next\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
+        if m:
+            nxt = m.group(1)
+        blob = nxt or raw_cp
+        m = re.search(
+            r"(?:continue|resume|finish|start|on)\s+\*?\*?slice\s*(\d+)\b|"
+            r"\bslice\s*(\d+)\b\s*(?:partial|from|—|-)",
+            blob,
+            flags=re.I,
+        )
+        if m:
+            n = int(m.group(1) or m.group(2))
+            if n >= 1:
+                si = n
+                inferred_partial = bool(
+                    re.search(rf"\bslice\s*{n}\b[^\n]{{0,40}}partial", raw_cp, flags=re.I)
+                    or re.search(rf"partial[^\n]{{0,40}}\bslice\s*{n}\b", raw_cp, flags=re.I)
+                )
+                # Match a leaf titled "Slice N …"
+                for leaf in leaves:
+                    t = leaf.get("title") or ""
+                    if re.search(rf"(?i)\bslice\s*{n}\b", t):
+                        cur_title = t
+                        break
+                if not cur_title:
+                    cur_title = f"Slice {n}"
+                break
+
 # Equal weights among progress leaves; cumulative end % on each leaf.
 if leaves:
     base = 100 // len(leaves)
@@ -5610,6 +5663,11 @@ elif total_n > 0:
             pct = int(current.get("cum_pct_end") or 0)
         else:
             pct = int(current.get("cum_pct_start") or 0)
+            # HANDOFF "Slice N partial" → credit half of the active slice's weight
+            # so mid-slice build work is not stuck at 0% overall.
+            if inferred_partial:
+                half = int((current.get("weight_pct") or 0) // 2)
+                pct = min(99, pct + half)
     else:
         pct = int(round(100.0 * done_n / total_n))
 elif si and st and st >= 1 and si >= 1:
