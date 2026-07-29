@@ -127,17 +127,20 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
         return 0
       fi
     fi
-    # Human residual land (plinth residual --bind): bound RESIDUAL.json at HEAD lineage.
+    # Human residual land (plinth residual --bind): bound RESIDUAL.json on the
+    # authorized tip ($head — current checkout for bare ship; resolved PR SHA for
+    # targeted merge). Only RESIDUAL.json + HANDOFF.md may change after bind;
+    # NEEDS-HUMAN is project-owned queue work and invalidates residual.
     if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
-      local rb rsha
+      local rb rsha ch
       rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
       rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
-      if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] && [ -n "$head" ] \
          && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
-         && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
-        local ch
-        ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
-        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+         && git -C "$proj" rev-parse --verify --quiet "$head^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" "$head" 2>/dev/null; then
+        ch="$(git -C "$proj" diff --name-only "$rsha" "$head" 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
           return 0
         fi
       fi
@@ -261,15 +264,18 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
         return 0
       fi
     fi
+    # Residual must authorize the *resolved PR tip* ($head), never checkout HEAD —
+    # otherwise a residual on the local branch authorizes an unrelated targeted merge.
     if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
       local rb rsha ch
       rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
       rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
-      if [ "$rb" = "true" ] && [ -n "$rsha" ] \
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] && [ -n "$head" ] \
          && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
-         && git -C "$proj" merge-base --is-ancestor "$rsha" HEAD 2>/dev/null; then
-        ch="$(git -C "$proj" diff --name-only "$rsha" HEAD 2>/dev/null || true)"
-        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^\.plinth/NEEDS-HUMAN\.md$|^NEEDS-HUMAN\.md$' | grep -q .; then
+         && git -C "$proj" rev-parse --verify --quiet "$head^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" "$head" 2>/dev/null; then
+        ch="$(git -C "$proj" diff --name-only "$rsha" "$head" 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
           return 0
         fi
       fi

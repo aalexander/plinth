@@ -70,9 +70,9 @@ TEST_CONFIG='(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypre
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.
-# VERSION is release meta (paired with CHANGELOG) — pure VERSION/CHANGELOG bumps
-# are Tier 0 so they do not burn a model round on prose thrash.
-DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$|(^|/)VERSION$'
+# Root VERSION only (paired with CHANGELOG in review.sh) — nested pkg/VERSION
+# is operational package meta, not release prose (must not get free Tier 0).
+DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$|^VERSION$'
 
 tier=0; reasons=(); nfiles=0
 add_reason() { reasons+=("$1"); }
@@ -89,10 +89,13 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
-  # HANDOFF.md is session restart ephemera — never part of risk routing (review
-  # pathspec also excludes it). NEEDS-HUMAN stays counted (project-owned queue;
-  # a deletion must not launder to empty/Tier-0).
-  case "$path" in HANDOFF.md) continue ;; esac
+  # HANDOFF.md is session restart ephemera — skip ordinary mods only. Renames/
+  # copies *into* HANDOFF must still classify the OLD path (else product.txt →
+  # HANDOFF.md + inert docs launders a product deletion to Tier 0).
+  # NEEDS-HUMAN stays counted (project-owned queue; deletion is not Tier 0).
+  if [ "$path" = "HANDOFF.md" ] && [ -z "$oldpath" ]; then
+    continue
+  fi
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,

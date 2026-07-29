@@ -745,15 +745,59 @@ jq -e --arg s "$head" '.bound==true and .sha==$s' "$TMP/p21/.plinth/RESIDUAL.jso
 # Commit residual alone — still valid (only RESIDUAL changed after product sha)
 git -C "$TMP/p21" add .plinth/RESIDUAL.json
 git -C "$TMP/p21" commit -qm "residual land"
+# Source production residual helpers (awk brace-count; sed-to-first-} truncates).
+awk '
+  /^residual_path\(\)/ {p=1}
+  /^residual_ship_ok\(\)/ {p=1}
+  p {
+    print
+    for (i=1;i<=length($0);i++) {
+      c=substr($0,i,1)
+      if (c=="{") d++
+      if (c=="}") { d--; if (d==0) p=0 }
+    }
+  }
+' "$PLINTH" > "$TMP/residual_fn.sh"
+# shellcheck disable=SC1090
+. "$TMP/residual_fn.sh"
+type residual_ship_ok >/dev/null 2>&1 || fail "failed to source residual_ship_ok from bin/plinth"
+residual_ship_ok "$TMP/p21" || fail "residual_ship_ok should pass after residual-only commit"
+# HANDOFF-only still ok
+printf 'h\n' > "$TMP/p21/HANDOFF.md"
+git -C "$TMP/p21" add HANDOFF.md && git -C "$TMP/p21" commit -qm "handoff hygiene"
+residual_ship_ok "$TMP/p21" || fail "residual_ship_ok should pass after HANDOFF-only"
+# NEEDS-HUMAN change must invalidate (project queue, not residual hygiene)
+mkdir -p "$TMP/p21/.plinth"
+printf '# NH\n- [ ] [BLOCKING] x\n' > "$TMP/p21/.plinth/NEEDS-HUMAN.md"
+git -C "$TMP/p21" add .plinth/NEEDS-HUMAN.md && git -C "$TMP/p21" commit -qm "queue edit"
+residual_ship_ok "$TMP/p21" && fail "residual_ship_ok must FAIL after NEEDS-HUMAN change" || true
 # product change after residual must invalidate
 echo z >> "$TMP/p21/f"
 git -C "$TMP/p21" add f && git -C "$TMP/p21" commit -qm "product after residual"
-# Inline residual_ship_ok check (full function body, not sed-to-first-brace)
 rf="$TMP/p21/.plinth/RESIDUAL.json"
 rsha=$(jq -r .sha "$rf")
 ch=$(git -C "$TMP/p21" diff --name-only "$rsha" HEAD)
 printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q . \
   || fail "expected product path in residual window: $ch"
-pass "residual bind + product-change invalidates residual window"
+residual_ship_ok "$TMP/p21" && fail "residual_ship_ok must FAIL after product change" || true
+pass "residual bind + hygiene window (HANDOFF ok; NEEDS-HUMAN/product invalidate)"
+
+# residual against wrong tip (targeted-merge class): authorize bound tip only
+setup_proj "$TMP/p22"
+"$PLINTH" residual "$TMP/p22" --bind --note "tip-a residual" >/dev/null
+git -C "$TMP/p22" add .plinth/RESIDUAL.json && git -C "$TMP/p22" commit -qm residual-a
+tip_a=$(git -C "$TMP/p22" rev-parse HEAD)
+# Orphan tip with no ancestry from residual.sha
+git -C "$TMP/p22" checkout --orphan other-tip >/dev/null 2>&1
+echo o > "$TMP/p22/o" && git -C "$TMP/p22" add o && git -C "$TMP/p22" commit -qm orphan
+tip_b=$(git -C "$TMP/p22" rev-parse HEAD)
+# Keep residual file from tip_a in the tree for residual_ship_ok reads
+mkdir -p "$TMP/p22/.plinth"
+git -C "$TMP/p22" show "$tip_a:.plinth/RESIDUAL.json" > "$TMP/p22/.plinth/RESIDUAL.json"
+# shellcheck disable=SC1090
+. "$TMP/residual_fn.sh"
+residual_ship_ok "$TMP/p22" "$tip_a" || fail "residual should authorize its own tip_a"
+residual_ship_ok "$TMP/p22" "$tip_b" && fail "residual for tip_a must NOT authorize unrelated tip_b" || true
+pass "residual authorizes bound tip only (not unrelated tip)"
 
 echo "canary-lifecycle-build-harden: ALL PASS"
