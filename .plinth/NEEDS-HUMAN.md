@@ -27,7 +27,6 @@
   on open [anvil#1](https://github.com/aalexander/anvil/pull/1) (`build/harness-v14`),
   not an operator credential/config action for this repo. Track progress on that PR.
 
-- [ ] **plinth#51 remainder (optional):** after bare-merge (#49) in v5.0.2, remaining
-  fail-closed depth from the stale UPSTREAM PR — `git diff --raw` infra fail → Tier 2,
-  base-config probe fail-closed, `ls-files -z` large-tree snapshots — cherry-pick as
-  focused PRs only if dogfood hits them. Do not rebase the whole #51 branch onto 5.0.x.
+- [x] **plinth#51 / UPSTREAM fail-open class (2026-07-29)** — v5.0.3 paid #11/#12/#13/#15/#5/#31/#29/#14/#17
+  (+ #49 in 5.0.2). Remaining optional: #2 SIGPIPE, #20 long verify, #21 shell migration notes,
+  #32 lane honesty bound. Residual canary-depth still in RESIDUAL-TRIAGE.
