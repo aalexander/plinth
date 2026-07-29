@@ -1696,6 +1696,87 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# ── Slice routing (CHECKPOINT effort/implement) — non-blocking bias ──────────
+# Risk tier (classifier) ⊥ effort (slice push) ⊥ implement (who types).
+# Missing/invalid effort → high (default). Never fails the review loop.
+# Env overrides (for operators / canaries): PLINTH_CHECKPOINT_EFFORT,
+# PLINTH_CHECKPOINT_IMPLEMENT. Fence on CHECKPOINT.md (HANDOFF.md fallback).
+SLICE_EFFORT="high"
+SLICE_IMPLEMENT="either"
+SLICE_ID=""
+
+# Pure dual-bias matrix (testable). Args: effort, rphase, PLINTH_DUAL_PASS value.
+# stdout: 1 or 0. HARDEN always wants dual (ship rigor); effort never weakens it.
+# BUILD: only xhigh enables dual (medium/high keep cooperative-driver BUILD posture).
+# PLINTH_DUAL_PASS=1|0 forces on|off after the fresh/r1/Tier-2/vendor gates elsewhere.
+slice_dual_from_effort() {
+  local effort="${1:-high}" rphase="${2:-build}" override="${3:-}"
+  case "$override" in
+    1) echo 1; return 0 ;;
+    0) echo 0; return 0 ;;
+  esac
+  if [ "$rphase" = "hardening" ]; then echo 1; return 0; fi
+  case "$effort" in
+    xhigh) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
+# Load slice routing into SLICE_* globals. Fail-soft always.
+slice_load_routing() {
+  SLICE_EFFORT="high"
+  SLICE_IMPLEMENT="either"
+  SLICE_ID=""
+  local f="" parsed=""
+  if [ -f CHECKPOINT.md ]; then f=CHECKPOINT.md
+  elif [ -f HANDOFF.md ]; then f=HANDOFF.md
+  fi
+  if [ -n "$f" ]; then
+    parsed="$(python3 - "$f" <<'PY' 2>/dev/null || true
+import json, re, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+best = None
+for c in re.findall(r"```json\s*(\{.*?\})\s*```", raw, flags=re.S):
+    try:
+        o = json.loads(c)
+    except Exception:
+        continue
+    if not isinstance(o, dict):
+        continue
+    if o.get("schema") == "plinth.checkpoint/v1" or any(
+        k in o for k in ("slice_id", "effort", "implement")
+    ):
+        best = o
+if not best:
+    sys.exit(0)
+out = {
+    "effort": best.get("effort") if best.get("effort") in ("medium", "high", "xhigh") else None,
+    "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
+    "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+)"
+    if [ -n "$parsed" ]; then
+      local e i s
+      e="$(printf '%s' "$parsed" | jq -r '.effort // empty' 2>/dev/null || true)"
+      i="$(printf '%s' "$parsed" | jq -r '.implement // empty' 2>/dev/null || true)"
+      s="$(printf '%s' "$parsed" | jq -r '.slice_id // empty' 2>/dev/null || true)"
+      case "$e" in medium|high|xhigh) SLICE_EFFORT="$e" ;; esac
+      case "$i" in driver|worker|either) SLICE_IMPLEMENT="$i" ;; esac
+      [ -n "$s" ] && SLICE_ID="$s"
+    fi
+  fi
+  # Env overrides fence (operator / canary).
+  case "${PLINTH_CHECKPOINT_EFFORT:-}" in
+    medium|high|xhigh) SLICE_EFFORT="$PLINTH_CHECKPOINT_EFFORT" ;;
+  esac
+  case "${PLINTH_CHECKPOINT_IMPLEMENT:-}" in
+    driver|worker|either) SLICE_IMPLEMENT="$PLINTH_CHECKPOINT_IMPLEMENT" ;;
+  esac
+}
+
 # Review charter phase for prompts (build vs hardening). Default build; harden
 # when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
 # Corrupt/unknown phase file → hardening (fail closed — match Stop / CLI helper).
@@ -1802,6 +1883,8 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
 
   local rphase
   rphase="$(review_phase_for_round)"
+  # Slice routing bias (effort/implement) — non-blocking; defaults high/either.
+  slice_load_routing
   local phase_note
   if [ "$rphase" = "hardening" ]; then
     phase_note="REVIEW PHASE: HARDENING — full adversarial rigor including exotic robustness is in-charter."
@@ -1949,11 +2032,19 @@ ${inc}${evidence}${commits}"
     esac
   fi
   [ "$phase_src" = "env" ] || phase_src="file_or_default"
+  # Stamp slice routing on the request (audit trail; never blocks).
+  local dual_wanted
+  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
         --arg review_phase "$rphase" --arg phase_source "$phase_src" \
+        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
+        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
         '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
-          review_phase:$review_phase, phase_source:$phase_source}' \
+          review_phase:$review_phase, phase_source:$phase_source,
+          slice_routing:{effort:$effort, implement:$implement,
+            slice_id:(if $slice_id=="" then null else $slice_id end),
+            dual_wanted:($dual_wanted==1)}}' \
         > "$SDIR/request-$r.json"
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
@@ -1993,17 +2084,19 @@ ${inc}${evidence}${commits}"
   fi
   [ -n "$thrash_scope" ] || thrash_scope="${REVIEWED_FILES_FULL:-}"
 
-  # Dual first-pass: HARDEN + Tier 2 + fresh r1 only. BUILD skips merge-blocking
-  # dual-pass (cooperative-driver posture — thrash/cost; external security still
-  # blocks via primary). Override: PLINTH_DUAL_PASS=1 forces on; =0 forces off.
+  # Dual first-pass: Tier 2 + fresh r1 + cross-vendor audit seat, then bias by
+  # phase/effort. HARDEN always wants dual (ship rigor). BUILD wants dual only
+  # when slice effort=xhigh (MODELS live wiring). medium|high keep cooperative-
+  # driver BUILD posture. Override: PLINTH_DUAL_PASS=1 forces on; =0 forces off.
+  # Effort never weakens HARDEN dual and never fails the loop if unset (→ high).
   local dual_ok=0
   if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
      && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
-    if [ "${PLINTH_DUAL_PASS:-}" = "1" ]; then dual_ok=1
-    elif [ "${PLINTH_DUAL_PASS:-}" = "0" ]; then dual_ok=0
-    elif [ "$rphase" = "hardening" ]; then dual_ok=1
-    else
-      echo "Plinth review: dual first-pass skipped in BUILD (HARDEN or PLINTH_DUAL_PASS=1 to enable)."
+    dual_ok="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+    if [ "$dual_ok" = 0 ]; then
+      echo "Plinth review: dual first-pass skipped in BUILD (effort=${SLICE_EFFORT}; HARDEN, effort=xhigh, or PLINTH_DUAL_PASS=1 to enable)."
+    elif [ "$rphase" != "hardening" ] && [ "$SLICE_EFFORT" = "xhigh" ] && [ "${PLINTH_DUAL_PASS:-}" != "1" ]; then
+      echo "Plinth review: dual first-pass enabled by slice effort=xhigh (BUILD)."
     fi
   fi
   if [ "$dual_ok" = 1 ]; then

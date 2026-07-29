@@ -1,6 +1,6 @@
-# Checkpoint — `fix/residual-zero-debt` @ 9de2821
+# Checkpoint — `feat/effort-seat-wiring` @ c3d873e
 
-Updated: 2026-07-29T16:14:15Z · Phase: **build** · Snapshot: **manual** (keep_cooking) · Verdict: none
+Updated: 2026-07-29T16:26:13Z · Phase: **build** · Snapshot: **manual** (keep_cooking) · Verdict: none
 
 context_advice: keep_cooking — mid-loop snapshot; do not compact/clear. Resume: CHECKPOINT.md.
 
@@ -20,7 +20,7 @@ sticky/thrash, phase, plan seats, scaffold, quota, agy -p, docs). Canary ALL PAS
 > **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items.
 
 ## Evidence
-- Live: phase=build reason=manual verdict=none HEAD=`9de2821` branch=`fix/residual-zero-debt`
+- Live: phase=build reason=manual verdict=none HEAD=`c3d873e` branch=`feat/effort-seat-wiring`
 
 ## Risks / Noticed
 - (edit)
@@ -35,15 +35,15 @@ Bound at HEAD — see .plinth/RESIDUAL.json (canary e2e depth follow-up).
 {
   "schema": "plinth.checkpoint/v1",
   "plan_ref": "PLAN.md",
-  "slice_id": "done",
-  "slice_title": null,
+  "slice_id": "effort-seat",
+  "slice_title": "effort/seat live wiring",
   "slice_index": 1,
   "slice_total": 1,
-  "status": "done",
-  "effort": "medium",
-  "effort_rationale": "residual zero-debt closeout",
+  "status": "implementing",
+  "effort": "high",
+  "effort_rationale": "judgment+wiring interleaved",
   "implement": "driver",
-  "updated_at": "2026-07-29T16:14:15Z",
+  "updated_at": "2026-07-29T16:26:13Z",
   "elapsed_secs_slice": null,
   "eta_secs_slice": null,
   "eta_secs_plan": null

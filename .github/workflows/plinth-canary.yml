@@ -159,6 +159,10 @@ jobs:
           set -euo pipefail
           # PLAN.md AC 1–4 + migrate/next/sticky units (no network).
           ./.github/scripts/canary-lifecycle-build-harden.sh
+      - name: Checkpoint + effort/seat routing canary
+        run: |
+          set -euo pipefail
+          ./.github/scripts/canary-checkpoint-routing.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail

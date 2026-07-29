@@ -153,6 +153,25 @@ are reserved-null in v1 (no fabricated times).
 
 Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
 
+### Live wiring (what the product actually does)
+
+Guidance becomes code at these seats only — still **non-blocking** (missing effort
+defaults to **high**; never stops next / review / Stop):
+
+| Signal | Live effect |
+|--------|-------------|
+| **effort=xhigh** | Dual first-pass **also in BUILD** (Tier-2 · fresh r1 · cross-vendor audit seat present). HARDEN already duals; effort never *weakens* HARDEN dual. |
+| **effort=medium\|high** | BUILD keeps cooperative-driver posture (no dual unless `PLINTH_DUAL_PASS=1`). HARDEN dual unchanged. |
+| **effort unset/invalid** | Treated as **high**; review continues. |
+| **implement=worker\|driver** | `plinth next` prints a non-blocking `hint:` line; driver may override freely. |
+| **implement=either** | No extra implement hint. |
+| **request-\<n\>.json** | Stamps `slice_routing.{effort,implement,slice_id,dual_wanted}` for the audit trail. |
+
+Overrides: `PLINTH_DUAL_PASS=1\|0` forces dual on/off after the Tier-2/fresh/r1/vendor
+gates; `PLINTH_CHECKPOINT_EFFORT` / `PLINTH_CHECKPOINT_IMPLEMENT` override the fence
+for operators and canaries. Advise depth (`plinth advise --impactful`) remains a
+**driver choice** at xhigh — not auto-invoked.
+
 ## Orchestration
 `/effort` -> `ultracode` for substantive tasks (model-managed dynamic workflows);
 default effort for routine ones. The model chooses decomposition; the gates make

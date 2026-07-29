@@ -1,5 +1,16 @@
 # Plinth changelog
 
+## v5.0.8 — effort/seat live wiring — July 29, 2026
+- **Effort → dual-pass:** checkpoint `effort=xhigh` enables dual first-pass in
+  BUILD (Tier-2 · fresh r1 · cross-vendor audit); HARDEN dual unchanged; medium/high
+  keep cooperative-driver BUILD posture. Default missing effort → high (no behavior
+  change). Never a ship gate.
+- **Implement → next hints:** `plinth next` prints non-blocking `hint:` for
+  `implement=worker|driver` on every path (route line also always when present).
+- **request.json:** stamps `slice_routing` (effort, implement, slice_id, dual_wanted).
+- **MODELS:** documents live wiring table; advise --impactful stays driver choice.
+- **Canaries:** dual matrix unit + implement-hint coverage.
+
 ## v5.0.7 — residual zero-debt — July 29, 2026
 - **Thrash:** define precedence before coverage-asymptotic so mixed "helper
   extraction + real bug" descriptions stay major in BUILD.

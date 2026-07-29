@@ -5957,13 +5957,10 @@ run_next() {
   if [ -n "$nhf" ] && [ -s "$nhf" ]; then
     blocking=$(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" | head -1 || true)
   fi
-  if [ -n "$blocking" ]; then
-    echo "status: human_blocked"
-    echo "action: resolve NEEDS-HUMAN blocking item"
-    echo "detail: $blocking"
-    echo "phase: $phase"
-  # Non-blocking slice routing from checkpoint (never fails next).
+  # Non-blocking slice routing from checkpoint — emit on every next (never fails).
+  local _cj _sid _eff _impl _rat
   _cj="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
+  _sid=""; _eff=""; _impl=""; _rat=""
   if [ -n "$_cj" ]; then
     _sid=$(printf '%s' "$_cj" | jq -r '.slice_id // empty' 2>/dev/null || true)
     _eff=$(printf '%s' "$_cj" | jq -r '.effort // empty' 2>/dev/null || true)
@@ -5973,7 +5970,18 @@ run_next() {
       if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either} — $_rat"
       else echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either}"; fi
     fi
+    case "$_impl" in
+      worker)
+        echo "hint: implement=worker — prefer worker lane (volume-shaped; five-part spec); override freely" ;;
+      driver)
+        echo "hint: implement=driver — judgment-shaped exception; keep typing on the resident driver" ;;
+    esac
   fi
+  if [ -n "$blocking" ]; then
+    echo "status: human_blocked"
+    echo "action: resolve NEEDS-HUMAN blocking item"
+    echo "detail: $blocking"
+    echo "phase: $phase"
     exit 2
   fi
 
