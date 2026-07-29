@@ -115,11 +115,13 @@ git status --porcelain -z > "$_status_tmp" 2>/dev/null || status_rc=$?
   || { rm -f "$_status_tmp"; die_infra "git status failed (rc=$status_rc) — cannot verify a clean tree for SHA-bound review"; }
 while IFS= read -r -d '' entry; do
   [ -n "$entry" ] || continue
-  case "$entry" in
-    # XY columns may be space (e.g. " M path", "M  path") — include space in class.
-    [ MADRCUT?!][ MADRCUT?!]\ *) path="${entry:3}" ;;
-    *) path="$entry" ;;                              # rename/copy second path
-  esac
+  # porcelain -z: first record is "XY path"; rename second path has no XY prefix.
+  # X/Y may be space (e.g. " M f", "M  f") — do not use a character class with space.
+  if [ "${#entry}" -ge 3 ] && [ "${entry:2:1}" = " " ]; then
+    path="${entry:3}"
+  else
+    path="$entry"
+  fi
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
     HANDOFF.md) ;;                               # review/handoff auto-refresh — not reviewable product

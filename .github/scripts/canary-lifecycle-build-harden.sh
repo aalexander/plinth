@@ -953,7 +953,9 @@ set -e
 [ "$rc" = "3" ] || fail "empty/missing transcript must exit 3, got $rc $out"
 printf '%s' "$out" | grep -qi unavailable || fail "expected unavailable for missing transcript: $out"
 bsha=$(git -C "$TMP/p32del" rev-parse HEAD)
-out2="$("$TMP/p32del/.plinth/lane-guard.sh" delegation grok 0 "$trf" "$bsha" 2>&1)" || fail "delegation with transcript+before failed: $out2"
+# Must run inside the fixture repo so before-sha resolves to that HEAD (not the host checkout).
+out2="$(cd "$TMP/p32del" && ./.plinth/lane-guard.sh delegation grok 0 "$trf" "$bsha" 2>&1)" \
+  || fail "delegation with transcript+before failed: $out2"
 printf '%s' "$out2" | grep -q "delegation recorded:" || fail "expected receipt line: $out2"
 printf '%s' "$out2" | grep -q "before=$bsha" || fail "expected before= binding: $out2"
 rm -f "$trf"
