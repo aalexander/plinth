@@ -1131,7 +1131,7 @@
     // Only non-default lifecycle signals (BUILD is default — omit)
     if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
     if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
-    // Plan progress (derived PLAN / impl / spec) — primary glanceable surface
+    // Plan progress (derived from PLAN.md; spec fallback only) — glanceable surface
     const pp = life.plan_progress && typeof life.plan_progress === "object"
       ? life.plan_progress : null;
     if (pp) {
@@ -1954,14 +1954,19 @@
     if (!p) return;
     if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
     const panel = document.getElementById("nh-panel");
-    if (panel) panel.classList.toggle("plan-wide", kind === "plan");
-    nhList.classList.toggle("plan-track", kind === "plan");
+    // Smoke/node stubs may lack Element.classList — guard before toggle.
+    if (panel && panel.classList && typeof panel.classList.toggle === "function") {
+      panel.classList.toggle("plan-wide", kind === "plan");
+    }
+    if (nhList && nhList.classList && typeof nhList.classList.toggle === "function") {
+      nhList.classList.toggle("plan-track", kind === "plan");
+    }
     if (kind === "plan") {
       const pp = (p.lifecycle && p.lifecycle.plan_progress) || null;
       nhTitle.textContent = "PLAN — " + (p.name || path);
       if (!pp) {
         nhSub.textContent = path + " · no derived stages";
-        nhList.innerHTML = '<li class="muted">Add PLAN.md (preferred), an implementation plan, or a readable spec_path.</li>';
+        nhList.innerHTML = '<li class="muted">Add root PLAN.md (canonical operational plan), or a readable spec_path fallback.</li>';
       } else {
         const bits = [];
         if (pp.pct_complete != null) bits.push(Math.round(Number(pp.pct_complete)) + "%");

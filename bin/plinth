@@ -1168,28 +1168,14 @@ _nh_count_blocking() {  # stdin logical items → count
 _nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-]|:)")'
 
 # Scope of a blocking NEEDS-HUMAN item (stdout: global|build|harden|ship).
-# Explicit: [BLOCKING:ship] [BLOCKING:harden] [BLOCKING:build] [BLOCKING:global]
-# Bare [BLOCKING] / [BLOCKING — title] → global (backward compatible).
-# Heuristic for legacy ship-only wording when no explicit scope (certeus-class).
+# Explicit only: [BLOCKING:ship] [BLOCKING:harden] [BLOCKING:build] [BLOCKING:global]
+# Bare [BLOCKING] / [BLOCKING — title] → always global (MANUAL contract; no heuristics).
 _nh_blocker_scope() {
   local t="$1" s
   s=$(printf '%s' "$t" | sed -nE 's/.*\[BLOCKING[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]*(\]|[—–-]).*/\1/p' | head -1 | tr '[:upper:]' '[:lower:]')
   case "$s" in
     global|build|harden|ship) printf '%s\n' "$s"; return 0 ;;
   esac
-  # Legacy ship/merge controls — do not stall BUILD implementation.
-  if printf '%s' "$t" | grep -qiE \
-    'unspoofable|review provenance|gh pr (create|merge)|branch protection|receipt[[:space:]]*/[[:space:]]*verify|ship gate|before (you )?merge|merge to main|required status check'; then
-    printf 'ship\n'
-    return 0
-  fi
-  # Legacy harden-only wording.
-  if printf '%s' "$t" | grep -qiE \
-    'plinth harden|hard(en|ening) phase|before harden|APPROVED@HEAD only|paid review only'; then
-    # Prefer ship if both match; ship regex already returned.
-    printf 'harden\n'
-    return 0
-  fi
   printf 'global\n'
 }
 
@@ -1739,18 +1725,23 @@ $question"
       # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
       # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
       # from a missing binary (#62).
+      # Auth/error classifiers (also catch exit-0 unauth text — grok/claude can do that).
+      _advise_looks_auth_fail() {
+        grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)|please run' \
+          "$errf" "$outf" 2>/dev/null
+      }
       set +e
       printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
         --allowed-tools "Read,Grep,Glob" >"$outf" 2>"$errf"
       rc=$?
       set -e
+      if _advise_looks_auth_fail; then
+        _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
+        return 0
+      fi
       if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
         diag="claude at ${bin} exited ${rc}"
-        if grep -qiE 'not logged in|/login|authentication|unauthorized' "$errf" "$outf" 2>/dev/null; then
-          diag="claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
-        elif [ ! -x "$bin" ]; then
-          diag="claude at ${bin} is not executable"
-        fi
+        [ ! -x "$bin" ] && diag="claude at ${bin} is not executable"
         _advise_fail "$diag"
         return 0
       fi
@@ -1769,6 +1760,11 @@ $question"
         >"$outf" 2>"$errf"
       rc=$?
       set -e
+      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)' \
+           "$errf" "$outf" 2>/dev/null; then
+        _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
       if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
         _advise_fail "codex at ${bin} exited ${rc}"
         return 0
@@ -1788,6 +1784,12 @@ $question"
         >"$outf" 2>"$errf"
       rc=$?
       set -e
+      # Grok may print unauth guidance with exit 0 — still not advice.
+      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)|sign in' \
+           "$errf" "$outf" 2>/dev/null; then
+        _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
       if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
         _advise_fail "grok at ${bin} exited ${rc}"
         return 0
@@ -1806,6 +1808,11 @@ $question"
       "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} >"$outf" 2>"$errf"
       rc=$?
       set -e
+      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)' \
+           "$errf" "$outf" 2>/dev/null; then
+        _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
       if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
         _advise_fail "agy at ${bin} exited ${rc}"
         return 0
@@ -1813,7 +1820,11 @@ $question"
       cat "$outf"
       rm -f "$errf" "$outf"
       ;;
-    *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
+    *)
+      [ -n "$errf" ] && rm -f "$errf"
+      [ -n "$outf" ] && rm -f "$outf"
+      echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2
+      exit 1 ;;
   esac
 }
 
@@ -5248,6 +5259,11 @@ NON_CODING_ITEM_RE = re.compile(
     r"owner explicitly agrees|"
     r"human (sign[- ]?off|gate|approval|ratification)|"
     r"external(ly)? gated|"
+    r"sign[- ]?off\b|"
+    r"\b(FDA|IRB)\b|"
+    r"Security team approves|"
+    r"Product owner signs|"
+    r"Obtain FDA|"
     r"^NB:|"
     r"^RESOLVED\b|"
     r"^Read:\s*SPEC|"
@@ -5329,9 +5345,8 @@ while i < len(lines):
             continue
         # #### substeps under ### Slice / module majors (expandable on the dash).
         if level == 4:
-            if cur is not None and (
+            if cur is not None and is_coding_item(ht, cur.get("title") or "") and (
                 re.match(r"^\d+[.)]?\s+\S", ht)
-                or is_coding_section(ht)
                 or CODING_ITEM_HINT_RE.search(ht)
             ):
                 cur["children"].append({
@@ -5626,9 +5641,9 @@ for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
 for n in leaves:
     if n.get("status") == "done":
         continue
-    title = n.get("title") or ""
+    leaf_title = n.get("title") or ""
     for dl in done_lines:
-        if match_text(title, dl):
+        if match_text(leaf_title, dl):
             n["status"] = "done"
             n["done_via"] = "checkpoint_done"
             break
@@ -5732,11 +5747,11 @@ else:
             current_via = "slice_title"
             checkpoint_cursor = True
             break
-    # 2) Numeric position from checkpoint — clients report where they are.
-    #    Prefer when slice_total matches plan item count; still accept index alone
-    #    when 1..len(leaves) so a client can say "item 5 of N" without titles.
+    # 2) Numeric position only when totals match the plan leaf count (or total
+    #    omitted with a title already matched above). Refuse stale 1/1 against
+    #    a multi-item plan (false first-leaf cursor).
     if current is None and si and 1 <= si <= len(leaves):
-        if st == len(leaves) or st is None or st >= 1:
+        if st is None or st == len(leaves):
             current = leaves[si - 1]
             current_via = "slice_index"
             checkpoint_cursor = True
@@ -6130,28 +6145,42 @@ _write_handoff() {
   # clients *should* set PLINTH_CHECKPOINT_SLICE_* ; if missing and prev has no
   # index either, derive from PLAN progress (first open / active work item).
   local cj _seed_pp _seed_idx _seed_tot _seed_title _seed_id
+  # Seed or advance plan position from PLAN.md when env index is unset.
+  # Re-seed when prev index is missing OR behind the first open leaf (checkbox progress).
   if [ -z "${PLINTH_CHECKPOINT_SLICE_INDEX:-}" ]; then
-    local _have_prev_idx=0
-    if [ -n "${_cp_prev_json:-}" ] && printf '%s' "$_cp_prev_json" | jq -e '.slice_index != null' >/dev/null 2>&1; then
-      _have_prev_idx=1
+    local _prev_idx="" _seed_first=""
+    if [ -n "${_cp_prev_json:-}" ]; then
+      _prev_idx=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_index // empty' 2>/dev/null || true)
     fi
-    if [ "$_have_prev_idx" = 0 ]; then
-      _seed_pp="$(_plan_progress_json "$root" "${_cp_prev_json:-{}}")"
-      if [ -n "$_seed_pp" ]; then
-        _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
-          [ .outline[]?.children[]? | select(.progress != false) ] as $L
-          | ($L | to_entries | map(select(.value.status != "done")) | .[0]) as $e
-          | if $e == null then empty else ($e.key + 1) end
-        ' 2>/dev/null || true)
-        _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
-          [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
-        ' 2>/dev/null || true)
-        _seed_title=$(printf '%s' "$_seed_pp" | jq -r '
-          [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].title // empty
-        ' 2>/dev/null || true)
-        _seed_id=$(printf '%s' "$_seed_pp" | jq -r '
-          [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].id // empty
-        ' 2>/dev/null || true)
+    _seed_pp="$(_plan_progress_json "$root" "${_cp_prev_json:-{}}")"
+    if [ -n "$_seed_pp" ]; then
+      _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false) ] as $L
+        | ($L | to_entries | map(select(.value.status != "done")) | .[0]) as $e
+        | if $e == null then empty else ($e.key + 1) end
+      ' 2>/dev/null || true)
+      _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
+      ' 2>/dev/null || true)
+      _seed_title=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].title // empty
+      ' 2>/dev/null || true)
+      _seed_id=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].id // empty
+      ' 2>/dev/null || true)
+      _seed_first=1
+      case "$_prev_idx" in
+        ''|*[!0-9]*) ;;
+        *)
+          # Only advance if plan's first open is strictly after prev index.
+          if [ -n "$_seed_idx" ] && [ "$_seed_idx" -gt "$_prev_idx" ]; then
+            _seed_first=1
+          else
+            _seed_first=0
+          fi
+          ;;
+      esac
+      if [ "$_seed_first" = 1 ]; then
         case "$_seed_idx" in ''|*[!0-9]*) ;; *)
           export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_idx"
           [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"

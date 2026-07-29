@@ -30,12 +30,12 @@ setup() {
 EOF
 }
 
-# 1) BUILD + ship-only blocker + open Next → work (not human_blocked)
+# 1) BUILD + explicit ship blocker + open Next → work (not human_blocked)
 setup "$TMP/a"
 mkdir -p "$TMP/a/.plinth"
 cat > "$TMP/a/.plinth/NEEDS-HUMAN.md" <<'EOF'
 # NH
-- [ ] **[BLOCKING — unspoofable review provenance] Choose one GitHub control** for merge
+- [ ] [BLOCKING:ship] Choose one GitHub control for merge (receipt / verify)
 - [ ] optional non-blocking note
 EOF
 set +e
@@ -46,7 +46,59 @@ echo "$out" | grep -q 'status: work' || fail "BUILD+ship blocker should still wo
 echo "$out" | grep -qi 'deferred BLOCKING' || fail "expected deferred note: $out"
 echo "$out" | grep -qi 'implement the feature' || fail "expected HANDOFF next action: $out"
 [ "$rc" -eq 0 ] || fail "exit 0 expected, got $rc"
-pass "BUILD continues past ship-only BLOCKING with deferred note"
+pass "BUILD continues past BLOCKING:ship with deferred note"
+
+# 1b) Bare titled BLOCKING stays GLOBAL even if text says merge/provenance
+setup "$TMP/a2"
+mkdir -p "$TMP/a2/.plinth"
+cat > "$TMP/a2/.plinth/NEEDS-HUMAN.md" <<'EOF'
+# NH
+- [ ] **[BLOCKING — unspoofable review provenance] Choose one GitHub control** for merge
+EOF
+set +e
+out=$("$PLINTH" next "$TMP/a2" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q human_blocked || fail "bare BLOCKING must stay global: $out"
+[ "$rc" -eq 2 ] || fail "exit 2 for bare global, got $rc"
+pass "bare [BLOCKING — title] stays global (no heuristic re-scope)"
+
+# 1c) explicit global
+setup "$TMP/a3"
+mkdir -p "$TMP/a3/.plinth"
+printf '%s\n' '# NH' '- [ ] [BLOCKING:global] always stop' > "$TMP/a3/.plinth/NEEDS-HUMAN.md"
+set +e
+out=$("$PLINTH" next "$TMP/a3" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q human_blocked || fail "BLOCKING:global must block: $out"
+pass "explicit BLOCKING:global blocks BUILD"
+
+# 1d) BUILD + BLOCKING:harden → deferred
+setup "$TMP/a4"
+mkdir -p "$TMP/a4/.plinth"
+printf '%s\n' '# NH' '- [ ] [BLOCKING:harden] paid review seat credit' > "$TMP/a4/.plinth/NEEDS-HUMAN.md"
+set +e
+out=$("$PLINTH" next "$TMP/a4" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q 'status: work' || fail "BUILD+harden should defer: $out"
+echo "$out" | grep -qi 'deferred BLOCKING (harden)' || fail "expected harden deferred: $out"
+[ "$rc" -eq 0 ] || fail "exit 0 expected, got $rc"
+pass "BUILD continues past BLOCKING:harden"
+
+# 1e) HARDEN + BLOCKING:harden → human_blocked
+setup "$TMP/a5"
+"$PLINTH" harden "$TMP/a5" >/dev/null 2>&1 || true
+mkdir -p "$TMP/a5/.plinth"
+printf '%s\n' '# NH' '- [ ] [BLOCKING:harden] paid review seat credit' > "$TMP/a5/.plinth/NEEDS-HUMAN.md"
+set +e
+out=$("$PLINTH" next "$TMP/a5" 2>&1)
+rc=$?
+set -e
+echo "$out" | grep -q human_blocked || fail "HARDEN+BLOCKING:harden must block: $out"
+[ "$rc" -eq 2 ] || fail "exit 2 expected, got $rc"
+pass "HARDEN blocked by BLOCKING:harden"
 
 # 2) BUILD + global BLOCKING → human_blocked
 setup "$TMP/b"

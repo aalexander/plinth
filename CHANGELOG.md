@@ -15,10 +15,10 @@
 - **request.json:** stamps `slice_routing` (effort, implement, slice_id, dual_wanted).
 - **MODELS:** documents live wiring table; advise --impactful stays driver choice.
 - **Canaries:** dual matrix unit + implement-hint coverage.
-- **Dashboard plan progress:** derive `lifecycle.plan_progress` from PLAN.md →
-  implementation plan → `spec_path` (coordinated `sources`); card progress meter +
-  PLAN chip; click-in stage track (milestones + leaves, weights, current). ETA
-  reserved-null. Canary covers derivation + cardHTML.
+- **Dashboard plan progress:** derive `lifecycle.plan_progress` from root
+  **PLAN.md only** (spec_path coding-shaped fallback when PLAN absent — no
+  IMPLEMENTATION-PLAN aliases); card progress meter + PLAN chip; click-in stage
+  track expands Slice #### subheads. ETA reserved-null.
 
 ## v5.0.7 — residual zero-debt — July 29, 2026
 - **Thrash:** define precedence before coverage-asymptotic so mixed "helper

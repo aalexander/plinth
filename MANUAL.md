@@ -98,12 +98,16 @@ Everything between is the model's call.
   force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
 - `plinth checkpoint [path]`    — write/refresh root `CHECKPOINT.md` (resume + slice
-  routing JSON: effort medium|high|xhigh, implement driver|worker|either,
-  `slice_index`/`slice_total`/`slice_title` = **client-reported plan position** for
-  the dashboard). Env: `PLINTH_CHECKPOINT_SLICE_INDEX`, `_TOTAL`, `_TITLE`, `_ID`,
-  `_EFFORT`, `_IMPLEMENT`, `_STATUS`. `handoff` is an alias; legacy `HANDOFF.md` is
-  a pointer. Effort biases dual first-pass (`xhigh` → dual in BUILD); never a ship
-  gate (see MODELS live wiring).
+  routing JSON). Preferred: set plan position env vars when you know them
+  (`PLINTH_CHECKPOINT_SLICE_INDEX` + `_TOTAL`, optional `_TITLE`/`_ID`;
+  `_EFFORT` medium|high|xhigh; `_IMPLEMENT` driver|worker|either;
+  `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
+  complete). If index is unset and no prior fence, the writer **seeds** the first
+  open PLAN.md stage (synthesized position; re-checkpoint to advance). Index is
+  only applied when `slice_total` matches the plan leaf count (or total is
+  omitted). `plan_ref` is always basename `PLAN.md`. `handoff` is an alias;
+  legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass (`xhigh` → dual
+  in BUILD); never a ship gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
@@ -902,14 +906,9 @@ installed copies.
   `url.insteadOf` rewrite), private-repo/PAT visibility of the pinned plinth source, and
   the real `gh api` response shape. Wants a documented RUNTIME receipt from the first PR
   that runs the check for real.
-- **`plinth advise` still reports every failure as "CLI missing or not signed in"**
-  (`bin/plinth` `run_advise`, all four vendor branches). v4.7 fixed the wiring bug
-  that this message was masking, but the mask itself remains: each branch is
-  `<cli> ... 2>/dev/null || { echo "$unavail"; ... }`, so a future flag change,
-  auth error, or model rejection is still reported as an absent CLI. That is what
-  made the variadic-prompt bug invisible for a full release. Fix: capture stderr
-  and surface its tail in the unavailable line (advise is non-blocking, so there is
-  no reason to hide the cause). Found in the v4.7 self-review pre-flight.
+- **`plinth advise` diagnostics (v5.0.8 / #62):** resolved — PATH vs auth vs nonzero
+  exit are distinguished; stderr sample is shown. Re-open only if a vendor still
+  masks auth as success without matching the unauth classifiers.
 - **Every seat-swap path re-anchors coverage except a swap that lands on a fresh
   round anyway** (`shared/.plinth/review.sh`, #26 fix). The vendor check compares
   only the IMMEDIATELY preceding round's vendor, which is sound today because the
