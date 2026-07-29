@@ -106,11 +106,13 @@ command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 # ends in "NEEDS-HUMAN.md" (filenames may contain spaces, e.g. "docs/foo NEEDS-HUMAN.md").
 # plinth#12: git status failure must fail CLOSED (not "clean"). Porcelain -z rename
 # records are XY path\0path2\0 — only the first record has the "XY " prefix.
+# Do NOT capture -z output in a bash $(...) var — command substitution strips NULs.
 dirty=0
 status_rc=0
-status_z="$(git status --porcelain -z 2>/dev/null)" || status_rc=$?
+_status_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-status.XXXXXX")" || die_infra "mktemp failed for git status capture"
+git status --porcelain -z > "$_status_tmp" 2>/dev/null || status_rc=$?
 [ "$status_rc" -eq 0 ] \
-  || die_infra "git status failed (rc=$status_rc) — cannot verify a clean tree for SHA-bound review"
+  || { rm -f "$_status_tmp"; die_infra "git status failed (rc=$status_rc) — cannot verify a clean tree for SHA-bound review"; }
 while IFS= read -r -d '' entry; do
   [ -n "$entry" ] || continue
   case "$entry" in
@@ -123,7 +125,8 @@ while IFS= read -r -d '' entry; do
     "") ;;
     *) dirty=1; break ;;
   esac
-done < <(printf '%s' "$status_z")
+done < "$_status_tmp"
+rm -f "$_status_tmp"
 [ "$dirty" = 0 ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
