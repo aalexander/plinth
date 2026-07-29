@@ -1,24 +1,9 @@
 {
   "schema": "plinth.residual/v1",
-  "bound": true,
-  "sha": "156933819699d58ee7c05a37f4dadac3728d19cb",
+  "bound": false,
+  "sha": "",
   "by": "austin",
-  "ts": "2026-07-29T15:34:36Z",
-  "note": "5.0.5 residual closeout product fixes landed; remaining canary e2e depth / review thrash as residual follow-up (not ship-blocking product defects)",
-  "findings": [
-    {
-      "severity": "major",
-      "file": ".github/scripts/canary-lifecycle-build-harden.sh",
-      "line": 1075,
-      "description": "Production-path coverage remains open. The additions still use eval/sed-extracted functions or grep source; the passing lifecycle canary therefore does not exercise the enumerated command-level siblings: both run_round corrupt-prior calls; VERSION diff failure and large path lists; agy `-p` with stdin and response parsing; malformed, mixed, placeholder, and empty-verdict seat JSON through the merger; migration with custom comment-only destinations, stock appends, and Unicode/punctuation comments\u2026",
-      "id": null
-    },
-    {
-      "severity": "major",
-      "file": "shared/.plinth/review.sh",
-      "line": 1629,
-      "description": "The classifier finding remains open. Concrete probes confirmed that each prior asymptotic phrase still demotes a combined real bug to minor: `Helper extraction ... Clicking Save does nothing`, `Existing coverage either injects ... Clicking Save does nothing`, and `Missing cases include ... Clicking Save does nothing`. The new canary tests only plain real-bug descriptions, so they cannot catch this interaction. The data-loss and documented-command samples are now protected, but arbitrary real bug\u2026",
-      "id": null
-    }
-  ]
+  "ts": "2026-07-29T16:14:15Z",
+  "note": "5.0.7 residual zero-debt: classifier mixed-phrase + production-path canaries closed; unbound",
+  "findings": []
 }

@@ -1623,13 +1623,22 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         ((.description // "") | test(
           "acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|for the new |this change (has|adds|introduces)|missing tests? for|missing test cases include|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|not implemented|canonical[- ]spec|documented behavior is not|still untested:|named changed behavior|quota parser|malformed reset|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor"; "i"
         ));
+    # Precedence first so asymptotic thrash cannot swallow real-bug wording mixed
+    # into the same description (Helper extraction … Clicking Save does nothing).
+    def is_precedence_must_block:
+        is_external_security
+        or is_real_test_gap
+        or ((.description // "") | test(
+          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not|clicking[[:space:]].*does|no[- ]?op\\b"; "i"
+        ));
     def is_coverage_asymp:
-        # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
+        # Horizon thrash / residual canary lists — not concrete missing-test/bug wording.
         ((.description // "") | test(
           "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects"; "i"
         ))
         and (is_real_test_gap | not)
-        and (is_external_security | not);
+        and (is_external_security | not)
+        and (is_precedence_must_block | not);
     def is_thrash_class:
         is_coverage_asymp
         or ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"))
@@ -1647,15 +1656,6 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         and ((.file // "") != ".")
         and (((.file // "") as $fp | ($files | index($fp)) == null))
         and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
-    # Belt: thrash_class mislabels that are really security/test-gap/data-loss.
-    def is_precedence_must_block:
-        # Real bugs / data loss / spec / fail-open must never demote solely for
-        # being outside the fix pathspec (ratified convergence precedence).
-        is_external_security
-        or is_real_test_gap
-        or ((.description // "") | test(
-          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not"; "i"
-        ));
     # Outside fix pathspec: demote thrash classes only. Never demote arbitrary
     # new majors/blockers in BUILD verify/resume solely for being out-of-delta —
     # that fail-opened real bugs/data-loss/spec gaps that keyword lists miss.

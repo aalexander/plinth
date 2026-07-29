@@ -78,9 +78,12 @@ pass "plinth build restores build_defer"
 
 # --- handoff writes file ---
 "$PLINTH" handoff "$TMP/p1" >/dev/null
-[ -f "$TMP/p1/HANDOFF.md" ] || fail "HANDOFF.md missing"
-grep -q 'Restart prompt' "$TMP/p1/HANDOFF.md" || fail "HANDOFF missing restart section"
-pass "plinth handoff writes HANDOFF.md"
+[ -f "$TMP/p1/CHECKPOINT.md" ] || fail "CHECKPOINT.md missing"
+[ -f "$TMP/p1/HANDOFF.md" ] || fail "HANDOFF.md pointer missing"
+# Canonical resume is CHECKPOINT.md; HANDOFF.md is a pointer (v5.0.6+).
+grep -q 'Restart prompt' "$TMP/p1/CHECKPOINT.md" || fail "CHECKPOINT missing restart section"
+grep -q 'CHECKPOINT.md' "$TMP/p1/HANDOFF.md" || fail "HANDOFF pointer missing CHECKPOINT.md"
+pass "plinth handoff/checkpoint writes CHECKPOINT.md + HANDOFF pointer"
 
 # --- harden refuses main ---
 git -C "$TMP/p1" checkout -q main 2>/dev/null || git -C "$TMP/p1" checkout -qb main
@@ -117,7 +120,7 @@ pass "phase status after harden"
 setup_proj "$TMP/p3"
 "$PLINTH" handoff "$TMP/p3" >/dev/null
 # inject a next line
-if ! grep -q '## Next' "$TMP/p3/HANDOFF.md"; then fail "handoff missing Next"; fi
+if ! grep -q '## Next' "$TMP/p3/CHECKPOINT.md"; then fail "checkpoint missing Next"; fi
 # next should return work
 set +e
 out=$("$PLINTH" next "$TMP/p3" 2>&1)
@@ -271,7 +274,7 @@ setup_proj "$TMP/p8"
 "$PLINTH" harden "$TMP/p8" >/dev/null
 "$PLINTH" build "$TMP/p8" >/dev/null
 "$PLINTH" harden "$TMP/p8" >/dev/null
-next_block=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$TMP/p8/HANDOFF.md")
+next_block=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$TMP/p8/CHECKPOINT.md")
 first=$(printf '%s\n' "$next_block" | sed -n '1p' | sed -E 's/^[[:space:]]*[0-9]+[.)]*[[:space:]]*//')
 printf '%s\n' "$first" | grep -qi 'review' \
   || fail "after final harden, first Next should be review: $next_block"
@@ -408,11 +411,11 @@ pass "review_phase_for_round fail-closed on corrupt phase"
 # Operator Next line "Fix [Windows]…" preserved across harden refresh
 setup_proj "$TMP/p11"
 printf '%s\n' '# H' '## Next' '1. Fix [Windows] packaging regression' '2. custom operator note' \
-  > "$TMP/p11/HANDOFF.md"
+  > "$TMP/p11/CHECKPOINT.md"
 "$PLINTH" harden "$TMP/p11" >/dev/null
-grep -F 'Fix [Windows] packaging regression' "$TMP/p11/HANDOFF.md" \
+grep -F 'Fix [Windows] packaging regression' "$TMP/p11/CHECKPOINT.md" \
   || fail "operator Fix [Windows] line must be preserved"
-grep -F 'custom operator note' "$TMP/p11/HANDOFF.md" \
+grep -F 'custom operator note' "$TMP/p11/CHECKPOINT.md" \
   || fail "operator note must be preserved"
 pass "handoff preserves operator-authored Next lines"
 
@@ -420,13 +423,13 @@ pass "handoff preserves operator-authored Next lines"
 setup_proj "$TMP/p12"
 printf '%s\n' '# H' '## Goal' 'Operator custom goal text keep me' '## Next' '1. do thing' \
   '## Evidence' '- my evidence note' '## Risks / Noticed' '- my risk' \
-  > "$TMP/p12/HANDOFF.md"
+  > "$TMP/p12/CHECKPOINT.md"
 "$PLINTH" build "$TMP/p12" >/dev/null
-grep -F 'Operator custom goal text keep me' "$TMP/p12/HANDOFF.md" \
+grep -F 'Operator custom goal text keep me' "$TMP/p12/CHECKPOINT.md" \
   || fail "Goal freeform must survive refresh"
-grep -F 'my evidence note' "$TMP/p12/HANDOFF.md" \
+grep -F 'my evidence note' "$TMP/p12/CHECKPOINT.md" \
   || fail "Evidence freeform must survive refresh"
-grep -F 'my risk' "$TMP/p12/HANDOFF.md" \
+grep -F 'my risk' "$TMP/p12/CHECKPOINT.md" \
   || fail "Risks freeform must survive refresh"
 ls "$TMP/p12/.plinth/session"/handoff-*-pre-*.md >/dev/null 2>&1 \
   || fail "pre-overwrite archive must exist"
@@ -732,14 +735,14 @@ pass "AUTO-STICKY does not resolve AC-worded coverage gaps"
 
 # Evidence live line updates on phase change at same HEAD
 setup_proj "$TMP/p18"
-printf '%s\n' '# H' '## Next' '1. x' '## Evidence' '- operator note' > "$TMP/p18/HANDOFF.md"
+printf '%s\n' '# H' '## Next' '1. x' '## Evidence' '- operator note' > "$TMP/p18/CHECKPOINT.md"
 "$PLINTH" build "$TMP/p18" >/dev/null
-grep -q 'Live: phase=build' "$TMP/p18/HANDOFF.md" || fail "expected Live build line"
+grep -q 'Live: phase=build' "$TMP/p18/CHECKPOINT.md" || fail "expected Live build line"
 "$PLINTH" harden "$TMP/p18" >/dev/null
-grep -q 'Live: phase=harden' "$TMP/p18/HANDOFF.md" || fail "Live line must refresh on harden: $(grep Live "$TMP/p18/HANDOFF.md" || true)"
+grep -q 'Live: phase=harden' "$TMP/p18/CHECKPOINT.md" || fail "Live line must refresh on harden: $(grep Live "$TMP/p18/CHECKPOINT.md" || true)"
 # Generated BUILD bullets must not remain after harden
-if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p18/HANDOFF.md"; then
-  fail "stale generated build evidence after harden: $(grep -E 'Lifecycle|Live' "$TMP/p18/HANDOFF.md")"
+if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p18/CHECKPOINT.md"; then
+  fail "stale generated build evidence after harden: $(grep -E 'Lifecycle|Live' "$TMP/p18/CHECKPOINT.md")"
 fi
 pass "handoff Live evidence refreshes on phase change"
 
@@ -747,10 +750,10 @@ pass "handoff Live evidence refreshes on phase change"
 setup_proj "$TMP/p19"
 "$PLINTH" build "$TMP/p19" >/dev/null
 "$PLINTH" harden "$TMP/p19" >/dev/null
-if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p19/HANDOFF.md"; then
-  fail "generated path left stale build evidence: $(grep -E 'Lifecycle|Live|Snapshot' "$TMP/p19/HANDOFF.md")"
+if grep -qE 'Lifecycle phase: build|Snapshot reason: enter-build' "$TMP/p19/CHECKPOINT.md"; then
+  fail "generated path left stale build evidence: $(grep -E 'Lifecycle|Live|Snapshot' "$TMP/p19/CHECKPOINT.md")"
 fi
-grep -q 'Live: phase=harden' "$TMP/p19/HANDOFF.md" || fail "generated path missing Live harden"
+grep -q 'Live: phase=harden' "$TMP/p19/CHECKPOINT.md" || fail "generated path missing Live harden"
 pass "handoff generated evidence path no stale build after harden"
 
 # plinth next done when empty Next / no NH
@@ -1195,6 +1198,94 @@ bash -c '
   rm -f "$f"
 ' || fail "stock template with AWS append must not be scaffold"
 pass "residual: stock-comment AWS append preserved"
+
+
+
+# ── residual-zero: thrash never demotes mixed asymptotic+real-bug wording ──
+THRASH_FNZ="$TMP/thrash_zero.sh"
+sed -n '/^thrash_policy_process_findings()/,/^review_phase_for_round()/p' \
+  "$ROOT/shared/.plinth/review.sh" | sed '$d' > "$THRASH_FNZ"
+# shellcheck disable=SC1090
+. "$THRASH_FNZ"
+_tz=$(mktemp)
+for desc in \
+  "Helper extraction for the new path. Clicking Save does nothing" \
+  "Existing coverage either injects fixtures. Clicking Save does nothing" \
+  "Missing cases include empty input. Clicking Save does nothing"
+do
+  jq -n --arg d "$desc" '{verdict:"CHANGES_NEEDED",summary:"t",findings:[
+    {file:"x.go",line:1,severity:"major",description:$d,status:"open",id:"c1"}
+  ]}' > "$_tz"
+  thrash_policy_process_findings "$_tz" "build" "x.go" "" "SPEC.md" "fresh"
+  sev=$(jq -r '.findings[0].severity' "$_tz")
+  [ "$sev" = "major" ] || fail "mixed asymptotic+bug demoted to $sev: $desc"
+done
+rm -f "$_tz"
+pass "residual-zero: combined asymptotic+bug stays major"
+
+# ── residual-zero: product-path — both verify prior schema gates present ──
+# Production run_round calls validate_findings on prior before ledger+re-merge.
+n_prior_val=$(grep -c 'verify prior findings' "$ROOT/shared/.plinth/review.sh" || true)
+[ "$n_prior_val" -ge 2 ] || fail "expected >=2 verify prior schema messages, got $n_prior_val"
+# Exercise production validate_findings (extracted) on corrupt {}
+_vf_src="$TMP/validate_fn_zero.sh"
+sed -n '/^validate_findings()/,/^}/p' "$ROOT/shared/.plinth/review.sh" > "$_vf_src"
+# shellcheck disable=SC1090
+. "$_vf_src"
+_bad=$(mktemp)
+echo '{}' > "$_bad"
+if validate_findings "$_bad"; then fail "validate_findings must reject {}"; fi
+echo '{"verdict":"CHANGES_NEEDED","summary":"x","findings":[{"file":"a","line":1,"severity":"major","description":"d","status":"open"}]}' > "$_bad"
+validate_findings "$_bad" || fail "validate_findings must accept schema-valid findings"
+rm -f "$_bad"
+pass "residual-zero: verify prior schema gates present + validate_findings product path"
+
+# ── residual-zero: plinth update migration (comment-only custom + stock+AWS) ──
+setup_proj "$TMP/pzero_mig"
+"$PLINTH" init "$TMP/pzero_mig" >/dev/null 2>&1 || true
+# comment-only custom DRIVER-project must not be treated as scaffold wipe
+cat > "$TMP/pzero_mig/.plinth/DRIVER-project.md" <<'EOF'
+# Project-Specific Driver Notes
+
+<!-- Operator: use Go 1.23 for this repo only. -->
+EOF
+cat > "$TMP/pzero_mig/CLAUDE.md" <<'EOF'
+# CLAUDE.md
+You are the implementer.
+## Project-specific notes
+- NEVER invent regulatory rates without a cite.
+EOF
+outm="$("$PLINTH" update "$TMP/pzero_mig" 2>&1)" || fail "plinth update failed: $outm"
+printf '%s' "$outm" | grep -q 'migrated: custom CLAUDE.md' || fail "expected migrate: $outm"
+# Go 1.23 note must survive (append or keep)
+grep -q 'Go 1.23\|NEVER invent regulatory' "$TMP/pzero_mig/.plinth/DRIVER-project.md" \
+  || fail "DRIVER-project lost operator notes: $(cat "$TMP/pzero_mig/.plinth/DRIVER-project.md")"
+pass "residual-zero: plinth update preserves comment-only DRIVER notes + migrates CLAUDE"
+
+# ── residual-zero: plan hollow JSON via product _plan_seat_output_ok ──
+bash -c '
+  set -euo pipefail
+  eval "$(sed -n "/^_plan_seat_output_ok()/,/^}/p" "'"$PLINTH"'")"
+  # empty verdict + none markers must fail
+  _plan_seat_output_ok $'"'"'### Seat: x
+```json
+{"blockers":["none"],"questions":[],"nits":[],"verdict":""}
+```
+'"'"' && exit 1 || true
+  # real verdict ok
+  _plan_seat_output_ok $'"'"'### Seat: x
+#### Blockers
+- none
+#### Questions for human
+- none
+#### Nits
+- none
+```json
+{"blockers":[],"questions":[],"nits":[],"verdict":"ok"}
+```
+'"'"' || exit 1
+' || fail "plan seat product hollow checks failed"
+pass "residual-zero: plan seat product hollow/non-hollow path"
 
 
 echo "canary-lifecycle-build-harden: ALL PASS"
