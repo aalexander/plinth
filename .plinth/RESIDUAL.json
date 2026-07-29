@@ -1,94 +1,17 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "e593c47c68c14bcb615f2b071a3e6d9d9815b7e3",
+  "sha": "7324849259c5e55f5c3506673472f4f8eacda601",
   "by": "austin",
-  "ts": "2026-07-28T22:20:29Z",
-  "note": "v5.0.0 land: canary resumable_prev arity",
+  "ts": "2026-07-29T01:47:57Z",
+  "note": "v5.0.2 post-triage: 11/12 residual items fixed or dropped; canary-depth only remains (see RESIDUAL-TRIAGE.md)",
   "findings": [
     {
       "severity": "major",
-      "file": "shared/.claude/hooks/guard.sh",
-      "line": 117,
-      "description": "The ship guard treats a corrupt or unknown phase file as an empty phase instead of HARDEN. Consequently, a BUILD-era APPROVED@HEAD verdict permits both `gh pr create` here and `gh pr merge` at line 232. This directly violates PLAN.md's fail-closed phase guarantee. Reproduced with malformed phase JSON plus a build approval: `gh pr create` returned 0 while the Stop gate correctly returned 2.",
-      "id": "c2hhcmVkLy5jbGF1ZGUvaG9va3MvZ3VhcmQuc2h8bWFqb3J8dGhlIHNoaXAgZ3VhcmQgdHJlYXRzIGEgY29ycnVwdCBvciB1bmtub3duIHBoYXNlIGZpbGUgYXMgYW4gZW1wdHkgcGhhc2UgaW5zdGVhZCBvZiBoYXJkZW4gY29uc2VxdWVudGx5IGEgYnVpbGQgZXJhIGFwcHJvdmVkIGhlYWQgdmVyZGljdCBwZXJtaXRzIGJvdGggZ2ggcHIgY3JlYXRlIGhlcmUgYW5kIGdoIHByIG1lcmdlIGF0IGxpbmUgMjMyIHRoaXMgZGlyZWN0bHkgdmlvbGF0ZXMgcGxhbiBtZCBzIGZhaWwgY2xvc2VkIHBoYXNlIGd1YXJhbnRlZSByZXByb2R1Y2VkIHdpdGggbWFsZm9ybWVkIHBoYXNlIGpzb24gcGx1cyBhIGJ1aWxkIGFwcHJvdmFsIGdoIHByIGNyZWF0ZSByZXR1cm5lZCAwIHdoaWxlIHRoZSBzdG9wIGdhdGUgY29ycmVjdGx5IHJldHVybmVkIDI="
-    },
-    {
-      "severity": "major",
-      "file": "bin/plinth",
-      "line": 4463,
-      "description": "`_lifecycle_review_dir` chooses the encoded review directory whenever that directory merely exists, even if its verdict is absent and a valid legacy verdict exists. This masks legacy state in `plinth next` and HANDOFF generation. `snapshot_one_project` repeats the same directory-existence fallback at lines 2058-2060, so the dashboard also reports no review. Reproduced with an empty encoded directory and legacy APPROVED verdict; file-based guard/status readers correctly saw the legacy verdict, confirming the inconsistent behavior.",
-      "id": "YmluL3BsaW50aHxtYWpvcnxsaWZlY3ljbGUgcmV2aWV3IGRpciBjaG9vc2VzIHRoZSBlbmNvZGVkIHJldmlldyBkaXJlY3Rvcnkgd2hlbmV2ZXIgdGhhdCBkaXJlY3RvcnkgbWVyZWx5IGV4aXN0cyBldmVuIGlmIGl0cyB2ZXJkaWN0IGlzIGFic2VudCBhbmQgYSB2YWxpZCBsZWdhY3kgdmVyZGljdCBleGlzdHMgdGhpcyBtYXNrcyBsZWdhY3kgc3RhdGUgaW4gcGxpbnRoIG5leHQgYW5kIGhhbmRvZmYgZ2VuZXJhdGlvbiBzbmFwc2hvdCBvbmUgcHJvamVjdCByZXBlYXRzIHRoZSBzYW1lIGRpcmVjdG9yeSBleGlzdGVuY2UgZmFsbGJhY2sgYXQgbGluZXMgMjA1OCAyMDYwIHNvIHRoZSBkYXNoYm9hcmQgYWxzbyByZXBvcnRzIG5vIHJldmlldyByZXByb2R1Y2VkIHdpdGggYW4gZW1wdHkgZW5jb2RlZCBkaXJlY3RvcnkgYW5kIGxlZ2FjeSBhcHByb3ZlZCB2ZXJkaWN0IGZpbGUgYmFzZWQgZ3VhcmQgc3RhdHVzIHJlYWRlcnMgY29ycmVjdGx5IHNhdyB0aGUgbGVnYWN5IHZlcmRpY3QgY29uZmlybWluZyB0aGUgaW5jb25zaXN0ZW50IGJlaGF2aW9y"
-    },
-    {
-      "severity": "major",
-      "file": "shared/.plinth/review.sh",
-      "line": 160,
-      "description": "Both deterministic Tier-0 approval paths read only the encoded phase file: the HANDOFF-only floor here and the regular Tier-0 floor at lines 839-842. Unlike `review_phase_for_round`, neither checks the supported legacy phase path. A valid legacy HARDEN phase is therefore stamped as `review_phase:\"build\"`; HARDEN Stop/ship gates then reject the newly generated approval, wedging the review loop.",
-      "id": "c2hhcmVkLy5wbGludGgvcmV2aWV3LnNofG1ham9yfGJvdGggZGV0ZXJtaW5pc3RpYyB0aWVyIDAgYXBwcm92YWwgcGF0aHMgcmVhZCBvbmx5IHRoZSBlbmNvZGVkIHBoYXNlIGZpbGUgdGhlIGhhbmRvZmYgb25seSBmbG9vciBoZXJlIGFuZCB0aGUgcmVndWxhciB0aWVyIDAgZmxvb3IgYXQgbGluZXMgODM5IDg0MiB1bmxpa2UgcmV2aWV3IHBoYXNlIGZvciByb3VuZCBuZWl0aGVyIGNoZWNrcyB0aGUgc3VwcG9ydGVkIGxlZ2FjeSBwaGFzZSBwYXRoIGEgdmFsaWQgbGVnYWN5IGhhcmRlbiBwaGFzZSBpcyB0aGVyZWZvcmUgc3RhbXBlZCBhcyByZXZpZXcgcGhhc2UgYnVpbGQgaGFyZGVuIHN0b3Agc2hpcCBnYXRlcyB0aGVuIHJlamVjdCB0aGUgbmV3bHkgZ2VuZXJhdGVkIGFwcHJvdmFsIHdlZGdpbmcgdGhlIHJldmlldyBsb29w"
-    },
-    {
-      "severity": "major",
-      "file": "bin/plinth",
-      "line": 4625,
-      "description": "HANDOFF refresh classifies the entire Goal section as generated whenever its first line is the scaffold `(edit: ...)` placeholder. Operator text appended beneath that placeholder is silently discarded from the active HANDOFF on the next refresh. This reproduces with the normal generated HANDOFF followed by an appended goal and violates the claimed Goal/Evidence/Risks preservation. The pre-overwrite archive makes recovery possible but does not prevent the active-state data loss.",
-      "id": "YmluL3BsaW50aHxtYWpvcnxoYW5kb2ZmIHJlZnJlc2ggY2xhc3NpZmllcyB0aGUgZW50aXJlIGdvYWwgc2VjdGlvbiBhcyBnZW5lcmF0ZWQgd2hlbmV2ZXIgaXRzIGZpcnN0IGxpbmUgaXMgdGhlIHNjYWZmb2xkIGVkaXQgcGxhY2Vob2xkZXIgb3BlcmF0b3IgdGV4dCBhcHBlbmRlZCBiZW5lYXRoIHRoYXQgcGxhY2Vob2xkZXIgaXMgc2lsZW50bHkgZGlzY2FyZGVkIGZyb20gdGhlIGFjdGl2ZSBoYW5kb2ZmIG9uIHRoZSBuZXh0IHJlZnJlc2ggdGhpcyByZXByb2R1Y2VzIHdpdGggdGhlIG5vcm1hbCBnZW5lcmF0ZWQgaGFuZG9mZiBmb2xsb3dlZCBieSBhbiBhcHBlbmRlZCBnb2FsIGFuZCB2aW9sYXRlcyB0aGUgY2xhaW1lZCBnb2FsIGV2aWRlbmNlIHJpc2tzIHByZXNlcnZhdGlvbiB0aGUgcHJlIG92ZXJ3cml0ZSBhcmNoaXZlIG1ha2VzIHJlY292ZXJ5IHBvc3NpYmxlIGJ1dCBkb2VzIG5vdCBwcmV2ZW50IHRoZSBhY3RpdmUgc3RhdGUgZGF0YSBsb3Nz"
-    },
-    {
-      "severity": "major",
-      "file": "bin/plinth",
-      "line": 2470,
-      "description": "The malformed-events/verdict error-card constructor receives all lifecycle arguments but omits the `lifecycle` object entirely. Normal cards and the later jq fallback include it. Thus projects in a deliberately supported error state lose phase, plan, HANDOFF, dual-degraded, and next-action visibility, contradicting the canonical dashboard lifecycle contract.",
-      "id": "YmluL3BsaW50aHxtYWpvcnx0aGUgbWFsZm9ybWVkIGV2ZW50cyB2ZXJkaWN0IGVycm9yIGNhcmQgY29uc3RydWN0b3IgcmVjZWl2ZXMgYWxsIGxpZmVjeWNsZSBhcmd1bWVudHMgYnV0IG9taXRzIHRoZSBsaWZlY3ljbGUgb2JqZWN0IGVudGlyZWx5IG5vcm1hbCBjYXJkcyBhbmQgdGhlIGxhdGVyIGpxIGZhbGxiYWNrIGluY2x1ZGUgaXQgdGh1cyBwcm9qZWN0cyBpbiBhIGRlbGliZXJhdGVseSBzdXBwb3J0ZWQgZXJyb3Igc3RhdGUgbG9zZSBwaGFzZSBwbGFuIGhhbmRvZmYgZHVhbCBkZWdyYWRlZCBhbmQgbmV4dCBhY3Rpb24gdmlzaWJpbGl0eSBjb250cmFkaWN0aW5nIHRoZSBjYW5vbmljYWwgZGFzaGJvYXJkIGxpZmVjeWNsZSBjb250cmFjdA=="
-    },
-    {
-      "severity": "major",
       "file": ".github/scripts/canary-lifecycle-build-harden.sh",
-      "line": 532,
-      "description": "Changed guarantees lack production-bound tests. The cost concurrency test reimplements `append_entries` in standalone Python, so production locking or deduplication can regress while it passes. No behavioral test exercises the HANDOFF-only deterministic floor, HARDEN Tier-2 dual/degraded merge, same-open cap, SessionStart additionalContext, guard-produced session_id event, or production cost harvesters. These are named changed behaviors, not asymptotic coverage requests; the CHANGELOG explicitly lists them as residual canary gaps.",
-      "id": "LmdpdGh1Yi9zY3JpcHRzL2NhbmFyeS1saWZlY3ljbGUtYnVpbGQtaGFyZGVuLnNofG1ham9yfGNoYW5nZWQgZ3VhcmFudGVlcyBsYWNrIHByb2R1Y3Rpb24gYm91bmQgdGVzdHMgdGhlIGNvc3QgY29uY3VycmVuY3kgdGVzdCByZWltcGxlbWVudHMgYXBwZW5kIGVudHJpZXMgaW4gc3RhbmRhbG9uZSBweXRob24gc28gcHJvZHVjdGlvbiBsb2NraW5nIG9yIGRlZHVwbGljYXRpb24gY2FuIHJlZ3Jlc3Mgd2hpbGUgaXQgcGFzc2VzIG5vIGJlaGF2aW9yYWwgdGVzdCBleGVyY2lzZXMgdGhlIGhhbmRvZmYgb25seSBkZXRlcm1pbmlzdGljIGZsb29yIGhhcmRlbiB0aWVyIDIgZHVhbCBkZWdyYWRlZCBtZXJnZSBzYW1lIG9wZW4gY2FwIHNlc3Npb25zdGFydCBhZGRpdGlvbmFsY29udGV4dCBndWFyZCBwcm9kdWNlZCBzZXNzaW9uIGlkIGV2ZW50IG9yIHByb2R1Y3Rpb24gY29zdCBoYXJ2ZXN0ZXJzIHRoZXNlIGFyZSBuYW1lZCBjaGFuZ2VkIGJlaGF2aW9ycyBub3QgYXN5bXB0b3RpYyBjb3ZlcmFnZSByZXF1ZXN0cyB0aGUgY2hhbmdlbG9nIGV4cGxpY2l0bHkgbGlzdHMgdGhlbSBhcyByZXNpZHVhbCBjYW5hcnkgZ2Fwcw=="
-    },
-    {
-      "severity": "minor",
-      "file": "bin/plinth",
-      "line": 4450,
-      "description": "The slug encoder escapes `/` and spaces but not `%`, so distinct valid branch names such as `feat/a/b` and `feat%2Fa/b` collide. The same encoding pattern is copied across lifecycle, review, guard, run, and dashboard paths, allowing session state to cross-talk. This is an exotic branch-name robustness gap in BUILD.",
-      "id": "YmluL3BsaW50aHxtaW5vcnx0aGUgc2x1ZyBlbmNvZGVyIGVzY2FwZXMgYW5kIHNwYWNlcyBidXQgbm90IHNvIGRpc3RpbmN0IHZhbGlkIGJyYW5jaCBuYW1lcyBzdWNoIGFzIGZlYXQgYSBiIGFuZCBmZWF0IDJmYSBiIGNvbGxpZGUgdGhlIHNhbWUgZW5jb2RpbmcgcGF0dGVybiBpcyBjb3BpZWQgYWNyb3NzIGxpZmVjeWNsZSByZXZpZXcgZ3VhcmQgcnVuIGFuZCBkYXNoYm9hcmQgcGF0aHMgYWxsb3dpbmcgc2Vzc2lvbiBzdGF0ZSB0byBjcm9zcyB0YWxrIHRoaXMgaXMgYW4gZXhvdGljIGJyYW5jaCBuYW1lIHJvYnVzdG5lc3MgZ2FwIGluIGJ1aWxk"
-    },
-    {
-      "severity": "minor",
-      "file": "docs/LIFECYCLE.md",
-      "line": 156,
-      "description": "The lifecycle table overstates sticky behavior by saying any reopened finding on an unchanged blob is auto-resolved. Production code only auto-resolves recognized thrash classes and deliberately keeps ordinary bugs, blockers, and security findings open.",
-      "id": "ZG9jcy9MSUZFQ1lDTEUubWR8bWlub3J8dGhlIGxpZmVjeWNsZSB0YWJsZSBvdmVyc3RhdGVzIHN0aWNreSBiZWhhdmlvciBieSBzYXlpbmcgYW55IHJlb3BlbmVkIGZpbmRpbmcgb24gYW4gdW5jaGFuZ2VkIGJsb2IgaXMgYXV0byByZXNvbHZlZCBwcm9kdWN0aW9uIGNvZGUgb25seSBhdXRvIHJlc29sdmVzIHJlY29nbml6ZWQgdGhyYXNoIGNsYXNzZXMgYW5kIGRlbGliZXJhdGVseSBrZWVwcyBvcmRpbmFyeSBidWdzIGJsb2NrZXJzIGFuZCBzZWN1cml0eSBmaW5kaW5ncyBvcGVu"
-    },
-    {
-      "severity": "minor",
-      "file": "bin/plinth",
-      "line": 5029,
-      "description": "Deep-plan parsing uses `setdefault` for the seat identity, allowing a fallible model's incorrect `seat` field to override the caller-assigned role. A security seat can therefore be mislabeled as completeness/delete-simplify. The configured invocation role should remain authoritative; this is BUILD-phase model-output robustness rather than a ship-boundary defect.",
-      "id": "YmluL3BsaW50aHxtaW5vcnxkZWVwIHBsYW4gcGFyc2luZyB1c2VzIHNldGRlZmF1bHQgZm9yIHRoZSBzZWF0IGlkZW50aXR5IGFsbG93aW5nIGEgZmFsbGlibGUgbW9kZWwgcyBpbmNvcnJlY3Qgc2VhdCBmaWVsZCB0byBvdmVycmlkZSB0aGUgY2FsbGVyIGFzc2lnbmVkIHJvbGUgYSBzZWN1cml0eSBzZWF0IGNhbiB0aGVyZWZvcmUgYmUgbWlzbGFiZWxlZCBhcyBjb21wbGV0ZW5lc3MgZGVsZXRlIHNpbXBsaWZ5IHRoZSBjb25maWd1cmVkIGludm9jYXRpb24gcm9sZSBzaG91bGQgcmVtYWluIGF1dGhvcml0YXRpdmUgdGhpcyBpcyBidWlsZCBwaGFzZSBtb2RlbCBvdXRwdXQgcm9idXN0bmVzcyByYXRoZXIgdGhhbiBhIHNoaXAgYm91bmRhcnkgZGVmZWN0"
-    },
-    {
-      "severity": "minor",
-      "file": "bin/plinth",
-      "line": 3057,
-      "description": "The Codex quota probe reads the newest session file completely with `read_text().splitlines()` before slicing the last 400 records. Large long-lived session logs can stall or exhaust memory during dashboard refresh. This is an asymptotic local-history gap and is non-blocking in BUILD.",
-      "id": "YmluL3BsaW50aHxtaW5vcnx0aGUgY29kZXggcXVvdGEgcHJvYmUgcmVhZHMgdGhlIG5ld2VzdCBzZXNzaW9uIGZpbGUgY29tcGxldGVseSB3aXRoIHJlYWQgdGV4dCBzcGxpdGxpbmVzIGJlZm9yZSBzbGljaW5nIHRoZSBsYXN0IDQwMCByZWNvcmRzIGxhcmdlIGxvbmcgbGl2ZWQgc2Vzc2lvbiBsb2dzIGNhbiBzdGFsbCBvciBleGhhdXN0IG1lbW9yeSBkdXJpbmcgZGFzaGJvYXJkIHJlZnJlc2ggdGhpcyBpcyBhbiBhc3ltcHRvdGljIGxvY2FsIGhpc3RvcnkgZ2FwIGFuZCBpcyBub24gYmxvY2tpbmcgaW4gYnVpbGQ="
-    },
-    {
-      "severity": "minor",
-      "file": "bin/plinth",
-      "line": 3950,
-      "description": "Observed costs are rounded to cents before checking whether any positive amount exists. A real positive total below $0.005 becomes zero and is omitted, despite MANUAL.md saying the dollar strip appears for any positive observed amount.",
-      "id": "YmluL3BsaW50aHxtaW5vcnxvYnNlcnZlZCBjb3N0cyBhcmUgcm91bmRlZCB0byBjZW50cyBiZWZvcmUgY2hlY2tpbmcgd2hldGhlciBhbnkgcG9zaXRpdmUgYW1vdW50IGV4aXN0cyBhIHJlYWwgcG9zaXRpdmUgdG90YWwgYmVsb3cgMCAwMDUgYmVjb21lcyB6ZXJvIGFuZCBpcyBvbWl0dGVkIGRlc3BpdGUgbWFudWFsIG1kIHNheWluZyB0aGUgZG9sbGFyIHN0cmlwIGFwcGVhcnMgZm9yIGFueSBwb3NpdGl2ZSBvYnNlcnZlZCBhbW91bnQ="
-    },
-    {
-      "severity": "minor",
-      "file": "bin/plinth",
-      "line": 5300,
-      "description": "The first `sed` expression used to extract HANDOFF Next items has an entirely optional prefix and therefore emits every line unchanged. For a bullet such as `- (edit: ...)`, that unstripped copy bypasses the placeholder filter and makes `plinth next` report work rather than done. This affects an alternate operator-authored input form; generated numbered hints are unaffected.",
-      "id": "YmluL3BsaW50aHxtaW5vcnx0aGUgZmlyc3Qgc2VkIGV4cHJlc3Npb24gdXNlZCB0byBleHRyYWN0IGhhbmRvZmYgbmV4dCBpdGVtcyBoYXMgYW4gZW50aXJlbHkgb3B0aW9uYWwgcHJlZml4IGFuZCB0aGVyZWZvcmUgZW1pdHMgZXZlcnkgbGluZSB1bmNoYW5nZWQgZm9yIGEgYnVsbGV0IHN1Y2ggYXMgZWRpdCB0aGF0IHVuc3RyaXBwZWQgY29weSBieXBhc3NlcyB0aGUgcGxhY2Vob2xkZXIgZmlsdGVyIGFuZCBtYWtlcyBwbGludGggbmV4dCByZXBvcnQgd29yayByYXRoZXIgdGhhbiBkb25lIHRoaXMgYWZmZWN0cyBhbiBhbHRlcm5hdGUgb3BlcmF0b3IgYXV0aG9yZWQgaW5wdXQgZm9ybSBnZW5lcmF0ZWQgbnVtYmVyZWQgaGludHMgYXJlIHVuYWZmZWN0ZWQ="
+      "line": 0,
+      "description": "Residual triage KEEP: lifecycle canary depth (production-bound tests for dual-pass, HANDOFF floor e2e, cost harvesters). Tracked as follow-up; non-blocking for ship after 5.0.2 triage.",
+      "id": "residual-canary-depth-keep"
     }
   ]
 }
