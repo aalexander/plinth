@@ -224,17 +224,82 @@ OLDSTOCK
 )"
   [ -n "$norm" ] && [ "$norm" = "$ref" ]
 }
+# True if DRIVER-project is missing or still the empty scaffold template (only
+# the stock heading/comment — no operator notes yet).
+_driver_project_is_scaffold() {
+  local f="$1" body
+  [ -f "$f" ] || return 0
+  # Fail closed without python3: never treat an existing file as disposable.
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+  # Strip multi-line HTML comments + blank lines; scaffold is title-only.
+  body="$(python3 - "$f" <<'PY' 2>/dev/null || echo __SCAFFOLD_PROBE_FAILED__
+import re, sys
+t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
+lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+print("\n".join(lines))
+PY
+)"
+  case "$body" in
+    __SCAFFOLD_PROBE_FAILED__) return 1 ;;  # fail closed → append, never overwrite
+    ''|'# Project-Specific Driver Notes') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Extract non-shell project content from a custom CLAUDE.md into DRIVER-project.md
+# so the pinned shell can replace CLAUDE.md without losing domain rules (upstream #21).
+_migrate_custom_claude_into_driver_project() {
+  local claude="$1" dest="$2" ts extracted
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$dest")" || return 1
+  extracted="$(mktemp "${TMPDIR:-/tmp}/plinth-claude-mig.XXXXXX")" || return 1
+  # Full custom file always — never drop pre-heading rules (review r2 blocker).
+  {
+    echo "# Project-Specific Driver Notes"
+    echo
+    echo "<!-- Migrated FULL custom CLAUDE.md on $ts by plinth update (driver-shell v4.4+)."
+    echo "     Review and trim; this file is never overwritten by later updates. -->"
+    echo
+    cat "$claude"
+  } > "$extracted" || { rm -f "$extracted"; return 1; }
+  if [ ! -s "$extracted" ]; then
+    rm -f "$extracted"
+    return 1
+  fi
+  if [ -f "$dest" ] && ! _driver_project_is_scaffold "$dest"; then
+    {
+      echo
+      echo "---"
+      echo
+      cat "$extracted"
+    } >> "$dest" || { rm -f "$extracted"; return 1; }
+    rm -f "$extracted"
+  else
+    mv "$extracted" "$dest" || { rm -f "$extracted"; return 1; }
+  fi
+  return 0
+}
+
 materialize_driver_shell() {
   copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$target/AGENTS.md"
-  local c="$target/CLAUDE.md"
+  local c="$target/CLAUDE.md" dp="$target/.plinth/DRIVER-project.md"
   if [ ! -f "$c" ] || grep -qF "$DRIVER_SHELL_MARKER" "$c" 2>/dev/null || is_stock_old_claude "$c"; then
     copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"   # absent, already-shell, or stock old -> (re)generate
   else
-    echo "  NOTE: $c has CUSTOM content — NOT overwritten. The v4.4.0 driver contract"
-    echo "        is a pinned shell (CLAUDE.md + AGENTS.md, regenerated) plus"
-    echo "        .plinth/DRIVER-project.md for your notes. Move your"
-    echo "        '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
-    echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+    # Custom pre-shell CLAUDE.md (upstream #21): migrate notes into DRIVER-project
+    # then install the pinned shell. On migration failure, PRESERVE custom CLAUDE.md.
+    if _migrate_custom_claude_into_driver_project "$c" "$dp"; then
+      echo "  migrated: custom CLAUDE.md project notes → .plinth/DRIVER-project.md"
+      copy_managed_file "$PLINTH_ROOT/shared/driver-shell.md" "$c"
+      echo "  regenerated: CLAUDE.md as pinned driver shell (project rules preserved in DRIVER-project.md)"
+    else
+      echo "  NOTE: $c has CUSTOM content — NOT overwritten (migration to DRIVER-project.md failed)."
+      echo "        Move your '## Project-specific notes' into .plinth/DRIVER-project.md, then delete"
+      echo "        CLAUDE.md and re-run 'plinth update' to regenerate the shell."
+    fi
   fi
 }
 
@@ -1048,13 +1113,30 @@ open_items() {  # open_items <needs-human-file>
   ' "$1" 2>/dev/null
 }
 
+# Blocking marker after open_items strips "- [ ] ".
+# Canonical:  [BLOCKING] text
+# Also accept common human/markdown forms:
+#   **[BLOCKING] text
+#   **[BLOCKING — title] text
+#   [BLOCKING — title] text
+# Used by queue, watch, and dash so counts and sort agree.
+_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-])'
+_nh_item_is_blocking() {  # <logical-item-text> → 0 if blocking
+  printf '%s' "$1" | grep -qE "$_nh_blocking_re"
+}
+_nh_count_blocking() {  # stdin logical items → count
+  grep -cE "$_nh_blocking_re" || true
+}
+# jq expression (string): true when . is a blocking logical item text.
+_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")'
+
 # Blocking items first (order preserved within each group), so the human sees
 # what's stalling work RIGHT NOW at the top. Reads logical items on stdin.
 sort_blocking_first() {
   local all blk non
   all="$(cat)"
-  blk="$(printf '%s\n' "$all" | grep '^\[BLOCKING\]' || true)"
-  non="$(printf '%s\n' "$all" | grep -v '^\[BLOCKING\]' || true)"
+  blk="$(printf '%s\n' "$all" | grep -E "$_nh_blocking_re" || true)"
+  non="$(printf '%s\n' "$all" | grep -vE "$_nh_blocking_re" || true)"
   [ -n "$blk" ] && printf '%s\n' "$blk"
   [ -n "$non" ] && printf '%s\n' "$non"
   return 0   # never fail the caller's `x="$(... | sort_blocking_first)"` under set -e:
@@ -1073,16 +1155,17 @@ run_queue() {
   wrapw=$((cols - 4))
   items="$(open_items "$f")"
   [ -n "$items" ] || items="$(grep -v '^[[:space:]]*$' "$f")"
-  local qb; qb="$(printf '%s\n' "$items" | grep -c '^\[BLOCKING\]' || true)"
+  local qb; qb="$(printf '%s\n' "$items" | _nh_count_blocking)"
   items="$(printf '%s\n' "$items" | sort_blocking_first)"
   echo "⏸ NEEDS-HUMAN — $target ($(printf '%s\n' "$items" | grep -c .) open, $qb blocking; blocking first)"
   local RD=$'\033[1;31m' Z=$'\033[0m'
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    case "$item" in
-      '[BLOCKING]'*) printf '%s· %s%s\n' "$RD" "$item" "$Z" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
-      *)             printf '· %s\n' "$item" | fold -s -w "$wrapw" | sed '2,$s/^/  /' ;;
-    esac
+    if _nh_item_is_blocking "$item"; then
+      printf '%s· %s%s\n' "$RD" "$item" "$Z" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+    else
+      printf '· %s\n' "$item" | fold -s -w "$wrapw" | sed '2,$s/^/  /'
+    fi
   done <<< "$items"
 }
 
@@ -1135,7 +1218,7 @@ render_frame() {
     raw="$(open_items "$nhf")"
     [ -n "$raw" ] || raw="$(grep -v '^[[:space:]]*$' "$nhf")"
     nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
-    nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+    nhb="$(printf '%s\n' "$raw" | _nh_count_blocking)"
     raw="$(printf '%s\n' "$raw" | sort_blocking_first)"   # blocking to the top
     cols="${PLINTH_WATCH_COLS:-$(tput cols 2>/dev/null || echo 100)}"
     [ "$cols" -ge 40 ] 2>/dev/null || cols=100
@@ -1152,7 +1235,7 @@ render_frame() {
     local tag
     while IFS= read -r item; do
       [ -n "$item" ] || continue
-      case "$item" in '[BLOCKING]'*) tag='!' ;; *) tag=' ' ;; esac
+      if _nh_item_is_blocking "$item"; then tag='!'; else tag=' '; fi
       folded="$(printf '%s\n' "· $item" | fold -s -w "$wrapw" | sed '2,$s/^/  /')"
       flines="$(printf '%s\n' "$folded" | wc -l | tr -d ' ')"
       if [ $((used + flines)) -gt "$budget" ] && [ "$shown" -gt 0 ]; then break; fi
@@ -2072,13 +2155,37 @@ snapshot_one_project() {
   # Detached HEAD → slug "detached" (same contract as smoke/statusline), not "-".
   branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [ -z "$branch" ]; then branch="detached"; fi
-  slug="$(_lifecycle_slug "$dir")"
-  if [ ! -f "$dir/.plinth/session/review/$slug/verdict.json" ] \
-     && [ ! -d "$dir/.plinth/session/review/$slug" ]; then
-    slug="$(_lifecycle_slug_legacy "$dir")"
+  # Prefer a review dir with real work: encoded first when it has a verdict OR
+  # request/findings (in-flight / findings-without-verdict); else legacy if it
+  # has a verdict. Empty encoded dirs must not mask legacy verdicts.
+  local rev_dir enc_slug leg_slug enc_dir leg_dir enc_has_work=0
+  enc_slug="$(_lifecycle_slug "$dir")"
+  leg_slug="$(_lifecycle_slug_legacy "$dir")"
+  enc_dir="$dir/.plinth/session/review/$enc_slug"
+  leg_dir="$dir/.plinth/session/review/$leg_slug"
+  if [ -d "$enc_dir" ]; then
+    local _encf
+    for _encf in "$enc_dir"/request-*.json "$enc_dir"/findings-*.json; do
+      [ -f "$_encf" ] || continue
+      enc_has_work=1
+      break
+    done
+  fi
+  if [ -f "$enc_dir/verdict.json" ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ "$enc_has_work" -eq 1 ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ -f "$leg_dir/verdict.json" ]; then
+    slug="$leg_slug"; rev_dir="$leg_dir"
+  elif [ -d "$enc_dir" ]; then
+    slug="$enc_slug"; rev_dir="$enc_dir"
+  elif [ -d "$leg_dir" ]; then
+    slug="$leg_slug"; rev_dir="$leg_dir"
+  else
+    slug="$enc_slug"; rev_dir="$enc_dir"
   fi
 
-  local vfile="$dir/.plinth/session/review/$slug/verdict.json"
+  local vfile="$rev_dir/verdict.json"
   local verdict_file_bad=false
   if [ -f "$vfile" ]; then
     # Exactly one JSON document and it must be an object (rejects null/false,
@@ -2098,7 +2205,7 @@ snapshot_one_project() {
   # means a retry is in flight (review.sh writes request, then on fail last-error;
   # a later retry rewrites request). Same mtime or older request → keep error.
   local has_last_error=false
-  local errfile="$dir/.plinth/session/review/$slug/last-error"
+  local errfile="$rev_dir/last-error"
   if [ -f "$errfile" ]; then
     if [ -n "$rqfile" ] && [ -f "$rqfile" ] && [ "$rqfile" != /dev/null ] \
        && _dash_file_newer "$rqfile" "$errfile"; then
@@ -2106,6 +2213,22 @@ snapshot_one_project() {
     else
       has_last_error=true
     fi
+  fi
+  # Primary findings for the in-flight request round mean the reviewer finished
+  # even when verdict.json was not written (e.g. dual-pass hang). Not RUNNING.
+  local has_primary_findings=false
+  local findings_for_rq=""
+  if [ -n "$rqfile" ] && [ "$rqfile" != /dev/null ]; then
+    local _rqn _ftry
+    _rqn="${rqfile##*/request-}"
+    _rqn="${_rqn%.json}"
+    case "$_rqn" in ''|*[!0-9]*) ;; *)
+      _ftry="$rev_dir/findings-${_rqn}.json"
+      if [ -f "$_ftry" ] && jq -e 'type == "object"' "$_ftry" >/dev/null 2>&1; then
+        has_primary_findings=true
+        findings_for_rq="$_ftry"
+      fi
+    ;; esac
   fi
 
   local activity_ago=null events_mtime=0
@@ -2130,15 +2253,17 @@ snapshot_one_project() {
     # do NOT fall back to counting headings / checked lines as open.
     if [ -n "$raw" ]; then
       nhn="$(printf '%s\n' "$raw" | grep -c . || true)"
-      nhb="$(printf '%s\n' "$raw" | grep -c '^\[BLOCKING\]' || true)"
+      nhb="$(printf '%s\n' "$raw" | _nh_count_blocking)"
       # Drill-down list for the wallboard (cap 50; full queue via `plinth queue`).
       # Avoid printf|head SIGPIPE under pipefail: materialize then slice in jq.
+      # Blocking: canonical [BLOCKING] plus markdown **[BLOCKING — …] forms.
       nh_items_json="$(printf '%s\n' "$raw" | jq -Rsc --argjson open "$nhn" '
         split("\n")
         | map(select(length > 0))
         | . as $all
         | ($all[:50]) as $items
-        | {items: ($items | map({text: ., blocking: startswith("[BLOCKING]")})),
+        | {items: ($items | map({text: .,
+            blocking: test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")})),
            truncated: (($items | length) < $open)}
       ' 2>/dev/null || echo '{"items":[],"truncated":true}')"
     fi
@@ -2197,7 +2322,9 @@ snapshot_one_project() {
     dual_degraded=true
   fi
   local next_action=""
-  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || next_action=""
+  # plinth next exits 2 on human_blocked / 3 on done — keep stdout either way
+  # (pipefail would otherwise blank next via `|| next_action=""`).
+  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || true
 
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
@@ -2386,7 +2513,6 @@ snapshot_one_project() {
   # Separate review-round wall time (request-N → findings-N mtimes). NOT folded into
   # phases.reviewing (that would double-count Bash review.sh event gaps).
   local review_round_secs=0
-  local rev_dir="$dir/.plinth/session/review/$slug"
   if [ -d "$rev_dir" ]; then
     local n rqff fnd t0 t1
     for fnd in "$rev_dir"/findings-*.json; do
@@ -2406,16 +2532,23 @@ snapshot_one_project() {
     done
   fi
 
-  # Open findings for CHANGES click-through (latest findings-N for verdict round).
+  # Open findings for CHANGES click-through. Prefer findings for the request
+  # round (covers findings-without-verdict), else verdict.round, else highest N.
   local findings_items='[]' findings_summary='' findings_open=0 findings_trunc=false
-  if [ -d "$rev_dir" ] && [ -f "$vfile" ] && [ "$vfile" != /dev/null ] \
-     && [ "$verdict_file_bad" != true ]; then
+  local findings_verdict=''  # when no verdict.json, surface findings.verdict
+  if [ -d "$rev_dir" ] && [ "$verdict_file_bad" != true ]; then
     local fround fpath
-    fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
-    case "$fround" in ''|*[!0-9]*) fround="" ;; esac
-    if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
-      fpath="$rev_dir/findings-$fround.json"
-    else
+    fpath=""
+    if [ -n "$findings_for_rq" ] && [ -f "$findings_for_rq" ]; then
+      fpath="$findings_for_rq"
+    elif [ -f "$vfile" ] && [ "$vfile" != /dev/null ]; then
+      fround="$(jq -r 'if (.round | type) == "number" then .round else empty end' "$vfile" 2>/dev/null || true)"
+      case "$fround" in ''|*[!0-9]*) fround="" ;; esac
+      if [ -n "$fround" ] && [ -f "$rev_dir/findings-$fround.json" ]; then
+        fpath="$rev_dir/findings-$fround.json"
+      fi
+    fi
+    if [ -z "$fpath" ] || [ ! -f "$fpath" ]; then
       # Fall back to highest-numbered findings-N.json
       fpath=""
       local cand maxn=-1
@@ -2437,6 +2570,8 @@ snapshot_one_project() {
           if type != "string" then ""
           elif length > 280 then .[0:277] + "…"
           else . end;
+        def verdict_ok($v):
+          $v == "APPROVED" or $v == "CHANGES_NEEDED" or $v == "UNBOUND";
         (.summary // null) as $sum
         | [(.findings // [])[]
            | select((.status // "open") != "resolved")
@@ -2451,7 +2586,9 @@ snapshot_one_project() {
             summary: (if $sum == null then null else ($sum|tostring|clip) end),
             open: ($all|length),
             truncated: (($all|length) > 25),
-            items: $all[0:25]
+            items: $all[0:25],
+            verdict: (if ((.verdict // null) | type) == "string"
+                         and verdict_ok(.verdict) then .verdict else null end)
           }
       ' "$fpath" 2>/dev/null || true)"
       if [ -n "$fparsed" ]; then
@@ -2462,6 +2599,7 @@ snapshot_one_project() {
         if printf '%s' "$fparsed" | jq -e '.truncated == true' >/dev/null 2>&1; then
           findings_trunc=true
         fi
+        findings_verdict="$(printf '%s' "$fparsed" | jq -r '.verdict // empty' 2>/dev/null || true)"
       fi
     fi
   fi
@@ -2489,7 +2627,7 @@ snapshot_one_project() {
         error:"snapshot_render_failed",
         lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
                    handoff:$handoff_present,handoff_age_secs:$handoff_age,
-                   dual_degraded:$dual_degraded,next_action:(if $next_action=="" then null else $next_action end)},
+                   dual_degraded:$dual_degraded,next:(if $next_action=="" then null else $next_action end)},
         needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
         phases:($phases // {}),
         review_round_secs:$review_round_secs,
@@ -2550,6 +2688,8 @@ snapshot_one_project() {
         --arg seat_advm "${seat_advisor_model:-}" \
         --arg seat_advx "${seat_advisor_max:-}" \
         --argjson has_last_error "$has_last_error" \
+        --argjson has_primary_findings "$has_primary_findings" \
+        --arg findings_verdict "${findings_verdict:-}" \
         --argjson rq_round_from_name "$rq_round_from_name" \
         --arg life_phase "$life_phase" \
         --argjson plan_present "$plan_present" --argjson handoff_present "$handoff_present" \
@@ -2591,12 +2731,21 @@ snapshot_one_project() {
        elif ($rq_round_from_name != null)
             and (($RQ0.round | floor) != $rq_round_from_name) then error("bad_request_round_mismatch")
        else $RQ0 end) as $RQ
-    # RUNNING only when a newer request exists AND no last-error (infra failure
-    # leaves request-N behind without a live reviewer).
-    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0)) and ($has_last_error | not)
+    # RUNNING only when a newer request exists, no last-error, AND primary
+    # findings for that round are not yet on disk (findings-without-verdict is done).
+    | (if $RQ != null and (($RQ.round // 0) > ($V.round // 0))
+            and ($has_last_error | not) and ($has_primary_findings | not)
        then true else false end) as $running
     | (if $V == null then null
        else (sha_match($V.sha // ""; $head_full) | not) end) as $stale
+    # When verdict.json is missing but findings-N carries a non-APPROVED enum,
+    # surface CHANGES_NEEDED/UNBOUND only — never promote raw APPROVED without
+    # the instrument verdict arithmetic (sticky/thrash/tamper).
+    | (if $V != null then ($V.verdict // null)
+       elif ($findings_verdict | length) > 0 and verdict_ok($findings_verdict)
+            and $findings_verdict != "APPROVED"
+       then $findings_verdict
+       else null end) as $disp_verdict
     | ($tr | map(select(type == "object" and .type == "assistant" and (.message.usage? != null))
         | {e: ((.timestamp // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdate catch null),
            i: (.message.usage.input_tokens // 0),
@@ -2668,26 +2817,35 @@ snapshot_one_project() {
                   } else {
                     guard_blocks:0, gate_releases:0, compactions:0, subagents:0
                   } end),
-        review: (if $V == null and ($running | not) and ($has_last_error | not) then null
-                 elif $V == null and $has_last_error then {
-                   verdict: null, round: ($RQ.round // null), sha7: null,
-                   stale: null, running: false, mode: ($RQ.mode // null),
-                   tier: null, last_error: true
-                 }
-                 else {
-          verdict: ($V.verdict // null),
-          round: (if $running then ($RQ.round // null) else ($V.round // null) end),
-          sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
-          stale: $stale,
-          running: $running,
-          mode: (if $running then ($RQ.mode // null) else ($V.mode // null) end),
-          tier: ($V.risk.tier // null),
-          last_error: $has_last_error,
-          summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
-          findings_open: $findings_open,
-          findings_truncated: $findings_trunc,
-          findings: $findings_items
-        } end),
+        review: (
+          if $V == null and ($running | not) and ($has_last_error | not)
+             and $disp_verdict == null then null
+          elif $V == null and $has_last_error and ($has_primary_findings | not) then {
+            verdict: null, round: ($RQ.round // null), sha7: null,
+            stale: null, running: false, mode: ($RQ.mode // null),
+            tier: null, last_error: true,
+            summary: null, findings_open: 0, findings_truncated: false, findings: []
+          }
+          else {
+            verdict: $disp_verdict,
+            round: (if $running then ($RQ.round // null)
+                    elif $V != null then ($V.round // null)
+                    else ($RQ.round // null) end),
+            sha7: (if $V == null then null else ($V.sha // "")[0:7] end),
+            stale: $stale,
+            running: $running,
+            mode: (if $running then ($RQ.mode // null)
+                   elif $V != null then ($V.mode // null)
+                   else ($RQ.mode // null) end),
+            tier: (if $V != null then ($V.risk.tier // null) else null end),
+            # Never mask a real last-error just because findings exist (infra
+            # can die_infra after writing findings-N). Surface both.
+            last_error: $has_last_error,
+            summary: (if ($findings_summary|length) > 0 then $findings_summary else null end),
+            findings_open: $findings_open,
+            findings_truncated: $findings_trunc,
+            findings: $findings_items
+          } end),
         needs_human: {
           open: $nhn, blocking: $nhb, items: $nh_items, truncated: $nh_trunc,
           source: $nh_source
@@ -2906,38 +3064,82 @@ access = tokens.get("access_token")
 if not access or not isinstance(access, str):
     sys.exit(2)
 account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else ""
-# urllib keeps the bearer out of process argv. Disable redirects at the
-# HTTPRedirectHandler layer (order 500) — subclassing HTTPErrorProcessor alone
-# does not stop the default redirect handler from re-sending Authorization.
-import urllib.error
-import urllib.request
+# Bearer never on argv: urllib headers, or curl -H @headerfile on SSL failure
+# (python.org builds on macOS often lack CA certs → CERTIFICATE_VERIFY_FAILED).
 headers = {
     "Authorization": "Bearer " + access,
     "Accept": "application/json",
 }
 if account_id:
     headers["ChatGPT-Account-Id"] = account_id
-req = urllib.request.Request(
-    "https://chatgpt.com/backend-api/wham/usage",
-    headers=headers,
-    method="GET",
-)
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None  # raise HTTPError; never follow (bearer must not leave host)
-_opener = urllib.request.build_opener(_NoRedirect)
+
+def http_get_body(url, headers, timeout):
+    import os, shutil, subprocess, tempfile
+    import urllib.error
+    import urllib.request
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # never follow (bearer must not leave host)
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        resp = urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+        code = getattr(resp, "status", None) or resp.getcode()
+        if code is not None and int(code) >= 400:
+            raise SystemExit(4)
+        return resp.read().decode("utf-8", errors="replace")
+    except SystemExit:
+        raise
+    except urllib.error.HTTPError:
+        raise SystemExit(4)
+    except Exception as e:
+        if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+            raise SystemExit(124)
+        # SSL / cert chain failures (common on python.org macOS installs).
+        if shutil.which("curl") is None:
+            raise SystemExit(1)
+        hpath = None
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, prefix="plinth-qh-") as hf:
+                for k, v in headers.items():
+                    hf.write("%s: %s\n" % (k, v))
+                hpath = hf.name
+            # No -L: do not follow redirects (same bearer isolation as urllib).
+            # -q/--disable first: never load ~/.curlrc (trace/insecure/location).
+            r = subprocess.run(
+                ["curl", "-q", "-sS", "--max-time", str(int(timeout)),
+                 "-H", "@" + hpath, "-w", "\n%{http_code}", url],
+                capture_output=True, text=True, timeout=int(timeout) + 5,
+            )
+            out = r.stdout or ""
+            if "\n" not in out:
+                raise SystemExit(1)
+            body, _, code_s = out.rpartition("\n")
+            try:
+                code = int(code_s.strip() or "0")
+            except ValueError:
+                raise SystemExit(1)
+            if code >= 400 or code == 0:
+                raise SystemExit(4 if code >= 400 else 1)
+            return body
+        except SystemExit:
+            raise
+        except subprocess.TimeoutExpired:
+            raise SystemExit(124)
+        except Exception:
+            raise SystemExit(1)
+        finally:
+            if hpath:
+                try:
+                    os.unlink(hpath)
+                except Exception:
+                    pass
+
 try:
-    resp = _opener.open(req, timeout=to_s)
-    code = getattr(resp, "status", None) or resp.getcode()
-    if code is not None and int(code) >= 400:
-        sys.exit(4)
-    body = resp.read().decode("utf-8", errors="replace")
-except urllib.error.HTTPError:
-    sys.exit(4)
-except Exception as e:
-    if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
-        sys.exit(124)
-    sys.exit(1)
+    body = http_get_body(
+        "https://chatgpt.com/backend-api/wham/usage", headers, to_s
+    )
+except SystemExit:
+    raise
 try:
     d = json.loads(body or "")
 except Exception:
@@ -3229,46 +3431,94 @@ if not token:
     sys.exit(2)
 
 def curl_json(url, required=True):
-    """HTTP GET with bearer in urllib headers (never on argv). No redirects
-    (override HTTPRedirectHandler — default would re-send Authorization).
-    required=False: return None on any failure."""
+    """HTTP GET with bearer never on argv (urllib headers, or curl -H @file).
+    No redirects. required=False: return None on any failure.
+    curl fallback covers python.org macOS SSL CERTIFICATE_VERIFY_FAILED."""
+    import os, shutil, subprocess, tempfile
     import urllib.error
     import urllib.request
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/json",
+    }
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Accept": "application/json",
-        },
-        method="GET",
-    )
+    def _parse(body):
+        try:
+            return json.loads(body or "")
+        except json.JSONDecodeError:
+            if not required:
+                return None
+            raise SystemExit(5)
     try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
         resp = urllib.request.build_opener(_NoRedirect).open(req, timeout=to_s)
         code = getattr(resp, "status", None) or resp.getcode()
         if code is not None and int(code) >= 400:
             if not required:
                 return None
             raise SystemExit(4)
-        return json.loads(resp.read().decode("utf-8", errors="replace") or "")
+        return _parse(resp.read().decode("utf-8", errors="replace"))
     except SystemExit:
         raise
-    except json.JSONDecodeError:
-        if not required:
-            return None
-        raise SystemExit(5)
     except urllib.error.HTTPError:
         if not required:
             return None
         raise SystemExit(4)
     except Exception as e:
-        if not required:
-            return None
         if "timed out" in str(e).lower() or isinstance(e, TimeoutError):
+            if not required:
+                return None
             raise SystemExit(124)
-        raise SystemExit(1)
+        if shutil.which("curl") is None:
+            if not required:
+                return None
+            raise SystemExit(1)
+        hpath = None
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, prefix="plinth-qh-") as hf:
+                for k, v in headers.items():
+                    hf.write("%s: %s\n" % (k, v))
+                hpath = hf.name
+            r = subprocess.run(
+                ["curl", "-q", "-sS", "--max-time", str(int(to_s)),
+                 "-H", "@" + hpath, "-w", "\n%{http_code}", url],
+                capture_output=True, text=True, timeout=int(to_s) + 5,
+            )
+            out = r.stdout or ""
+            if "\n" not in out:
+                if not required:
+                    return None
+                raise SystemExit(1)
+            body, _, code_s = out.rpartition("\n")
+            try:
+                code = int(code_s.strip() or "0")
+            except ValueError:
+                if not required:
+                    return None
+                raise SystemExit(1)
+            if code >= 400 or code == 0:
+                if not required:
+                    return None
+                raise SystemExit(4 if code >= 400 else 1)
+            return _parse(body)
+        except SystemExit:
+            raise
+        except subprocess.TimeoutExpired:
+            if not required:
+                return None
+            raise SystemExit(124)
+        except Exception:
+            if not required:
+                return None
+            raise SystemExit(1)
+        finally:
+            if hpath:
+                try:
+                    os.unlink(hpath)
+                except Exception:
+                    pass
 
 def num_val(obj, *keys):
     cur = obj
@@ -4904,11 +5154,66 @@ EOF
   echo "Wrote $f (light scaffold). Fill AC, then build — or: plinth plan --deep"
 }
 
+# Drop models that are clearly the wrong vendor family (e.g. fable on codex).
+# Empty → vendor default model.
+_plan_model_for_vendor() {
+  local vendor="$1" model="$2"
+  [ -n "$model" ] || { printf ''; return 0; }
+  case "$vendor" in
+    codex)
+      case "$model" in
+        fable*|opus*|sonnet*|haiku*|claude*|gemini*|flash*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    claude)
+      case "$model" in
+        gpt-*|o[0-9]*|o1*|o3*|o4*|codex*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    grok)
+      case "$model" in
+        gpt-*|opus*|sonnet*|fable*|claude*) printf '' ;;
+        *) printf '%s' "$model" ;;
+      esac ;;
+    *) printf '%s' "$model" ;;
+  esac
+}
+
+# Classify a failed seat from stdout+stderr (bounded, secret-safe).
+_plan_seat_classify() {
+  local vendor="$1" out="$2" err="$3"
+  local blob
+  blob="$(printf '%s\n%s' "$out" "$err" | head -c 4000)"
+  if printf '%s' "$blob" | grep -qiE 'not logged in|please run /login|auth.*(fail|required)|unauthorized|401'; then
+    echo "unauthenticated"
+  elif printf '%s' "$blob" | grep -qiE 'model.*not (found|supported)|invalid.*(model|request)|unknown model'; then
+    echo "invalid_model"
+  elif printf '%s' "$blob" | grep -qiE 'rate.?limit|429|quota|capacity|overloaded|timeout|timed out|ECONN|connection reset|temporarily'; then
+    echo "transient"
+  elif printf '%s' "$blob" | grep -qiE 'command not found|No such file'; then
+    echo "missing_binary"
+  else
+    echo "cli_failed"
+  fi
+}
+
+# True when seat output is a usable review body (JSON fence or ### Seat).
+# Only treat OUR unavailability markers as failure — never model prose that
+# happens to say "not logged in" (security_ops blockers) as CLI auth failure.
+_plan_seat_output_ok() {
+  local text="$1"
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" | grep -qE '^\(seat .+ unavailable' && return 1
+  printf '%s' "$text" | grep -qE '### Seat:|```json' || return 1
+  return 0
+}
+
 # One plan-review seat via a vendor CLI (read-only). Prints body to stdout.
+# Exit 0 = usable seat output; 1 = unavailable/failed (stdout still holds a diagnostic).
 _plan_seat_call() {
   local vendor="$1" model="$2" role="$3" plan_body="$4"
-  local prompt margs=() unavail
-  unavail="(seat $role unavailable: $vendor CLI missing or failed)"
+  local prompt margs=() out="" err="" rc=0 class bin errf
+  model="$(_plan_model_for_vendor "$vendor" "$model")"
   prompt="You are an independent PLAN REVIEWER (role: $role), not the author and not the driver.
 Read-only. Do not implement. Critique the PRODUCT PLAN only.
 
@@ -4936,27 +5241,77 @@ Use empty arrays when none.
 
 PLAN:
 $plan_body"
+
+  case "$vendor" in
+    claude) bin=claude ;;
+    codex) bin=codex ;;
+    grok) bin=grok ;;
+    agy|gemini) bin=agy ;;
+    *)
+      echo "(seat $role unavailable: unsupported vendor '$vendor')"
+      return 1
+      ;;
+  esac
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "(seat $role unavailable: $vendor binary not found on PATH)"
+    return 1
+  fi
+
+  errf="$(mktemp "${TMPDIR:-/tmp}/plinth-plan-seat.XXXXXX")" || errf=""
   case "$vendor" in
     claude)
       [ -n "$model" ] && margs=(--model "$model")
-      printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" 2>/dev/null || echo "$unavail"
+      # Prompt via STDIN (allowed-tools is variadic — same as run_advise / review.sh).
+      out="$(printf '%s' "$prompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} \
+        --permission-mode dontAsk --allowed-tools "Read,Grep,Glob" 2>"${errf:-/dev/null}")" || rc=$?
       ;;
     codex)
       [ -n "$model" ] && margs=(-m "$model")
-      printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
-        --sandbox read-only - 2>/dev/null || echo "$unavail"
+      out="$(printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} \
+        --sandbox read-only - 2>"${errf:-/dev/null}")" || rc=$?
       ;;
     grok)
       [ -n "$model" ] && margs=(-m "$model")
-      grok -p "$prompt" --sandbox read-only \
+      out="$(grok -p "$prompt" --sandbox read-only \
         --rules 'You are a read-only plan reviewer. Advise only — never implement.' \
-        ${margs[@]+"${margs[@]}"} 2>/dev/null || echo "$unavail"
+        ${margs[@]+"${margs[@]}"} 2>"${errf:-/dev/null}")" || rc=$?
       ;;
-    *)
-      echo "(seat $role: unsupported vendor '$vendor')"
+    agy|gemini)
+      [ -n "$model" ] && margs=(--model "$model")
+      out="$(agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} 2>"${errf:-/dev/null}")" || rc=$?
       ;;
   esac
+  err=""
+  if [ -n "$errf" ] && [ -f "$errf" ]; then
+    err="$(head -c 1200 "$errf" 2>/dev/null | tr -d '\0' || true)"
+    rm -f "$errf"
+  fi
+
+  if [ "$rc" -eq 0 ] && _plan_seat_output_ok "$out"; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  class="$(_plan_seat_classify "$vendor" "$out" "$err")"
+  case "$class" in
+    missing_binary) echo "(seat $role unavailable: $vendor binary not found on PATH)" ;;
+    unauthenticated) echo "(seat $role unavailable: $vendor unauthenticated — run vendor login; class=unauthenticated)" ;;
+    invalid_model) echo "(seat $role unavailable: $vendor invalid model${model:+ ($model)}; class=invalid_model)" ;;
+    transient) echo "(seat $role unavailable: $vendor transient failure; class=transient — will retry sequential if parallel)" ;;
+    *) echo "(seat $role unavailable: $vendor CLI failed; class=$class)" ;;
+  esac
+  # Bounded stdout/stderr for diagnosis (no full prompt echo).
+  if [ -n "$out" ]; then
+    echo "--- seat stdout (bounded) ---"
+    printf '%s\n' "$out" | head -c 800
+    echo
+  fi
+  if [ -n "$err" ]; then
+    echo "--- seat stderr (bounded) ---"
+    printf '%s\n' "$err" | head -c 800
+    echo
+  fi
+  return 1
 }
 
 run_plan() {
@@ -4982,39 +5337,76 @@ run_plan() {
     [ -f "$cfg" ] || { printf ''; return 0; }
     sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" 2>/dev/null | head -1 || true
   }
-  local rv am av rm amodel
+  local rv av rm amodel
   rv="$(aval reviewer_vendor)"; [ -n "$rv" ] || rv=codex
   av="$(aval audit_vendor)"; [ -n "$av" ] || av=claude
   rm="$(aval reviewer_model_tier2)"; [ -n "$rm" ] || rm="$(aval reviewer_model_tier1)"
   amodel="$(aval audit_model)"
-  # Third seat: advisor vendor if distinct, else same as primary with different role.
+  # Third seat: same default as run_advise (claude), not primary reviewer.
+  # Falling back to primary made two concurrent codex processes and often
+  # paired codex with fable (advisor_model_max) → invalid_model.
   local tv tm
-  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv="$rv"
+  tv="$(aval advisor_vendor)"; [ -n "$tv" ] || tv=claude
   tm="$(aval advisor_model_max)"; [ -n "$tm" ] || tm="$(aval advisor_model)"
+  rm="$(_plan_model_for_vendor "$rv" "$rm")"
+  amodel="$(_plan_model_for_vendor "$av" "$amodel")"
+  tm="$(_plan_model_for_vendor "$tv" "$tm")"
 
   body="$(cat "$planf")"
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  local d1 d2 d3 o1 o2 o3
-  d1="$(mktemp)"; d2="$(mktemp)"; d3="$(mktemp)"
+  local o1 o2 o3
   o1="$(mktemp)"; o2="$(mktemp)"; o3="$(mktemp)"
-  trap 'rm -f "$d1" "$d2" "$d3" "$o1" "$o2" "$o3"' RETURN
+  trap 'rm -f "$o1" "$o2" "$o3"' RETURN
 
   echo "plinth plan --deep: launching 3 independent seats (parallel)…" >&2
-  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" 2>"$d1" ) &
+  echo "  security_ops=$rv${rm:+/$rm}  completeness=$av${amodel:+/$amodel}  delete_simplify=$tv${tm:+/$tm}" >&2
+  # Capture only stdout from seats (stderr is already folded into the body on fail).
+  ( cd "$root" && _plan_seat_call "$rv" "$rm" "security_ops" "$body" >"$o1" ) &
   local p1=$!
-  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" 2>"$d2" ) &
+  ( cd "$root" && _plan_seat_call "$av" "$amodel" "completeness" "$body" >"$o2" ) &
   local p2=$!
-  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" 2>"$d3" ) &
+  ( cd "$root" && _plan_seat_call "$tv" "$tm" "delete_simplify" "$body" >"$o3" ) &
   local p3=$!
   wait "$p1" "$p2" "$p3" || true
+
+  # Sequential retry for seats that failed (parallel auth/session/rate races).
+  _plan_seat_retry_if_needed() {
+    local vendor="$1" model="$2" role="$3" of="$4"
+    if _plan_seat_output_ok "$(cat "$of" 2>/dev/null || true)"; then
+      return 0
+    fi
+    echo "plinth plan --deep: retrying $role sequentially ($vendor)…" >&2
+    ( cd "$root" && _plan_seat_call "$vendor" "$model" "$role" "$body" >"$of" ) || true
+  }
+  _plan_seat_retry_if_needed "$rv" "$rm" "security_ops" "$o1"
+  _plan_seat_retry_if_needed "$av" "$amodel" "completeness" "$o2"
+  _plan_seat_retry_if_needed "$tv" "$tm" "delete_simplify" "$o3"
 
   local out="$root/PLAN-REVIEW.md" merge_json="$root/.plinth/session/plan-review-merge.json"
   mkdir -p "$root/.plinth/session"
   # Structured merge: extract JSON fences if present, else scrape markdown #### Blockers bullets.
+  # Marks overall status incomplete when any seat is unavailable — never look "clean" at 0/0/0.
   python3 - "$o1" "$o2" "$o3" "$merge_json" <<'PY'
 import json, re, sys
 paths, outj = sys.argv[1:4], sys.argv[4]
 roles_default = ["security_ops", "completeness", "delete_simplify"]
+# Only instrument-emitted unavailability markers (line-anchored).
+unavail_re = re.compile(r"^\(seat \w+ unavailable", re.I | re.M)
+
+def section(text, name):
+    mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
+    if not mm:
+        return []
+    body = mm.group(1)
+    items = []
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            item = line[2:].strip()
+            if item and item.lower() not in ("none", "n/a", "…", "..."):
+                items.append(item)
+    return items
+
 seats = []
 for i, p in enumerate(paths):
     text = open(p, encoding="utf-8", errors="replace").read()
@@ -5026,28 +5418,23 @@ for i, p in enumerate(paths):
             data = json.loads(m.group(1))
         except Exception:
             data = None
+    unavailable = bool(unavail_re.search(text))
     if not isinstance(data, dict):
-        def section(name):
-            mm = re.search(rf"#### {re.escape(name)}\s*\n(.*?)(?=\n#### |\n### |\Z)", text, re.S | re.I)
-            if not mm:
-                return []
-            body = mm.group(1)
-            items = []
-            for line in body.splitlines():
-                line = line.strip()
-                if line.startswith("- "):
-                    item = line[2:].strip()
-                    if item and item.lower() not in ("none", "n/a", "…", "..."):
-                        items.append(item)
-            return items
         data = {
             "seat": role,
-            "blockers": section("Blockers"),
-            "questions": section("Questions for human"),
-            "nits": section("Nits"),
+            "blockers": [] if unavailable else section(text, "Blockers"),
+            "questions": [] if unavailable else section(text, "Questions for human"),
+            "nits": [] if unavailable else section(text, "Nits"),
             "verdict": "",
             "raw_ok": False,
+            "available": False if unavailable else bool(
+                re.search(r"### Seat:", text) and not unavailable
+            ),
         }
+        if not data["available"] and not unavailable and (
+            data["blockers"] or data["questions"] or data["nits"]
+        ):
+            data["available"] = True
     else:
         # Caller-assigned role is authoritative — model output cannot relabel seats.
         data["seat"] = role
@@ -5055,6 +5442,10 @@ for i, p in enumerate(paths):
             if not isinstance(data.get(k), list):
                 data[k] = []
         data["raw_ok"] = True
+        data["available"] = not unavailable
+    if unavailable:
+        data["available"] = False
+        data["raw_ok"] = False
     seats.append(data)
 
 def norm(s):
@@ -5063,6 +5454,8 @@ def norm(s):
 blockers, questions, nits = [], [], []
 seen_b, seen_q, seen_n = set(), set(), set()
 for s in seats:
+    if not s.get("available"):
+        continue  # do not harvest "blockers" from error text
     seat = s.get("seat") or "?"
     for b in s.get("blockers") or []:
         k = norm(str(b))
@@ -5094,6 +5487,10 @@ for b in blockers:
     if b.get("security"):
         b["label"] = "security_" + b["label"]
 
+available_n = sum(1 for s in seats if s.get("available"))
+unavailable_n = len(seats) - available_n
+status = "complete" if unavailable_n == 0 else ("empty" if available_n == 0 else "incomplete")
+
 merge = {
     "seats": seats,
     "blockers": blockers,
@@ -5101,14 +5498,25 @@ merge = {
     "nits": nits,
     "open_blocker_count": len(blockers),
     "open_question_count": len(questions),
+    "available_seats": available_n,
+    "unavailable_seats": unavailable_n,
+    "status": status,
 }
 with open(outj, "w", encoding="utf-8") as f:
     json.dump(merge, f, indent=2)
-print(json.dumps({"blockers": len(blockers), "questions": len(questions), "nits": len(nits)}))
+print(json.dumps({
+    "blockers": len(blockers),
+    "questions": len(questions),
+    "nits": len(nits),
+    "status": status,
+    "available": available_n,
+    "unavailable": unavailable_n,
+}))
 PY
 
-  local merge_stats
-  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []))' 2>/dev/null || echo "0 0 0")
+  local merge_stats merge_status
+  merge_stats=$(python3 -c 'import json; d=json.load(open("'"$merge_json"'")); print(d["open_blocker_count"], d["open_question_count"], len(d.get("nits") or []), d.get("status","?"), d.get("unavailable_seats",0))' 2>/dev/null || echo "0 0 0 unknown 0")
+  merge_status=$(python3 -c 'import json; print(json.load(open("'"$merge_json"'")).get("status","unknown"))' 2>/dev/null || echo unknown)
 
   {
     echo "# Plan review — deep (structured merge)"
@@ -5116,6 +5524,13 @@ PY
     echo "Updated: $ts"
     echo "Seats: security_ops ($rv${rm:+ /$rm}) · completeness ($av${amodel:+ /$amodel}) · delete_simplify ($tv${tm:+ /$tm})"
     echo "Machine merge: \`.plinth/session/plan-review-merge.json\`"
+    echo "Status: **$merge_status** (stats: $merge_stats)"
+    if [ "$merge_status" != "complete" ]; then
+      echo
+      echo "> **No full review credit.** One or more seats were unavailable. Zero merged"
+      echo "> blockers is **not** a clean bill of health — read Raw seats and re-run"
+      echo "> \`plinth plan --deep\` after fixing CLI/login issues (or run seats sequentially)."
+    fi
     echo
     echo "Human: resolve **Merged blockers** and **Questions** before treating the plan as ratified."
     echo "Labels are advisory (majority = 2+ seats); you adjudicate. Security-tagged items stay visible even if minority."
@@ -5126,7 +5541,9 @@ PY
 import json, sys
 d = json.load(open(sys.argv[1]))
 bs = d.get("blockers") or []
-if not bs:
+if d.get("status") in ("empty", "incomplete") and not bs:
+    print("- [ ] _(no blockers extracted — seats incomplete; see Status / Raw)_")
+elif not bs:
     print("- [ ] _(none extracted — read raw seats below)_")
 else:
     for b in bs:
@@ -5183,13 +5600,21 @@ PY
     echo "---"
     echo
     echo "## Human adjudication"
+    if [ "$merge_status" != "complete" ]; then
+      echo "- [ ] **Tooling:** seats were incomplete — re-run \`plinth plan --deep\` or sequential CLIs before treating merge as review credit"
+    fi
     echo "- [ ] All merged blockers addressed or dismissed with reason"
     echo "- [ ] Product tradeoffs decided"
     echo "- [ ] PLAN.md updated (bump product_rev if AC/scope changed)"
   } > "$out"
 
   echo "Wrote $out (merged blockers/questions; stats: $merge_stats)"
+  if [ "$merge_status" != "complete" ]; then
+    echo "plinth plan --deep: WARNING — status=$merge_status (unavailable seats; merge is not a clean review)" >&2
+  fi
   # Security-tagged majority blockers → NEEDS-HUMAN [BLOCKING] so plinth next stops that path.
+  # Skip when empty/incomplete so we do not invent queue noise from failed seats.
+  if [ "$merge_status" = "complete" ] || [ "$merge_status" = "incomplete" ]; then
   local nhf
   nhf="$(needs_human_file "$root")"
   mkdir -p "$(dirname "$nhf")"
@@ -5197,6 +5622,8 @@ PY
 import json, sys, os
 merge, nhf = sys.argv[1], sys.argv[2]
 d = json.load(open(merge))
+if d.get("status") == "empty":
+    sys.exit(0)
 items = []
 for b in d.get("blockers") or []:
     lab = b.get("label") or ""
@@ -5213,8 +5640,14 @@ for it in items:
 open(nhf, "w", encoding="utf-8").write(existing)
 print(f"NEEDS-HUMAN: appended {len(items)} plan-review item(s)")
 PY
-  _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
-  echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  fi
+  if [ "$merge_status" = "empty" ]; then
+    _write_handoff "$root" "plan-deep" "Re-run plinth plan --deep (all seats unavailable — no review credit); fix vendor CLIs/login if needed."
+    echo "Next: fix seat CLIs / re-run plinth plan --deep — empty merge is not ratification."
+  else
+    _write_handoff "$root" "plan-deep" "Resolve PLAN-REVIEW.md merged blockers (or plinth next); update PLAN.md; then implement."
+    echo "Next: human resolves questions → edit PLAN.md → build → plinth harden when ready to ship."
+  fi
   echo "Or: plinth next \"$root\""
 }
 
@@ -5235,7 +5668,7 @@ run_next() {
   nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
   local blocking=""
   if [ -n "$nhf" ] && [ -s "$nhf" ]; then
-    blocking=$(open_items "$nhf" 2>/dev/null | grep '^\[BLOCKING\]' | head -1 || true)
+    blocking=$(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" | head -1 || true)
   fi
   if [ -n "$blocking" ]; then
     echo "status: human_blocked"

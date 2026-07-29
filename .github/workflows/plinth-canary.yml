@@ -2397,21 +2397,24 @@ jobs:
           cp "$OLDT" "$MS/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MS" >/dev/null 2>&1
           grep -qF "Plinth driver shell (version-pinned)" "$MS/CLAUDE.md" || { echo "::error::update did not regenerate a STOCK old CLAUDE.md to the shell"; exit 1; }
-          # Custom notes REPLACING the placeholder -> preserved.
+          # Custom notes REPLACING the placeholder -> migrate to DRIVER-project, shell CLAUDE (upstream #21).
           MC="$(mktemp -d)"; ( cd "$MC" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MC" >/dev/null 2>&1 )
           sed 's/<!-- Anything unique to THIS project.*/CUSTOM: never touch migrations without approval./' "$OLDT" > "$MC/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MC" >/dev/null 2>&1
-          grep -qF "never touch migrations" "$MC/CLAUDE.md" || { echo "::error::custom CLAUDE.md content lost on update"; exit 1; }
-          # Notes INSIDE the placeholder comment (round-3) -> custom, preserved.
+          grep -qF "Plinth driver shell (version-pinned)" "$MC/CLAUDE.md" || { echo "::error::custom CLAUDE.md was not replaced by the pinned shell after migration"; exit 1; }
+          grep -qF "never touch migrations" "$MC/.plinth/DRIVER-project.md" || { echo "::error::custom CLAUDE.md content lost on update (not in DRIVER-project.md)"; exit 1; }
+          # Notes INSIDE the placeholder comment (round-3) -> custom, migrated.
           MK="$(mktemp -d)"; ( cd "$MK" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MK" >/dev/null 2>&1 )
           sed 's/stack quirks\./use Postgres 16 ONLY; never edit migrations\/./' "$OLDT" > "$MK/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MK" >/dev/null 2>&1
-          grep -qF "Postgres 16" "$MK/CLAUDE.md" || { echo "::error::notes inside the placeholder comment were destroyed (treated as stock)"; exit 1; }
-          # Custom content ABOVE the notes heading (round-4) -> custom, preserved.
+          grep -qF "Plinth driver shell (version-pinned)" "$MK/CLAUDE.md" || { echo "::error::notes-inside-placeholder CLAUDE not regenerated as shell"; exit 1; }
+          grep -qF "Postgres 16" "$MK/.plinth/DRIVER-project.md" || { echo "::error::notes inside the placeholder comment were destroyed (not migrated to DRIVER-project)"; exit 1; }
+          # Custom content ABOVE the notes heading (round-4) -> custom, migrated.
           MA="$(mktemp -d)"; ( cd "$MA" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$MA" >/dev/null 2>&1 )
           python3 -c 'import sys,re; s=open(sys.argv[1]).read(); sys.stdout.write(re.sub(r"(## Project-specific notes)", "- CUSTOM RULE: always run make lint.\n\n\\1", s, count=1))' "$OLDT" > "$MA/CLAUDE.md"
           "$GITHUB_WORKSPACE/bin/plinth" update "$MA" >/dev/null 2>&1
-          grep -qF "make lint" "$MA/CLAUDE.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (treated as stock)"; exit 1; }
+          grep -qF "Plinth driver shell (version-pinned)" "$MA/CLAUDE.md" || { echo "::error::above-heading custom CLAUDE not regenerated as shell"; exit 1; }
+          grep -qF "make lint" "$MA/.plinth/DRIVER-project.md" || { echo "::error::custom content ABOVE the notes heading was destroyed (not migrated to DRIVER-project)"; exit 1; }
 
           # ── v4.4.0: protected-paths backfill not suppressed by COMMENT lines ────
           CP="$(mktemp -d)"; ( cd "$CP" && git init -qb main . >/dev/null && "$GITHUB_WORKSPACE/bin/plinth" init "$CP" >/dev/null 2>&1 )
@@ -3633,7 +3636,7 @@ jobs:
           [ -s "$dart" ] || { echo "::error::delegation artifact missing"; exit 1; }
           case "$dart" in "$LDR"/.plinth/session/lanes/*) : ;; *) echo "::error::artifact not under session/lanes ($dart)"; exit 1 ;; esac
           hdr="$(head -n1 "$dart")"
-          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 recorded=" \
+          printf '%s\n' "$hdr" | grep -qE "^# plinth lane delegation v1: vendor=grok rc=7 bytes=${want_bytes} sha256=${want_hash} model=canary-model-9 before=unbound recorded=" \
             || { echo "::error::artifact header not exact (got: $hdr)"; exit 1; }
           tail -n +2 "$dart" > "$LDR/body.got"; cmp -s "$LDR/out.txt" "$LDR/body.got" \
             || { echo "::error::artifact body not byte-identical to transcript"; exit 1; }
