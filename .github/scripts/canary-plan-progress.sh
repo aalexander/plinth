@@ -422,12 +422,17 @@ if (!elsById["nh-modal"].classList.contains("open")) {
 }
 // completed group: prefer details/summary; require active leaf class
 const planHtml = String(list.innerHTML);
-if (!planHtml.includes("plan-done-group") && !planHtml.includes("<details")) {
-  console.error("expected plan-done-group details for completed leaves:", planHtml.slice(0, 240));
+if (!/<details[^>]*class="[^"]*plan-done-group/.test(planHtml) && !planHtml.includes('class="plan-done-group"') && !planHtml.includes("plan-done-group")) {
+  console.error("expected details.plan-done-group:", planHtml.slice(0, 300));
   process.exit(1);
 }
-if (!planHtml.includes("leaf active") && !planHtml.includes('class="leaf active"') && !planHtml.includes("active")) {
-  console.error("expected active leaf markup:", planHtml.slice(0, 240));
+// completed group should start closed (no open attr on plan-done-group details)
+if (/<details[^>]*plan-done-group[^>]*\sopen[\s>]/.test(planHtml)) {
+  console.error("plan-done-group should be closed by default:", planHtml.slice(0, 300));
+  process.exit(1);
+}
+if (!/class="leaf active"/.test(planHtml) && !/leaf active/.test(planHtml)) {
+  console.error("expected .leaf.active:", planHtml.slice(0, 300));
   process.exit(1);
 }
 // missing classList guard on panel AND list
@@ -544,6 +549,21 @@ echo "$outs" | jq -e '
 echo "$outs" | jq -e '.title|test("Spec Dir")' >/dev/null \
   || fail "document title: $(echo "$outs"|jq .title)"
 pass "spec dir Requirements/Behavior shall + Features list; title preserved"
+
+# OVERVIEW.md / API.md / requirements.md entry names
+for ename in OVERVIEW.md API.md requirements.md; do
+  mkdir -p "$TMP/ent$ename/.plinth" "$TMP/ent$ename/spec"
+  printf 'spec_path = spec\n' > "$TMP/ent$ename/.plinth/config"
+  cat > "$TMP/ent$ename/spec/$ename" <<S
+# Entry $ename
+## Requirements
+The system shall resolve $ename entry files.
+S
+  oute=$(_plan_progress_json "$TMP/ent$ename" '{}')
+  echo "$oute" | jq -e '.primary_kind=="spec" and (.total//0) >= 1' >/dev/null \
+    || fail "entry $ename: $(echo "$oute"|jq '{primary,kind:.primary_kind,total}')"
+done
+pass "spec dir OVERVIEW/API/requirements.md entry names"
 
 # restore file spec for later tests if any
 printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"

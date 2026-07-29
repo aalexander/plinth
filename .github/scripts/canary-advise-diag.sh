@@ -154,6 +154,8 @@ run_advise_vendor grok ok_embed_sign_in
 [ "$_adv_rc" -eq 0 ] || fail "embed sign-in rc"
 echo "$_adv_out" | grep -qi 'not signed in\|advisor unavailable' \
   && fail "embedded please sign in must be advice: $_adv_out" || true
+echo "$_adv_out" | grep -qi 'please sign in only after staging' \
+  || fail "embed sign-in advice text missing: $_adv_out"
 pass "advice embedding please sign in mid-sentence is advice"
 
 run_advise_vendor codex auth_stdout_nz
@@ -177,11 +179,15 @@ run_advise_vendor grok fail_nz
 echo "$_adv_out" | grep -qiE 'exited 7|advisor unavailable' || fail "grok fail_nz: $_adv_out"
 pass "grok nonzero non-auth → exited (not auth)"
 
-# four unterminated banner lines → NOT short-banner auth (logical line count 4)
+# four unterminated banner lines → NOT short-banner auth; must return advice text
 run_advise_vendor claude auth_four_lines_unterminated
 echo "$_adv_out" | grep -qi 'not signed in' \
   && fail "4 unterminated banner lines must not be short-banner auth: $_adv_out" || true
-# should print the lines as advice (or empty-output if treated empty — either not auth)
+echo "$_adv_out" | grep -qi 'Please sign in' \
+  || fail "four-line advice must print content: $_adv_out"
+# count Please sign in occurrences >= 3
+n=$(echo "$_adv_out" | grep -ci 'please sign in' || true)
+[ "${n:-0}" -ge 3 ] || fail "expected multiple banner lines as advice, got n=$n out=$_adv_out"
 pass "four unterminated banner lines are not short-banner auth"
 
 # three whole-line banners → auth

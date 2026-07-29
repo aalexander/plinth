@@ -1823,7 +1823,9 @@ $question"
         _advise_fail "$diag"
         return 0
       fi
-      [ -s "$outf" ] || { _advise_fail "claude at ${bin} produced empty output"; return 0; }
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "claude at ${bin} produced empty output"; return 0
+      fi
       cat "$outf"
       _advise_cleanup
       ;;
@@ -1846,7 +1848,9 @@ $question"
         _advise_fail "codex at ${bin} exited ${rc}"
         return 0
       fi
-      [ -s "$outf" ] || { _advise_fail "codex at ${bin} produced empty output"; return 0; }
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "codex at ${bin} produced empty output"; return 0
+      fi
       cat "$outf"
       _advise_cleanup
       ;;
@@ -1866,7 +1870,9 @@ $question"
         _advise_fail "grok at ${bin} exited ${rc}"
         return 0
       fi
-      [ -s "$outf" ] || { _advise_fail "grok at ${bin} produced empty output"; return 0; }
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "grok at ${bin} produced empty output"; return 0
+      fi
       cat "$outf"
       _advise_cleanup
       ;;
@@ -1886,7 +1892,9 @@ $question"
         _advise_fail "agy at ${bin} exited ${rc}"
         return 0
       fi
-      [ -s "$outf" ] || { _advise_fail "agy at ${bin} produced empty output"; return 0; }
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "agy at ${bin} produced empty output"; return 0
+      fi
       cat "$outf"
       _advise_cleanup
       ;;
@@ -6001,8 +6009,15 @@ else:
 done_n = sum(1 for n in leaves if n.get("status") == "done")
 total_n = len(leaves)
 pct = None
+# Truncated outline that looks fully done is incomplete — never paint 100%.
+if truncated and total_n > 0 and done_n == total_n and pct_force is None:
+    notes_trunc_incomplete = True
+else:
+    notes_trunc_incomplete = False
 if pct_force is not None:
     pct = pct_force
+elif notes_trunc_incomplete:
+    pct = None
 elif total_n > 0:
     if progress_mode == "checkpoint" and current in leaves:
         # Cumulative % through completed work (before active item).
