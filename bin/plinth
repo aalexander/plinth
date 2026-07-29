@@ -1706,7 +1706,13 @@ $question"
   # Best-effort cleanup on interrupt. Kill the advisor child immediately so we
   # do not wait for a hung CLI before exiting.
   _advise_child=""
-  _advise_cleanup() { [ -n "${errf:-}" ] && rm -f "$errf"; [ -n "${outf:-}" ] && rm -f "$outf"; }
+  _apf=""
+  _advise_cleanup() {
+    [ -n "${errf:-}" ] && rm -f "$errf"
+    [ -n "${outf:-}" ] && rm -f "$outf"
+    [ -n "${_apf:-}" ] && rm -f "$_apf"
+    _apf=""
+  }
   _advise_on_signal() {
     local _sig="$1"
     if [ -n "${_advise_child:-}" ]; then
@@ -5184,11 +5190,14 @@ if _plan_ref is None and "PLINTH_CHECKPOINT_PLAN_REF" not in os.environ:
         _plan_ref = None
 if not _plan_ref:
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# Orphan PLAN cursor: prior fence pointed at PLAN.md but the file is gone.
+# Never preserve a nested *PLAN.md path as operational plan_ref.
+if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
+    _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
+# Orphan PLAN cursor: prior fence pointed at root PLAN.md but the file is gone.
 _orphan_plan = (
     _plan_ref is None
     and isinstance(prev.get("plan_ref"), str)
-    and Path(str(prev.get("plan_ref"))).name == "PLAN.md"
+    and str(prev.get("plan_ref")) in ("PLAN.md", "./PLAN.md")
     and not (root / "PLAN.md").is_file()
 )
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
@@ -5301,13 +5310,16 @@ def resolve_file(rel):
                 return Path(os.path.realpath(cand))
     return None
 
-# Canonical operational plan: root PLAN.md only (no filename aliases).
-# checkpoint plan_ref may repoint only if basename is still PLAN.md.
+# Canonical operational plan: root PLAN.md ONLY (no filename aliases, no nested
+# docs/PLAN.md basename collision — that is a normal file, not the operational plan).
 plan_ref = routing.get("plan_ref") if isinstance(routing.get("plan_ref"), str) else None
-plan_rel = "PLAN.md"
-if plan_ref and Path(plan_ref).name == "PLAN.md":
-    plan_rel = plan_ref
-plan_path = resolve_file(plan_rel)
+plan_path = resolve_file("PLAN.md")
+# plan_ref may only reaffirm root PLAN.md (never a nested path whose basename is PLAN.md).
+if plan_ref and plan_ref not in ("PLAN.md", "./PLAN.md"):
+    # Ignore non-root plan_ref for operational progress.
+    pass
+elif plan_ref in ("PLAN.md", "./PLAN.md"):
+    plan_path = resolve_file("PLAN.md")
 spec_rel = read_cfg_spec(root) or "SPEC.md"
 spec_path = resolve_file(spec_rel)
 
@@ -6362,7 +6374,8 @@ _write_handoff() {
       # Only seed from PLAN.md — never from spec-fallback leaves (first-open AND all-done).
       _seed_primary=$(printf '%s' "$_seed_pp" | jq -r '.primary // empty' 2>/dev/null || true)
       _seed_is_plan=0
-      if [ "$_seed_primary" = "PLAN.md" ] || [ "${_seed_primary##*/}" = "PLAN.md" ]; then
+      # Exact root PLAN.md only — never docs/PLAN.md or other basename collisions.
+      if [ "$_seed_primary" = "PLAN.md" ]; then
         _seed_is_plan=1
       else
         _seed_first=0

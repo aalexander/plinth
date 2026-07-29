@@ -68,12 +68,27 @@ case "$mode" in
     echo "Docs: operators please sign in only after staging is up."
     exit 0
     ;;
+  auth_four_lines_unterminated)
+    # Four whole-line banners, no final newline — logical count must be 4 (not auth).
+    printf '%s' $'Please sign in\nPlease sign in\nPlease sign in\nPlease sign in'
+    exit 0
+    ;;
+  auth_three_lines)
+    printf '%s\n' "Please sign in" "Not logged in" "Please run /login"
+    exit 0
+    ;;
   empty)
     exit 0
     ;;
   fail_nz)
     echo "model overloaded" >&2
     exit 7
+    ;;
+  hang)
+    # Ignore TERM once to exercise non-blocking cleanup path; then exit
+    trap '' TERM
+    sleep 30
+    exit 0
     ;;
   *)
     echo "unknown FAKE_ADVISE_MODE=$mode" >&2
@@ -160,5 +175,31 @@ run_advise_vendor grok fail_nz
 [ "$_adv_rc" -eq 0 ] || fail "grok fail non-blocking"
 echo "$_adv_out" | grep -qiE 'exited 7|advisor unavailable' || fail "grok fail_nz: $_adv_out"
 pass "grok nonzero non-auth → exited (not auth)"
+
+# four unterminated banner lines → NOT short-banner auth (logical line count 4)
+run_advise_vendor claude auth_four_lines_unterminated
+echo "$_adv_out" | grep -qi 'not signed in' \
+  && fail "4 unterminated banner lines must not be short-banner auth: $_adv_out" || true
+# should print the lines as advice (or empty-output if treated empty — either not auth)
+pass "four unterminated banner lines are not short-banner auth"
+
+# three whole-line banners → auth
+run_advise_vendor claude auth_three_lines
+echo "$_adv_out" | grep -qi 'not signed in' || fail "3-line banner should be auth: $_adv_out"
+pass "three whole-line banners classify as auth"
+
+# successful advise removes prompt temp files created during this run
+rm -f "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null || true
+run_advise_vendor claude ok
+leftover=$(ls "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null | head -5 || true)
+[ -z "$leftover" ] || fail "prompt temp files left after success: $leftover"
+# product cleanup must include _apf (signal path + success)
+grep -q '_apf' "$ROOT/bin/plinth" || fail "missing _apf prompt path"
+grep -A8 '_advise_cleanup()' "$ROOT/bin/plinth" | grep -q '_apf' \
+  || fail "_advise_cleanup must rm _apf (signal path)"
+# also clear _apf after success rm so signal mid-run still cleans
+grep -q 'rm -f "\$_apf"' "$ROOT/bin/plinth" || grep -q 'rm -f "$_apf"' "$ROOT/bin/plinth" \
+  || fail "success path should rm _apf"
+pass "advise prompt files cleaned; cleanup covers _apf"
 
 echo "canary-advise-diag: ALL PASS"
