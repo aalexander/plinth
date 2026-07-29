@@ -2257,7 +2257,9 @@ snapshot_one_project() {
     dual_degraded=true
   fi
   local next_action=""
-  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || next_action=""
+  # plinth next exits 2 on human_blocked / 3 on done — keep stdout either way
+  # (pipefail would otherwise blank next via `|| next_action=""`).
+  next_action="$(cd "$dir" && "$PLINTH_ROOT/bin/plinth" next "$dir" 2>/dev/null | awk -F': ' '/^action:/{print $2; exit}')" || true
 
   # Session identity: always `tail -n $_DASH_EV_MAX_LINES` then stream (no wc -l
   # pre-scan of the full file). t0 is set only from SessionStart — if that event
