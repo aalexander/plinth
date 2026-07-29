@@ -124,6 +124,35 @@ code and can bounce a coding session to Opus mid-run — if a session feels diff
 that's why.) Anthropic intends to restore Fable 5 to standard subscription "when
 capacity allows" — check before buying credits in bulk.
 
+## Slice routing (effort + implement) — guidance, not a gate
+
+Per-**slice** routing sits alongside seat assignment and risk tier. It does **not**
+override the reviewer gate (`risk-classify` still owns review depth).
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| **effort** | medium · high · xhigh | How hard to push this slice (seats, dual-pass bias, advise depth) |
+| **implement** | driver · worker · either | Who types this slice under the active topology |
+
+**Defaults (non-blocking):** missing/invalid effort → treat as **high** and continue;
+never stop the loop because effort is unset or the driver cannot change it.
+
+**implement recommendation (not always-worker):**
+- **worker** when the slice is volume-shaped and a complete five-part (or equivalent)
+  spec determines the outcome — the architect-resident default already routes most
+  coding to the worker lane.
+- **driver** as the **named exception** when judgment and typing are interleaved,
+  material ambiguity remains, or delegation/context-reconstruction cost exceeds
+  the savings (judgment-shaped work).
+- The driver may override the checkpoint without a gate; announce the override.
+  Verification and review requirements are unchanged.
+
+Recorded on root **CHECKPOINT.md** (`plinth.checkpoint/v1` JSON fence). Legacy
+**HANDOFF.md** is a pointer/fallback. Dashboard surfaces position + effort; ETAs
+are reserved-null in v1 (no fabricated times).
+
+Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
+
 ## Orchestration
 `/effort` -> `ultracode` for substantive tasks (model-managed dynamic workflows);
 default effort for routine ones. The model chooses decomposition; the gates make

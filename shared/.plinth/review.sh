@@ -124,7 +124,7 @@ while IFS= read -r -d '' entry; do
   fi
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
-    HANDOFF.md) ;;                               # review/handoff auto-refresh — not reviewable product
+    HANDOFF.md|CHECKPOINT.md) ;;                 # checkpoint/handoff auto-refresh — not reviewable product
     .plinth/RESIDUAL.json) ;;                    # same-open soft-cap draft
     "") ;;
     *) dirty=1; break ;;
@@ -160,9 +160,9 @@ base_tip="$(git rev-parse --verify "$baseref")" \
 # queue wording are still demoted to minor by thrash policy (see is_queue_nit).
 # Root HANDOFF.md only — nested product docs named HANDOFF.md stay in review.
 REVIEW_PATHSPEC=(.
-  ':(exclude)HANDOFF.md'
+  ':(exclude)HANDOFF.md' ':(exclude)CHECKPOINT.md'
 )
-EPHEMERA_RE='^HANDOFF\.md$'
+EPHEMERA_RE='^(HANDOFF|CHECKPOINT)\.md$'
 diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
   || die_infra "git diff ${baseref}...HEAD failed"
 if [ -z "$diff" ]; then
@@ -183,7 +183,7 @@ if [ -z "$diff" ]; then
     jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg rph "$_rph" \
       '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
         round:0, session_id:"", model:"deterministic-floor", review_phase:$rph,
-        risk:{tier:0,files:0,reasons:["HANDOFF.md only — session ephemera, not reviewed"]},
+        risk:{tier:0,files:0,reasons:["HANDOFF/CHECKPOINT only — session ephemera, not reviewed"]},
         usage:null, ts:$ts}' > "$SDIR/verdict.json"
     rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
     # mint_receipt is defined later — flag and mint at Tier-0 site (same as docs floor).
@@ -894,7 +894,7 @@ fi
 # HANDOFF-only floor: verdict already written; mint receipt now that helper exists.
 if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
   mint_receipt 0
-  echo "Plinth review: HANDOFF.md-only change — APPROVED without model (session ephemera)."
+  echo "Plinth review: HANDOFF/CHECKPOINT-only change — APPROVED without model (session ephemera)."
   exit 0
 fi
 
@@ -1593,7 +1593,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     (lines($scope)) as $files
     | (lines($prior)) as $prior_ids
     | def is_ephemera:
-        ((.file // "") == "HANDOFF.md");
+        ((.file // "") == "HANDOFF.md" or (.file // "") == "CHECKPOINT.md");
     def is_canonical_spec:
         ($spec != "" and (
           (.file // "") == $spec
@@ -2141,7 +2141,7 @@ ${diff}"
   # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
   # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-    --arg href '^HANDOFF\\.md$' \
+    --arg href '^(HANDOFF|CHECKPOINT)\\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
@@ -2362,7 +2362,7 @@ $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
       thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
         "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}" "fresh"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
-        --arg href '^HANDOFF\\.md$' \
+        --arg href '^(HANDOFF|CHECKPOINT)\\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
            | select((.file // "" | test($href)) | not)

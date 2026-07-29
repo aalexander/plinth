@@ -96,8 +96,8 @@ Everything between is the model's call.
 - `plinth build [path]`         — return to default BUILD: Stop does **not**
   force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
-- `plinth handoff [path]`       — write/refresh root `HANDOFF.md` (restart:
-  “Read HANDOFF.md and continue”).
+- `plinth checkpoint [path]`    — write/refresh root `CHECKPOINT.md` (resume + slice
+  routing JSON); `handoff` is an alias. Legacy `HANDOFF.md` is a pointer.
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (HANDOFF ## Next, plan-review blockers, open review findings, or
   human_blocked). Exit 0=work, 2=human-blocked, 3=done.

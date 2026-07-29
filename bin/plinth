@@ -45,7 +45,7 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth changelog-collate [<target-repo>]      (fold changelog.d/*.md into CHANGELOG.md + VERSION)
        plinth dash|dashboard [--snapshot] [--port N] (multi-instance HTML wallboard on 127.0.0.1)
        plinth harden|build|phase [<project-path>]    (lifecycle: ship-prep vs default build; default CWD)
-       plinth handoff [<project-path>]               (write/refresh HANDOFF.md; default CWD)
+       plinth checkpoint|handoff [<project-path>]    (write/refresh CHECKPOINT.md; HANDOFF alias)
        plinth plan [--deep] [<project-path>]         (light PLAN.md scaffold, or deep multi-agent critique)
        plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
        plinth residual [<path>] [--bind] [--note t] [--from-findings f]
@@ -67,7 +67,7 @@ elif [ "$cmd" = "statusline" ] || [ "$cmd" = "advise" ] || [ "$cmd" = "hookprobe
      # hookprobe: probes a vendor CLI in a scratch repo; its arg is a vendor, not a path.
      # changelog-collate: optional target-repo (defaults to CWD); validated in the handler.
      # dash/dashboard: multi-repo wallboard; no project path (see run_dashboard).
-elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] \
+elif [ "$cmd" = "harden" ] || [ "$cmd" = "build" ] || [ "$cmd" = "phase" ] || [ "$cmd" = "handoff" ] || [ "$cmd" = "checkpoint" ] \
    || [ "$cmd" = "next" ] || [ "$cmd" = "lifecycle-migrate" ] || [ "$cmd" = "residual" ]; then
   # Lifecycle commands: project path optional (default CWD).
   # residual may be: residual | residual PATH | residual --bind | residual PATH --bind ...
@@ -2339,18 +2339,24 @@ snapshot_one_project() {
   local life_phase
   life_phase="$(_lifecycle_read_phase "$dir")"
   case "$life_phase" in build|harden) ;; *) life_phase=harden ;; esac
-  local plan_present=false handoff_present=false plan_review_present=false
+  local plan_present=false handoff_present=false plan_review_present=false checkpoint_present=false
   [ -f "$dir/PLAN.md" ] && plan_present=true
   [ -f "$dir/HANDOFF.md" ] && handoff_present=true
   [ -f "$dir/PLAN-REVIEW.md" ] && plan_review_present=true
-  local handoff_age=null
-  if [ -f "$dir/HANDOFF.md" ]; then
+  local handoff_age=null checkpoint_age=null
+  local _cpath _cj_dash='{}'
+  _cpath="$(_checkpoint_read_path "$dir")"
+  if [ -f "$_cpath" ]; then
+    checkpoint_present=true
     local hm
-    hm="$(_dash_mtime "$dir/HANDOFF.md")"
+    hm="$(_dash_mtime "$_cpath")"
     case "$hm" in ''|*[!0-9]*) ;; *)
-      handoff_age=$((NOW - hm))
-      [ "$handoff_age" -ge 0 ] 2>/dev/null || handoff_age=0
+      checkpoint_age=$((NOW - hm))
+      [ "$checkpoint_age" -ge 0 ] 2>/dev/null || checkpoint_age=0
+      handoff_age=$checkpoint_age
     ;; esac
+    _cj_dash="$(_checkpoint_parse_json "$_cpath")"
+    [ -n "$_cj_dash" ] || _cj_dash='{}'
   fi
   local dual_degraded=false
   if [ -f "$dir/.plinth/session/review/$slug/dual-degraded.json" ] \
@@ -4504,7 +4510,16 @@ build_dashboard_snapshot() {
   roots="$(discover_dashboard_projects | sort -u)"
   while IFS= read -r dir; do
     [ -n "$dir" ] || continue
-    snapshot_one_project "$dir" >> "$tmp" || true
+    card="$(snapshot_one_project "$dir" 2>/dev/null || true)"
+    if [ -n "$card" ]; then
+      _rt="$(_checkpoint_parse_json "$(_checkpoint_read_path "$dir")")"
+      [ -n "$_rt" ] || _rt="{}"
+      if [ -f "$dir/CHECKPOINT.md" ] || [ -f "$dir/HANDOFF.md" ]; then _cp_bool=true; else _cp_bool=false; fi
+      printf "%s\n" "$card" | jq -c --argjson routing "$_rt" --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
+        '.lifecycle = ((.lifecycle // {}) + {checkpoint:$checkpoint, routing:(if ($routing|length)==0 then null else $routing end)})' \
+        >> "$tmp" 2>/dev/null \
+        || printf "%s\n" "$card" >> "$tmp"
+    fi
   done <<< "$roots"
   # jq -s on an empty file yields []; if the slurp itself fails, surface a top-level
   # error rather than a silent empty wallboard (looks-idle-while-broken).
@@ -4844,16 +4859,131 @@ run_phase_status() {
   else
     echo "stop:    build_defer (no forced review); ship still needs APPROVED@HEAD"
   fi
-  echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  handoff: $([ -f "$root/HANDOFF.md" ] && echo yes || echo no)"
+  echo "plan:    $([ -f "$root/PLAN.md" ] && echo yes || echo no)  plan-review: $([ -f "$root/PLAN-REVIEW.md" ] && echo yes || echo no)  checkpoint: $(if [ -f "$root/CHECKPOINT.md" ] || [ -f "$root/HANDOFF.md" ]; then echo yes; else echo no; fi)"
 }
 
 # Classify handoff: milestone (optional compact advice) vs checkpoint (keep cooking).
 # NEVER waits for human/compaction — notify and return immediately.
+
+# ── Checkpoint (resume + slice routing) ──────────────────────────────────────
+_checkpoint_file() { printf '%s' "${1:-.}/CHECKPOINT.md"; }
+_handoff_file() { printf '%s' "${1:-.}/HANDOFF.md"; }
+_checkpoint_read_path() {
+  local root="${1:-.}"
+  if [ -f "$root/CHECKPOINT.md" ]; then printf '%s' "$root/CHECKPOINT.md"
+  elif [ -f "$root/HANDOFF.md" ]; then printf '%s' "$root/HANDOFF.md"
+  else printf '%s' "$root/CHECKPOINT.md"
+  fi
+}
+_checkpoint_parse_json() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  python3 - "$f" <<'PY' 2>/dev/null || true
+import json, re, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+cands = re.findall(r"```json\s*(\{.*?\})\s*```", raw, flags=re.S)
+best = None
+for c in cands:
+    try:
+        o = json.loads(c)
+    except Exception:
+        continue
+    if not isinstance(o, dict):
+        continue
+    if o.get("schema") == "plinth.checkpoint/v1" or any(
+        k in o for k in ("slice_id", "slice_index", "effort", "implement")
+    ):
+        best = o
+if best is None:
+    sys.exit(0)
+out = {
+    "schema": "plinth.checkpoint/v1",
+    "plan_ref": best.get("plan_ref") if isinstance(best.get("plan_ref"), str) else "PLAN.md",
+    "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
+    "slice_title": best.get("slice_title") if isinstance(best.get("slice_title"), str) else None,
+    "slice_index": best.get("slice_index") if isinstance(best.get("slice_index"), int) and best["slice_index"] >= 1 else None,
+    "slice_total": best.get("slice_total") if isinstance(best.get("slice_total"), int) and best["slice_total"] >= 1 else None,
+    "status": best.get("status") if best.get("status") in (
+        "ready", "implementing", "reviewing", "blocked", "done"
+    ) else None,
+    "effort": best.get("effort") if best.get("effort") in ("medium", "high", "xhigh") else None,
+    "effort_rationale": best.get("effort_rationale") if isinstance(best.get("effort_rationale"), str) else None,
+    "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
+    "updated_at": best.get("updated_at") if isinstance(best.get("updated_at"), str) else None,
+    "elapsed_secs_slice": best.get("elapsed_secs_slice") if isinstance(best.get("elapsed_secs_slice"), int) else None,
+    "eta_secs_slice": None,
+    "eta_secs_plan": None,
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+}
+_checkpoint_build_json() {
+  local root="$1" prev=""
+  if [ -n "${PLINTH_CHECKPOINT_PREV_JSON:-}" ]; then
+    prev="$PLINTH_CHECKPOINT_PREV_JSON"
+  else
+    prev="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
+  fi
+  python3 - "$prev" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+prev = {}
+if len(sys.argv) > 1 and sys.argv[1]:
+    try:
+        prev = json.loads(sys.argv[1])
+    except Exception:
+        prev = {}
+def env(k, default=None):
+    v = os.environ.get(k)
+    return v if v not in (None, "") else default
+def env_int(k):
+    v = env(k)
+    if v is None:
+        return None
+    try:
+        n = int(v)
+        return n if n >= 1 else None
+    except Exception:
+        return None
+effort = env("PLINTH_CHECKPOINT_EFFORT", prev.get("effort"))
+if effort not in ("medium", "high", "xhigh"):
+    effort = "high"
+impl = env("PLINTH_CHECKPOINT_IMPLEMENT", prev.get("implement"))
+if impl not in ("driver", "worker", "either"):
+    impl = prev.get("implement") if prev.get("implement") in ("driver", "worker", "either") else "either"
+status = env("PLINTH_CHECKPOINT_STATUS", prev.get("status"))
+if status not in ("ready", "implementing", "reviewing", "blocked", "done"):
+    status = prev.get("status") if prev.get("status") in (
+        "ready", "implementing", "reviewing", "blocked", "done"
+    ) else "implementing"
+out = {
+    "schema": "plinth.checkpoint/v1",
+    "plan_ref": env("PLINTH_CHECKPOINT_PLAN_REF", prev.get("plan_ref") or "PLAN.md"),
+    "slice_id": env("PLINTH_CHECKPOINT_SLICE_ID", prev.get("slice_id")),
+    "slice_title": env("PLINTH_CHECKPOINT_SLICE_TITLE", prev.get("slice_title")),
+    "slice_index": env_int("PLINTH_CHECKPOINT_SLICE_INDEX") or prev.get("slice_index"),
+    "slice_total": env_int("PLINTH_CHECKPOINT_SLICE_TOTAL") or prev.get("slice_total"),
+    "status": status,
+    "effort": effort,
+    "effort_rationale": env("PLINTH_CHECKPOINT_EFFORT_RATIONALE", prev.get("effort_rationale")),
+    "implement": impl,
+    "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "elapsed_secs_slice": prev.get("elapsed_secs_slice"),
+    "eta_secs_slice": None,
+    "eta_secs_plan": None,
+}
+print(json.dumps(out, indent=2))
+PY
+}
+
+
+# Classify snapshot kind: milestone vs keep_cooking (NOT the artifact name).
 _handoff_kind() {
   case "${1:-manual}" in
     enter-harden|enter-build|plan-deep|review-approved|approved|manual-milestone)
       echo milestone ;;
-    *) echo checkpoint ;;
+    *) echo keep_cooking ;;
   esac
 }
 
@@ -4886,12 +5016,16 @@ _write_handoff() {
     fi
     [ -n "$goal" ] || goal="(edit: one paragraph of what this branch ships)"
   fi
-  out="$root/HANDOFF.md"
+  out="$root/CHECKPOINT.md"
+  local read_src _cp_prev_json
+  read_src="$(_checkpoint_read_path "$root")"
+  # Capture routing JSON BEFORE overwriting the file (fail-soft).
+  _cp_prev_json="$(_checkpoint_parse_json "$read_src")"
   done_block="- (edit: bullets of what is already committed)"
   next="1. (edit: next concrete step)"$'\n'"2. …"
   # Operator freeform sections preserved across refresh (not only Done/Next).
   local goal_body="" evidence_body="" risks_body="" extra_sections="" restart_body=""
-  if [ -f "$out" ]; then
+  if [ -f "$read_src" ]; then
     local _hd _hn _hg _he _hr _hx _raw
     _hd=$(mktemp) _hn=$(mktemp) _hg=$(mktemp) _he=$(mktemp) _hr=$(mktemp) _hx=$(mktemp)
     # Archive PRE-overwrite so freeform text is recoverable.
@@ -4899,13 +5033,13 @@ _write_handoff() {
     sdir_pre="$root/.plinth/session"
     mkdir -p "$sdir_pre"
     arch_pre="$sdir_pre/handoff-${slug}-pre-$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM.md"
-    cp "$out" "$arch_pre" 2>/dev/null || true
+    cp "$read_src" "$arch_pre" 2>/dev/null || true
     # Exact reserved headings only — "## Next release" etc. stay operator freeform.
-    awk '/^## Done[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hd" || true
-    awk '/^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hn" || true
-    awk '/^## Goal[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hg" || true
-    awk '/^## Evidence[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_he" || true
-    awk '/^## Risks( \/ Noticed)?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$out" 2>/dev/null > "$_hr" || true
+    awk '/^## Done[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$read_src" 2>/dev/null > "$_hd" || true
+    awk '/^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$read_src" 2>/dev/null > "$_hn" || true
+    awk '/^## Goal[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$read_src" 2>/dev/null > "$_hg" || true
+    awk '/^## Evidence[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$read_src" 2>/dev/null > "$_he" || true
+    awk '/^## Risks( \/ Noticed)?[[:space:]]*$/{p=1;next} p&&/^## /{exit} p' "$read_src" 2>/dev/null > "$_hr" || true
     # Unrecognized ## sections (exact reserved names only)
     awk '
       /^## / {
@@ -4913,11 +5047,12 @@ _write_handoff() {
         if (title ~ /^## (Goal|Done|Evidence)[[:space:]]*$/ \
             || title ~ /^## Next([[:space:]]*\(ordered\))?[[:space:]]*$/ \
             || title ~ /^## Restart prompt[[:space:]]*$/ \
-            || title ~ /^## Risks( \/ Noticed)?[[:space:]]*$/) { p=0; next }
+            || title ~ /^## Risks( \/ Noticed)?[[:space:]]*$/ \
+            || title ~ /^## Routing[[:space:]]*$/) { p=0; next }
         p=1; print title; next
       }
       p { print }
-    ' "$out" 2>/dev/null > "$_hx" || true
+    ' "$read_src" 2>/dev/null > "$_hx" || true
     _read_sec() {
       local f="$1"
       [ -s "$f" ] || return 1
@@ -5032,7 +5167,7 @@ _write_handoff() {
   if [ "$kind" = "milestone" ]; then
     advice="optional_fresh_session — NOT required; do not wait. Keep working unless human-blocked."
   else
-    advice="keep_cooking — checkpoint only; do not compact/clear mid-loop."
+    advice="keep_cooking — mid-loop snapshot; do not compact/clear. Resume: CHECKPOINT.md."
   fi
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Normalize section bodies to end with exactly one newline so the template
@@ -5044,7 +5179,7 @@ _write_handoff() {
   fi
   # shellcheck disable=SC2154
   {
-    printf '%s\n' "# Handoff — \`${branch}\` @ ${head}" "" \
+    printf '%s\n' "# Checkpoint — \`${branch}\` @ ${head}" "" \
       "Updated: ${ts} · Phase: **${phase}** · Snapshot: **${reason}** (${kind}) · Verdict: ${verdict}${vsha:+ @ $vsha}" "" \
       "context_advice: ${advice}" "" \
       "## Goal"
@@ -5054,7 +5189,7 @@ _write_handoff() {
     printf '%s\n' "" "## Next (ordered)"
     printf '%s' "$next"
     printf '%s\n' "" "## Restart prompt" \
-      "> Read HANDOFF.md and continue from ## Next." \
+      "> Read CHECKPOINT.md (or HANDOFF.md) and continue from ## Next." \
       "> Phase is **${phase}**. Do not open a PR until \`plinth harden\` and \`./.plinth/review.sh\` reach APPROVED@HEAD (unless already APPROVED at this HEAD)." \
       "> Advisor: \`plinth advise\` anytime." \
       "> **Automation:** never block on compaction. At milestones, fresh session is optional; default is keep cooking until ## Next is empty or NEEDS-HUMAN has [BLOCKING] items." \
@@ -5095,9 +5230,41 @@ _write_handoff() {
       '{ts:(now|todate),epoch:(now|floor),event:"handoff_snapshot",sid:null,tool:null,
         detail:("reason="+$reason+" kind="+$kind+" advice="+$advice),head:$head}' \
       >> "$sdir/events.jsonl"; } 2>/dev/null || true
-  echo "Wrote $out (snapshot: $reason / $kind)"
+  # Append machine-readable routing block (canonical source of truth).
+  local cj
+  # Prefer in-memory prev JSON (pre-overwrite); fall back to re-parse.
+  if [ -n "${_cp_prev_json:-}" ]; then
+    cj="$(PLINTH_CHECKPOINT_PREV_JSON="$_cp_prev_json" _checkpoint_build_json "$root")"
+  else
+    cj="$(_checkpoint_build_json "$root")"
+  fi
+  {
+    printf '\n## Routing\n\n'
+    printf '<!-- plinth.checkpoint/v1 — machine-readable; ETAs reserved-null in v1 -->\n'
+    printf '```json\n%s\n```\n' "$cj"
+  } >> "$out"
+  # Legacy HANDOFF.md: pointer + mtime (no dual full-body state).
+  {
+    printf '# Handoff (pointer)\n\n'
+    printf 'Canonical restart state: **CHECKPOINT.md**.\n\n'
+    printf 'Read CHECKPOINT.md and continue from ## Next.\n'
+    printf '\n<!-- refreshed %s reason=%s -->\n' "$ts" "$reason"
+  } > "$root/HANDOFF.md"
+  echo "Wrote $out (snapshot: $reason / $kind); HANDOFF.md pointer refreshed"
   echo "NOTIFY: handoff ${kind} — ${advice}"
   echo "Automation: continuing immediately (no wait for compact/human)."
+  if printf '%s' "$cj" | jq -e '.effort != null or .slice_id != null' >/dev/null 2>&1; then
+    local _sid _eff _impl _rat
+    _sid=$(printf '%s' "$cj" | jq -r '.slice_id // "?"')
+    _eff=$(printf '%s' "$cj" | jq -r '.effort // "high"')
+    _impl=$(printf '%s' "$cj" | jq -r '.implement // "either"')
+    _rat=$(printf '%s' "$cj" | jq -r '.effort_rationale // empty')
+    if [ -n "$_rat" ]; then
+      echo "Route ${_sid}: ${_eff} · ${_impl} — ${_rat}"
+    else
+      echo "Route ${_sid}: ${_eff} · ${_impl}"
+    fi
+  fi
 }
 
 run_harden() {
@@ -5795,6 +5962,18 @@ run_next() {
     echo "action: resolve NEEDS-HUMAN blocking item"
     echo "detail: $blocking"
     echo "phase: $phase"
+  # Non-blocking slice routing from checkpoint (never fails next).
+  _cj="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
+  if [ -n "$_cj" ]; then
+    _sid=$(printf '%s' "$_cj" | jq -r '.slice_id // empty' 2>/dev/null || true)
+    _eff=$(printf '%s' "$_cj" | jq -r '.effort // empty' 2>/dev/null || true)
+    _impl=$(printf '%s' "$_cj" | jq -r '.implement // empty' 2>/dev/null || true)
+    _rat=$(printf '%s' "$_cj" | jq -r '.effort_rationale // empty' 2>/dev/null || true)
+    if [ -n "$_eff" ] || [ -n "$_sid" ]; then
+      if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either} — $_rat"
+      else echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either}"; fi
+    fi
+  fi
     exit 2
   fi
 
@@ -5872,7 +6051,8 @@ run_next() {
   fi
 
   # HANDOFF ## Next first actionable line
-  if [ -f "$root/HANDOFF.md" ]; then
+  local _cp; _cp="$(_checkpoint_read_path "$root")"
+  if [ -f "$_cp" ]; then
     local nxt
     # Require a real number/bullet prefix before stripping — an optional-everything
     # sed would re-emit bare "(edit: …)" and bypass the placeholder filter.
@@ -5887,11 +6067,11 @@ run_next() {
         if (line ~ /^\(edit/ || line ~ /^\.\.\./ || line ~ /^…/) next
         print line
         exit
-      }' "$root/HANDOFF.md" 2>/dev/null || true)
+      }' "$_cp" 2>/dev/null || true)
     if [ -n "$nxt" ]; then
       echo "status: work"
       echo "action: $nxt"
-      echo "detail: from HANDOFF.md ## Next (phase=$phase)"
+      echo "detail: from checkpoint ## Next (phase=$phase)"
       exit 0
     fi
   fi
@@ -5971,7 +6151,7 @@ residual_ship_ok() {
   local changed
   changed="$(git -C "$root" diff --name-only "$rsha" "$tip" 2>/dev/null || true)"
   if [ -n "$changed" ]; then
-    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
+    if printf '%s\n' "$changed" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$|^CHECKPOINT\.md$' | grep -q .; then
       return 1
     fi
   fi
@@ -6006,7 +6186,7 @@ run_residual() {
     jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
       '{schema:"plinth.residual/v1", bound:true, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
     echo "Wrote $rf (BOUND residual for $sha)."
-    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL.json and HANDOFF.md change after (NEEDS-HUMAN invalidates)."
+    echo "Commit this file (and no other product paths), then ship. Residual stays valid if only RESIDUAL.json, HANDOFF.md, and CHECKPOINT.md change after (NEEDS-HUMAN invalidates)."
   else
     jq -n --arg sha "$sha" --arg by "$who" --arg ts "$ts" --arg note "$note" --argjson f "$findings_json" \
       '{schema:"plinth.residual/v1", bound:false, sha:$sha, by:$by, ts:$ts, note:$note, findings:$f}' > "$rf"
@@ -6030,7 +6210,7 @@ case "$cmd" in
   harden) run_harden "$target" ;;
   build) run_build_phase "$target" ;;
   phase) run_phase_status "$target" ;;
-  handoff) run_handoff "$target" ;;
+  handoff|checkpoint) run_handoff "$target" ;;
   plan) run_plan "$target" "$PLAN_DEEP" ;;
   next) run_next "$target" ;;
   residual) run_residual "$target" "${RESIDUAL_BIND:-0}" "${RESIDUAL_FROM:-}" "${RESIDUAL_NOTE:-}" ;;
