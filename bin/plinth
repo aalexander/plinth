@@ -5267,45 +5267,56 @@ def collect(nodes):
 
 collect(outline)
 
-# CHECKPOINT ## Done text can mark plan items complete (without requiring [x]).
-done_blob = ""
+def match_text(a, b):
+    if not a or not b:
+        return False
+    a = a.lower().strip()
+    b = b.lower().strip()
+    if a == b or (len(a) > 24 and a in b) or (len(b) > 24 and b in a):
+        return True
+    ta = {t for t in re.split(r"[^a-z0-9]+", a) if len(t) > 3}
+    tb = {t for t in re.split(r"[^a-z0-9]+", b) if len(t) > 3}
+    if not ta or not tb:
+        return False
+    # Require strong overlap — loose matching was inventing "done" from HANDOFF prose.
+    need = max(4, min(len(ta), len(tb)) // 2)
+    return len(ta & tb) >= need
+
+# CHECKPOINT/HANDOFF ## Done — match only against individual bullet lines (not whole blob).
+done_lines = []
 for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
     cp = root / cp_name
     if not cp.is_file():
         continue
     raw_cp = cp.read_text(encoding="utf-8", errors="replace")
     m = re.search(r"^## Done\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
-    if m:
-        done_blob += "\n" + m.group(1)
-done_blob_l = done_blob.lower()
-
-def match_text(a, b):
-    if not a or not b:
-        return False
-    a = a.lower().strip()
-    b = b.lower().strip()
-    if a == b or a in b or b in a:
-        return True
-    # token overlap for long titles
-    ta = {t for t in re.split(r"[^a-z0-9]+", a) if len(t) > 3}
-    tb = {t for t in re.split(r"[^a-z0-9]+", b) if len(t) > 3}
-    if not ta or not tb:
-        return False
-    return len(ta & tb) >= min(3, len(ta), len(tb))
+    if not m:
+        continue
+    for line in m.group(1).splitlines():
+        t = line.strip()
+        t = re.sub(r"^[-*+]\s+", "", t)
+        t = re.sub(r"^\d+[.)]\s+", "", t)
+        t = t.strip()
+        if len(t) >= 24:
+            done_lines.append(t)
 
 for n in leaves:
     if n.get("status") == "done":
         continue
-    if done_blob_l and match_text(n.get("title") or "", done_blob_l):
-        # Only auto-done from Done section when title is distinctive enough
-        if len(re.findall(r"[a-z0-9]{4,}", (n.get("title") or "").lower())) >= 3:
+    title = n.get("title") or ""
+    for dl in done_lines:
+        if match_text(title, dl):
             n["status"] = "done"
             n["done_via"] = "checkpoint_done"
+            break
 
 si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
 st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
 cur_title = routing.get("slice_title") if isinstance(routing.get("slice_title"), str) else None
 cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) else None
+# Client-reported position is authoritative when present (checkpoint is how clients
+# tell the dashboard where they are). status=done on the whole plan is a special case.
+cp_status = routing.get("status") if isinstance(routing.get("status"), str) else None
 
 # Equal weights among progress leaves; cumulative end % on each leaf.
 if leaves:
@@ -5337,21 +5348,37 @@ elif outline:
         cum += w
         sec["cum_pct_end"] = cum
 
-# Resolve current: title/id match → index-aligned slice → first open
+# Resolve current — checkpoint first (client-authored), then checkboxes / first open.
 current = None
 current_via = None
-for n in leaves:
-    if cur_id and match_text(cur_id, n.get("id", "")):
-        current = n
-        current_via = "slice_id"
-        break
-    if cur_title and match_text(cur_title, n.get("title", "")):
-        current = n
-        current_via = "slice_title"
-        break
-if current is None and si and st and st == len(leaves) and 1 <= si <= len(leaves):
-    current = leaves[si - 1]
-    current_via = "slice_index"
+checkpoint_cursor = False
+
+if cp_status == "done" and leaves:
+    current = leaves[-1]
+    current_via = "checkpoint_status_done"
+    checkpoint_cursor = True
+else:
+    # 1) Explicit title/id match to a plan leaf
+    for n in leaves:
+        if cur_id and match_text(cur_id, n.get("id", "") or n.get("title", "")):
+            current = n
+            current_via = "slice_id"
+            checkpoint_cursor = True
+            break
+        if cur_title and match_text(cur_title, n.get("title", "")):
+            current = n
+            current_via = "slice_title"
+            checkpoint_cursor = True
+            break
+    # 2) Numeric position from checkpoint — clients report where they are.
+    #    Prefer when slice_total matches plan item count; still accept index alone
+    #    when 1..len(leaves) so a client can say "item 5 of N" without titles.
+    if current is None and si and 1 <= si <= len(leaves):
+        if st == len(leaves) or st is None or st >= 1:
+            current = leaves[si - 1]
+            current_via = "slice_index"
+            checkpoint_cursor = True
+
 if current is None:
     for n in leaves:
         if n.get("status") != "done":
@@ -5365,34 +5392,55 @@ if current is None and outline:
 has_checkbox = any(n.get("checkbox") for n in leaves)
 progress_mode = "empty"
 
-# Ordered inference when no checkboxes: items before current = done.
-if leaves and current in leaves and not has_checkbox and current_via in (
-    "slice_id", "slice_title", "slice_index"
-):
+# Checkpoint cursor is authoritative: prior items = done, current = active.
+# Clients report position via plinth checkpoint (slice_index/title/status).
+if leaves and current in leaves and checkpoint_cursor:
     ci = leaves.index(current)
-    for i, n in enumerate(leaves):
-        if i < ci and n.get("status") != "done":
+    if current_via == "checkpoint_status_done" or cp_status == "done":
+        for n in leaves:
             n["status"] = "done"
-            n["done_via"] = "before_current"
-        elif i == ci and n.get("status") != "done":
-            n["status"] = "active"
-    progress_mode = "ordered_cursor"
+            n["done_via"] = "checkpoint_status_done"
+        progress_mode = "checkpoint"
+        pct_force = 100
+    else:
+        for i, n in enumerate(leaves):
+            if i < ci:
+                n["status"] = "done"
+                n["done_via"] = "checkpoint_before_current"
+            elif i == ci:
+                if cp_status == "done":
+                    n["status"] = "done"
+                else:
+                    n["status"] = "active"
+            else:
+                # Future items: keep explicit [x] if already checked; else open.
+                if not n.get("checkbox") or n.get("status") != "done":
+                    if n.get("status") != "done":
+                        n["status"] = "open"
+        progress_mode = "checkpoint"
+        pct_force = None
 elif has_checkbox:
     progress_mode = "checkbox"
+    pct_force = None
 elif leaves:
     progress_mode = "unchecked_list"
+    pct_force = None
 else:
     progress_mode = "empty"
+    pct_force = None
 
 done_n = sum(1 for n in leaves if n.get("status") == "done")
 total_n = len(leaves)
 pct = None
-if total_n > 0:
-    if progress_mode == "ordered_cursor" and current in leaves:
-        # Cumulative % through work completed before the active item.
-        pct = int(current.get("cum_pct_start") or 0)
+if pct_force is not None:
+    pct = pct_force
+elif total_n > 0:
+    if progress_mode == "checkpoint" and current in leaves:
+        # Cumulative % through completed work (before active item).
         if current.get("status") == "done":
-            pct = int(current.get("cum_pct_end") or pct)
+            pct = int(current.get("cum_pct_end") or 0)
+        else:
+            pct = int(current.get("cum_pct_start") or 0)
     else:
         pct = int(round(100.0 * done_n / total_n))
 elif si and st and st >= 1 and si >= 1:
@@ -5422,13 +5470,14 @@ notes = [
     "derived from " + primary_kind,
     "weights are cumulative end-% on each item",
 ]
-if progress_mode == "checkbox":
-    notes.append("checkboxes drive %")
-elif progress_mode == "ordered_cursor":
-    notes.append("cursor from checkpoint → prior items count as done")
+if progress_mode == "checkpoint":
+    notes.append("checkpoint is authoritative for position (client-reported)")
+elif progress_mode == "checkbox":
+    notes.append("checkboxes drive % (no checkpoint slice position)")
 elif progress_mode == "unchecked_list":
     notes.append(
-        "list has no [x] checkboxes and checkpoint slice does not map to an item — % is 0 until you check boxes or set slice_title/index to a plan item"
+        "no checkpoint slice_index/title and no [x] progress — client should "
+        "`plinth checkpoint` with PLINTH_CHECKPOINT_SLICE_INDEX/TOTAL (or title)"
     )
 notes.append("ETA reserved-null")
 if current_via:

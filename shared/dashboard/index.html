@@ -662,40 +662,63 @@
   #nh-list.plan-track li.milestone.active {
     border-left-color: var(--cyan);
     background: var(--cyan-bg);
+    box-shadow: inset 0 0 0 1px rgba(57, 210, 192, 0.25);
   }
   #nh-list.plan-track li.milestone.done {
     border-left-color: var(--green);
-    opacity: 0.85;
+    background: var(--green-bg);
+    box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.22);
   }
   #nh-list.plan-track li.leaf {
     margin-left: 0.85rem;
-    padding: 0.4rem 0.55rem;
+    padding: 0.45rem 0.6rem;
     font-size: 0.74rem;
     border-style: dashed;
   }
+  /* Active step — strong cyan highlight (current work) */
   #nh-list.plan-track li.leaf.active {
-    border-color: rgba(57, 210, 192, 0.45);
+    border-color: var(--cyan);
     border-style: solid;
+    background: var(--cyan-bg);
     color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(57, 210, 192, 0.35), 0 0 12px rgba(57, 210, 192, 0.12);
   }
+  /* Done steps — green shade (same family as APPROVED / green chips) */
   #nh-list.plan-track li.leaf.done {
-    color: var(--dim);
-    text-decoration: line-through;
-    text-decoration-color: rgba(110, 118, 129, 0.55);
+    border-color: rgba(63, 185, 80, 0.4);
+    border-style: solid;
+    background: var(--green-bg);
+    color: var(--text);
+    text-decoration: none;
+    opacity: 1;
   }
   #nh-list.plan-track .mark {
     font-family: var(--font);
     color: var(--dim);
-    margin-right: 0.35rem;
+    margin-right: 0.4rem;
+    font-weight: 700;
   }
   #nh-list.plan-track li.leaf.active .mark { color: var(--cyan); }
   #nh-list.plan-track li.leaf.done .mark { color: var(--green); }
+  #nh-list.plan-track li.milestone.done strong { color: var(--green); }
+  #nh-list.plan-track li.milestone.active strong { color: var(--cyan); }
   #nh-list.plan-track .w {
     float: right;
     font-family: var(--font);
     font-size: 0.65rem;
     color: var(--dim);
     margin-left: 0.5rem;
+  }
+  #nh-list.plan-track li.leaf.done .w,
+  #nh-list.plan-track li.milestone.done .w { color: var(--green); }
+  #nh-list.plan-track li.leaf.active .w { color: var(--cyan); }
+  /* Card meter: green fill when complete, cyan otherwise */
+  .plan-meter .fill.done {
+    background: linear-gradient(90deg, #2ea043, var(--green));
+  }
+  .plan-meter .fill.active {
+    background: linear-gradient(90deg, var(--cyan), #1f6feb);
   }
 </style>
 </head>
@@ -1231,9 +1254,11 @@
         ? String(pp.current.title).replace(/\s+/g, " ").trim()
         : "";
       const curShort = curT.length > 52 ? curT.slice(0, 49) + "…" : curT;
+      const fillCls = (pct != null && pct >= 100) ? "fill done"
+        : (pct != null && pct > 0) ? "fill active" : "fill";
       planMeter =
         '<div class="plan-meter" title="' + esc(pp.note || "plan progress") + '">' +
-          '<div class="track"><div class="fill" style="width:' +
+          '<div class="track"><div class="' + fillCls + '" style="width:' +
             (pct != null ? pct : 0) + '%;opacity:' + (pct != null ? "1" : "0.25") +
           '"></div></div>' +
           (pct != null ? '<span class="pct">' + Math.round(pct) + "%</span>" : '<span class="pct dim">—</span>') +

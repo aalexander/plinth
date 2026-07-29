@@ -61,21 +61,37 @@ echo "$out" | jq -e '[.outline[].title] | index("Problem") == null' >/dev/null \
   || fail "empty Problem section should be pruned"
 pass "checkbox plan progress + source coordination + cumulative %"
 
-# ordered cursor from checkpoint slice_title (no checkboxes)
+# checkpoint cursor is authoritative (even when checkboxes still unchecked)
 cat > "$TMP/a/PLAN.md" <<'P'
 # My product
 ## Acceptance criteria
-1. Alpha first
-2. Beta second
-3. Gamma third
-4. Delta fourth
+- [ ] Alpha first
+- [ ] Beta second
+- [ ] Gamma third
+- [ ] Delta fourth
 P
-rt='{"slice_index":3,"slice_total":4,"slice_title":"Gamma third"}'
+rt='{"slice_index":3,"slice_total":4,"slice_title":"Gamma third","status":"implementing"}'
 outc=$(_plan_progress_json "$TMP/a" "$rt")
-echo "$outc" | jq -e '.progress_mode=="ordered_cursor"' >/dev/null || fail "ordered mode: $(echo "$outc"|jq .progress_mode)"
-echo "$outc" | jq -e '.pct_complete==50' >/dev/null || fail "ordered pct 50: $(echo "$outc"|jq .pct_complete)"
-echo "$outc" | jq -e '.done==2 and (.current.title|test("Gamma"))' >/dev/null || fail "ordered current: $(echo "$outc"|jq '{done,current}')"
-pass "ordered cursor from checkpoint maps to plan item"
+echo "$outc" | jq -e '.progress_mode=="checkpoint"' >/dev/null || fail "checkpoint mode: $(echo "$outc"|jq .progress_mode)"
+echo "$outc" | jq -e '.pct_complete==50' >/dev/null || fail "checkpoint pct 50: $(echo "$outc"|jq .pct_complete)"
+echo "$outc" | jq -e '.done==2 and (.current.title|test("Gamma"))' >/dev/null || fail "checkpoint current: $(echo "$outc"|jq '{done,current}')"
+# prior items done + active shaded status
+echo "$outc" | jq -e '[.outline[0].children[].status] == ["done","done","active","open"]' >/dev/null \
+  || fail "status cascade: $(echo "$outc"|jq '[.outline[0].children[].status]')"
+pass "checkpoint cursor authoritative over unchecked boxes"
+
+# HANDOFF Done prose must NOT invent plan completion (certeus-class false positive)
+cat > "$TMP/a/HANDOFF.md" <<'H'
+# Handoff
+## Done
+- Branch renamed so its degraded review lineage cannot be mistaken for feature-freeze evidence.
+## Next
+1. keep going
+H
+# no routing — all AC still open
+outfp=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outfp" | jq -e '.done==0' >/dev/null || fail "Done prose false positive: $(echo "$outfp"|jq '{done,outline}')"
+pass "HANDOFF Done prose does not invent checkbox completion"
 
 # implementation plan when no PLAN.md
 rm -f "$TMP/a/PLAN.md"

@@ -97,9 +97,12 @@ Everything between is the model's call.
   force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
 - `plinth checkpoint [path]`    — write/refresh root `CHECKPOINT.md` (resume + slice
-  routing JSON: effort medium|high|xhigh, implement driver|worker|either);
-  `handoff` is an alias. Legacy `HANDOFF.md` is a pointer. Effort biases dual
-  first-pass (`xhigh` → dual in BUILD); never a ship gate (see MODELS live wiring).
+  routing JSON: effort medium|high|xhigh, implement driver|worker|either,
+  `slice_index`/`slice_total`/`slice_title` = **client-reported plan position** for
+  the dashboard). Env: `PLINTH_CHECKPOINT_SLICE_INDEX`, `_TOTAL`, `_TITLE`, `_ID`,
+  `_EFFORT`, `_IMPLEMENT`, `_STATUS`. `handoff` is an alias; legacy `HANDOFF.md` is
+  a pointer. Effort biases dual first-pass (`xhigh` → dual in BUILD); never a ship
+  gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
