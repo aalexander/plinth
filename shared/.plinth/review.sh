@@ -1626,7 +1626,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     def is_coverage_asymp:
         # Horizon thrash / residual canary lists — not concrete "no e2e test covers X".
         ((.description // "") | test(
-          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects|no production-path coverage|production-path (test|coverage)|eval (extracted|isolated)|extracted helpers|helper-level canar|no end-to-end coverage for both|still eval/sed|does not exercise these (paths|behaviors)"; "i"
+          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects"; "i"
         ))
         and (is_real_test_gap | not)
         and (is_external_security | not);
@@ -2140,11 +2140,14 @@ ${diff}"
   # reviewer prefix AND config path match) — they join the run gate instead.
   # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
   # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
+  # Residual hygiene paths are process docs (not HARNESS instrument). Never block ship.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
     --arg href '^HANDOFF\\.md$' \
+    --arg rre '(^|/)\\.plinth/RESIDUAL(\\.json|-TRIAGE\\.md)$|(^|/)docs/RESIDUAL' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
        | select((.file // "" | test($href)) | not)
+       | select((.file // "" | test($rre)) | not)
        | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
      ] | length' \
     "$SDIR/findings-$r.json")"

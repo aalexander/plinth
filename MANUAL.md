@@ -1030,13 +1030,9 @@ installed copies.
   `inline_contract()` concatenates both, so every review prompt here includes the
   charter twice. No functional impact — trim the duplicate from AGENTS-project.md
   on the next ratified charter touch. (v4.6 post-approval fresh round, minor.)
-- **`plinth update` cannot complete the driver-shell migration autonomously.**
-  The one-time pre-v4.4 migration (move notes to `.plinth/DRIVER-project.md`,
-  delete `CLAUDE.md`, regenerate) ends in a step the guard rightly blocks the
-  driver from performing (`rm CLAUDE.md`), so it lands in NEEDS-HUMAN on every
-  affected repo (plinth, certeus, anvil). If that recurs beyond this one-time
-  wave, consider an explicit `plinth update --regen-shell` that completes the
-  migration under a byte-honest no-content-loss check.
+- **`plinth update` auto-migrates custom pre-shell `CLAUDE.md` into
+  `.plinth/DRIVER-project.md` and regenerates the shell** (v4.4+ / 5.0.x). Older
+  notes about a manual `rm CLAUDE.md` NEEDS-HUMAN step are obsolete for that path.
 - **`changelog-collate` is not multi-file atomic across CHANGELOG + VERSION +
   fragment deletes.** Each file is written via temp+mv (so no half-written single
   file), but if the VERSION install or a fragment `rm` fails after CHANGELOG is
