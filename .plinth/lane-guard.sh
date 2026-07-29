@@ -38,21 +38,21 @@
 #       as the gitlink change. A submodule is a separate repo with its own review; treat its contents
 #       as out-of-scope for the superproject lane (the gitlink change itself IS caught).
 #
-#   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>
+#   lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file> [before-sha]
 #       The DELEGATION RECEIPT. Copies the delegate CLI's own transcript (with its exit code)
 #       to an artifact under `.plinth/session/lanes/` and prints a one-line receipt naming the
-#       artifact, the transcript's sha256, and the delegate's SELF-REPORTED model. Exits 3
-#       ("unavailable: ...") when the transcript is missing or EMPTY — nothing then shows the
-#       delegate ran, so the lane must report STATUS: unavailable instead of complete.
+#       artifact, the transcript's sha256, the delegate's SELF-REPORTED model, and optional
+#       before-sha (HEAD before the lane run — bind THIS run). Exits 3 ("unavailable: ...")
+#       when the transcript is missing or EMPTY — nothing then shows the delegate ran, so the
+#       lane must report STATUS: unavailable instead of complete.
 #       Run it AFTER `scope`: the artifact lands under `.plinth/session/`, which the pre-run
 #       snapshot covers, so recording it earlier would read as a sensitive-path violation.
 #       WHAT IT DOES NOT GUARANTEE (say it plainly, do not let this claim grow): it proves a
 #       non-empty transcript EXISTS and preserves it for the driver to read. It does NOT prove
 #       which model produced the diff — `model=` is whatever the transcript says, and a lane
-#       that implemented the task itself could write a file. It also does NOT bind the
-#       transcript to THIS run (no BEFORE/SNAP/recency check) — a fallible paste of a STALE
-#       OUT path from a prior invocation still records a green receipt. A skipped delegation
-#       becomes DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not
+#       that implemented the task itself could write a file. Pass before-sha so a STALE OUT
+#       paste is at least labeled with the wrong run's HEAD; a skipped delegation becomes
+#       DETECTABLE (no artifact, no receipt line, nothing for the driver to open), not
 #       impossible.
 #
 #   lane-guard.sh scope <baseref> [--snapshot <file>] <spec-file>...
@@ -268,7 +268,12 @@ sens_snapshot() {  # `<f1> <f2>  <path>` per sensitive node: `<sha> <mode>` for 
   # git/find failure must NOT be conflated with a legitimately-empty result (which would yield a
   # partial baseline that later reads as "scope ok"). ls-files exits 0 on empty, non-zero on error.
   local _gv _cp _d; local -a _cpdirs=()
-  _gv="$(git ls-files -c && git ls-files -o -i --exclude-standard && git ls-files -o --exclude-standard)" 2>/dev/null \
+  # plinth#17: NUL-delimited enumeration so tabs/newlines in pathnames are not C-quoted
+  # into forms that miss SECRET_DIRS / protected patterns. (Downstream filters still
+  # line-split for grep compatibility — paths containing raw newlines remain a residual
+  # honest bound; tabs are preserved in the path bytes.)
+  _gv=""
+  _gv="$( { git ls-files -z -c && git ls-files -z -o -i --exclude-standard && git ls-files -z -o --exclude-standard; } | tr '\0' '\n' )" 2>/dev/null \
     || { echo "lane-guard: git ls-files enumeration failed — refusing (fail closed)" >&2; return 5; }
   # Narrow to sensitivity CANDIDATES in ONE grep before the per-path record loop (see sens_prefilter):
   # the ignored-file listing stays FULL (that is the security property — gitignored secrets must be
@@ -484,12 +489,18 @@ case "$sub" in
     # removes that while the driver believes delegation happened. Nothing here can prove who
     # typed it — what it CAN do is make the delegate's own transcript a precondition the driver
     # can open and read, so a skipped delegation leaves a hole instead of a clean report.
-    dv="${1:-}"; dcrc="${2:-}"; dtr="${3:-}"
-    _dusage() { echo "usage: lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file>"; exit 2; }
+    dv="${1:-}"; dcrc="${2:-}"; dtr="${3:-}"; dbefore="${4:-}"
+    _dusage() { echo "usage: lane-guard.sh delegation <vendor> <cli-exit-code> <transcript-file> [before-sha]"; exit 2; }
     # vendor is a free token (vendor-neutral: any delegate CLI), constrained to filename-safe chars:
     printf '%s' "$dv"   | grep -Eq '^[A-Za-z0-9._-]+$' || _dusage
     printf '%s' "$dcrc" | grep -Eq '^[0-9]+$'          || _dusage   # the CLI's real rc, not a narrative
     [ -n "$dtr" ] || _dusage
+    # Optional BEFORE sha binds the receipt to THIS run (upstream #32) — refuse a
+    # non-hex token so a narrative cannot be smuggled in.
+    if [ -n "$dbefore" ]; then
+      printf '%s' "$dbefore" | grep -Eq '^[0-9a-fA-F]{7,64}$' || {
+        echo "unavailable: before-sha must be a 7–64 hex git object id (got '$dbefore')"; exit 3; }
+    fi
     # THE GATE. A missing or EMPTY transcript means nothing shows the delegate ran at all.
     { [ -f "$dtr" ] && [ -s "$dtr" ]; } || {
       echo "unavailable: no $dv transcript at '$dtr' (missing or empty) — nothing shows the delegate CLI ran, so the lane MUST report STATUS: unavailable; implementing the task itself instead is exactly the failure this gate exists to expose"; exit 3; }
@@ -581,10 +592,14 @@ case "$sub" in
     dmodel="$(grep -E '^[[:space:]]*MODEL:' "$dtr" 2>/dev/null | tail -n1 | sed -E 's/^[[:space:]]*MODEL:[[:space:]]*//' | tr -cd 'A-Za-z0-9._:/-' | cut -c1-64)"
     [ -n "$dmodel" ] || dmodel=unreported
     dart="$(mktemp "$ddir/${dv}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")" || { echo "unavailable: cannot create the delegation artifact under '$ddir'"; exit 3; }
-    { printf '# plinth lane delegation v1: vendor=%s rc=%s bytes=%s sha256=%s model=%s recorded=%s\n' \
-        "$dv" "$dcrc" "$dbytes" "$dhash" "$dmodel" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    { printf '# plinth lane delegation v1: vendor=%s rc=%s bytes=%s sha256=%s model=%s before=%s recorded=%s\n' \
+        "$dv" "$dcrc" "$dbytes" "$dhash" "$dmodel" "${dbefore:-unbound}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       cat "$dtr"; } > "$dart" || { echo "unavailable: cannot write the delegation artifact '$dart'"; exit 3; }
-    echo "delegation recorded: vendor=$dv rc=$dcrc bytes=$dbytes sha256=$dhash model=$dmodel artifact=$dart" ;;
+    if [ -n "$dbefore" ]; then
+      echo "delegation recorded: vendor=$dv rc=$dcrc bytes=$dbytes sha256=$dhash model=$dmodel before=$dbefore artifact=$dart"
+    else
+      echo "delegation recorded: vendor=$dv rc=$dcrc bytes=$dbytes sha256=$dhash model=$dmodel artifact=$dart"
+    fi ;;
 
   snapshot)
     git rev-parse --git-dir >/dev/null 2>&1 || { echo "snapshot: not inside a git repo" >&2; exit 5; }
