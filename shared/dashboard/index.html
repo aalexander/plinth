@@ -1922,7 +1922,10 @@
         }
         outline.forEach(function (sec) {
           const st = (sec && sec.status) || "open";
-          const w = sec && sec.weight_pct != null ? ('<span class="w">' + esc(String(sec.weight_pct)) + "%</span>") : "";
+          // Prefer cumulative end-% (running total through this milestone).
+          const cum = sec && sec.cum_pct_end != null ? sec.cum_pct_end
+            : (sec && sec.weight_pct != null ? sec.weight_pct : null);
+          const w = cum != null ? ('<span class="w">' + esc(String(cum)) + "%</span>") : "";
           rows.push(
             '<li class="milestone ' + esc(st) + '">' + w +
               "<strong>" + esc((sec && sec.title) || "section") + "</strong>" +
@@ -1932,8 +1935,10 @@
           kids.forEach(function (leaf) {
             const ls = (leaf && leaf.status) || "open";
             const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
-            const lw = leaf && leaf.weight_pct != null
-              ? ('<span class="w">' + esc(String(leaf.weight_pct)) + "%</span>") : "";
+            const lcum = leaf && leaf.cum_pct_end != null ? leaf.cum_pct_end
+              : (leaf && leaf.weight_pct != null ? leaf.weight_pct : null);
+            const lw = lcum != null
+              ? ('<span class="w" title="cumulative through this item">' + esc(String(lcum)) + "%</span>") : "";
             rows.push(
               '<li class="leaf ' + esc(ls) + '">' + lw +
                 '<span class="mark">' + mark + "</span>" +
@@ -1944,6 +1949,9 @@
         });
         if (pp.note) {
           rows.push('<li class="muted">' + esc(pp.note) + "</li>");
+        }
+        if (pp.progress_mode) {
+          rows.push('<li class="muted">mode: ' + esc(String(pp.progress_mode)) + "</li>");
         }
         nhList.innerHTML = rows.join("");
       }

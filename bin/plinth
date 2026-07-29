@@ -5143,6 +5143,11 @@ while i < len(lines):
         # Spec with no H2 yet: synthesize from first content later
         i += 1
         continue
+    # Only count work under stage-like sections for progress leaves.
+    work_sec = bool(re.search(
+        r"acceptance|criteria|require|stage|roadmap|milestone|implement|phase|scope|deliver",
+        cur.get("title") or "", re.I,
+    ))
     cm = CHECK_RE.match(line)
     if cm:
         done = cm.group(3).lower() == "x"
@@ -5152,6 +5157,8 @@ while i < len(lines):
             "title": body,
             "status": "done" if done else "open",
             "checkable": True,
+            "checkbox": True,
+            "progress": work_sec,
             "children": [],
         })
         i += 1
@@ -5161,12 +5168,13 @@ while i < len(lines):
         body = bm.group(3).strip()
         # Ignore empty / placeholder bullets
         if body and body not in ("…", "...", "—", "-"):
-            # Prefer checklist-looking AC numbers even without brackets
             cur["children"].append({
                 "id": f"{cur['id']}.{len(cur['children'])+1}",
                 "title": body,
                 "status": "open",
-                "checkable": True,  # countable work item
+                "checkable": True,
+                "checkbox": False,
+                "progress": work_sec,
                 "children": [],
             })
         i += 1
@@ -5237,117 +5245,194 @@ outline = [n for n in outline if (n.get("children") or n.get("checkable"))]
 if not outline:
     sys.exit(0)
 
-# Collect checkable leaves for progress
+# Leaves that participate in progress % (work sections only).
 leaves = []
-def walk(nodes, acc):
-    for n in nodes:
-        ch = n.get("children") or []
-        if ch:
-            walk(ch, acc)
-        elif n.get("checkable"):
-            acc.append(n)
-        # parent with only non-checkable: ignore
-        if ch:
-            # also count checkable children only via recursion
-            pass
-walk(outline, leaves)
-# Prefer only checkable nodes among leaves
-leaves = [n for n in leaves if n.get("checkable")]
-# If sections have checkable children, collect them properly:
-leaves = []
+all_items = []
+
 def collect(nodes):
     for n in nodes:
         ch = n.get("children") or []
         if ch:
             for c in ch:
                 if c.get("checkable"):
-                    leaves.append(c)
+                    all_items.append(c)
+                    if c.get("progress", True):
+                        leaves.append(c)
                 if c.get("children"):
                     collect([c])
         elif n.get("checkable"):
-            leaves.append(n)
+            all_items.append(n)
+            if n.get("progress", True):
+                leaves.append(n)
+
 collect(outline)
 
-done_n = sum(1 for n in leaves if n.get("status") == "done")
-total_n = len(leaves)
-
-# Checkpoint / routing can mark done progress when AC not checkboxed:
-si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
-st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
-pct = None
-if total_n > 0:
-    # Prefer real checklist progress; never invent 100% from a 1/1 slice pointer
-    # while open AC items remain.
-    pct = int(round(100.0 * done_n / total_n))
-elif si and st and st >= 1 and si >= 1:
-    # No checkable leaves — coarse progress from checkpoint slice pointer only.
-    pct = int(round(100.0 * min(si, st) / st))
-
-# Equal weights among leaves (sum 100); sections get sum of children
-if leaves:
-    base = 100 // len(leaves)
-    rem = 100 - base * len(leaves)
-    for i, n in enumerate(leaves):
-        n["weight_pct"] = base + (1 if i < rem else 0)
-    # roll up to parents
-    for sec in outline:
-        ch = sec.get("children") or []
-        if ch:
-            sec["weight_pct"] = sum(c.get("weight_pct") or 0 for c in ch)
-        else:
-            sec["weight_pct"] = 0
-else:
-    if outline:
-        base = 100 // len(outline)
-        rem = 100 - base * len(outline)
-        for i, sec in enumerate(outline):
-            sec["weight_pct"] = base + (1 if i < rem else 0)
-
-# Current item: routing match → first open checkable → first open section
-cur_title = routing.get("slice_title") if isinstance(routing.get("slice_title"), str) else None
-cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) else None
-current = None
+# CHECKPOINT ## Done text can mark plan items complete (without requiring [x]).
+done_blob = ""
+for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
+    cp = root / cp_name
+    if not cp.is_file():
+        continue
+    raw_cp = cp.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"^## Done\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
+    if m:
+        done_blob += "\n" + m.group(1)
+done_blob_l = done_blob.lower()
 
 def match_text(a, b):
     if not a or not b:
         return False
     a = a.lower().strip()
     b = b.lower().strip()
-    return a == b or a in b or b in a
+    if a == b or a in b or b in a:
+        return True
+    # token overlap for long titles
+    ta = {t for t in re.split(r"[^a-z0-9]+", a) if len(t) > 3}
+    tb = {t for t in re.split(r"[^a-z0-9]+", b) if len(t) > 3}
+    if not ta or not tb:
+        return False
+    return len(ta & tb) >= min(3, len(ta), len(tb))
 
+for n in leaves:
+    if n.get("status") == "done":
+        continue
+    if done_blob_l and match_text(n.get("title") or "", done_blob_l):
+        # Only auto-done from Done section when title is distinctive enough
+        if len(re.findall(r"[a-z0-9]{4,}", (n.get("title") or "").lower())) >= 3:
+            n["status"] = "done"
+            n["done_via"] = "checkpoint_done"
+
+si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
+st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
+cur_title = routing.get("slice_title") if isinstance(routing.get("slice_title"), str) else None
+cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) else None
+
+# Equal weights among progress leaves; cumulative end % on each leaf.
+if leaves:
+    base = 100 // len(leaves)
+    rem = 100 - base * len(leaves)
+    cum = 0
+    for i, n in enumerate(leaves):
+        w = base + (1 if i < rem else 0)
+        n["weight_pct"] = w
+        n["cum_pct_start"] = cum
+        cum += w
+        n["cum_pct_end"] = cum  # cumulative through this item
+    for sec in outline:
+        ch = [c for c in (sec.get("children") or []) if c.get("progress", True) and c.get("checkable")]
+        if ch:
+            sec["weight_pct"] = sum(c.get("weight_pct") or 0 for c in ch)
+            sec["cum_pct_end"] = max((c.get("cum_pct_end") or 0) for c in ch)
+        else:
+            sec["weight_pct"] = 0
+            sec["cum_pct_end"] = None
+elif outline:
+    base = 100 // len(outline)
+    rem = 100 - base * len(outline)
+    cum = 0
+    for i, sec in enumerate(outline):
+        w = base + (1 if i < rem else 0)
+        sec["weight_pct"] = w
+        sec["cum_pct_start"] = cum
+        cum += w
+        sec["cum_pct_end"] = cum
+
+# Resolve current: title/id match → index-aligned slice → first open
+current = None
+current_via = None
 for n in leaves:
     if cur_id and match_text(cur_id, n.get("id", "")):
         current = n
+        current_via = "slice_id"
         break
     if cur_title and match_text(cur_title, n.get("title", "")):
         current = n
+        current_via = "slice_title"
         break
+if current is None and si and st and st == len(leaves) and 1 <= si <= len(leaves):
+    current = leaves[si - 1]
+    current_via = "slice_index"
 if current is None:
     for n in leaves:
         if n.get("status") != "done":
             current = n
+            current_via = "first_open"
             break
 if current is None and outline:
     current = outline[0]
+    current_via = "first_section"
 
-# Mark active status on current + ancestors
-if current:
-    current["status"] = "active" if current.get("status") != "done" else "done"
-    for sec in outline:
-        ch = sec.get("children") or []
-        if any(c.get("id") == current.get("id") for c in ch) or sec.get("id") == current.get("id"):
-            if sec.get("status") != "done":
-                sec["status"] = "active"
-        # section done when all checkable children done
-        check_ch = [c for c in ch if c.get("checkable")]
-        if check_ch and all(c.get("status") == "done" for c in check_ch):
-            sec["status"] = "done"
+has_checkbox = any(n.get("checkbox") for n in leaves)
+progress_mode = "empty"
 
-# Related sources (coordination): list non-primary present docs
+# Ordered inference when no checkboxes: items before current = done.
+if leaves and current in leaves and not has_checkbox and current_via in (
+    "slice_id", "slice_title", "slice_index"
+):
+    ci = leaves.index(current)
+    for i, n in enumerate(leaves):
+        if i < ci and n.get("status") != "done":
+            n["status"] = "done"
+            n["done_via"] = "before_current"
+        elif i == ci and n.get("status") != "done":
+            n["status"] = "active"
+    progress_mode = "ordered_cursor"
+elif has_checkbox:
+    progress_mode = "checkbox"
+elif leaves:
+    progress_mode = "unchecked_list"
+else:
+    progress_mode = "empty"
+
+done_n = sum(1 for n in leaves if n.get("status") == "done")
+total_n = len(leaves)
+pct = None
+if total_n > 0:
+    if progress_mode == "ordered_cursor" and current in leaves:
+        # Cumulative % through work completed before the active item.
+        pct = int(current.get("cum_pct_start") or 0)
+        if current.get("status") == "done":
+            pct = int(current.get("cum_pct_end") or pct)
+    else:
+        pct = int(round(100.0 * done_n / total_n))
+elif si and st and st >= 1 and si >= 1:
+    pct = int(round(100.0 * min(si, st) / st))
+    progress_mode = "slice_only"
+
+# Mark active on current + section rollup
+if current and current.get("status") != "done":
+    current["status"] = "active"
+for sec in outline:
+    ch = sec.get("children") or []
+    if current and (
+        any(c.get("id") == current.get("id") for c in ch) or sec.get("id") == current.get("id")
+    ):
+        if sec.get("status") != "done":
+            sec["status"] = "active"
+    check_ch = [c for c in ch if c.get("checkable") and c.get("progress", True)]
+    if check_ch and all(c.get("status") == "done" for c in check_ch):
+        sec["status"] = "done"
+
 related = []
 for k, v in sources.items():
     if v and v != primary_rel:
         related.append({"kind": k, "path": v})
+
+notes = [
+    "derived from " + primary_kind,
+    "weights are cumulative end-% on each item",
+]
+if progress_mode == "checkbox":
+    notes.append("checkboxes drive %")
+elif progress_mode == "ordered_cursor":
+    notes.append("cursor from checkpoint → prior items count as done")
+elif progress_mode == "unchecked_list":
+    notes.append(
+        "list has no [x] checkboxes and checkpoint slice does not map to an item — % is 0 until you check boxes or set slice_title/index to a plan item"
+    )
+notes.append("ETA reserved-null")
+if current_via:
+    notes.append("current via " + current_via)
 
 out = {
     "schema": "plinth.plan_progress/v1",
@@ -5359,17 +5444,14 @@ out = {
     "pct_complete": pct,
     "done": done_n if total_n else None,
     "total": total_n if total_n else None,
+    "progress_mode": progress_mode,
     "current": (
-        {"id": current.get("id"), "title": current.get("title")}
+        {"id": current.get("id"), "title": current.get("title"), "via": current_via}
         if current else None
     ),
     "outline": outline,
     "eta_secs": None,
-    "note": (
-        "derived from "
-        + primary_kind
-        + "; checkboxes drive % when present; ETA reserved-null"
-    ),
+    "note": "; ".join(notes),
 }
 print(json.dumps(out, separators=(",", ":")))
 PY

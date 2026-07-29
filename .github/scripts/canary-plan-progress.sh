@@ -45,12 +45,37 @@ echo "$out" | jq -e '.sources.spec=="SPEC.md"' >/dev/null || fail "spec coordina
 echo "$out" | jq -e '.done==1 and .total==3 and .pct_complete==33' >/dev/null \
   || fail "checkbox %: $(echo "$out" | jq '{done,total,pct_complete}')"
 echo "$out" | jq -e '.current.title|test("Second")' >/dev/null || fail "current first open"
+echo "$out" | jq -e '.progress_mode=="checkbox"' >/dev/null || fail "mode checkbox"
+# cumulative end-% on leaves: 33,66,100 (approx; 3-way equal may be 34/67/100)
+cums=$(echo "$out" | jq -c '[.outline[].children[]?.cum_pct_end]')
+echo "$out" | jq -e '([.outline[].children[]?.cum_pct_end] | last) == 100' >/dev/null \
+  || fail "cumulative last != 100: $cums"
+echo "$out" | jq -e '
+  ([.outline[].children[]?.cum_pct_end]) as $c
+  | ($c|length) >= 2 and $c[0] < $c[1] and ($c|last)==100
+' >/dev/null || fail "cumulative not increasing: $cums"
 sum=$(echo "$out" | jq '[.outline[].children[]?.weight_pct // empty] | add')
 [ "$sum" = "100" ] || fail "weights sum=$sum want 100"
 # empty Problem section should not appear (no children)
 echo "$out" | jq -e '[.outline[].title] | index("Problem") == null' >/dev/null \
   || fail "empty Problem section should be pruned"
-pass "checkbox plan progress + source coordination"
+pass "checkbox plan progress + source coordination + cumulative %"
+
+# ordered cursor from checkpoint slice_title (no checkboxes)
+cat > "$TMP/a/PLAN.md" <<'P'
+# My product
+## Acceptance criteria
+1. Alpha first
+2. Beta second
+3. Gamma third
+4. Delta fourth
+P
+rt='{"slice_index":3,"slice_total":4,"slice_title":"Gamma third"}'
+outc=$(_plan_progress_json "$TMP/a" "$rt")
+echo "$outc" | jq -e '.progress_mode=="ordered_cursor"' >/dev/null || fail "ordered mode: $(echo "$outc"|jq .progress_mode)"
+echo "$outc" | jq -e '.pct_complete==50' >/dev/null || fail "ordered pct 50: $(echo "$outc"|jq .pct_complete)"
+echo "$outc" | jq -e '.done==2 and (.current.title|test("Gamma"))' >/dev/null || fail "ordered current: $(echo "$outc"|jq '{done,current}')"
+pass "ordered cursor from checkpoint maps to plan item"
 
 # implementation plan when no PLAN.md
 rm -f "$TMP/a/PLAN.md"
