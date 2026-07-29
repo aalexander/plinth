@@ -6486,17 +6486,29 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+          # Open checkboxes (not open bullets/shall) force reopen of status=done.
+          _seed_open_cb=$(printf '%s' "$_seed_pp" | jq -r '
+            [.outline[]?.children[]?
+              | select(.progress != false and .checkbox == true and .status != "done")]
+            | length
+          ' 2>/dev/null || true)
+          case "$_seed_open_cb" in ''|*[!0-9]*) _seed_open_cb=0 ;; esac
           # Status policy on open-plan seed:
           # - env non-done (blocked/ready/…) sticks
-          # - env/prior done → reopen implementing
-          # - prior ready/reviewing/blocked (fence only) is preserved
+          # - env/prior done + open CHECKBOXES → implementing
+          # - env/prior done + only non-checkbox opens → keep done (whole plan complete)
+          # - prior ready/reviewing/blocked preserved
           # - no prior/env → implementing
           if [ "$_user_set_status" = 1 ]; then
-            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ]; then
+            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ "$_seed_open_cb" -gt 0 ]; then
               export PLINTH_CHECKPOINT_STATUS=implementing
             fi
           elif [ "$_prev_status" = "done" ]; then
-            export PLINTH_CHECKPOINT_STATUS=implementing
+            if [ "$_seed_open_cb" -gt 0 ]; then
+              export PLINTH_CHECKPOINT_STATUS=implementing
+            else
+              export PLINTH_CHECKPOINT_STATUS=done
+            fi
           elif [ -n "$_prev_status" ]; then
             export PLINTH_CHECKPOINT_STATUS="$_prev_status"
           else

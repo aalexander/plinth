@@ -1298,4 +1298,25 @@ echo "$outd" | jq -e '.pct_complete==100 and .done==2' >/dev/null \
   || fail "non-checkbox status=done should be 100: $(echo "$outd"|jq '{pct_complete,done,total}')"
 pass "non-checkbox plan status=done is 100%"
 
+# Writer must keep explicit STATUS=done for non-checkbox PLAN (no open [ ] boxes)
+mkdir -p "$TMP/bulletdone/.plinth"
+cd "$TMP/bulletdone"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# P
+## Acceptance criteria
+- Stage one bullet
+- Stage two bullet
+P
+export PLINTH_CHECKPOINT_STATUS=done
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="done"' >/dev/null \
+  || fail "writer keeps status=done for bullet plan: $cj"
+unset PLINTH_CHECKPOINT_STATUS
+pass "writer keeps status=done for non-checkbox PLAN"
+
 echo "canary-plan-progress: ALL PASS"
