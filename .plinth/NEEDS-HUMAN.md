@@ -26,3 +26,8 @@
   (seats + receipt @ v4.8.0 via anvil#6). Full SPEC acceptance is **anvil product work**
   on open [anvil#1](https://github.com/aalexander/anvil/pull/1) (`build/harness-v14`),
   not an operator credential/config action for this repo. Track progress on that PR.
+
+- [ ] **plinth#51 remainder (optional):** after bare-merge (#49) in v5.0.2, remaining
+  fail-closed depth from the stale UPSTREAM PR — `git diff --raw` infra fail → Tier 2,
+  base-config probe fail-closed, `ls-files -z` large-tree snapshots — cherry-pick as
+  focused PRs only if dogfood hits them. Do not rebase the whole #51 branch onto 5.0.x.

@@ -153,7 +153,7 @@ Archives: `.plinth/session/handoff-<slug>-<ts>.md`
 | Mechanism | Behavior |
 |-----------|----------|
 | `review_phase` | `build` by default; `hardening` when phase=harden (or env/commit marker) |
-| Sticky `id` | Assigned on findings; reopen without file blob change → auto-resolved |
+| Sticky `id` | Assigned on findings; **recognized thrash classes** reopened on an unchanged blob → auto-resolved (ordinary bugs/blockers/security stay open) |
 | Compact verify | Open-finding ledger + fix diff; no whole-repo free-explore |
 | Dual first-pass | Tier-2 fresh round 1: primary + audit_vendor merge open majors |
 

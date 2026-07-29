@@ -2487,6 +2487,9 @@ snapshot_one_project() {
       'def nonempty($s): if ($s|type)=="string" and ($s|length)>0 then $s else null end;
       {path:$path,name:$name,branch:$branch,head:$head,feedless:($feedless==1),
         error:"snapshot_render_failed",
+        lifecycle:{phase:$life_phase,plan:$plan_present,plan_review:$plan_review_present,
+                   handoff:$handoff_present,handoff_age_secs:$handoff_age,
+                   dual_degraded:$dual_degraded,next_action:(if $next_action=="" then null else $next_action end)},
         needs_human:{open:$nhn,blocking:$nhb,items:$nh_items,truncated:$nh_trunc,source:$nh_source},
         phases:($phases // {}),
         review_round_secs:$review_round_secs,
@@ -5046,7 +5049,8 @@ for i, p in enumerate(paths):
             "raw_ok": False,
         }
     else:
-        data.setdefault("seat", role)
+        # Caller-assigned role is authoritative — model output cannot relabel seats.
+        data["seat"] = role
         for k in ("blockers", "questions", "nits"):
             if not isinstance(data.get(k), list):
                 data[k] = []
@@ -5317,9 +5321,20 @@ run_next() {
   # HANDOFF ## Next first actionable line
   if [ -f "$root/HANDOFF.md" ]; then
     local nxt
-    nxt=$(awk '/^## Next/{p=1;next} p&&/^## /{exit} p' "$root/HANDOFF.md" \
-      | sed -n 's/^[[:space:]]*[0-9]*[.)]*[[:space:]]*//p; s/^-[[:space:]]*//p' \
-      | grep -v '^$' | grep -viE '^\(edit|^\.\.\.|^…' | head -1 || true)
+    # Require a real number/bullet prefix before stripping — an optional-everything
+    # sed would re-emit bare "(edit: …)" and bypass the placeholder filter.
+    # Portable awk (BSD/GNU sed branch labels differ).
+    nxt=$(awk '
+      /^## Next/{p=1;next} p&&/^## /{exit} p {
+        line=$0
+        sub(/^[[:space:]]*[0-9]+[.)][[:space:]]+/,"",line)
+        if (line==$0) sub(/^[[:space:]]*[-*][[:space:]]+/,"",line)
+        if (line==$0) next
+        if (line ~ /^[[:space:]]*$/) next
+        if (line ~ /^\(edit/ || line ~ /^\.\.\./ || line ~ /^…/) next
+        print line
+        exit
+      }' "$root/HANDOFF.md" 2>/dev/null || true)
     if [ -n "$nxt" ]; then
       echo "status: work"
       echo "action: $nxt"
