@@ -153,6 +153,20 @@ are reserved-null in v1 (no fabricated times).
 
 Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
 
+### Plan progress (dashboard)
+
+Stages are **auto-derived** (not hand-drawn Gantt data):
+
+1. **PLAN.md** if present (product plan — preferred)
+2. else **implementation plan** (`IMPLEMENTATION.md`, `IMPLEMENTATION_PLAN.md`, …)
+3. else **`spec_path`** from `.plinth/config` (file or tree entry)
+
+Snapshot field: `lifecycle.plan_progress` (`plinth.plan_progress/v1`). All three
+paths are listed under `sources` when present so PLAN / impl / spec stay
+coordinated in the UI. Progress uses markdown checkboxes when present; equal
+weights sum to 100%; ETA stays reserved-null until elapsed calibration exists.
+Dashboard: progress meter + PLAN chip on the card; click-in stage track.
+
 ### Live wiring (what the product actually does)
 
 Guidance becomes code at these seats only — still **non-blocking** (missing effort

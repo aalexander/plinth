@@ -615,6 +615,88 @@
     cursor: pointer;
   }
   #nh-close:hover { color: var(--text); border-color: #484f58; }
+  /* Plan progress — card meter + drill-in track */
+  .plan-meter {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0.35rem 0 0.15rem;
+    min-width: 0;
+  }
+  .plan-meter .track {
+    flex: 1;
+    height: 6px;
+    border-radius: 99px;
+    background: rgba(48, 54, 61, 0.9);
+    overflow: hidden;
+    min-width: 48px;
+  }
+  .plan-meter .fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan), var(--purple));
+    transition: width 0.25s ease;
+  }
+  .plan-meter .pct {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--cyan);
+    min-width: 2.4em;
+    text-align: right;
+  }
+  .plan-meter .cur {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 55%;
+  }
+  #nh-panel.plan-wide { width: min(640px, 100%); }
+  #nh-list.plan-track { gap: 0.55rem; }
+  #nh-list.plan-track li.milestone {
+    border-left: 3px solid var(--border);
+    padding-left: 0.7rem;
+  }
+  #nh-list.plan-track li.milestone.active {
+    border-left-color: var(--cyan);
+    background: var(--cyan-bg);
+  }
+  #nh-list.plan-track li.milestone.done {
+    border-left-color: var(--green);
+    opacity: 0.85;
+  }
+  #nh-list.plan-track li.leaf {
+    margin-left: 0.85rem;
+    padding: 0.4rem 0.55rem;
+    font-size: 0.74rem;
+    border-style: dashed;
+  }
+  #nh-list.plan-track li.leaf.active {
+    border-color: rgba(57, 210, 192, 0.45);
+    border-style: solid;
+    color: var(--text);
+  }
+  #nh-list.plan-track li.leaf.done {
+    color: var(--dim);
+    text-decoration: line-through;
+    text-decoration-color: rgba(110, 118, 129, 0.55);
+  }
+  #nh-list.plan-track .mark {
+    font-family: var(--font);
+    color: var(--dim);
+    margin-right: 0.35rem;
+  }
+  #nh-list.plan-track li.leaf.active .mark { color: var(--cyan); }
+  #nh-list.plan-track li.leaf.done .mark { color: var(--green); }
+  #nh-list.plan-track .w {
+    float: right;
+    font-family: var(--font);
+    font-size: 0.65rem;
+    color: var(--dim);
+    margin-left: 0.5rem;
+  }
 </style>
 </head>
 <body>
@@ -988,17 +1070,34 @@
     // Only non-default lifecycle signals (BUILD is default — omit)
     if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
     if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
-    // Slice routing (generalized model policy) — from CHECKPOINT.md JSON
+    // Plan progress (derived PLAN / impl / spec) — primary glanceable surface
+    const pp = life.plan_progress && typeof life.plan_progress === "object"
+      ? life.plan_progress : null;
+    if (pp) {
+      const pLab = pp.pct_complete != null
+        ? ("PLAN " + Math.round(Number(pp.pct_complete)) + "%")
+        : "PLAN";
+      const pTitle = (pp.title || pp.primary || "plan") +
+        (pp.done != null && pp.total != null ? (" · " + pp.done + "/" + pp.total) : "") +
+        " — click for stages";
+      chips.push(
+        '<button type="button" class="chip cyan btn" data-plan="' + esc(p.path) +
+        '" title="' + esc(pTitle) + '">' + esc(pLab) + "</button>"
+      );
+    } else if (life.plan) {
+      chips.push('<span class="chip dim" title="PLAN.md present (no derived stages)">plan</span>');
+    }
+    // Slice routing (effort/implement) — secondary chips
     const rt = life.routing && typeof life.routing === "object" ? life.routing : null;
     if (rt) {
-      if (rt.slice_index != null && rt.slice_total != null) {
+      if (rt.slice_index != null && rt.slice_total != null && !pp) {
         chips.push(
           '<span class="chip dim" title="Plan position (1-based)">' +
             "slice " + esc(String(rt.slice_index)) + "/" + esc(String(rt.slice_total)) +
             (rt.slice_id ? " · " + esc(String(rt.slice_id)) : "") +
             "</span>"
         );
-      } else if (rt.slice_id) {
+      } else if (rt.slice_id && !pp) {
         chips.push('<span class="chip dim" title="Current slice">' + esc(String(rt.slice_id)) + "</span>");
       }
       if (rt.effort) {
@@ -1009,7 +1108,6 @@
             "</span>"
         );
       }
-      // v1: ETAs reserved-null — show only when non-null (future)
       if (rt.eta_secs_slice != null && Number(rt.eta_secs_slice) > 0) {
         chips.push('<span class="chip dim" title="Slice ETA">η ' + hum(Number(rt.eta_secs_slice)) + "</span>");
       }
@@ -1120,10 +1218,28 @@
       esc(p.branch) + " @" + esc(p.head),
       activity,
       session ? ("sess " + session) : null,
-      life.plan ? "plan" : null,
       life.plan_review ? "plan-review" : null,
       (life.checkpoint || life.handoff) ? "checkpoint" : null,
+      pp && pp.primary_kind ? ("src " + pp.primary_kind) : (life.plan ? "plan" : null),
     ].filter(Boolean).join(" · ");
+
+    // Plan progress meter (best glanceable signal for stage position)
+    let planMeter = "";
+    if (pp) {
+      const pct = pp.pct_complete != null ? Math.max(0, Math.min(100, Number(pp.pct_complete))) : null;
+      const curT = pp.current && pp.current.title
+        ? String(pp.current.title).replace(/\s+/g, " ").trim()
+        : "";
+      const curShort = curT.length > 52 ? curT.slice(0, 49) + "…" : curT;
+      planMeter =
+        '<div class="plan-meter" title="' + esc(pp.note || "plan progress") + '">' +
+          '<div class="track"><div class="fill" style="width:' +
+            (pct != null ? pct : 0) + '%;opacity:' + (pct != null ? "1" : "0.25") +
+          '"></div></div>' +
+          (pct != null ? '<span class="pct">' + Math.round(pct) + "%</span>" : '<span class="pct dim">—</span>') +
+          (curShort ? '<span class="cur" title="' + esc(curT) + '">' + esc(curShort) + "</span>" : "") +
+        "</div>";
+    }
 
     // Show cleaned prompt only if headline is next (avoid duplicating same text)
     const showPrompt = prompt && next && prompt.toLowerCase() !== next.toLowerCase()
@@ -1139,6 +1255,7 @@
             '" title="Click to copy path: ' + esc(p.path) + '">' + esc(p.name) + "</button>" +
         "</div>" +
         '<div class="submeta" title="' + esc(p.path) + '">' + sub + "</div>" +
+        planMeter +
         (chips.length ? '<div class="chips">' + chips.join("") + "</div>" : "") +
         (headline
           ? '<div class="headline"><span class="lbl">' + esc(headlineLbl) + "</span>" +
@@ -1765,10 +1882,74 @@
     openProjectModal(path, "changes");
   }
 
+  function openPlan(path) {
+    openProjectModal(path, "plan");
+  }
+
   function openProjectModal(path, kind) {
     const p = projectsByPath[path];
     if (!p) return;
     if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
+    const panel = document.getElementById("nh-panel");
+    if (panel) panel.classList.toggle("plan-wide", kind === "plan");
+    nhList.classList.toggle("plan-track", kind === "plan");
+    if (kind === "plan") {
+      const pp = (p.lifecycle && p.lifecycle.plan_progress) || null;
+      nhTitle.textContent = "PLAN — " + (p.name || path);
+      if (!pp) {
+        nhSub.textContent = path + " · no derived stages";
+        nhList.innerHTML = '<li class="muted">Add PLAN.md (preferred), an implementation plan, or a readable spec_path.</li>';
+      } else {
+        const bits = [];
+        if (pp.pct_complete != null) bits.push(Math.round(Number(pp.pct_complete)) + "%");
+        if (pp.done != null && pp.total != null) bits.push(pp.done + "/" + pp.total + " done");
+        bits.push("primary " + (pp.primary || "?") + " (" + (pp.primary_kind || "?") + ")");
+        if (Array.isArray(pp.related) && pp.related.length) {
+          bits.push("also " + pp.related.map(function (r) {
+            return (r.kind || "") + ":" + (r.path || "");
+          }).join(", "));
+        }
+        if (pp.eta_secs != null && Number(pp.eta_secs) > 0) {
+          bits.push("η " + hum(Number(pp.eta_secs)));
+        } else {
+          bits.push("ETA —");
+        }
+        nhSub.textContent = bits.join(" · ") + " · " + path;
+        const rows = [];
+        const outline = Array.isArray(pp.outline) ? pp.outline : [];
+        if (!outline.length) {
+          rows.push('<li class="muted">(empty outline)</li>');
+        }
+        outline.forEach(function (sec) {
+          const st = (sec && sec.status) || "open";
+          const w = sec && sec.weight_pct != null ? ('<span class="w">' + esc(String(sec.weight_pct)) + "%</span>") : "";
+          rows.push(
+            '<li class="milestone ' + esc(st) + '">' + w +
+              "<strong>" + esc((sec && sec.title) || "section") + "</strong>" +
+            "</li>"
+          );
+          const kids = (sec && Array.isArray(sec.children)) ? sec.children : [];
+          kids.forEach(function (leaf) {
+            const ls = (leaf && leaf.status) || "open";
+            const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
+            const lw = leaf && leaf.weight_pct != null
+              ? ('<span class="w">' + esc(String(leaf.weight_pct)) + "%</span>") : "";
+            rows.push(
+              '<li class="leaf ' + esc(ls) + '">' + lw +
+                '<span class="mark">' + mark + "</span>" +
+                esc((leaf && leaf.title) || "") +
+              "</li>"
+            );
+          });
+        });
+        if (pp.note) {
+          rows.push('<li class="muted">' + esc(pp.note) + "</li>");
+        }
+        nhList.innerHTML = rows.join("");
+      }
+      nhModal.classList.add("open");
+      return;
+    }
     if (kind === "changes") {
       const r = p.review || {};
       const items = Array.isArray(r.findings) ? r.findings : [];
@@ -1862,6 +2043,11 @@
         openChanges(ch.getAttribute("data-changes"));
         return;
       }
+      const pl = e.target && e.target.closest ? e.target.closest("[data-plan]") : null;
+      if (pl) {
+        openPlan(pl.getAttribute("data-plan"));
+        return;
+      }
       const t = e.target && e.target.closest
         ? (e.target.closest("[data-human]") || e.target.closest("[data-nh]"))
         : null;
@@ -1927,7 +2113,7 @@
     cardTone: cardTone, cardHTML: cardHTML, esc: esc,
     modelsLine: modelsLine, modelsHTML: modelsHTML, modelParts: modelParts,
     phaseBar: phaseBar, renderQuota: renderQuota,
-    openNeedsHuman: openNeedsHuman, openChanges: openChanges,
+    openNeedsHuman: openNeedsHuman, openChanges: openChanges, openPlan: openPlan,
     closeNeedsHuman: closeNeedsHuman, openProjectModal: openProjectModal,
     attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
     isRecentlyActive: isRecentlyActive,

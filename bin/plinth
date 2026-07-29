@@ -4515,8 +4515,19 @@ build_dashboard_snapshot() {
       _rt="$(_checkpoint_parse_json "$(_checkpoint_read_path "$dir")")"
       [ -n "$_rt" ] || _rt="{}"
       if [ -f "$dir/CHECKPOINT.md" ] || [ -f "$dir/HANDOFF.md" ]; then _cp_bool=true; else _cp_bool=false; fi
-      printf "%s\n" "$card" | jq -c --argjson routing "$_rt" --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
-        '.lifecycle = ((.lifecycle // {}) + {checkpoint:$checkpoint, routing:(if ($routing|length)==0 then null else $routing end)})' \
+      _pp="$(_plan_progress_json "$dir" "$_rt")"
+      [ -n "$_pp" ] || _pp="null"
+      # Validate plan_progress JSON; corrupt → null (fail-soft).
+      if [ "$_pp" != "null" ] && ! printf '%s' "$_pp" | jq -e . >/dev/null 2>&1; then _pp="null"; fi
+      printf "%s\n" "$card" | jq -c \
+        --argjson routing "$_rt" \
+        --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
+        --argjson plan_progress "$_pp" \
+        '.lifecycle = ((.lifecycle // {}) + {
+            checkpoint:$checkpoint,
+            routing:(if ($routing|length)==0 then null else $routing end),
+            plan_progress:(if $plan_progress == null then null else $plan_progress end)
+          })' \
         >> "$tmp" 2>/dev/null \
         || printf "%s\n" "$card" >> "$tmp"
     fi
@@ -4977,6 +4988,392 @@ print(json.dumps(out, indent=2))
 PY
 }
 
+# Build lifecycle.plan_progress from PLAN / implementation plan / spec (coordinated).
+# Args: project root, optional routing JSON string from checkpoint. Fail-soft → empty stdout.
+_plan_progress_json() {
+  local root="${1:-.}" routing="${2:-}"
+  python3 - "$root" "$routing" <<'PY' 2>/dev/null || true
+import json, os, re, sys
+from pathlib import Path
+
+# realpath so macOS /var vs /private/var does not break relative_to checks.
+root = Path(os.path.realpath(sys.argv[1]))
+routing = {}
+if len(sys.argv) > 2 and sys.argv[2]:
+    try:
+        routing = json.loads(sys.argv[2])
+        if not isinstance(routing, dict):
+            routing = {}
+    except Exception:
+        routing = {}
+
+def read_cfg_spec(p: Path):
+    cfg = p / ".plinth" / "config"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\s*spec_path\s*=\s*(.+?)\s*$", line)
+        if m:
+            v = m.group(1).strip().strip("\"'")
+            return v or None
+    return None
+
+def rel_to_root(path: Path):
+    try:
+        return str(Path(os.path.realpath(path)).relative_to(root))
+    except Exception:
+        return os.path.relpath(os.path.realpath(path), str(root))
+
+def resolve_file(rel):
+    if not rel:
+        return None
+    # Reject path escape before resolve.
+    raw = (root / rel)
+    path = Path(os.path.realpath(raw))
+    try:
+        path.relative_to(root)
+    except Exception:
+        # Allow when realpath prefixes differ but relpath stays inside.
+        rp = os.path.relpath(str(path), str(root))
+        if rp.startswith(".."):
+            return None
+    if path.is_file():
+        return path
+    if path.is_dir():
+        for name in ("SPEC.md", "README.md", "index.md", "spec.md"):
+            cand = path / name
+            if cand.is_file():
+                return Path(os.path.realpath(cand))
+    return None
+
+# Coordinated source preference: product plan → implementation plan → canonical spec.
+impl_candidates = [
+    "IMPLEMENTATION.md",
+    "IMPLEMENTATION_PLAN.md",
+    "PLAN-IMPLEMENTATION.md",
+    "docs/IMPLEMENTATION.md",
+    "docs/implementation-plan.md",
+]
+plan_ref = routing.get("plan_ref") if isinstance(routing.get("plan_ref"), str) else None
+if plan_ref and plan_ref not in ("PLAN.md",) and not any(
+    plan_ref.endswith(x) for x in ("PLAN.md",)
+):
+    # checkpoint may point at a non-PLAN implementation doc
+    impl_candidates.insert(0, plan_ref)
+
+plan_path = resolve_file("PLAN.md")
+impl_path = None
+for c in impl_candidates:
+    impl_path = resolve_file(c)
+    if impl_path:
+        break
+spec_rel = read_cfg_spec(root) or "SPEC.md"
+spec_path = resolve_file(spec_rel)
+
+sources = {
+    "plan": rel_to_root(plan_path) if plan_path else None,
+    "implementation": rel_to_root(impl_path) if impl_path else None,
+    "spec": rel_to_root(spec_path) if spec_path else None,
+}
+
+primary_path = plan_path or impl_path or spec_path
+if not primary_path:
+    sys.exit(0)
+primary_kind = "plan" if plan_path else ("implementation" if impl_path and primary_path == impl_path else "spec")
+primary_rel = rel_to_root(primary_path)
+
+# Prefer product plan outline; when only spec exists, still derive stages.
+text = primary_path.read_text(encoding="utf-8", errors="replace")
+# Cap huge specs (MANUAL.md) for dashboard — first 120k chars is enough for outline.
+if len(text) > 120_000:
+    text = text[:120_000]
+
+def slug(s, n=48):
+    s = re.sub(r"\s+", " ", (s or "").strip())
+    s = re.sub(r"[^\w.\- ]+", "", s)[:n].strip().replace(" ", "-").lower()
+    return s or "item"
+
+CHECK_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$")
+BULLET_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
+H_RE = re.compile(r"^(#{1,3})\s+(.*)$")
+
+# Skip meta sections that are not work stages when under product PLAN.
+SKIP_H2 = {
+    "ratification",
+    "users / context",
+    "users/context",
+    "non-goals",
+    "nongoals",
+}
+
+outline = []
+cur = None  # current H2/H3 section node
+title = None
+lines = text.splitlines()
+i = 0
+while i < len(lines):
+    line = lines[i]
+    hm = H_RE.match(line)
+    if hm:
+        level = len(hm.group(1))
+        ht = hm.group(2).strip()
+        if level == 1 and title is None:
+            title = ht
+            i += 1
+            continue
+        if level >= 2:
+            key = ht.lower().strip()
+            # For product PLAN, skip pure meta; for SPEC keep structure.
+            if primary_kind == "plan" and key in SKIP_H2:
+                cur = None
+                i += 1
+                continue
+            node = {
+                "id": f"s{len(outline)+1}-{slug(ht)}",
+                "title": ht,
+                "status": "open",
+                "checkable": False,
+                "children": [],
+            }
+            outline.append(node)
+            cur = node
+            i += 1
+            continue
+    if cur is None:
+        # Spec with no H2 yet: synthesize from first content later
+        i += 1
+        continue
+    cm = CHECK_RE.match(line)
+    if cm:
+        done = cm.group(3).lower() == "x"
+        body = cm.group(4).strip()
+        cur["children"].append({
+            "id": f"{cur['id']}.{len(cur['children'])+1}",
+            "title": body,
+            "status": "done" if done else "open",
+            "checkable": True,
+            "children": [],
+        })
+        i += 1
+        continue
+    bm = BULLET_RE.match(line)
+    if bm:
+        body = bm.group(3).strip()
+        # Ignore empty / placeholder bullets
+        if body and body not in ("…", "...", "—", "-"):
+            # Prefer checklist-looking AC numbers even without brackets
+            cur["children"].append({
+                "id": f"{cur['id']}.{len(cur['children'])+1}",
+                "title": body,
+                "status": "open",
+                "checkable": True,  # countable work item
+                "children": [],
+            })
+        i += 1
+        continue
+    i += 1
+
+def harvest_shall(max_n=40):
+    shall = []
+    for line in lines:
+        t = line.strip()
+        if re.search(r"\bshall\b", t, re.I) and len(t) > 12:
+            shall.append(re.sub(r"^[-*+\d.)\s]+", "", t).strip()[:200])
+        if len(shall) >= max_n:
+            break
+    return shall
+
+# Attach prose "shall" requirements when a section has no list children yet.
+for sec in outline:
+    if sec.get("children"):
+        continue
+    # Only for likely requirements sections (avoid stuffing Problem prose).
+    if not re.search(r"require|criteria|spec|shall|behavior|acceptance", sec.get("title") or "", re.I):
+        continue
+    # Re-scan body under this heading for shall lines (simple full-doc harvest OK for small specs).
+    for s in harvest_shall():
+        sec["children"].append({
+            "id": f"{sec['id']}.{len(sec['children'])+1}",
+            "title": s,
+            "status": "open",
+            "checkable": True,
+            "children": [],
+        })
+
+# SPEC-style: if still no structure, harvest shall lines as one milestone.
+if not outline or not any(n.get("children") for n in outline):
+    shall = harvest_shall()
+    if shall:
+        outline = [{
+            "id": "s1-requirements",
+            "title": "Requirements",
+            "status": "open",
+            "checkable": False,
+            "children": [
+                {
+                    "id": f"s1-requirements.{j+1}",
+                    "title": s,
+                    "status": "open",
+                    "checkable": True,
+                    "children": [],
+                }
+                for j, s in enumerate(shall)
+            ],
+        }]
+
+# If still empty, expose H1-only presence
+if not outline and title:
+    outline = [{
+        "id": "s1-doc",
+        "title": title,
+        "status": "open",
+        "checkable": False,
+        "children": [],
+    }]
+
+# Drop empty milestones (heading, no bullets) — keeps the track scannable.
+outline = [n for n in outline if (n.get("children") or n.get("checkable"))]
+
+if not outline:
+    sys.exit(0)
+
+# Collect checkable leaves for progress
+leaves = []
+def walk(nodes, acc):
+    for n in nodes:
+        ch = n.get("children") or []
+        if ch:
+            walk(ch, acc)
+        elif n.get("checkable"):
+            acc.append(n)
+        # parent with only non-checkable: ignore
+        if ch:
+            # also count checkable children only via recursion
+            pass
+walk(outline, leaves)
+# Prefer only checkable nodes among leaves
+leaves = [n for n in leaves if n.get("checkable")]
+# If sections have checkable children, collect them properly:
+leaves = []
+def collect(nodes):
+    for n in nodes:
+        ch = n.get("children") or []
+        if ch:
+            for c in ch:
+                if c.get("checkable"):
+                    leaves.append(c)
+                if c.get("children"):
+                    collect([c])
+        elif n.get("checkable"):
+            leaves.append(n)
+collect(outline)
+
+done_n = sum(1 for n in leaves if n.get("status") == "done")
+total_n = len(leaves)
+
+# Checkpoint / routing can mark done progress when AC not checkboxed:
+si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
+st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
+pct = None
+if total_n > 0:
+    # Prefer real checklist progress; never invent 100% from a 1/1 slice pointer
+    # while open AC items remain.
+    pct = int(round(100.0 * done_n / total_n))
+elif si and st and st >= 1 and si >= 1:
+    # No checkable leaves — coarse progress from checkpoint slice pointer only.
+    pct = int(round(100.0 * min(si, st) / st))
+
+# Equal weights among leaves (sum 100); sections get sum of children
+if leaves:
+    base = 100 // len(leaves)
+    rem = 100 - base * len(leaves)
+    for i, n in enumerate(leaves):
+        n["weight_pct"] = base + (1 if i < rem else 0)
+    # roll up to parents
+    for sec in outline:
+        ch = sec.get("children") or []
+        if ch:
+            sec["weight_pct"] = sum(c.get("weight_pct") or 0 for c in ch)
+        else:
+            sec["weight_pct"] = 0
+else:
+    if outline:
+        base = 100 // len(outline)
+        rem = 100 - base * len(outline)
+        for i, sec in enumerate(outline):
+            sec["weight_pct"] = base + (1 if i < rem else 0)
+
+# Current item: routing match → first open checkable → first open section
+cur_title = routing.get("slice_title") if isinstance(routing.get("slice_title"), str) else None
+cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) else None
+current = None
+
+def match_text(a, b):
+    if not a or not b:
+        return False
+    a = a.lower().strip()
+    b = b.lower().strip()
+    return a == b or a in b or b in a
+
+for n in leaves:
+    if cur_id and match_text(cur_id, n.get("id", "")):
+        current = n
+        break
+    if cur_title and match_text(cur_title, n.get("title", "")):
+        current = n
+        break
+if current is None:
+    for n in leaves:
+        if n.get("status") != "done":
+            current = n
+            break
+if current is None and outline:
+    current = outline[0]
+
+# Mark active status on current + ancestors
+if current:
+    current["status"] = "active" if current.get("status") != "done" else "done"
+    for sec in outline:
+        ch = sec.get("children") or []
+        if any(c.get("id") == current.get("id") for c in ch) or sec.get("id") == current.get("id"):
+            if sec.get("status") != "done":
+                sec["status"] = "active"
+        # section done when all checkable children done
+        check_ch = [c for c in ch if c.get("checkable")]
+        if check_ch and all(c.get("status") == "done" for c in check_ch):
+            sec["status"] = "done"
+
+# Related sources (coordination): list non-primary present docs
+related = []
+for k, v in sources.items():
+    if v and v != primary_rel:
+        related.append({"kind": k, "path": v})
+
+out = {
+    "schema": "plinth.plan_progress/v1",
+    "primary": primary_rel,
+    "primary_kind": primary_kind,
+    "sources": sources,
+    "related": related,
+    "title": title or primary_rel,
+    "pct_complete": pct,
+    "done": done_n if total_n else None,
+    "total": total_n if total_n else None,
+    "current": (
+        {"id": current.get("id"), "title": current.get("title")}
+        if current else None
+    ),
+    "outline": outline,
+    "eta_secs": None,
+    "note": (
+        "derived from "
+        + primary_kind
+        + "; checkboxes drive % when present; ETA reserved-null"
+    ),
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+}
 
 # Classify snapshot kind: milestone vs keep_cooking (NOT the artifact name).
 _handoff_kind() {
