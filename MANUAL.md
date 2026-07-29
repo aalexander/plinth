@@ -102,13 +102,15 @@ Everything between is the model's call.
   (`PLINTH_CHECKPOINT_SLICE_INDEX` + `_TOTAL`, optional `_TITLE`/`_ID`;
   `_EFFORT` medium|high|xhigh; `_IMPLEMENT` driver|worker|either;
   `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
-  complete). If index is unset and no prior fence, the writer **seeds** the first
-  open PLAN.md stage (synthesized; re-checkpoint advances when checkboxes move).
-  Index applies only when `slice_total` matches the plan leaf count (or total is
-  omitted) and no conflicting non-matching title/id was supplied. Writer-seeded
-  `plan_ref` is always `PLAN.md`. `handoff` is an alias; legacy `HANDOFF.md` is a
-  pointer. Effort biases dual first-pass (`xhigh` → dual in BUILD); never a ship
-  gate (see MODELS live wiring).
+  complete). If index is unset, the writer **seeds from PLAN.md only** (never
+  from the spec fallback): first open stage, advance when checkboxes move ahead
+  of the prior index, and when **all** PLAN leaves are checked set `status=done`
+  with index=total (100%). Conflicting `slice_id` + `slice_title` that resolve to
+  different leaves refuse a cursor (no document-order invent); index applies only
+  when totals match and neither title nor id was supplied. Writer-seeded
+  `plan_ref` is always `PLAN.md` and only when PLAN.md is the primary. `handoff`
+  is an alias; legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass
+  (`xhigh` → dual in BUILD); never a ship gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
@@ -907,9 +909,15 @@ installed copies.
   `url.insteadOf` rewrite), private-repo/PAT visibility of the pinned plinth source, and
   the real `gh api` response shape. Wants a documented RUNTIME receipt from the first PR
   that runs the check for real.
-- **`plinth advise` diagnostics (v5.0.8 / #62):** resolved — PATH vs auth vs nonzero
-  exit are distinguished; stderr sample is shown. Re-open only if a vendor still
-  masks auth as success without matching the unauth classifiers.
+- **`plinth advise` diagnostics (v5.0.8 / #62):** PATH vs auth vs nonzero exit are
+  distinguished; stderr is sampled. Auth is classified from **stderr**, from
+  **stdout on nonzero exit**, and from exit-0 only when stdout is a **short unauth
+  banner** (≤3 lines / ≤240 chars, e.g. “Please sign in”). Long exit-0 advice that
+  discusses authentication is not treated as a CLI auth failure.
+- **Plan progress classifiers (v5.0.8):** coding-milestone heuristics are best-effort;
+  remaining edge cases may need PLAN.md checklist polish rather than perfect NLP.
+  Spec-dir entry files beyond SPEC/README/index/OVERVIEW/REQUIREMENTS/API still
+  need an explicit `spec_path` file.
 - **Every seat-swap path re-anchors coverage except a swap that lands on a fresh
   round anyway** (`shared/.plinth/review.sh`, #26 fix). The vendor check compares
   only the IMMEDIATELY preceding round's vendor, which is sound today because the

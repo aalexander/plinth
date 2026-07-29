@@ -1701,6 +1701,9 @@ $question"
   local margs=() bin="" errf outf rc=0 diag=""
   errf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-err.XXXXXX")" || errf=""
   outf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-out.XXXXXX")" || outf=""
+  # Best-effort cleanup on interrupt (success paths also rm explicitly).
+  _advise_cleanup() { [ -n "${errf:-}" ] && rm -f "$errf"; [ -n "${outf:-}" ] && rm -f "$outf"; }
+  trap '_advise_cleanup' INT TERM HUP
   _advise_fail() {
     local why="$1"
     echo "(advisor unavailable: $why — proceed on your own judgment)" >&2
@@ -1708,9 +1711,32 @@ $question"
       echo "(advisor stderr, first 8 lines:)" >&2
       head -n 8 "$errf" >&2 || true
     }
-    [ -n "$errf" ] && rm -f "$errf"
-    [ -n "$outf" ] && rm -f "$outf"
+    _advise_cleanup
     return 0
+  }
+  # Auth: stderr always; stdout on nonzero exit; exit-0 only as a SHORT unauth banner
+  # (e.g. "Please sign in"). Long exit-0 text that discusses authentication is advice.
+  # `not authenticated\.` requires a trailing period so prose "not authenticated until…"
+  # is not treated as CLI auth failure.
+  _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
+  _advise_auth_hit() {
+    local _rc="$1" _al _ac
+    if [ -n "$errf" ] && [ -s "$errf" ] && grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null; then
+      return 0
+    fi
+    if [ "$_rc" -ne 0 ] && [ -n "$outf" ] && [ -s "$outf" ] \
+       && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; then
+      return 0
+    fi
+    if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
+      _al=$(wc -l <"$outf" | tr -d ' ')
+      _ac=$(wc -c <"$outf" | tr -d ' ')
+      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 240 ] \
+         && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; then
+        return 0
+      fi
+    fi
+    return 1
   }
   case "$vendor" in
     claude)
@@ -1725,26 +1751,24 @@ $question"
       # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
       # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
       # from a missing binary (#62).
-      # Strict unauth markers only — never bare "please run" / "authentication" advice.
-      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
         --allowed-tools "Read,Grep,Glob" >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
-         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
+      if _advise_auth_hit "$rc"; then
         _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
         return 0
       fi
-      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+      if [ "$rc" -ne 0 ]; then
         diag="claude at ${bin} exited ${rc}"
         [ ! -x "$bin" ] && diag="claude at ${bin} is not executable"
         _advise_fail "$diag"
         return 0
       fi
+      [ -s "$outf" ] || { _advise_fail "claude at ${bin} produced empty output"; return 0; }
       cat "$outf"
-      rm -f "$errf" "$outf"
+      _advise_cleanup
       ;;
     codex)
       bin="$(command -v codex 2>/dev/null || true)"
@@ -1753,23 +1777,22 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
-      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - \
         >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
-         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
+      if _advise_auth_hit "$rc"; then
         _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
-      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+      if [ "$rc" -ne 0 ]; then
         _advise_fail "codex at ${bin} exited ${rc}"
         return 0
       fi
+      [ -s "$outf" ] || { _advise_fail "codex at ${bin} produced empty output"; return 0; }
       cat "$outf"
-      rm -f "$errf" "$outf"
+      _advise_cleanup
       ;;
     grok)
       bin="$(command -v grok 2>/dev/null || true)"
@@ -1778,24 +1801,22 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
-      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} \
         >"$outf" 2>"$errf"
       rc=$?
       set -e
-      # Grok may exit 0 with unauth text — only treat stderr or explicit unauth phrases.
-      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
-         || grep -qiE 'not logged in|please run /login|not authenticated' "$outf" 2>/dev/null; then
+      if _advise_auth_hit "$rc"; then
         _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
-      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+      if [ "$rc" -ne 0 ]; then
         _advise_fail "grok at ${bin} exited ${rc}"
         return 0
       fi
+      [ -s "$outf" ] || { _advise_fail "grok at ${bin} produced empty output"; return 0; }
       cat "$outf"
-      rm -f "$errf" "$outf"
+      _advise_cleanup
       ;;
     agy|gemini)
       bin="$(command -v agy 2>/dev/null || true)"
@@ -1804,30 +1825,30 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(--model "$use")
-      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
-         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
+      if _advise_auth_hit "$rc"; then
         _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
-      if [ "$rc" -ne 0 ] || [ ! -s "$outf" ]; then
+      if [ "$rc" -ne 0 ]; then
         _advise_fail "agy at ${bin} exited ${rc}"
         return 0
       fi
+      [ -s "$outf" ] || { _advise_fail "agy at ${bin} produced empty output"; return 0; }
       cat "$outf"
-      rm -f "$errf" "$outf"
+      _advise_cleanup
       ;;
     *)
-      [ -n "$errf" ] && rm -f "$errf"
-      [ -n "$outf" ] && rm -f "$outf"
+      _advise_cleanup
       echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2
       exit 1 ;;
   esac
+  trap - INT TERM HUP
 }
+
 
 # plinth hookprobe <grok|codex> — which wired .claude/ hook EVENTS does this vendor CLI
 # EXECUTE? Plinth's enforcement uses four (SessionStart = session-start.sh, PreToolUse =
@@ -5173,7 +5194,10 @@ def resolve_file(rel):
     if path.is_file():
         return path
     if path.is_dir():
-        for name in ("SPEC.md", "README.md", "index.md", "spec.md"):
+        for name in (
+            "SPEC.md", "README.md", "index.md", "spec.md",
+            "OVERVIEW.md", "REQUIREMENTS.md", "requirements.md", "API.md",
+        ):
             cand = path / name
             if cand.is_file():
                 return Path(os.path.realpath(cand))
@@ -5203,8 +5227,10 @@ primary_rel = rel_to_root(primary_path)
 # Prefer product plan outline; when only spec exists, still derive stages.
 text = primary_path.read_text(encoding="utf-8", errors="replace")
 # Cap huge specs (MANUAL.md) for dashboard — first 120k chars is enough for outline.
+truncated = False
 if len(text) > 120_000:
     text = text[:120_000]
+    truncated = True
 
 def slug(s, n=48):
     s = re.sub(r"\s+", " ", (s or "").strip())
@@ -5233,7 +5259,7 @@ SKIP_H2 = {
 
 # Coding-milestone sections (operational build work).
 CODING_SECTION_RE = re.compile(
-    r"acceptance|criteria|phase\b|module|build order|build status|"
+    r"acceptance|criteria|require|behavior|features?\b|phase\b|module|build order|build status|"
     r"implement(?:ation)?\s+sequence|implement|milestone|deliver|roadmap|"
     r"feature work|engineering|sprint|slice\s*\d|slice\b|coding|work items|"
     r"todo|next steps|remaining .+ roadmap|foundation\b|release\s*\d",
@@ -5260,7 +5286,9 @@ NON_CODING_ITEM_RE = re.compile(
     r"owner explicitly agrees|"
     r"human (sign[- ]?off|gate|approval|ratification)|"
     r"external(ly)? gated|"
-    r"(^|\s)(owner |product |legal |security )?(sign[- ]?off|approves? the (threat|privacy)|obtain (FDA|SOC))\b|"
+    # Human approval gates only — NOT coding work like "Build the sign-off workflow".
+    r"(^|\s)(owner|product|legal|security) (sign[- ]?off|approves? the (threat|privacy))\b|"
+    r"\bobtain (FDA|SOC)\b|"
     r"^NB:|"
     r"^RESOLVED\b|"
     r"^Read:\s*SPEC|"
@@ -5308,7 +5336,14 @@ def is_coding_item(body: str, sec_title: str = "") -> bool:
     if not body or body in ("…", "...", "—", "-"):
         return False
     if NON_CODING_ITEM_RE.search(body):
-        return False
+        # Coding verbs + sign-off as product work stay (not human gates).
+        if not re.search(
+            r"\b(implement|build|wire|land|code|scaffold)\b.*\bsign[- ]?off\b|"
+            r"\bsign[- ]?off\b.*\b(workflow|API|endpoint|handler|UI|service)\b",
+            body,
+            re.I,
+        ):
+            return False
     if re.match(r"^(INV|FND|REQ-FND)-\d+\s*$", body.strip(), re.I):
         return False
     # Tooling/verify noise, not milestones
@@ -5383,9 +5418,13 @@ while i < len(lines):
                 cur = None
                 i += 1
                 continue
-            # ## containers (e.g. "6. Implementation sequence") are not stages.
+            # ## containers (e.g. "6. Implementation sequence") are not stages,
+            # unless they are themselves coding majors (Phase N / Foundation / AC /
+            # Requirements / Behavior / Features).
             if level == 2 and not re.search(
-                r"acceptance|criteria|build order|slice\s*\d", ht, re.I
+                r"acceptance|criteria|build order|slice\s*\d|phase\s*\d|"
+                r"^foundation$|^release\s*\d+|require|behavior|features?\b|shall",
+                ht, re.I,
             ):
                 cur = None
                 i += 1
@@ -5441,10 +5480,14 @@ while i < len(lines):
             and not has_subheads
             and is_coding_item(body, sec_title)
         ):
-            in_ac = bool(re.search(r"acceptance|criteria|work items|todo", sec_title, re.I))
+            in_ac = bool(re.search(
+                r"acceptance|criteria|work items|todo|require|behavior|feature",
+                sec_title, re.I,
+            ))
             looks_coding = bool(
                 CODING_ITEM_HINT_RE.search(body)
                 or re.match(r"^(phase|module|implement|build|wire|land|\*\*M\d)", body, re.I)
+                or re.search(r"\bshall\b", body, re.I)
                 or len(body) < 140
             )
             if in_ac or looks_coding:
@@ -5457,6 +5500,28 @@ while i < len(lines):
                     "progress": True,
                     "children": [],
                 })
+        i += 1
+        continue
+    # Prose shall-lines under admitted sections (mixed list + shall ownership).
+    if (
+        work_sec
+        and not build_status_sec
+        and not has_subheads
+        and re.search(r"\bshall\b", line, re.I)
+        and len(line.strip()) > 12
+    ):
+        body = re.sub(r"^[-*+\d.)\s]+", "", line.strip()).strip()
+        if is_coding_item(body, sec_title):
+            cur["children"].append({
+                "id": f"{cur['id']}.{len(cur['children'])+1}",
+                "title": body[:200],
+                "status": "done" if section_done_from_title(sec_title) else "open",
+                "checkable": True,
+                "checkbox": False,
+                "progress": True,
+                "kind": "shall",
+                "children": [],
+            })
         i += 1
         continue
     i += 1
@@ -5721,21 +5786,36 @@ if cp_status == "done" and leaves:
     current_via = "checkpoint_status_done"
     checkpoint_cursor = True
 else:
-    # 1) Explicit title/id match to a plan leaf
+    # 1) Explicit title/id: if both provided they must agree on the same leaf.
+    id_hit = None
+    title_hit = None
+    # slice_id may be a machine id OR a human title the client stuffed in id.
     for n in leaves:
-        if cur_id and match_text(cur_id, n.get("id", "") or n.get("title", "")):
-            current = n
-            current_via = "slice_id"
-            checkpoint_cursor = True
+        if cur_id and (
+            match_text(cur_id, n.get("id", "") or "")
+            or match_text(cur_id, n.get("title", "") or "")
+        ):
+            id_hit = n
             break
+    for n in leaves:
         if cur_title and match_text(cur_title, n.get("title", "")):
-            current = n
-            current_via = "slice_title"
-            checkpoint_cursor = True
+            title_hit = n
             break
-    # 2) Numeric index only when totals match leaf count AND no conflicting
-    #    title/id was provided (non-matching title already failed above → refuse
-    #    numeric fallthrough that would invent a cursor).
+    if id_hit is not None and title_hit is not None:
+        if id_hit.get("id") == title_hit.get("id"):
+            current = id_hit
+            current_via = "slice_id+title"
+            checkpoint_cursor = True
+        # else conflict → leave current unset (no invented cursor)
+    elif title_hit is not None:
+        current = title_hit
+        current_via = "slice_title"
+        checkpoint_cursor = True
+    elif id_hit is not None:
+        current = id_hit
+        current_via = "slice_id"
+        checkpoint_cursor = True
+    # 2) Numeric index only when totals match and no title/id was supplied.
     if current is None and si and 1 <= si <= len(leaves):
         if (st is None or st == len(leaves)) and not cur_title and not cur_id:
             current = leaves[si - 1]
@@ -5848,6 +5928,8 @@ elif progress_mode == "unchecked_list":
         "`plinth checkpoint` with PLINTH_CHECKPOINT_SLICE_INDEX/TOTAL (or title)"
     )
 notes.append("ETA reserved-null")
+if truncated:
+    notes.append("source truncated at 120000 chars")
 if current_via:
     notes.append("current via " + current_via)
 
@@ -6167,13 +6249,34 @@ _write_handoff() {
           fi
           ;;
       esac
+      # Only seed from PLAN.md — never from spec-fallback leaves.
+      _seed_primary=$(printf '%s' "$_seed_pp" | jq -r '.primary // empty' 2>/dev/null || true)
+      if [ "$_seed_primary" != "PLAN.md" ] && [ "${_seed_primary##*/}" != "PLAN.md" ]; then
+        _seed_first=0
+      fi
+      # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor).
+      _seed_done_all=$(printf '%s' "$_seed_pp" | jq -r '
+        ([.outline[]?.children[]? | select(.progress != false)] | length) as $t
+        | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
+        | if $t > 0 and $d == $t then "yes" else "no" end
+      ' 2>/dev/null || true)
+      if [ "$_seed_done_all" = "yes" ]; then
+        export PLINTH_CHECKPOINT_STATUS=done
+        _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
+        ' 2>/dev/null || true)
+        [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_tot"
+        [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
+        export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+        echo "  Seeded plan complete (all PLAN.md stages done)."
+        _seed_first=0
+      fi
       if [ "$_seed_first" = 1 ]; then
         case "$_seed_idx" in ''|*[!0-9]*) ;; *)
           export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_idx"
           [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
-          # plan_ref is always the operational plan basename (PLAN.md), never SPEC.
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
           echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
         ;; esac

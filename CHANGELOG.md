@@ -5,7 +5,9 @@
   bare `[BLOCKING]` stays global. Ship/harden items do not stop BUILD `plinth next`
   (deferred note); HARDEN still fails closed on ship/harden/global.
 - **#62 advise diagnostics:** distinguish CLI missing vs not signed in vs nonzero exit;
-  preserve stderr sample; never conflate into “missing or not signed in.”
+  preserve stderr sample; never conflate into “missing or not signed in.” Auth from
+  stderr, stdout-on-nonzero, and exit-0 short unauth banners only (long auth prose is
+  advice).
 - **Effort → dual-pass:** checkpoint `effort=xhigh` enables dual first-pass in
   BUILD (Tier-2 · fresh r1 · cross-vendor audit); HARDEN dual unchanged; medium/high
   keep cooperative-driver BUILD posture. Default missing effort → high (no behavior
@@ -18,7 +20,10 @@
 - **Dashboard plan progress:** derive `lifecycle.plan_progress` from root
   **PLAN.md only** (spec_path coding-shaped fallback when PLAN absent — no
   IMPLEMENTATION-PLAN aliases); card progress meter + PLAN chip; click-in stage
-  track expands Slice #### subheads. ETA reserved-null.
+  track expands Slice #### subheads. Checkpoint seeds PLAN only (all-done →
+  status=done; refuse conflicting id/title; no SPEC seed as plan_ref). Spec
+  harvest: Requirements/Behavior shall + Features lists; Phase/Foundation majors;
+  coding sign-off workflows kept. ETA reserved-null.
 
 ## v5.0.7 — residual zero-debt — July 29, 2026
 - **Thrash:** define precedence before coverage-asymptotic so mixed "helper

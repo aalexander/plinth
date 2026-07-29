@@ -283,4 +283,145 @@ console.log("cardHTML ok");
 NODE
 pass "cardHTML plan meter + chip"
 
+
+# --- r3: Phase 0 / Foundation / sign-off coding work / conflict cursor / all-done ---
+cat > "$TMP/a/PLAN.md" <<'P'
+# Product
+## Phase 0
+- [ ] Scaffold repo layout
+## Foundation
+- [x] Core crate
+## Acceptance criteria
+- [ ] Build the sign-off workflow
+- [ ] Implement owner sign-off API
+- [ ] The owner explicitly agrees to feature freeze before plinth harden
+P
+outph=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outph" | jq -e '[.outline[].title] | map(test("Phase 0|Foundation|Acceptance")) | all' >/dev/null \
+  || fail "Phase/Foundation majors: $(echo "$outph"|jq '[.outline[].title]')"
+echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("sign-off workflow|sign-off API")) | any' >/dev/null \
+  || fail "coding sign-off kept: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
+echo "$outph" | jq -e '[.outline[].children[]?.title] | map(test("owner explicitly agrees")) | any | not' >/dev/null \
+  || fail "human sign-off gate should drop: $(echo "$outph"|jq '[.outline[].children[]?.title]')"
+pass "Phase 0 / Foundation / coding sign-off vs human gate"
+
+# conflicting id+title → no invented checkpoint cursor
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [ ] Alpha first
+- [ ] Beta second
+- [ ] Gamma third
+P
+# id matches leaf1, title matches leaf3
+rt='{"slice_id":"Alpha first","slice_title":"Gamma third","slice_index":2,"slice_total":3,"status":"implementing"}'
+outcf=$(_plan_progress_json "$TMP/a" "$rt")
+# should NOT use checkpoint mode from conflict; fall through to first_open
+echo "$outcf" | jq -e '.progress_mode != "checkpoint" or (.current.via|test("first_open|checkbox")|not|not)' >/dev/null 2>&1 || true
+# Stronger: current via must not be slice_id alone when title also present and conflicts
+via=$(echo "$outcf" | jq -r '.current.via // empty')
+case "$via" in
+  slice_id|slice_title|slice_id+title|slice_index)
+    fail "conflict must not invent checkpoint via=$via: $(echo "$outcf"|jq '{mode:.progress_mode,current}')"
+    ;;
+esac
+pass "conflicting id/title refuse checkpoint cursor (via=$via)"
+
+# all-done checkboxes → 100% without stale mid cursor when status=done
+rt='{"status":"done","slice_index":1,"slice_total":2}'
+cat > "$TMP/a/PLAN.md" <<'P'
+# P
+## Acceptance criteria
+- [x] One
+- [x] Two
+P
+outd=$(_plan_progress_json "$TMP/a" "$rt")
+echo "$outd" | jq -e '.pct_complete==100 and .done==2' >/dev/null \
+  || fail "status=done all checked: $(echo "$outd"|jq '{pct_complete,done,total,mode:.progress_mode}')"
+pass "checkpoint status=done → 100%"
+
+# Spec Requirements + Behavior shall + Features list (mixed ownership)
+rm -f "$TMP/a/PLAN.md"
+mkdir -p "$TMP/a/spec"
+cat > "$TMP/a/spec/REQUIREMENTS.md" <<'S'
+# Spec Dir
+## Requirements
+The system shall authenticate users via OAuth.
+## Behavior
+The system shall reject expired tokens.
+## Features
+- Export CSV reports
+- Wire dashboard meter
+S
+# point config at directory
+printf 'spec_path = spec\n' > "$TMP/a/.plinth/config"
+outs=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outs" | jq -e '.primary_kind=="spec"' >/dev/null || fail "spec dir primary: $(echo "$outs"|jq .primary,.primary_kind)"
+echo "$outs" | jq -e '[.outline[].children[]?.title] | map(test("authenticate|reject expired|Export CSV|Wire dashboard")) | map(.) | flatten | length >= 3' >/dev/null \
+  || fail "mixed shall+list harvest: $(echo "$outs"|jq '{primary,outline}')"
+# title from H1 preserved
+echo "$outs" | jq -e '.title|test("Spec Dir")' >/dev/null \
+  || fail "document title: $(echo "$outs"|jq .title)"
+pass "spec dir Requirements/Behavior shall + Features list; title preserved"
+
+# restore file spec for later tests if any
+printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"
+cat > "$TMP/a/SPEC.md" <<'S'
+# Spec
+## Requirements
+The system shall foo.
+S
+
+# Writer seed: all PLAN leaves done → status done (product plinth checkpoint)
+mkdir -p "$TMP/seed/.plinth"
+cd "$TMP/seed"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [x] Done A
+- [x] Done B
+P
+# Prior fence with stale mid-plan cursor
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. old
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","slice_index":1,"slice_total":2,"slice_title":"Done A","status":"implementing"}
+```
+C
+# unset index env so seeder runs
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_SLICE_TOTAL PLINTH_CHECKPOINT_SLICE_TITLE PLINTH_CHECKPOINT_SLICE_ID PLINTH_CHECKPOINT_STATUS || true
+"$PLINTH" checkpoint . >/dev/null 2>&1 || fail "checkpoint seed failed"
+# Parse routing fence
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="done" and .slice_index==2 and .slice_total==2' >/dev/null \
+  || fail "all-done seed: $cj"
+pass "checkpoint seeder: all PLAN leaves done → status=done index=total"
+
+# No PLAN.md → do not seed from SPEC with plan_ref PLAN.md
+rm -f PLAN.md
+cat > SPEC.md <<'S'
+# Spec
+## Requirements
+The system shall never seed as plan.
+S
+printf 'spec_path = SPEC.md\n' > .plinth/config
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX || true
+"$PLINTH" checkpoint . >/dev/null 2>&1 || true
+cj2=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+# slice_index should remain null/absent (no PLAN seed)
+si=$(echo "$cj2" | jq -r '.slice_index // empty')
+[ -z "$si" ] || fail "must not seed from SPEC: $cj2"
+pass "checkpoint seeder: no PLAN.md → no SPEC-fallback seed"
+
 echo "canary-plan-progress: ALL PASS"
