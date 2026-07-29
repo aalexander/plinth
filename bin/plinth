@@ -1768,10 +1768,14 @@ $question"
   # filler like "Error:" / "You are" / "to continue"), not advice that embeds
   # those phrases mid-sentence.
   _advise_line_is_banner() {
-    local _line="$1" _rest
+    local _line="$1" _low _rest
     [ -z "${_line//[[:space:]]/}" ] && return 1
+    _low=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]')
+    # Must contain at least one real auth token (filler-only lines are not auth).
+    printf '%s' "$_low" | grep -qE 'not logged in|please run /login|please sign in|not authenticated|unauthorized|401 unauthorized|/login' \
+      || return 1
     # Portable sed (macOS BSD sed has no \b).
-    _rest=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]' | sed -E \
+    _rest=$(printf '%s' "$_low" | sed -E \
       -e 's/not logged in//g' \
       -e 's/please run \/login//g' \
       -e 's/please sign in//g' \
@@ -1781,6 +1785,9 @@ $question"
       -e 's/error:?//g' \
       -e 's/you are//g' \
       -e 's/to continue//g' \
+      -e 's/login required//g' \
+      -e 's/not signed in//g' \
+      -e 's/\/login//g' \
       -e 's/[^a-z]+//g')
     [ -z "$_rest" ]
   }
@@ -5436,6 +5443,8 @@ NON_CODING_ITEM_RE = re.compile(
     r"^(INV|REQ-FND|FND|REQ)-\d+\b|"
     r"^Gate\s*G?\d+\b|"
     r"\bINV-\d+\b\s*[—\-:]|"  # "INV-7 — …" invariant note as the item
+    r"^(Risks?|Notes?|Design decisions?|Deployment checklist|Operational readiness|"
+    r"External gate|Confirm launch|Deployment approval)\b|"
     r"owner explicitly agrees|"
     r"human (sign[- ]?off|gate|approval|ratification)|"
     r"external(ly)? gated|"
