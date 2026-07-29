@@ -169,6 +169,26 @@ echo "$out3" | jq -e '.primary=="PLAN.md" and .primary_kind=="plan"' >/dev/null 
 echo "$out3" | jq -e '.done==1 and .total==2' >/dev/null || fail "PLAN counts"
 pass "PLAN.md is the only operational plan name"
 
+# Slice N expands to #### subheadings (not one collapsed leaf)
+cat > "$TMP/a/PLAN.md" <<'P'
+# Product
+## 6. Implementation sequence
+### Slice 1 — First
+#### 1. Scaffold
+do stuff
+#### 2. Identity
+more
+### Slice 2 — Second
+#### 1. Later work
+P
+outs=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outs" | jq -e '
+  ([.outline[] | select(.title|test("Slice 1"))][0].children | length) == 2
+  and ([.outline[] | select(.title|test("Slice 1"))][0].children[0].title|test("Scaffold"))
+  and (.total == 3)
+' >/dev/null || fail "slice subheadings: $(echo "$outs"|jq .)"
+pass "Slice N expands to #### subheadings"
+
 # dash snapshot attaches field
 mkdir -p "$TMP/b/.plinth/session"
 cd "$TMP/b"
