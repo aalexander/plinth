@@ -5980,7 +5980,9 @@ progress_mode = "empty"
 # Clients report position via plinth checkpoint (slice_index/title/status).
 if leaves and current in leaves and checkpoint_cursor:
     ci = leaves.index(current)
-    if current_via == "checkpoint_status_done" or cp_status == "done":
+    # Only whole-plan done authority paints 100%. A bare status=done with a
+    # mid-plan slice cursor must not mark open checkboxes complete.
+    if current_via == "checkpoint_status_done":
         for n in leaves:
             n["status"] = "done"
             n["done_via"] = "checkpoint_status_done"
@@ -5992,10 +5994,7 @@ if leaves and current in leaves and checkpoint_cursor:
                 n["status"] = "done"
                 n["done_via"] = "checkpoint_before_current"
             elif i == ci:
-                if cp_status == "done":
-                    n["status"] = "done"
-                else:
-                    n["status"] = "active"
+                n["status"] = "active"
             else:
                 # Future items: keep explicit [x] if already checked; else open.
                 if not n.get("checkbox") or n.get("status") != "done":
