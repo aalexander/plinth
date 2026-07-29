@@ -1770,6 +1770,7 @@ $question"
   _advise_line_is_banner() {
     local _line="$1" _rest
     [ -z "${_line//[[:space:]]/}" ] && return 1
+    # Portable sed (macOS BSD sed has no \b).
     _rest=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]' | sed -E \
       -e 's/not logged in//g' \
       -e 's/please run \/login//g' \
@@ -1777,9 +1778,9 @@ $question"
       -e 's/not authenticated\.?//g' \
       -e 's/unauthorized \(401\)//g' \
       -e 's/401 unauthorized//g' \
-      -e 's/\berror:?//g' \
-      -e 's/\byou are\b//g' \
-      -e 's/\bto continue\b//g' \
+      -e 's/error:?//g' \
+      -e 's/you are//g' \
+      -e 's/to continue//g' \
       -e 's/[^a-z]+//g')
     [ -z "$_rest" ]
   }
@@ -5249,6 +5250,11 @@ else:
     _stitle = prev.get("slice_title")
 if "PLINTH_CHECKPOINT_SLICE_INDEX" in os.environ:
     _sidx = env_int_key("PLINTH_CHECKPOINT_SLICE_INDEX")
+    # New index without title/id → do not inherit stale labels from prior fence.
+    if "PLINTH_CHECKPOINT_SLICE_ID" not in os.environ:
+        _sid = None
+    if "PLINTH_CHECKPOINT_SLICE_TITLE" not in os.environ:
+        _stitle = None
 elif _orphan_plan:
     _sidx = None
 else:
@@ -5421,7 +5427,8 @@ NON_CODING_SECTION_RE = re.compile(
     r"simplicity constraints|branch protocol|product and delivery|architecture\b|"
     r"pin unresolved|resolve specification|merge the browser|specification conflicts|"
     r"external and clinical decision|specification ratification|"
-    r"release gates",
+    r"release gates|human approval|deployment checklist|operational readiness|"
+    r"required human|deployment approval",
     re.I,
 )
 # Leaf titles that are not coding milestones (INV inventory, pure gates, human sign-off).
@@ -5543,8 +5550,7 @@ while i < len(lines):
             parent = (cur.get("title") if cur else "") or ""
             under_slice = bool(re.search(r"\bslice\s*\d+\b", parent, re.I))
             if cur is not None and is_coding_item(ht, parent) and (
-                under_slice
-                or re.match(r"^\d+[.)]?\s+\S", ht)
+                re.match(r"^\d+[.)]?\s+\S", ht)
                 or CODING_ITEM_HINT_RE.search(ht)
             ):
                 cur["children"].append({

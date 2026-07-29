@@ -1319,4 +1319,34 @@ echo "$cj" | jq -e '.status=="done"' >/dev/null \
 unset PLINTH_CHECKPOINT_STATUS
 pass "writer keeps status=done for non-checkbox PLAN"
 
+# Adding a plain bullet after done reopens (plan grew)
+mkdir -p "$TMP/grow/.plinth"
+cd "$TMP/grow"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# P
+## Acceptance criteria
+- Stage one
+- Stage two
+P
+export PLINTH_CHECKPOINT_STATUS=done
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+unset PLINTH_CHECKPOINT_STATUS
+cat > PLAN.md <<'P'
+# P
+## Acceptance criteria
+- Stage one
+- Stage two
+- Stage three new
+P
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="implementing" and .slice_total==3' >/dev/null \
+  || fail "bullet after done reopens: $cj"
+pass "bullet after done reopens (plan grew)"
+
 echo "canary-plan-progress: ALL PASS"

@@ -48,6 +48,18 @@ case "$mode" in
     echo "Please sign in"
     exit 0
     ;;
+  auth_combo)
+    echo "Not logged in. Please run /login"
+    exit 0
+    ;;
+  auth_continue)
+    echo "Please sign in to continue"
+    exit 0
+    ;;
+  auth_error_not)
+    echo "Error: not authenticated."
+    exit 0
+    ;;
   auth_stdout_nz)
     echo "Error: not authenticated."
     exit 2
@@ -126,6 +138,15 @@ run_advise_vendor claude auth_stdout0
 [ "$_adv_rc" -eq 0 ] || fail "banner auth rc"
 echo "$_adv_out" | grep -qi 'not signed in' || fail "auth_stdout0 short banner: $_adv_out"
 pass "claude exit-0 Please sign in → not signed in"
+run_advise_vendor claude auth_combo
+echo "$_adv_out" | grep -qi 'not signed in' || fail "combo banner: $_adv_out"
+pass "claude combo Not logged in. Please run /login → auth"
+run_advise_vendor codex auth_continue
+echo "$_adv_out" | grep -qi 'not signed in' || fail "sign in to continue: $_adv_out"
+pass "codex Please sign in to continue → auth"
+run_advise_vendor grok auth_error_not
+echo "$_adv_out" | grep -qi 'not signed in' || fail "Error not authenticated: $_adv_out"
+pass "grok Error: not authenticated. → auth"
 
 run_advise_vendor codex auth_stdout_nz
 echo "$_adv_out" | grep -qi 'not signed in' || fail "auth_stdout_nz: $_adv_out"
