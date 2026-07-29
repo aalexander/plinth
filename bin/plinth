@@ -1764,9 +1764,25 @@ $question"
   # NARROW banner re and rejects advice cues so "authentication required before…" is
   # not treated as a login prompt.
   _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
-  # Exit-0 short path: each non-empty line must be a WHOLE-LINE CLI banner
-  # (anchored), not an advice sentence that embeds "not logged in" mid-prose.
-  _advise_banner_line_re='^[[:space:]]*(not logged in|please run /login|please sign in|not authenticated\.?|unauthorized \(401\)|401 unauthorized)[.![:space:]]*$'
+  # Exit-0 short path: each non-empty line must be ONLY banner tokens (and light
+  # filler like "Error:" / "You are" / "to continue"), not advice that embeds
+  # those phrases mid-sentence.
+  _advise_line_is_banner() {
+    local _line="$1" _rest
+    [ -z "${_line//[[:space:]]/}" ] && return 1
+    _rest=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]' | sed -E \
+      -e 's/not logged in//g' \
+      -e 's/please run \/login//g' \
+      -e 's/please sign in//g' \
+      -e 's/not authenticated\.?//g' \
+      -e 's/unauthorized \(401\)//g' \
+      -e 's/401 unauthorized//g' \
+      -e 's/\berror:?//g' \
+      -e 's/\byou are\b//g' \
+      -e 's/\bto continue\b//g' \
+      -e 's/[^a-z]+//g')
+    [ -z "$_rest" ]
+  }
   _advise_auth_hit() {
     local _rc="$1" _al _ac _line _any=0
     if [ -n "$errf" ] && [ -s "$errf" ] && grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null; then
@@ -1777,14 +1793,13 @@ $question"
       return 0
     fi
     if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
-      # Logical non-empty lines (wc -l undercounts when no final newline).
       _al=$(grep -cve '^[[:space:]]*$' "$outf" 2>/dev/null | head -1)
       case "$_al" in ''|*[!0-9]*) _al=0 ;; esac
       _ac=$(wc -c <"$outf" | tr -d ' ')
       if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ]; then
         while IFS= read -r _line || [ -n "$_line" ]; do
           [ -z "${_line//[[:space:]]/}" ] && continue
-          if printf '%s\n' "$_line" | grep -qiE "$_advise_banner_line_re"; then
+          if _advise_line_is_banner "$_line"; then
             _any=1
           else
             return 1
@@ -6486,25 +6501,42 @@ _write_handoff() {
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
           export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
-          # Open checkboxes (not open bullets/shall) force reopen of status=done.
+          # Reopen status=done when PLAN gains open work: open checkboxes OR
+          # more leaves than the prior fence total (new bullet/shall/####).
           _seed_open_cb=$(printf '%s' "$_seed_pp" | jq -r '
             [.outline[]?.children[]?
               | select(.progress != false and .checkbox == true and .status != "done")]
             | length
           ' 2>/dev/null || true)
           case "$_seed_open_cb" in ''|*[!0-9]*) _seed_open_cb=0 ;; esac
+          _prev_tot=""
+          if [ -n "${_cp_prev_json:-}" ]; then
+            _prev_tot=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_total // empty' 2>/dev/null || true)
+          fi
+          _grew=0
+          case "$_prev_tot" in
+            ''|*[!0-9]*) ;;
+            *)
+              if [ -n "$_seed_tot" ] && [ "$_seed_tot" -gt "$_prev_tot" ]; then
+                _grew=1
+              fi
+              ;;
+          esac
+          _reopen_done=0
+          if [ "$_seed_open_cb" -gt 0 ] || [ "$_grew" = 1 ]; then
+            _reopen_done=1
+          fi
           # Status policy on open-plan seed:
           # - env non-done (blocked/ready/…) sticks
-          # - env/prior done + open CHECKBOXES → implementing
-          # - env/prior done + only non-checkbox opens → keep done (whole plan complete)
+          # - env/prior done + open work (checkboxes or grown total) → implementing
           # - prior ready/reviewing/blocked preserved
           # - no prior/env → implementing
           if [ "$_user_set_status" = 1 ]; then
-            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ "$_seed_open_cb" -gt 0 ]; then
+            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ "$_reopen_done" = 1 ]; then
               export PLINTH_CHECKPOINT_STATUS=implementing
             fi
           elif [ "$_prev_status" = "done" ]; then
-            if [ "$_seed_open_cb" -gt 0 ]; then
+            if [ "$_reopen_done" = 1 ]; then
               export PLINTH_CHECKPOINT_STATUS=implementing
             else
               export PLINTH_CHECKPOINT_STATUS=done

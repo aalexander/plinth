@@ -31,7 +31,7 @@ echo "$out" | grep -qi 'missing or not signed in' \
 pass "missing claude → PATH diagnostic (not conflated)"
 
 grep -q '_advise_auth_hit' "$ROOT/bin/plinth" || fail "missing _advise_auth_hit helper"
-grep -q '_advise_banner_line_re' "$ROOT/bin/plinth" || fail "missing anchored banner line re"
+grep -q '_advise_line_is_banner' "$ROOT/bin/plinth" || fail "missing _advise_line_is_banner helper"
 pass "advise diagnostic helpers present in product"
 
 install_fake() {

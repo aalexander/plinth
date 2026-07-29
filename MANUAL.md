@@ -107,8 +107,8 @@ Everything between is the model's call.
   first open stage, advance when checkboxes move ahead of the prior index, and
   when **all** PLAN leaves are checked set `status=done` with index=total and
   clear stale `slice_id`/`slice_title`. If a prior `status=done` fence exists but
-  PLAN later gains an open leaf, re-seed sets `status=implementing` (dashboard
-  leaves 100%). Conflicting `slice_id` + `slice_title` that resolve to different
+  PLAN later gains open work (unchecked checkboxes **or** more leaves than the
+  prior total — e.g. a new bullet), re-seed sets `status=implementing`. Conflicting `slice_id` + `slice_title` that resolve to different
   leaves refuse a cursor. Numeric index applies only when **`slice_total` is
   present and equals** the plan leaf count, and neither title nor id was
   supplied. Writer-seeded `plan_ref` is `PLAN.md` only when PLAN.md is primary;
