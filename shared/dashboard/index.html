@@ -1984,14 +1984,24 @@
           rows.push('<li class="muted">(empty outline — work stages only; notes/risks omitted)</li>');
         }
 
+        // Overall completion (same number as the card meter). Per-item
+        // cum_pct_end is only the planned share of the plan (e.g. item 3 of 12
+        // ends at ~24%) — NOT current completion. Never show that as "done %".
+        const overallPct = pp.pct_complete != null
+          ? Math.max(0, Math.min(100, Math.round(Number(pp.pct_complete))))
+          : null;
+
         function leafHTML(leaf) {
           const ls = (leaf && leaf.status) || "open";
           const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
-          const lcum = leaf && leaf.cum_pct_end != null ? leaf.cum_pct_end
-            : (leaf && leaf.weight_pct != null ? leaf.weight_pct : null);
-          const lw = lcum != null
-            ? ('<span class="w" title="cumulative through this item">' + esc(String(lcum)) + "%</span>")
-            : "";
+          let lw = "";
+          if (ls === "done" && overallPct != null) {
+            // Done steps: show overall completion (not planned slot %).
+            lw = '<span class="w" title="Overall plan completion">' + overallPct + "%</span>";
+          } else if (ls === "active" && overallPct != null) {
+            lw = '<span class="w" title="Overall plan completion (current)">' + overallPct + "%</span>";
+          }
+          // Future open steps: no % badge (avoids "24% on detail vs 8% overall").
           return (
             '<div class="leaf ' + esc(ls) + '">' + lw +
               '<span class="mark">' + mark + "</span>" +
@@ -2011,15 +2021,13 @@
         const activeLeaves = allLeaves.filter(function (l) { return l && l.status === "active"; });
 
         if (doneLeaves.length) {
-          const through = doneLeaves[doneLeaves.length - 1];
-          const throughPct = through && through.cum_pct_end != null ? through.cum_pct_end : null;
           rows.push(
             '<li><details class="plan-done-group">' +
               "<summary>" +
                 '<span class="sum-title">✓ ' + doneLeaves.length + " completed" +
-                  (throughPct != null ? (" · through " + throughPct + "%") : "") +
+                  (overallPct != null ? (" · " + overallPct + "% overall") : "") +
                 "</span>" +
-                (throughPct != null ? '<span class="w">' + throughPct + "%</span>" : "") +
+                (overallPct != null ? '<span class="w">' + overallPct + "%</span>" : "") +
               "</summary>" +
               '<div class="sec-body">' + doneLeaves.map(leafHTML).join("") + "</div>" +
             "</details></li>"
@@ -2048,9 +2056,10 @@
 
           const openAttr = secActive ? " open" : "";
           const stCls = secActive ? "active" : (secDone ? "done" : "open");
-          const cum = sec && sec.cum_pct_end != null ? sec.cum_pct_end
-            : (sec && sec.weight_pct != null ? sec.weight_pct : null);
-          const w = cum != null ? ('<span class="w">' + esc(String(cum)) + "%</span>") : "";
+          // Section badge: overall % only when this major is the active/done focus.
+          const w = (secActive || secDone) && overallPct != null
+            ? ('<span class="w" title="Overall plan completion">' + overallPct + "%</span>")
+            : "";
           const nLeft = remaining.length;
           const sumLabel = esc((sec && sec.title) || "section") +
             (nLeft ? (" · " + nLeft + " remaining") : "");
