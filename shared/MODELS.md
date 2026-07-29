@@ -163,11 +163,14 @@ Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
 | **Execution progress** | **PLAN.md** (preferred) | Operational stages, ACs, phase exits — what the dash tracks |
 | **Fallback sequence** | implementation plan → spec shall-lines | When PLAN is absent |
 
-Stages for the dash are **auto-derived** (work points only — not risks/tradeoffs/notes):
+Stages for the dash are **auto-derived coding milestones only** — not risks,
+tradeoffs, notes, INV-# inventory lines, external/human gates, freeze sign-off,
+design digressions, or BUILD-MATRIX bookkeeping:
 
-1. **PLAN.md** if present  
+1. **PLAN.md** if present (AC / phase exits / module build status / build order)  
 2. else **implementation plan** (`IMPLEMENTATION.md`, …)  
-3. else **`spec_path`** requirements harvest  
+3. else **`spec_path`** requirements harvest (coding-shaped only)  
+
 
 **Checkpoint is how the client reports position:** on `plinth checkpoint` /
 handoff, set `PLINTH_CHECKPOINT_SLICE_INDEX` / `_TOTAL` / `_TITLE` (or let the

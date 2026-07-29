@@ -110,6 +110,31 @@ echo "$outw" | jq -e '[.outline[].title] == ["Acceptance criteria"]' >/dev/null 
 echo "$outw" | jq -e '.total==2' >/dev/null || fail "work-only total"
 pass "notes/risks/tradeoffs omitted from stage track"
 
+# coding milestones only — drop INV / matrix / human freeze / design noise
+cat > "$TMP/a/PLAN.md" <<'P'
+# My product
+## Acceptance criteria
+- [ ] Phase 2 mock exit with Playwright
+- [ ] INV-7 — values immutable through learning
+- [ ] BUILD-MATRIX.md maps every requirement R1–R60
+- [ ] The owner explicitly agrees to feature freeze before plinth harden
+- [x] Wire dashboard plan progress meter
+## 4. Module-00 design decisions (recorded for review)
+- **Event log**: table inside SQLCipher
+## 4a. Module-00 build status (this pass — COMPLETE)
+- cargo test passes
+- INV-3 append-only note
+## 3. Build order
+- **M00 Foundation** — crates: platform
+- zeroize key material scrubbing (INV-6)
+P
+outc2=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outc2" | jq -e '[.outline[].children[]?.title] | map(test("INV-7|BUILD-MATRIX|owner explicitly|Event log|cargo test|zeroize")) | any | not' >/dev/null \
+  || fail "non-coding leaked: $(echo "$outc2"|jq '[.outline[].children[]?.title]')"
+echo "$outc2" | jq -e '[.outline[].children[]?.title] | map(test("Phase 2|Wire dashboard|Module-00 build status|M00 Foundation")) | any' >/dev/null \
+  || fail "coding milestones missing: $(echo "$outc2"|jq '[.outline[].children[]?.title]')"
+pass "coding milestones only (no INV/matrix/freeze/design noise)"
+
 # implementation plan when no PLAN.md
 rm -f "$TMP/a/PLAN.md"
 cat > "$TMP/a/IMPLEMENTATION.md" <<'I'

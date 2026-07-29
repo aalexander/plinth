@@ -5097,14 +5097,103 @@ CHECK_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
 H_RE = re.compile(r"^(#{1,3})\s+(.*)$")
 
-# Skip meta sections that are not work stages when under product PLAN.
+# Meta / non-coding PLAN sections — never stage points on the dash.
 SKIP_H2 = {
     "ratification",
     "users / context",
     "users/context",
     "non-goals",
     "nongoals",
+    "problem",
+    "freeze definition",
+    "external gate register",
+    "risks / trust boundaries",
+    "open tradeoffs",
+    "open tradeoffs (with agent recommendation each)",
 }
+
+# Coding-milestone sections (operational build work).
+CODING_SECTION_RE = re.compile(
+    r"acceptance|criteria|phase\b|module|build order|build status|"
+    r"implement|milestone|deliver|roadmap|feature work|engineering|"
+    r"sprint|slice|coding|work items|todo|next steps",
+    re.I,
+)
+NON_CODING_SECTION_RE = re.compile(
+    r"risk|tradeoff|non-?goal|gate register|freeze definition|ratification|"
+    r"users?\s*/|problem\b|dependenc|design decision|spec review|deficienc|"
+    r"external gate|open question|noticed|background|context\b|"
+    r"inventory|invariants?\b|annex|rationale|how plinth|process\b",
+    re.I,
+)
+# Leaf titles that are not coding milestones (INV inventory, pure gates, human sign-off).
+NON_CODING_ITEM_RE = re.compile(
+    r"^(INV|REQ-FND|FND|REQ)-\d+\b|"
+    r"^Gate\s*G?\d+\b|"
+    r"\bINV-\d+\b\s*[—\-:]|"  # "INV-7 — …" invariant note as the item
+    r"owner explicitly agrees|"
+    r"human (sign[- ]?off|gate|approval|ratification)|"
+    r"external(ly)? gated|"
+    r"^NB:|"
+    r"^RESOLVED\b|"
+    r"^Read:\s*SPEC|"
+    r"findings?, ordered by|"
+    r"maps every requirement R\d|"
+    r"BUILD-MATRIX\.md maps|"
+    r"Trial Definition of Done|"
+    r"feature freeze before|"
+    r"^zeroize\b.*\(INV-|"
+    r"where this document and a spec conflict",
+    re.I,
+)
+CODING_ITEM_HINT_RE = re.compile(
+    r"\b(phase\s*\d|module[- ]?\d|implement|build|wire|land|ship|E2E|"
+    r"playwright|test|code|API|schema|migrate|endpoint|UI|dashboard|"
+    r"review\.sh|canary|checkpoint|handler|service|crate|package)\b",
+    re.I,
+)
+
+def is_coding_section(ht: str) -> bool:
+    """True only for sections that are operational coding milestones."""
+    if not ht:
+        return False
+    # Strong positive: module build status / build order always count.
+    if re.search(r"\bbuild status\b|\bbuild order\b", ht, re.I):
+        return True
+    if re.search(r"\bmodule[- ]?\d+", ht, re.I) and re.search(
+        r"\b(build|status|implement|complete|underway)\b", ht, re.I
+    ):
+        return True
+    # Non-coding wins over weak positives (e.g. "Module-00 design decisions").
+    if NON_CODING_SECTION_RE.search(ht):
+        return False
+    if CODING_SECTION_RE.search(ht):
+        return True
+    return False
+
+def is_coding_item(body: str, sec_title: str = "") -> bool:
+    if not body or body in ("…", "...", "—", "-"):
+        return False
+    if NON_CODING_ITEM_RE.search(body):
+        return False
+    if re.match(r"^(INV|FND|REQ-FND)-\d+\s*$", body.strip(), re.I):
+        return False
+    # Tooling/verify noise, not milestones
+    if re.match(
+        r"^`?(cargo (test|clippy|fmt|build)|Static gates:|clippy |fmt clean)",
+        body.strip(),
+        re.I,
+    ):
+        return False
+    st = sec_title or ""
+    # Build order: only module/phase milestone lines (M00, Module N, …)
+    if re.search(r"build order", st, re.I):
+        if not re.search(r"\bM\d{2}\b|\bmodule[- ]?\d|\*\*M\d+|\bphase\s*\d", body, re.I):
+            return False
+    return True
+
+def section_done_from_title(ht: str) -> bool:
+    return bool(re.search(r"\b(COMPLETE|DONE|FINISHED|SHIPPED)\b", ht or "", re.I))
 
 outline = []
 cur = None  # current H2/H3 section node
@@ -5123,63 +5212,123 @@ while i < len(lines):
             continue
         if level >= 2:
             key = ht.lower().strip()
-            # For product PLAN, skip pure meta; for SPEC keep structure.
-            if primary_kind == "plan" and key in SKIP_H2:
+            # Skip pure meta headings always for plan-like docs.
+            if key in SKIP_H2 or (NON_CODING_SECTION_RE.search(ht) and not is_coding_section(ht)):
                 cur = None
                 i += 1
                 continue
+            if not is_coding_section(ht) and primary_kind == "plan":
+                # Implementation plans: only coding milestone sections.
+                cur = None
+                i += 1
+                continue
+            if not is_coding_section(ht) and primary_kind == "implementation":
+                cur = None
+                i += 1
+                continue
+            # Spec primary: keep requirement-like sections only.
+            if primary_kind == "spec" and not re.search(
+                r"require|criteria|shall|behavior|accept|feature", ht, re.I
+            ):
+                cur = None
+                i += 1
+                continue
+            st = "done" if section_done_from_title(ht) else "open"
             node = {
                 "id": f"s{len(outline)+1}-{slug(ht)}",
                 "title": ht,
-                "status": "open",
+                "status": st,
                 "checkable": False,
                 "children": [],
+                "coding": True,
             }
             outline.append(node)
             cur = node
             i += 1
             continue
     if cur is None:
-        # Spec with no H2 yet: synthesize from first content later
         i += 1
         continue
-    # Only count work under stage-like sections for progress leaves.
-    work_sec = bool(re.search(
-        r"acceptance|criteria|require|stage|roadmap|milestone|implement|phase|scope|deliver",
-        cur.get("title") or "", re.I,
-    ))
+    work_sec = is_coding_section(cur.get("title") or "")
+    sec_title = cur.get("title") or ""
+    # Build-status sections: one milestone leaf from the heading; ignore detail bullets.
+    build_status_sec = bool(re.search(r"\bbuild status\b", sec_title, re.I))
     cm = CHECK_RE.match(line)
     if cm:
         done = cm.group(3).lower() == "x"
         body = cm.group(4).strip()
-        cur["children"].append({
-            "id": f"{cur['id']}.{len(cur['children'])+1}",
-            "title": body,
-            "status": "done" if done else "open",
-            "checkable": True,
-            "checkbox": True,
-            "progress": work_sec,
-            "children": [],
-        })
+        if work_sec and not build_status_sec and is_coding_item(body, sec_title):
+            cur["children"].append({
+                "id": f"{cur['id']}.{len(cur['children'])+1}",
+                "title": body,
+                "status": "done" if done else "open",
+                "checkable": True,
+                "checkbox": True,
+                "progress": True,
+                "children": [],
+            })
         i += 1
         continue
     bm = BULLET_RE.match(line)
     if bm:
         body = bm.group(3).strip()
-        # Ignore empty / placeholder bullets
-        if body and body not in ("…", "...", "—", "-"):
-            cur["children"].append({
-                "id": f"{cur['id']}.{len(cur['children'])+1}",
-                "title": body,
-                "status": "open",
-                "checkable": True,
-                "checkbox": False,
-                "progress": work_sec,
-                "children": [],
-            })
+        if work_sec and not build_status_sec and is_coding_item(body, sec_title):
+            in_ac = bool(re.search(r"acceptance|criteria|work items|todo", sec_title, re.I))
+            looks_coding = bool(
+                CODING_ITEM_HINT_RE.search(body)
+                or re.match(r"^(phase|module|implement|build|wire|land|\*\*M\d)", body, re.I)
+                or len(body) < 140
+            )
+            if in_ac or looks_coding:
+                cur["children"].append({
+                    "id": f"{cur['id']}.{len(cur['children'])+1}",
+                    "title": body,
+                    "status": "done" if section_done_from_title(sec_title) else "open",
+                    "checkable": True,
+                    "checkbox": False,
+                    "progress": True,
+                    "children": [],
+                })
         i += 1
         continue
     i += 1
+
+# Collapse module/build-pass sections to ONE coding milestone (the heading).
+# Keeps acceptance-criteria checklists and build-order module lines expanded.
+for sec in outline:
+    ht = sec.get("title") or ""
+    if re.search(r"acceptance|criteria|work items|todo", ht, re.I):
+        continue
+    if re.search(r"\bbuild order\b", ht, re.I):
+        continue
+    collapse = bool(
+        re.search(r"\bbuild status\b|\bmodule\b|\bthis pass\b", ht, re.I)
+        or re.match(r"^\d+[a-z]?[.)]\s", ht)
+    )
+    if collapse:
+        st = "done" if section_done_from_title(ht) else "open"
+        if re.search(r"\bUNDERWAY|IN PROGRESS|WIP\b", ht, re.I):
+            st = "open"  # active set later by checkpoint
+        sec["children"] = [{
+            "id": f"{sec['id']}.1",
+            "title": ht,
+            "status": st,
+            "checkable": True,
+            "checkbox": False,
+            "progress": True,
+            "children": [],
+        }]
+        continue
+    if not sec.get("children") and re.search(r"\bmodule[- ]?\d+", ht, re.I):
+        sec["children"] = [{
+            "id": f"{sec['id']}.1",
+            "title": ht,
+            "status": "done" if section_done_from_title(ht) else "open",
+            "checkable": True,
+            "checkbox": False,
+            "progress": True,
+            "children": [],
+        }]
 
 def harvest_shall(max_n=40):
     shall = []
@@ -5200,6 +5349,8 @@ for sec in outline:
         continue
     # Re-scan body under this heading for shall lines (simple full-doc harvest OK for small specs).
     for s in harvest_shall():
+        if not is_coding_item(s, sec.get("title") or ""):
+            continue
         sec["children"].append({
             "id": f"{sec['id']}.{len(sec['children'])+1}",
             "title": s,
@@ -5212,7 +5363,7 @@ for sec in outline:
 
 # SPEC-style: if still no structure, harvest shall lines as one milestone.
 if not outline or not any(n.get("children") for n in outline):
-    shall = harvest_shall()
+    shall = [s for s in harvest_shall() if is_coding_item(s, "Requirements")]
     if shall:
         outline = [{
             "id": "s1-requirements",
