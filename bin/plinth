@@ -5193,11 +5193,13 @@ if not _plan_ref:
 # Never preserve a nested *PLAN.md path as operational plan_ref.
 if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# Orphan PLAN cursor: prior fence pointed at root PLAN.md but the file is gone.
+# Orphan PLAN cursor: prior fence claimed any *PLAN.md (root or nested legacy)
+# but root PLAN.md is gone — clear ghost position so SPEC fallback is not 100%.
+_prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
 _orphan_plan = (
     _plan_ref is None
-    and isinstance(prev.get("plan_ref"), str)
-    and str(prev.get("plan_ref")) in ("PLAN.md", "./PLAN.md")
+    and _prev_ref is not None
+    and Path(_prev_ref).name == "PLAN.md"
     and not (root / "PLAN.md").is_file()
 )
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:

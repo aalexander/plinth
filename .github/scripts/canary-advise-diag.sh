@@ -84,10 +84,9 @@ case "$mode" in
     echo "model overloaded" >&2
     exit 7
     ;;
-  hang)
-    # Ignore TERM once to exercise non-blocking cleanup path; then exit
-    trap '' TERM
-    sleep 30
+  slow)
+    # Dies on TERM (default); used for cancellation cleanup check
+    sleep 8
     exit 0
     ;;
   *)
@@ -201,5 +200,35 @@ grep -A8 '_advise_cleanup()' "$ROOT/bin/plinth" | grep -q '_apf' \
 grep -q 'rm -f "\$_apf"' "$ROOT/bin/plinth" || grep -q 'rm -f "$_apf"' "$ROOT/bin/plinth" \
   || fail "success path should rm _apf"
 pass "advise prompt files cleaned; cleanup covers _apf"
+
+# positive auth for grok + agy
+run_advise_vendor grok auth_stderr
+echo "$_adv_out" | grep -qi 'not signed in' || fail "grok auth_stderr: $_adv_out"
+pass "grok auth_stderr → not signed in"
+run_advise_vendor agy auth_stdout0
+echo "$_adv_out" | grep -qi 'not signed in' || fail "agy auth_stdout0: $_adv_out"
+pass "agy exit-0 Please sign in → not signed in"
+
+# soft cancel: short sleep fake; TERM parent; no prompt leftovers
+rm -f "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null || true
+printf 'advisor_vendor = claude\nadvisor_model = x\n' > .plinth/config
+install_fake claude
+set +e
+PATH="$TMP/bin:/usr/bin:/bin" FAKE_ADVISE_MODE=slow \
+  "$PLINTH" advise "cancel-secret-token" >/tmp/adv-cancel.out 2>&1 &
+pid=$!
+sleep 0.25
+kill -TERM "$pid" 2>/dev/null || true
+# bounded wait
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.3
+done
+kill -KILL "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+set -e
+leftover=$(ls "${TMPDIR:-/tmp}"/plinth-advise-prompt.* 2>/dev/null | head -3 || true)
+[ -z "$leftover" ] || fail "prompt leak after TERM: $leftover"
+pass "TERM cancel path leaves no prompt files"
 
 echo "canary-advise-diag: ALL PASS"

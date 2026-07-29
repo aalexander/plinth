@@ -294,10 +294,12 @@ const elsById = Object.create(null);
 const classSets = Object.create(null);
 function makeEl(id) {
   const cs = new Set();
-  classSets[id || Math.random()] = cs;
+  const key = id || ("anon-" + Math.random());
+  classSets[key] = cs;
   const o = {
     textContent: "", className: "", innerHTML: "",
     style: { display: "", cssText: "" },
+    _listeners: [],
     classList: {
       add(c) { cs.add(c); },
       remove(c) { cs.delete(c); },
@@ -309,7 +311,8 @@ function makeEl(id) {
         cs.add(c); return true;
       },
     },
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) { o._listeners.push({ type, fn }); },
+    removeEventListener() {},
     getAttribute() { return null; }, setAttribute() {},
     closest() { return null; },
     querySelector() { return null; },
@@ -399,19 +402,47 @@ if (!String(list.innerHTML).includes("plan-done-group") && !String(list.innerHTM
     process.exit(1);
   }
 }
-// Delegated click on data-plan
+// Delegated click on data-plan via grid listener (production attaches here)
 const btn = makeEl();
 btn.getAttribute = (k) => (k === "data-plan" ? "/tmp/demo" : null);
 btn.closest = (sel) => (sel === "[data-plan]" ? btn : null);
-const click = listeners.find((l) => l.type === "click");
-if (click) {
-  click.fn({ target: btn, preventDefault() {} });
-}
-// details collapse present for completed group
-if (!String(list.innerHTML).includes("<details") && !String(list.innerHTML).includes("leaf")) {
-  console.error("expected details or leaf markup");
+const grid = elsById["grid"];
+const gridClick = (grid._listeners || []).find((l) => l.type === "click")
+  || listeners.find((l) => l.type === "click");
+if (!gridClick) {
+  console.error("no grid/document click listener for data-plan");
   process.exit(1);
 }
+// Reset modal then click
+elsById["nh-modal"].classList.remove("open");
+gridClick.fn({ target: btn, preventDefault() {} });
+if (!elsById["nh-modal"].classList.contains("open")) {
+  console.error("data-plan click did not open modal");
+  process.exit(1);
+}
+// completed group collapsed, active leaf present
+const html = String(list.innerHTML);
+if (!html.includes("plan-done-group") && !html.includes("completed")) {
+  if (!html.includes("First")) {
+    console.error("expected completed group or first leaf");
+    process.exit(1);
+  }
+}
+if (!html.includes("leaf") && !html.includes("Second") && !html.includes("active")) {
+  console.error("expected active/open leaf markup");
+  process.exit(1);
+}
+// missing classList guard: openPlan must not throw when panel.classList absent
+const panel = elsById["nh-panel"];
+const saved = panel.classList;
+panel.classList = undefined;
+try {
+  api.openPlan("/tmp/demo");
+} catch (e) {
+  console.error("openPlan threw without classList", e);
+  process.exit(1);
+}
+panel.classList = saved;
 console.log("openPlan+click+details ok");
 NODE
 pass "openPlan / data-plan click / plan-wide + stage rows"
@@ -943,6 +974,41 @@ echo "$outn" | jq -e '.primary_kind=="spec" or .primary=="SPEC.md"' >/dev/null \
   || fail "nested PLAN must not be primary: $(echo "$outn"|jq '{primary,kind:.primary_kind}')"
 pass "nested docs/PLAN.md is not operational plan"
 
+# Legacy nested plan_ref in fence must not leave ghost cursor when root PLAN absent
+mkdir -p "$TMP/ghost/.plinth" "$TMP/ghost/docs"
+cd "$TMP/ghost"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > docs/PLAN.md <<'P'
+# Nested
+## Acceptance criteria
+- [x] Nested A
+- [x] Nested B
+P
+cat > SPEC.md <<'S'
+# Spec
+## Requirements
+The system shall not be forced to 100 percent.
+S
+printf 'spec_path = SPEC.md\n' > .plinth/config
+rm -f PLAN.md
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","plan_ref":"docs/PLAN.md","slice_id":"ghost","slice_title":"Nested B","slice_index":2,"slice_total":2,"status":"done"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS PLINTH_CHECKPOINT_SLICE_ID PLINTH_CHECKPOINT_SLICE_TITLE PLINTH_CHECKPOINT_PLAN_REF 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '(.plan_ref==null or .plan_ref=="") and (.slice_index==null or .slice_index=="") and (.status!="done")' >/dev/null \
+  || fail "legacy nested plan_ref ghost cursor: $cj"
+pass "legacy nested plan_ref ghost cursor cleared"
+
 # ready + reviewing preserved on first-open seed (missing index)
 for st in ready reviewing; do
   mkdir -p "$TMP/st$st/.plinth"
@@ -972,5 +1038,60 @@ C
     || fail "preserve status=$st on first-open: $cj"
 done
 pass "inherited ready/reviewing preserved on first-open seed"
+
+# ready/reviewing preserved during advance; blocked on first-open
+for st in ready reviewing; do
+  mkdir -p "$TMP/adv$st/.plinth"
+  cd "$TMP/adv$st"
+  git init -q
+  git config user.email t@t && git config user.name t
+  echo x > f && git add f && git commit -qm i
+  cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [x] First leaf completed now
+- [ ] Second still open
+P
+  cat > CHECKPOINT.md <<C
+# Checkpoint
+## Next
+1. x
+## Routing
+\`\`\`json
+{"schema":"plinth.checkpoint/v1","slice_index":1,"slice_total":2,"status":"$st","plan_ref":"PLAN.md"}
+\`\`\`
+C
+  unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+  "$PLINTH" checkpoint . >/dev/null
+  cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+  echo "$cj" | jq -e --arg s "$st" '.status==$s and .slice_index==2' >/dev/null \
+    || fail "preserve status=$st on advance: $cj"
+done
+# blocked first-open (no index in fence)
+mkdir -p "$TMP/blk0/.plinth"
+cd "$TMP/blk0"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [ ] Open A
+P
+cat > CHECKPOINT.md <<'C'
+# Checkpoint
+## Next
+1. x
+## Routing
+```json
+{"schema":"plinth.checkpoint/v1","status":"blocked","plan_ref":"PLAN.md"}
+```
+C
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="blocked" and .slice_index==1' >/dev/null \
+  || fail "blocked first-open: $cj"
+pass "ready/reviewing advance + blocked first-open preserved"
 
 echo "canary-plan-progress: ALL PASS"
