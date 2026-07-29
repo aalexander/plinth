@@ -5300,13 +5300,11 @@ if m:
     if not isinstance(ver, str):
         sys.exit(1)  # non-string verdict → hollow
     ver_s = ver.strip()
-    if any(has_real(d.get(k)) for k in ("blockers", "questions", "nits")):
-        sys.exit(0)
-    if ver_s and ver_s.lower() not in ("none", "n/a", "…", "..."):
-        sys.exit(0)
-    if has_all_none_or_real:
-        sys.exit(0)
-    sys.exit(1)
+    # Real string verdict always required for JSON seats.
+    if not ver_s or ver_s.lower() in ("none", "n/a", "…", "..."):
+        sys.exit(1)
+    # Arrays may be empty or contain only empty markers; real strings optional.
+    sys.exit(0)
 if has_all_none_or_real:
     sys.exit(0)
 sys.exit(1)
@@ -5550,15 +5548,21 @@ for i, p in enumerate(paths):
         for k in ("blockers", "questions", "nits"):
             if not isinstance(data.get(k), list):
                 data[k] = []
-        # Hollow {} / all-empty arrays without a real verdict is not a complete seat.
-        _nonempty = any(
-            isinstance(data.get(k), list) and any(str(x).strip() for x in data.get(k))
-            for k in ("blockers", "questions", "nits")
+            else:
+                # Drop empty markers so they are not harvested as findings.
+                data[k] = [
+                    x for x in data[k]
+                    if isinstance(x, str)
+                    and x.strip()
+                    and x.strip().lower() not in ("none", "n/a", "…", "...")
+                ]
+        _ver = data.get("verdict")
+        _has_ver = isinstance(_ver, str) and _ver.strip() and _ver.strip().lower() not in (
+            "none", "n/a", "…", "..."
         )
-        _ver = str(data.get("verdict") or "").strip()
-        _has_ver = bool(_ver) and _ver.lower() not in ("none", "n/a", "…", "...")
         data["raw_ok"] = True
-        data["available"] = (not unavailable) and (_nonempty or _has_ver)
+        # JSON seat complete only with a real string verdict (arrays may be empty).
+        data["available"] = (not unavailable) and _has_ver
     if unavailable:
         data["available"] = False
         data["raw_ok"] = False

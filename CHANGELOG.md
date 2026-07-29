@@ -15,8 +15,8 @@
   avoid `grep -q` SIGPIPE under pipefail.
 - **agy audit:** `agy -p` + stdin (no `@file`); require parseable findings object.
 - **Plan seats:** require all three markdown sections, or JSON with string-only
-  arrays (empty markers alone are hollow) plus a real verdict; statusline BLOCKING
-  matches queue forms; classify/diagnostics avoid SIGPIPE.
+  arrays and a required non-empty string verdict (empty markers stripped at merge);
+  statusline BLOCKING matches queue forms; classify/diagnostics avoid SIGPIPE.
 - **Quota UI:** overall-only cache renders used_pct again.
 - **Migration:** DRIVER-project stock scaffold is fingerprint-matched; any other
   comment text (including short tokens / stock+append) is preserved.

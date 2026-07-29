@@ -167,7 +167,8 @@ Everything between is the model's call.
   tool-blocked under a Claude driver; project-owned entries reviewed as normal project
   code), `AGENTS-project.md`
   (project-specific reviewer rules), `DRIVER-project.md` (project-specific driver notes).
-  None is ever overwritten by `plinth update`.
+  Project note files are not overwritten by `plinth update` except the intentional
+  CLAUDE.md→DRIVER-project migration when the destination is still the empty scaffold.
 - The DRIVER contract is a thin, pinned shell in BOTH `CLAUDE.md` and `AGENTS.md`, so
   whichever file your driver's CLI auto-loads (Claude→CLAUDE.md, codex→AGENTS.md,
   grok→both) delivers the driver role; it imports the shared rules and your
