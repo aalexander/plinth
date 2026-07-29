@@ -5205,6 +5205,8 @@ for sec in outline:
             "title": s,
             "status": "open",
             "checkable": True,
+            "checkbox": False,
+            "progress": True,
             "children": [],
         })
 
@@ -5223,6 +5225,8 @@ if not outline or not any(n.get("children") for n in outline):
                     "title": s,
                     "status": "open",
                     "checkable": True,
+                    "checkbox": False,
+                    "progress": True,
                     "children": [],
                 }
                 for j, s in enumerate(shall)
@@ -5242,6 +5246,20 @@ if not outline and title:
 # Drop empty milestones (heading, no bullets) — keeps the track scannable.
 outline = [n for n in outline if (n.get("children") or n.get("checkable"))]
 
+if not outline:
+    sys.exit(0)
+
+# Work-only outline for the dashboard: strip notes / risks / tradeoffs / prose.
+# PLAN is the operational source of truth for *progress*; SPEC is requirements.
+# Non-progress children (notes) are not stage points.
+_work_outline = []
+for sec in outline:
+    kids = [c for c in (sec.get("children") or []) if c.get("progress", False)]
+    if kids:
+        sec = dict(sec)
+        sec["children"] = kids
+        _work_outline.append(sec)
+outline = _work_outline
 if not outline:
     sys.exit(0)
 
@@ -5759,7 +5777,44 @@ _write_handoff() {
         detail:("reason="+$reason+" kind="+$kind+" advice="+$advice),head:$head}' \
       >> "$sdir/events.jsonl"; } 2>/dev/null || true
   # Append machine-readable routing block (canonical source of truth).
-  local cj
+  # Seed plan position on checkpoint when the client/driver did not set it:
+  # clients *should* set PLINTH_CHECKPOINT_SLICE_* ; if missing and prev has no
+  # index either, derive from PLAN progress (first open / active work item).
+  local cj _seed_pp _seed_idx _seed_tot _seed_title _seed_id
+  if [ -z "${PLINTH_CHECKPOINT_SLICE_INDEX:-}" ]; then
+    local _have_prev_idx=0
+    if [ -n "${_cp_prev_json:-}" ] && printf '%s' "$_cp_prev_json" | jq -e '.slice_index != null' >/dev/null 2>&1; then
+      _have_prev_idx=1
+    fi
+    if [ "$_have_prev_idx" = 0 ]; then
+      _seed_pp="$(_plan_progress_json "$root" "${_cp_prev_json:-{}}")"
+      if [ -n "$_seed_pp" ]; then
+        _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false) ] as $L
+          | ($L | to_entries | map(select(.value.status != "done")) | .[0]) as $e
+          | if $e == null then empty else ($e.key + 1) end
+        ' 2>/dev/null || true)
+        _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
+        ' 2>/dev/null || true)
+        _seed_title=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].title // empty
+        ' 2>/dev/null || true)
+        _seed_id=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].id // empty
+        ' 2>/dev/null || true)
+        case "$_seed_idx" in ''|*[!0-9]*) ;; *)
+          export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_idx"
+          [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
+          [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
+          [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
+          [ -z "${PLINTH_CHECKPOINT_PLAN_REF:-}" ] && \
+            export PLINTH_CHECKPOINT_PLAN_REF="$(printf '%s' "$_seed_pp" | jq -r '.primary // "PLAN.md"')"
+          echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
+        ;; esac
+      fi
+    fi
+  fi
   # Prefer in-memory prev JSON (pre-overwrite); fall back to re-parse.
   if [ -n "${_cp_prev_json:-}" ]; then
     cj="$(PLINTH_CHECKPOINT_PREV_JSON="$_cp_prev_json" _checkpoint_build_json "$root")"

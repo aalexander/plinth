@@ -93,6 +93,23 @@ outfp=$(_plan_progress_json "$TMP/a" '{}')
 echo "$outfp" | jq -e '.done==0' >/dev/null || fail "Done prose false positive: $(echo "$outfp"|jq '{done,outline}')"
 pass "HANDOFF Done prose does not invent checkbox completion"
 
+# notes / risks / tradeoffs are not stage points
+cat > "$TMP/a/PLAN.md" <<'P'
+# My product
+## Acceptance criteria
+- [ ] Real work A
+- [ ] Real work B
+## Risks / trust boundaries
+- auth note should not appear as a stage
+## Open tradeoffs
+- tradeoff note should not appear
+P
+outw=$(_plan_progress_json "$TMP/a" '{}')
+echo "$outw" | jq -e '[.outline[].title] == ["Acceptance criteria"]' >/dev/null \
+  || fail "work-only titles: $(echo "$outw"|jq '[.outline[].title]')"
+echo "$outw" | jq -e '.total==2' >/dev/null || fail "work-only total"
+pass "notes/risks/tradeoffs omitted from stage track"
+
 # implementation plan when no PLAN.md
 rm -f "$TMP/a/PLAN.md"
 cat > "$TMP/a/IMPLEMENTATION.md" <<'I'

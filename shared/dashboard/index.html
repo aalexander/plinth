@@ -654,44 +654,86 @@
     max-width: 55%;
   }
   #nh-panel.plan-wide { width: min(640px, 100%); }
-  #nh-list.plan-track { gap: 0.55rem; }
-  #nh-list.plan-track li.milestone {
-    border-left: 3px solid var(--border);
-    padding-left: 0.7rem;
+  #nh-list.plan-track { gap: 0.55rem; list-style: none; margin: 0; padding: 0; }
+  #nh-list.plan-track > li { list-style: none; }
+  #nh-list.plan-track details.plan-sec,
+  #nh-list.plan-track details.plan-done-group {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(13, 17, 23, 0.45);
+    overflow: hidden;
   }
-  #nh-list.plan-track li.milestone.active {
-    border-left-color: var(--cyan);
-    background: var(--cyan-bg);
-    box-shadow: inset 0 0 0 1px rgba(57, 210, 192, 0.25);
+  #nh-list.plan-track details.plan-sec.active {
+    border-color: rgba(57, 210, 192, 0.4);
+    box-shadow: 0 0 0 1px rgba(57, 210, 192, 0.12);
   }
-  #nh-list.plan-track li.milestone.done {
-    border-left-color: var(--green);
+  #nh-list.plan-track details.plan-sec.done,
+  #nh-list.plan-track details.plan-done-group {
+    border-color: rgba(63, 185, 80, 0.3);
     background: var(--green-bg);
-    box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.22);
   }
-  #nh-list.plan-track li.leaf {
-    margin-left: 0.85rem;
+  #nh-list.plan-track summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.55rem 0.7rem;
+    font-family: var(--font);
+    font-size: 0.78rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    user-select: none;
+  }
+  #nh-list.plan-track summary::-webkit-details-marker { display: none; }
+  #nh-list.plan-track summary::before {
+    content: "▸";
+    color: var(--dim);
+    font-size: 0.7rem;
+    width: 0.85em;
+  }
+  #nh-list.plan-track details[open] > summary::before { content: "▾"; }
+  #nh-list.plan-track summary .sum-title { flex: 1; min-width: 0; font-weight: 600; }
+  #nh-list.plan-track details.plan-sec.active > summary .sum-title { color: var(--cyan); }
+  #nh-list.plan-track details.plan-sec.done > summary .sum-title,
+  #nh-list.plan-track details.plan-done-group > summary .sum-title { color: var(--green); }
+  #nh-list.plan-track summary .w {
+    font-family: var(--font);
+    font-size: 0.65rem;
+    color: var(--dim);
+  }
+  #nh-list.plan-track details.plan-sec.done > summary .w,
+  #nh-list.plan-track details.plan-done-group > summary .w { color: var(--green); }
+  #nh-list.plan-track .sec-body {
+    padding: 0 0.55rem 0.55rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  #nh-list.plan-track .leaf {
+    margin: 0;
     padding: 0.45rem 0.6rem;
     font-size: 0.74rem;
-    border-style: dashed;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(13, 17, 23, 0.5);
+    font-family: var(--font);
+    line-height: 1.4;
   }
-  /* Active step — strong cyan highlight (current work) */
-  #nh-list.plan-track li.leaf.active {
+  #nh-list.plan-track .leaf.active {
     border-color: var(--cyan);
-    border-style: solid;
     background: var(--cyan-bg);
     color: var(--text);
     font-weight: 600;
     box-shadow: 0 0 0 1px rgba(57, 210, 192, 0.35), 0 0 12px rgba(57, 210, 192, 0.12);
   }
-  /* Done steps — green shade (same family as APPROVED / green chips) */
-  #nh-list.plan-track li.leaf.done {
+  #nh-list.plan-track .leaf.done {
     border-color: rgba(63, 185, 80, 0.4);
-    border-style: solid;
     background: var(--green-bg);
     color: var(--text);
-    text-decoration: none;
-    opacity: 1;
+  }
+  #nh-list.plan-track .leaf.open {
+    border-style: dashed;
+    color: var(--muted);
   }
   #nh-list.plan-track .mark {
     font-family: var(--font);
@@ -699,21 +741,17 @@
     margin-right: 0.4rem;
     font-weight: 700;
   }
-  #nh-list.plan-track li.leaf.active .mark { color: var(--cyan); }
-  #nh-list.plan-track li.leaf.done .mark { color: var(--green); }
-  #nh-list.plan-track li.milestone.done strong { color: var(--green); }
-  #nh-list.plan-track li.milestone.active strong { color: var(--cyan); }
-  #nh-list.plan-track .w {
+  #nh-list.plan-track .leaf.active .mark { color: var(--cyan); }
+  #nh-list.plan-track .leaf.done .mark { color: var(--green); }
+  #nh-list.plan-track .leaf .w {
     float: right;
     font-family: var(--font);
     font-size: 0.65rem;
     color: var(--dim);
     margin-left: 0.5rem;
   }
-  #nh-list.plan-track li.leaf.done .w,
-  #nh-list.plan-track li.milestone.done .w { color: var(--green); }
-  #nh-list.plan-track li.leaf.active .w { color: var(--cyan); }
-  /* Card meter: green fill when complete, cyan otherwise */
+  #nh-list.plan-track .leaf.done .w { color: var(--green); }
+  #nh-list.plan-track .leaf.active .w { color: var(--cyan); }
   .plan-meter .fill.done {
     background: linear-gradient(90deg, #2ea043, var(--green));
   }
@@ -1943,40 +1981,106 @@
         const rows = [];
         const outline = Array.isArray(pp.outline) ? pp.outline : [];
         if (!outline.length) {
-          rows.push('<li class="muted">(empty outline)</li>');
+          rows.push('<li class="muted">(empty outline — work stages only; notes/risks omitted)</li>');
         }
+
+        function leafHTML(leaf) {
+          const ls = (leaf && leaf.status) || "open";
+          const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
+          const lcum = leaf && leaf.cum_pct_end != null ? leaf.cum_pct_end
+            : (leaf && leaf.weight_pct != null ? leaf.weight_pct : null);
+          const lw = lcum != null
+            ? ('<span class="w" title="cumulative through this item">' + esc(String(lcum)) + "%</span>")
+            : "";
+          return (
+            '<div class="leaf ' + esc(ls) + '">' + lw +
+              '<span class="mark">' + mark + "</span>" +
+              esc((leaf && leaf.title) || "") +
+            "</div>"
+          );
+        }
+
+        // Flatten work leaves for a top-level "completed" collapse.
+        const allLeaves = [];
         outline.forEach(function (sec) {
-          const st = (sec && sec.status) || "open";
-          // Prefer cumulative end-% (running total through this milestone).
+          (sec && Array.isArray(sec.children) ? sec.children : []).forEach(function (c) {
+            allLeaves.push(c);
+          });
+        });
+        const doneLeaves = allLeaves.filter(function (l) { return l && l.status === "done"; });
+        const activeLeaves = allLeaves.filter(function (l) { return l && l.status === "active"; });
+
+        if (doneLeaves.length) {
+          const through = doneLeaves[doneLeaves.length - 1];
+          const throughPct = through && through.cum_pct_end != null ? through.cum_pct_end : null;
+          rows.push(
+            '<li><details class="plan-done-group">' +
+              "<summary>" +
+                '<span class="sum-title">✓ ' + doneLeaves.length + " completed" +
+                  (throughPct != null ? (" · through " + throughPct + "%") : "") +
+                "</span>" +
+                (throughPct != null ? '<span class="w">' + throughPct + "%</span>" : "") +
+              "</summary>" +
+              '<div class="sec-body">' + doneLeaves.map(leafHTML).join("") + "</div>" +
+            "</details></li>"
+          );
+        }
+
+        if (activeLeaves.length) {
+          rows.push(
+            '<li><div class="sec-body" style="padding:0">' +
+              activeLeaves.map(leafHTML).join("") +
+            "</div></li>"
+          );
+        }
+
+        // Majors: expandable; open only when active (or no done/active collapse context).
+        outline.forEach(function (sec) {
+          const kids = (sec && Array.isArray(sec.children) ? sec.children : [])
+            .filter(function (k) { return k && k.status !== "done" && k.status !== "active"; });
+          // Skip empty majors once done/active are shown above
+          const secDone = (sec && sec.status) === "done";
+          const secActive = (sec && sec.status) === "active";
+          if (secDone && !kids.length) return; // fully done major folded into completed group
+          const remaining = (sec && Array.isArray(sec.children) ? sec.children : [])
+            .filter(function (k) { return k && k.status !== "done"; });
+          if (!remaining.length && !secActive) return;
+
+          const openAttr = secActive ? " open" : "";
+          const stCls = secActive ? "active" : (secDone ? "done" : "open");
           const cum = sec && sec.cum_pct_end != null ? sec.cum_pct_end
             : (sec && sec.weight_pct != null ? sec.weight_pct : null);
           const w = cum != null ? ('<span class="w">' + esc(String(cum)) + "%</span>") : "";
-          rows.push(
-            '<li class="milestone ' + esc(st) + '">' + w +
-              "<strong>" + esc((sec && sec.title) || "section") + "</strong>" +
-            "</li>"
-          );
-          const kids = (sec && Array.isArray(sec.children)) ? sec.children : [];
-          kids.forEach(function (leaf) {
-            const ls = (leaf && leaf.status) || "open";
-            const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
-            const lcum = leaf && leaf.cum_pct_end != null ? leaf.cum_pct_end
-              : (leaf && leaf.weight_pct != null ? leaf.weight_pct : null);
-            const lw = lcum != null
-              ? ('<span class="w" title="cumulative through this item">' + esc(String(lcum)) + "%</span>") : "";
+          const nLeft = remaining.length;
+          const sumLabel = esc((sec && sec.title) || "section") +
+            (nLeft ? (" · " + nLeft + " remaining") : "");
+          // Inside major: show only non-done (active already above; still show if only section view)
+          const bodyKids = remaining.filter(function (k) { return k.status !== "active"; });
+          if (!bodyKids.length && secActive) {
+            // Active already rendered; show collapsed major shell only if useful
             rows.push(
-              '<li class="leaf ' + esc(ls) + '">' + lw +
-                '<span class="mark">' + mark + "</span>" +
-                esc((leaf && leaf.title) || "") +
-              "</li>"
+              '<li><details class="plan-sec ' + stCls + '"' + openAttr + ">" +
+                "<summary><span class=\"sum-title\">" + sumLabel + "</span>" + w + "</summary>" +
+                '<div class="sec-body"><div class="muted" style="font-size:0.72rem;padding:0.25rem 0.4rem">current step above</div></div>' +
+              "</details></li>"
             );
-          });
+            return;
+          }
+          if (!bodyKids.length) return;
+          rows.push(
+            '<li><details class="plan-sec ' + stCls + '"' + openAttr + ">" +
+              "<summary><span class=\"sum-title\">" + sumLabel + "</span>" + w + "</summary>" +
+              '<div class="sec-body">' + bodyKids.map(leafHTML).join("") + "</div>" +
+            "</details></li>"
+          );
         });
+
         if (pp.note) {
           rows.push('<li class="muted">' + esc(pp.note) + "</li>");
         }
         if (pp.progress_mode) {
-          rows.push('<li class="muted">mode: ' + esc(String(pp.progress_mode)) + "</li>");
+          rows.push('<li class="muted">mode: ' + esc(String(pp.progress_mode)) +
+            " · work stages only (notes/risks omitted)</li>");
         }
         nhList.innerHTML = rows.join("");
       }

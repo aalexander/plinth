@@ -155,17 +155,27 @@ Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
 
 ### Plan progress (dashboard)
 
-Stages are **auto-derived** (not hand-drawn Gantt data):
+**Source of truth (coordinated, not duplicated):**
 
-1. **PLAN.md** if present (product plan — preferred)
-2. else **implementation plan** (`IMPLEMENTATION.md`, `IMPLEMENTATION_PLAN.md`, …)
-3. else **`spec_path`** from `.plinth/config` (file or tree entry)
+| Role | Source | Why |
+|------|--------|-----|
+| **Requirements** | `spec_path` (SPEC.md / spec tree) | Canonical “what must be true” for review/ship |
+| **Execution progress** | **PLAN.md** (preferred) | Operational stages, ACs, phase exits — what the dash tracks |
+| **Fallback sequence** | implementation plan → spec shall-lines | When PLAN is absent |
 
-Snapshot field: `lifecycle.plan_progress` (`plinth.plan_progress/v1`). All three
-paths are listed under `sources` when present so PLAN / impl / spec stay
-coordinated in the UI. Progress uses markdown checkboxes when present; equal
-weights sum to 100%; ETA stays reserved-null until elapsed calibration exists.
-Dashboard: progress meter + PLAN chip on the card; click-in stage track.
+Stages for the dash are **auto-derived** (work points only — not risks/tradeoffs/notes):
+
+1. **PLAN.md** if present  
+2. else **implementation plan** (`IMPLEMENTATION.md`, …)  
+3. else **`spec_path`** requirements harvest  
+
+**Checkpoint is how the client reports position:** on `plinth checkpoint` /
+handoff, set `PLINTH_CHECKPOINT_SLICE_INDEX` / `_TOTAL` / `_TITLE` (or let the
+writer seed the first open PLAN item when unset). The dash treats checkpoint
+cursor as authoritative (prior items = done, current = active).
+
+Snapshot: `lifecycle.plan_progress` (`plinth.plan_progress/v1`). UI: meter +
+PLAN chip; click-in track collapses completed work, expands the active major.
 
 ### Live wiring (what the product actually does)
 
