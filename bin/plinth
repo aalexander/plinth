@@ -1725,17 +1725,15 @@ $question"
       # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
       # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
       # from a missing binary (#62).
-      # Auth/error classifiers (also catch exit-0 unauth text — grok/claude can do that).
-      _advise_looks_auth_fail() {
-        grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)|please run' \
-          "$errf" "$outf" 2>/dev/null
-      }
+      # Strict unauth markers only — never bare "please run" / "authentication" advice.
+      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
         --allowed-tools "Read,Grep,Glob" >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if _advise_looks_auth_fail; then
+      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
+         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
         _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
         return 0
       fi
@@ -1755,13 +1753,14 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
+      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - \
         >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)' \
-           "$errf" "$outf" 2>/dev/null; then
+      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
+         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
         _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
@@ -1779,14 +1778,15 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(-m "$use")
+      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} \
         >"$outf" 2>"$errf"
       rc=$?
       set -e
-      # Grok may print unauth guidance with exit 0 — still not advice.
-      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)|sign in' \
-           "$errf" "$outf" 2>/dev/null; then
+      # Grok may exit 0 with unauth text — only treat stderr or explicit unauth phrases.
+      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
+         || grep -qiE 'not logged in|please run /login|not authenticated' "$outf" 2>/dev/null; then
         _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
@@ -1804,12 +1804,13 @@ $question"
         return 0
       fi
       [ -n "$use" ] && margs=(--model "$use")
+      _advise_auth_re='not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized'
       set +e
       "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} >"$outf" 2>"$errf"
       rc=$?
       set -e
-      if grep -qiE 'not logged in|/login|authentication|unauthorized|auth.*(fail|required)' \
-           "$errf" "$outf" 2>/dev/null; then
+      if grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null \
+         || { [ "$rc" -ne 0 ] && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; }; then
         _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
         return 0
       fi
@@ -5247,8 +5248,8 @@ NON_CODING_SECTION_RE = re.compile(
     r"repository and deployment|core contracts|dependency rules|gcp services|"
     r"simplicity constraints|branch protocol|product and delivery|architecture\b|"
     r"pin unresolved|resolve specification|merge the browser|specification conflicts|"
-    r"external and clinical decision|phase 0\b|specification ratification|"
-    r"release gates|^foundation$|^release\s*\d+\s*$",
+    r"external and clinical decision|specification ratification|"
+    r"release gates",
     re.I,
 )
 # Leaf titles that are not coding milestones (INV inventory, pure gates, human sign-off).
@@ -5259,11 +5260,7 @@ NON_CODING_ITEM_RE = re.compile(
     r"owner explicitly agrees|"
     r"human (sign[- ]?off|gate|approval|ratification)|"
     r"external(ly)? gated|"
-    r"sign[- ]?off\b|"
-    r"\b(FDA|IRB)\b|"
-    r"Security team approves|"
-    r"Product owner signs|"
-    r"Obtain FDA|"
+    r"(^|\s)(owner |product |legal |security )?(sign[- ]?off|approves? the (threat|privacy)|obtain (FDA|SOC))\b|"
     r"^NB:|"
     r"^RESOLVED\b|"
     r"^Read:\s*SPEC|"
@@ -5290,12 +5287,15 @@ def is_coding_section(ht: str) -> bool:
     """True only for sections that are operational coding milestones."""
     if not ht:
         return False
-    # Strong positive: module build status / build order / Slice N always count.
-    if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b", ht, re.I):
+    # Strong positive: module build status / build order / Slice N / Phase N.
+    if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b|\bphase\s*\d+\b", ht, re.I):
         return True
     if re.search(r"\bmodule[- ]?\d+", ht, re.I) and re.search(
         r"\b(build|status|implement|complete|underway)\b", ht, re.I
     ):
+        return True
+    # Exact Foundation / Release N as coding majors when not under "release gates".
+    if re.match(r"^(Foundation|Release\s*\d+)\s*$", ht.strip(), re.I):
         return True
     # Non-coding wins over weak positives (e.g. "Module-00 design decisions").
     if NON_CODING_SECTION_RE.search(ht):
@@ -5345,8 +5345,11 @@ while i < len(lines):
             continue
         # #### substeps under ### Slice / module majors (expandable on the dash).
         if level == 4:
-            if cur is not None and is_coding_item(ht, cur.get("title") or "") and (
-                re.match(r"^\d+[.)]?\s+\S", ht)
+            parent = (cur.get("title") if cur else "") or ""
+            under_slice = bool(re.search(r"\bslice\s*\d+\b", parent, re.I))
+            if cur is not None and is_coding_item(ht, parent) and (
+                under_slice
+                or re.match(r"^\d+[.)]?\s+\S", ht)
                 or CODING_ITEM_HINT_RE.search(ht)
             ):
                 cur["children"].append({
@@ -5509,29 +5512,9 @@ def harvest_shall(max_n=40):
             break
     return shall
 
-# Attach prose "shall" requirements when a section has no list children yet.
-for sec in outline:
-    if sec.get("children"):
-        continue
-    # Only for likely requirements sections (avoid stuffing Problem prose).
-    if not re.search(r"require|criteria|spec|shall|behavior|acceptance", sec.get("title") or "", re.I):
-        continue
-    # Re-scan body under this heading for shall lines (simple full-doc harvest OK for small specs).
-    for s in harvest_shall():
-        if not is_coding_item(s, sec.get("title") or ""):
-            continue
-        sec["children"].append({
-            "id": f"{sec['id']}.{len(sec['children'])+1}",
-            "title": s,
-            "status": "open",
-            "checkable": True,
-            "checkbox": False,
-            "progress": True,
-            "children": [],
-        })
-
-# SPEC-style: if still no structure, harvest shall lines as one milestone.
-if not outline or not any(n.get("children") for n in outline):
+# Spec fallback: single Requirements major from shall-lines (once), never
+# duplicate the whole-document harvest into every empty admitted section.
+if primary_kind == "spec" and (not outline or not any(n.get("children") for n in outline)):
     shall = [s for s in harvest_shall() if is_coding_item(s, "Requirements")]
     if shall:
         outline = [{
@@ -5549,9 +5532,12 @@ if not outline or not any(n.get("children") for n in outline):
                     "progress": True,
                     "children": [],
                 }
-                for j, s in enumerate(shall)
+                for j, s in enumerate(shall[:40])
             ],
         }]
+elif primary_kind == "spec":
+    # Drop empty admitted sections rather than stuffing them with global shalls.
+    outline = [s for s in outline if s.get("children")]
 
 # If still empty, expose H1-only presence
 if not outline and title:
@@ -5747,11 +5733,11 @@ else:
             current_via = "slice_title"
             checkpoint_cursor = True
             break
-    # 2) Numeric position only when totals match the plan leaf count (or total
-    #    omitted with a title already matched above). Refuse stale 1/1 against
-    #    a multi-item plan (false first-leaf cursor).
+    # 2) Numeric index only when totals match leaf count AND no conflicting
+    #    title/id was provided (non-matching title already failed above → refuse
+    #    numeric fallthrough that would invent a cursor).
     if current is None and si and 1 <= si <= len(leaves):
-        if st is None or st == len(leaves):
+        if (st is None or st == len(leaves)) and not cur_title and not cur_id:
             current = leaves[si - 1]
             current_via = "slice_index"
             checkpoint_cursor = True
@@ -6152,7 +6138,8 @@ _write_handoff() {
     if [ -n "${_cp_prev_json:-}" ]; then
       _prev_idx=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_index // empty' 2>/dev/null || true)
     fi
-    _seed_pp="$(_plan_progress_json "$root" "${_cp_prev_json:-{}}")"
+    # Seed discovery ignores prior routing so checked leaves stay done (not re-activated).
+    _seed_pp="$(_plan_progress_json "$root" '{}')"
     if [ -n "$_seed_pp" ]; then
       _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
         [ .outline[]?.children[]? | select(.progress != false) ] as $L
@@ -6186,8 +6173,8 @@ _write_handoff() {
           [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
           [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
           [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
-          [ -z "${PLINTH_CHECKPOINT_PLAN_REF:-}" ] && \
-            export PLINTH_CHECKPOINT_PLAN_REF="$(printf '%s' "$_seed_pp" | jq -r '.primary // "PLAN.md"')"
+          # plan_ref is always the operational plan basename (PLAN.md), never SPEC.
+          export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
           echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
         ;; esac
       fi

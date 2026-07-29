@@ -103,11 +103,12 @@ Everything between is the model's call.
   `_EFFORT` medium|high|xhigh; `_IMPLEMENT` driver|worker|either;
   `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
   complete). If index is unset and no prior fence, the writer **seeds** the first
-  open PLAN.md stage (synthesized position; re-checkpoint to advance). Index is
-  only applied when `slice_total` matches the plan leaf count (or total is
-  omitted). `plan_ref` is always basename `PLAN.md`. `handoff` is an alias;
-  legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass (`xhigh` → dual
-  in BUILD); never a ship gate (see MODELS live wiring).
+  open PLAN.md stage (synthesized; re-checkpoint advances when checkboxes move).
+  Index applies only when `slice_total` matches the plan leaf count (or total is
+  omitted) and no conflicting non-matching title/id was supplied. Writer-seeded
+  `plan_ref` is always `PLAN.md`. `handoff` is an alias; legacy `HANDOFF.md` is a
+  pointer. Effort biases dual first-pass (`xhigh` → dual in BUILD); never a ship
+  gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.

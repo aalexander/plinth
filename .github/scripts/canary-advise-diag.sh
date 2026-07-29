@@ -32,6 +32,23 @@ grep -q '_nh_blocker_scope()' "$ROOT/bin/plinth" || fail "missing _nh_blocker_sc
 grep -q '_nh_blocker_applies_to_phase()' "$ROOT/bin/plinth" || fail "missing phase apply helper"
 grep -q 'not on PATH' "$ROOT/bin/plinth" || fail "missing PATH diagnostic"
 grep -q 'is not signed in for this environment' "$ROOT/bin/plinth" || fail "missing auth diagnostic"
+# Must not classify ordinary "please run the tests" advice as unauth
+grep -q 'please run /login' "$ROOT/bin/plinth" || fail "auth re must require /login not bare please run"
 pass "advise diagnostic strings present in product"
+
+# Fake claude: exit 0 with legitimate advice containing 'please run' must NOT be auth-fail
+# (unit: the classifier pattern alone)
+python3 - <<'PY'
+import re
+re_auth = re.compile(
+    r"not logged in|please run /login|not authenticated|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized",
+    re.I,
+)
+ok = "Sound; please run the focused tests before merging"
+assert not re_auth.search(ok), ok
+assert re_auth.search("Not logged in · Please run /login")
+print("auth classifier unit ok")
+PY
+pass "auth classifier does not false-positive on please-run advice"
 
 echo "canary-advise-diag: ALL PASS"

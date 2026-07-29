@@ -184,4 +184,31 @@ pass "implement-only route + hint"
 [ "$(slice_dual_from_effort high build)" = 0 ] || fail "policy dual_wanted high+build"
 pass "dual_wanted policy matrix (pre-eligibility)"
 
+# request.json slice_routing stamp shape (compose pure helpers as run_round does)
+awk '
+  /^SLICE_EFFORT=/ {p=1}
+  /^# Review charter phase/ {exit}
+  p {print}
+' "$REVIEW" > "$TMP/slice_helpers2.sh"
+# shellcheck disable=SC1091
+. "$TMP/slice_helpers2.sh"
+mkdir -p "$TMP/req"
+(
+  cd "$TMP/req"
+  cat > CHECKPOINT.md <<'EOF'
+```json
+{"schema":"plinth.checkpoint/v1","effort":"xhigh","implement":"worker","slice_id":"X9"}
+```
+EOF
+  slice_load_routing
+  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" build "")"
+  jq -n --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
+    --arg slice_id "$SLICE_ID" --argjson dual_wanted "$dual_wanted" \
+    '{slice_routing:{effort:$effort,implement:$implement,slice_id:$slice_id,dual_wanted:($dual_wanted==1)}}' \
+    > request-1.json
+  jq -e '.slice_routing.effort=="xhigh" and .slice_routing.dual_wanted==true and .slice_routing.slice_id=="X9"' \
+    request-1.json >/dev/null
+)
+pass "request.json slice_routing stamp shape (xhigh dual_wanted)"
+
 echo "canary-checkpoint-routing: ALL PASS"
