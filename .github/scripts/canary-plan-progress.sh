@@ -744,6 +744,48 @@ echo "$cj" | jq -e '.slice_index==1 and .status!="done"' >/dev/null \
   || fail "Done prose must not advance seed: $cj"
 pass "seeder ignores CHECKPOINT Done prose (checkbox-only)"
 
+# Matching HANDOFF Done prose must not advance seeder either
+mkdir -p "$TMP/seed5b/.plinth"
+cd "$TMP/seed5b"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [ ] Wire dashboard plan progress meter for clients
+- [ ] Second long enough title for matching rules here
+P
+# No CHECKPOINT yet — first write creates it; seed from empty
+rm -f CHECKPOINT.md HANDOFF.md
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+# Inject matching Done into HANDOFF (legacy) and re-seed
+cat > HANDOFF.md <<'H'
+# Handoff
+## Done
+- Wire dashboard plan progress meter for clients was completed in a prior session
+## Next
+1. continue
+H
+# Force seeder path: keep CHECKPOINT without index env
+# Rebuild CHECKPOINT body without routing index so seeder runs
+python3 - <<'PY'
+from pathlib import Path
+import re
+p = Path("CHECKPOINT.md")
+raw = p.read_text()
+# strip routing fence if present
+raw = re.sub(r"\n## Routing\n.*", "\n", raw, flags=re.S)
+p.write_text(raw + "\n## Routing\n\n```json\n{\"schema\":\"plinth.checkpoint/v1\",\"status\":\"implementing\"}\n```\n")
+PY
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.slice_index==1 and .status!="done"' >/dev/null \
+  || fail "HANDOFF Done prose must not advance seed: $cj"
+pass "seeder ignores HANDOFF Done prose (checkbox-only)"
+
 # explicit STATUS=blocked must not be overwritten by open-plan seed
 mkdir -p "$TMP/seed4/.plinth"
 cd "$TMP/seed4"
@@ -765,5 +807,59 @@ echo "$cj" | jq -e '.status=="blocked" and .slice_index==1' >/dev/null \
   || fail "blocked status must stick with seed position: $cj"
 unset PLINTH_CHECKPOINT_STATUS
 pass "explicit STATUS=blocked preserved during auto-seed"
+
+# all-checked PLAN + explicit blocked → still status=done (plan complete is factual)
+mkdir -p "$TMP/seed6/.plinth"
+cd "$TMP/seed6"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [x] A done
+- [x] B done
+P
+rm -f CHECKPOINT.md
+export PLINTH_CHECKPOINT_STATUS=blocked
+unset PLINTH_CHECKPOINT_SLICE_INDEX 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+echo "$cj" | jq -e '.status=="done" and .slice_index==2 and .slice_total==2' >/dev/null \
+  || fail "all-done must force status=done even if env blocked: $cj"
+unset PLINTH_CHECKPOINT_STATUS
+# dashboard 100%
+out=$(cd "$TMP/seed6" && python3 - "$ROOT/bin/plinth" <<'PY'
+import re, subprocess, sys
+from pathlib import Path
+# extract progress via plinth is heavy; use checkpoint status=done assertion above
+print("ok")
+PY
+)
+pass "all-done forces status=done over explicit blocked"
+
+# orphan PLAN with explicit index env still clears stale id/title/done (only keeps env index)
+mkdir -p "$TMP/seed7/.plinth"
+cd "$TMP/seed7"
+git init -q
+git config user.email t@t && git config user.name t
+echo x > f && git add f && git commit -qm i
+cat > PLAN.md <<'P'
+# Seed
+## Acceptance criteria
+- [x] Only
+P
+unset PLINTH_CHECKPOINT_SLICE_INDEX PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+rm -f PLAN.md
+export PLINTH_CHECKPOINT_SLICE_INDEX=1
+unset PLINTH_CHECKPOINT_SLICE_ID PLINTH_CHECKPOINT_SLICE_TITLE PLINTH_CHECKPOINT_STATUS 2>/dev/null || true
+"$PLINTH" checkpoint . >/dev/null
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+# index may stay from env; id/title/status=done must not remain as ghost plan cursor
+echo "$cj" | jq -e '(.slice_id==null or .slice_id=="") and (.status!="done")' >/dev/null \
+  || fail "orphan PLAN with index env still ghost: $cj"
+unset PLINTH_CHECKPOINT_SLICE_INDEX
+pass "orphan PLAN clears ghost id/done even with index env"
 
 echo "canary-plan-progress: ALL PASS"

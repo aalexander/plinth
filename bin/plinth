@@ -1710,7 +1710,10 @@ $question"
   _advise_on_signal() {
     local _sig="$1"
     if [ -n "${_advise_child:-}" ]; then
-      kill -TERM "$_advise_child" 2>/dev/null || true
+      # Kill the whole process group (pipeline: shell + CLI), not just the wrapper.
+      kill -TERM -"$_advise_child" 2>/dev/null || kill -TERM "$_advise_child" 2>/dev/null || true
+      # Also walk children (pipeline leaves under the subshell).
+      pkill -TERM -P "$_advise_child" 2>/dev/null || true
       wait "$_advise_child" 2>/dev/null || true
       _advise_child=""
     fi
@@ -1754,7 +1757,8 @@ $question"
       return 0
     fi
     if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
-      _al=$(wc -l <"$outf" | tr -d ' ')
+      # Logical non-empty lines (wc -l undercounts when no final newline).
+      _al=$(grep -cve '^[[:space:]]*$' "$outf" 2>/dev/null || echo 0)
       _ac=$(wc -c <"$outf" | tr -d ' ')
       if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ]; then
         while IFS= read -r _line || [ -n "$_line" ]; do
@@ -1785,6 +1789,7 @@ $question"
       # from a missing binary (#62).
       set +e
       (
+        set -m
         printf '%s' "$aprompt" | "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
           --allowed-tools "Read,Grep,Glob"
       ) >"$outf" 2>"$errf" &
@@ -1816,6 +1821,7 @@ $question"
       [ -n "$use" ] && margs=(-m "$use")
       set +e
       (
+        set -m
         printf '%s' "$aprompt" | "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only -
       ) >"$outf" 2>"$errf" &
       _advise_child=$!
@@ -1844,6 +1850,7 @@ $question"
       [ -n "$use" ] && margs=(-m "$use")
       set +e
       (
+        set -m
         "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"}
       ) >"$outf" 2>"$errf" &
       _advise_child=$!
@@ -1872,6 +1879,7 @@ $question"
       [ -n "$use" ] && margs=(--model "$use")
       set +e
       (
+        set -m
         "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"}
       ) >"$outf" 2>"$errf" &
       _advise_child=$!
@@ -5112,7 +5120,8 @@ if best is None:
     sys.exit(0)
 out = {
     "schema": "plinth.checkpoint/v1",
-    "plan_ref": best.get("plan_ref") if isinstance(best.get("plan_ref"), str) else "PLAN.md",
+    # Preserve null plan_ref — do not invent PLAN.md when the fence had none.
+    "plan_ref": best.get("plan_ref") if isinstance(best.get("plan_ref"), str) else None,
     "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
     "slice_title": best.get("slice_title") if isinstance(best.get("slice_title"), str) else None,
     "slice_index": best.get("slice_index") if isinstance(best.get("slice_index"), int) and best["slice_index"] >= 1 else None,
@@ -5191,32 +5200,40 @@ if _plan_ref is None and "PLINTH_CHECKPOINT_PLAN_REF" not in os.environ:
         _plan_ref = None
 if not _plan_ref:
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
-# No live PLAN → drop inherited plan position (never apply obsolete cursor to SPEC).
-_clear_plan_pos = _plan_ref is None and "PLINTH_CHECKPOINT_SLICE_INDEX" not in os.environ
+# Orphan PLAN cursor: prior fence pointed at PLAN.md but the file is gone.
+_orphan_plan = (
+    _plan_ref is None
+    and isinstance(prev.get("plan_ref"), str)
+    and Path(str(prev.get("plan_ref"))).name == "PLAN.md"
+    and not (root / "PLAN.md").is_file()
+)
 if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
     _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
+elif _orphan_plan:
+    _sid = None
 else:
     _sid = prev.get("slice_id")
 if "PLINTH_CHECKPOINT_SLICE_TITLE" in os.environ:
     _stitle = env("PLINTH_CHECKPOINT_SLICE_TITLE")
+elif _orphan_plan:
+    _stitle = None
 else:
     _stitle = prev.get("slice_title")
 if "PLINTH_CHECKPOINT_SLICE_INDEX" in os.environ:
     _sidx = env_int_key("PLINTH_CHECKPOINT_SLICE_INDEX")
+elif _orphan_plan:
+    _sidx = None
 else:
     _sidx = prev.get("slice_index")
 if "PLINTH_CHECKPOINT_SLICE_TOTAL" in os.environ:
     _stot = env_int_key("PLINTH_CHECKPOINT_SLICE_TOTAL")
+elif _orphan_plan:
+    _stot = None
 else:
     _stot = prev.get("slice_total")
-if _clear_plan_pos:
-    _sid = None
-    _stitle = None
-    _sidx = None
-    _stot = None
-    # Keep non-done operator status; drop done-with-no-plan (would force 100% on SPEC).
-    if status == "done":
-        status = "implementing"
+# Drop inherited status=done when PLAN is gone (would force 100% on SPEC fallback).
+if _orphan_plan and "PLINTH_CHECKPOINT_STATUS" not in os.environ and status == "done":
+    status = "implementing"
 out = {
     "schema": "plinth.checkpoint/v1",
     "plan_ref": _plan_ref,
