@@ -724,6 +724,60 @@ it has run green with a real smoke_cmd.
 5. Let the driver loop. It exits into the normal review -> PR -> CI path, where the
    reviewer explicitly checks for metric gaming.
 
+## Ship bias — what is mandatory, and what is optional rigor (v5.1)
+
+Forced adversarial review after every committing session causes thrash: the loop
+keeps finding true-but-unfinishable things to say and never converges. v5.1 fixes
+that by naming which layers are the floor and which are optional, instead of
+running every available opinion on every diff.
+
+| Layer | What it is | Gates the ship? |
+|-------|-----------|-----------------|
+| **L1** | Free fail-open canaries (CI) | Signal only |
+| **L2** | **One** primary adversarial review (tier from `risk-classify`) → batch the fixes → **one** verify round | **Yes** — APPROVED@HEAD |
+| **L3** | Security-focused pass, **risk-triggered only**, security severities only | No — reported and recorded, not a merge check |
+| **L4** | CI floor + checks + `receipt / verify` (where wired, required, `strict:true`) | **Yes** — branch protection |
+
+**Dual first-pass is optional rigor, not the foundation.** Through v5.0.x every
+hardening-phase round ran a second full generalist review. That is off by default
+now, in every phase. Ask for it per-slice with `rigor: deep` in the CHECKPOINT
+fence, or per-run with `PLINTH_DUAL_PASS=1`. It is never a required check, and
+never turned on merely because the phase is hardening — phase alone is not
+evidence that a second *generalist* opinion earns a paid round.
+
+What dual was mostly being used for — a second pair of eyes on something
+security-shaped — is served directly by **L3**: when the diff touches an
+auth/crypto/secret surface, the tooling ship path, or a supply-chain vector
+(dependency manifests, submodules, symlinks), one security-scoped pass runs on the
+APPROVED path. If it cannot run, that is recorded as `security_pass: UNAVAILABLE`
+on the verdict and the receipt — never a false "clean". Set
+`security_pass_required = true` in `.plinth/config` to make a
+triggered-but-unavailable pass fail closed instead of continuing best-effort.
+
+**A diff with only minors open is APPROVED.** Open minors are required to land in
+the spec's `## Noticed` before the PR, so they survive as recorded backlog with
+you in the loop. Asymptotic findings — "the fixture cannot reach the live seat",
+"wants a wider CLI matrix", "coverage could go further" — are true, worth
+recording, and never blocking, in *either* phase. The reviewer test is not "is
+this worth doing?" but "can the driver finish it?".
+
+**Thrash demotion, and its bounds.** The harness deterministically demotes known
+thrash classes to minor so the loop converges. That is a fail-open, so it is
+bounded three ways, all of which you can audit:
+1. **An in-repo allowlist of seven class IDs** (`coverage-gap`, `canary-depth`,
+   `fake-cli-argv`, `handoff-ws`, `sticky-ledger`, `docs-prose`, `queue-nit`) in
+   `shared/.plinth/review.sh`. Findings are mapped to a class by the harness — there
+   is deliberately **no field** a reviewer or driver can set, so no participant in
+   the loop can classify its own finding as demotable.
+2. **Editing that vocabulary is Tier 2** by construction (it lives under
+   `.plinth/`), so widening the fail-open gets a full cross-vendor review.
+3. **Every demotion is disclosed on the receipt** (`demotions: [{class, from, to,
+   round, …}]`). An APPROVED that leaned on demotions is auditable from the git
+   note alone.
+Security, correctness, data loss and real test gaps are **never** demoted: both
+floors run ahead of every demotion arm, so a security finding filed against a docs
+file or an ephemera path still blocks.
+
 ## Hard blocks (don't rely on the model behaving)
 - Guard hook: common destructive commands (an enumerative, heuristic pattern set —
   bare and prefixed forms like `sudo rm -rf` are caught, but a command hidden inside a
@@ -885,6 +939,37 @@ summary is commentary. You intervene for exactly three things: infra failures
 Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
+
+- **`thrash_class` is still defined three times in the sticky blocks**
+  (`shared/.plinth/review.sh`). v5.1 aligned the vocabularies rather than
+  unifying the code: sticky uses its classes for identity/fingerprinting, not for
+  demotion authority, and `canary-thrash-classes.sh` now asserts that every
+  `class:*` literal in the file is a member of the single demotable allowlist — so
+  a divergence fails CI. Collapsing the three definitions into one is still the
+  right cleanup; it was deliberately not attempted in the same train as the
+  demotion-bound changes, because a refactor of three duplicated jq blocks is
+  exactly where a silent classification bug would hide.
+- **`PLINTH_ACK_NO_DUAL` is disclosed via dedicated fields, not the
+  `override_ledger`.** It rides on the request, the verdict
+  (`dual_first_pass: ACK_NO_SEAT`) and the receipt (`ack_no_dual`), but it is not
+  one of the five allowlisted `PLINTH-OVERRIDE` names that `receipt-verify.sh`
+  checks for exact tuple equality against the PR body. So an acked seatless dual
+  is auditable on the receipt but is **not** machine-enforced into the PR body the
+  way a reviewer/model/cap override is. Deliberate scope call (that path enforces
+  strict tuple equality and widening it is its own change); if acked dual ever
+  becomes common, promote it into the ledger allowlist.
+- **Reviewer-contract changes bind from the NEXT branch, not this one.** The
+  contract is inlined from the RATIFIED BASE, so the v5.1 reviewer rules (S5:
+  asymptotic never major in either phase, security never Noticed, no `class:`
+  emission, only-minors-is-APPROVED) do not govern the review of the branch that
+  introduces them. The harness-side halves (demotion floors, class bounds) DO
+  apply immediately, since they are code. Expect the first real exercise of the
+  new contract text on the branch after 5.1.0 lands.
+- **L3 fires on every diff in this repo.** Plinth's own product surface is the
+  tooling ship path, which is one of the L3 triggers — so every review here runs
+  the security pass. That is the intended coverage for a repo whose diff *is* the
+  ship path, but it does mean the "risk-triggered" saving shows up in downstream
+  projects, not in Plinth itself.
 
 - **`plinth dash` backlog (v4.8 review):** (a) ThreadingHTTPServer still allows
   unlimited concurrent *caller threads* (builders are single-flight). (b) a
