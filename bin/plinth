@@ -59,19 +59,29 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
 # a trap, not a usability nit — the operator asking "what does this do?" is precisely
 # the one who does not want it done. Intercepted here, ahead of ALL parsing and
 # dispatch, so it cannot regress per-command.
-# VALUE-AWARE: skip the token after an option that takes a value, so a value that
-# happens to look like a help flag stays a value. `plinth residual --note --help`
-# must record the note, not print usage. (Found by review, v5.1.1 round 1.)
+# VALUE-AWARE, PER COMMAND. A value that looks like a help flag must stay a value
+# (`plinth residual --note --help` records the note), but the skip list must belong to
+# the command being run: a GLOBAL list let `plinth harden --note --help` swallow the
+# --help and EXECUTE harden — reintroducing upstream #63 through its own fix. Only the
+# command that actually owns an option skips its value; for every other command those
+# tokens are just unknown flags and the help request still wins.
+# (Review finding, v5.2 round 2.)
+case "${1:-}" in
+  residual)       _valflags=" --note --from-findings " ;;
+  dash|dashboard) _valflags=" --port " ;;
+  advise)         _valflags=" " ;;
+  *)              _valflags=" " ;;
+esac
 _skip=0
 for _a in "$@"; do
   if [ "$_skip" = 1 ]; then _skip=0; continue; fi
   case "$_a" in
-    --note|--from-findings|--port|--body-file|--title|-m) _skip=1 ;;
-    -h|--help) usage 0 ;;
     --) break ;;   # everything after `--` belongs to a wrapped command (plinth smoke)
+    -h|--help) usage 0 ;;
+    -*) case "$_valflags" in *" $_a "*) _skip=1 ;; esac ;;
   esac
 done
-unset _a _skip
+unset _a _skip _valflags
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
 PLAN_DEEP=0

@@ -392,97 +392,73 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # with no extension restriction, and .md/.rst/.txt-only would silently drop
 # YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
 # the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
-# ── SPEC PAYLOAD BOUND (v5.2) ────────────────────────────────────────────────
-# A reviewer CLI is AGENTIC: the prompt is re-sent on every turn of its loop, so a
-# large spec is not paid once — it is paid ~60 times. Measured on this repo:
-# spec_path=MANUAL.md is 87KB (~23k tokens) of USER DOCUMENTATION, and one round on a
-# 62-line diff cost 2.73M input tokens while a 6,000-line diff cost 5.1M. The diff was
-# never the driver; the re-sent fixed payload was.
+# ── SPEC BY REFERENCE, NOT BY VALUE (v5.2) ───────────────────────────────────
+# The primary reviewer runs `codex exec --sandbox read-only` IN the repo: it can
+# already READ files. The ONLY reason the spec was ever pasted into the prompt is that
+# the WORKING-TREE copy is PR-modifiable — a PR must not ship the spec that judges it.
+# That argues for a BASE copy, not for an inline copy.
 #
-# So a spec above the threshold is EXCERPTED, not truncated, and the reviewer is told
-# so LOUDLY. Excerpting a spec is a fail-open risk — a requirement that never reaches
-# the reviewer cannot be enforced — so the bound is built to keep the parts that carry
-# obligations:
-#   1. the COMPLETE heading outline (cheap, and shows exactly what exists);
-#   2. every section whose heading looks like it carries requirements;
-#   3. every section mentioning a path/basename from THIS diff;
-#   4. a loud banner naming what was omitted and how to ask for it.
-# Below the threshold nothing changes, so ordinary projects with a real spec are
-# unaffected. Override with PLINTH_SPEC_INLINE_MAX (0 = never excerpt).
-SPEC_INLINE_MAX_DEFAULT=24000
-_spec_relevant_re() {
-  # DISTINCTIVE tokens only. A bare basename like `plinth` (from bin/plinth) matches
-  # nearly every line of this repo's own manual, which made an earlier version select
-  # the entire document — 0% reduction. So: full paths and >=6-char basenames, minus
-  # the project name itself.
-  local proj names
-  proj="$(basename "$PWD" 2>/dev/null || echo __none__)"
-  names="$(printf '%s\n' ${REVIEWED_FILES_FULL:-} \
-    | tr ' ' '\n' | grep -E '.' \
-    | sed 's#\.[A-Za-z0-9]\+$##' \
-    | awk -v p="$proj" '{ b=$0; sub(/.*\//,"",b);
-        if (length(b) >= 6 && b != p) print b;
-        if ($0 ~ /\//) print $0 }' \
-    | sort -u | head -30 | paste -sd'|' -)"
-  printf '%s' "${names:-__no_files__}"
-}
-# Emit selected sections up to a HARD BYTE CAP, then name what was dropped. The cap is
-# the guarantee: selection heuristics can be wrong (an earlier keep-regex matched every
-# heading in a manual full of the words "gate" and "contract"), but a cap cannot be.
-_spec_select() {  # <file> <cap> <relre>
-  awk -v cap="$2" -v relre="$3" '
-    function flush() {
-      if (keep && buf != "") {
-        if (used + length(buf) <= cap) { printf "%s", buf; used += length(buf) }
-        else { omitted = omitted "\n  - " hdr " (omitted: cap reached)" }
-      } else if (buf != "" && hdr != "") {
-        omitted_unsel = omitted_unsel "\n  - " hdr
-      }
-    }
-    /^#{1,6} / { flush(); hdr = $0; buf = $0 "\n"
-      keep = (tolower(hdr) ~ /acceptance|requirement|criteri|invariant|non-goal|must not|shall/)
-      next }
-    { buf = buf $0 "\n"
-      if (!keep && relre != "__no_files__" && $0 ~ relre) keep = 1 }
-    END { flush()
-      if (omitted != "") printf "\n=== SECTIONS SELECTED BUT DROPPED AT THE CAP ===%s\n", omitted
-      if (omitted_unsel != "") printf "\n=== SECTIONS NOT SELECTED (headings only; ask if load-bearing) ===%s\n", omitted_unsel
-    }
-  ' "$1"
-}
-inline_spec_file() {  # <path> — verbatim below the cap, honestly excerpted above it
-  local f="$1" cap total relre
-  cap="${PLINTH_SPEC_INLINE_MAX:-$SPEC_INLINE_MAX_DEFAULT}"
-  case "$cap" in ''|*[!0-9]*) cap="$SPEC_INLINE_MAX_DEFAULT" ;; esac
-  total="$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')"
-  case "$total" in ''|*[!0-9]*) total=0 ;; esac
-  if [ "$cap" = 0 ] || [ "$total" -le "$cap" ]; then cat "$f"; return; fi
-  relre="$(_spec_relevant_re)"
-  echo "=== SPEC EXCERPTED — NOT the whole document ==========================="
-  echo "${f} is ${total} bytes. A reviewer CLI is agentic: the prompt is re-sent on"
-  echo "every turn of its loop, so a large spec is paid ~60x per round, not once."
-  echo "You are seeing the COMPLETE heading outline, every requirement-shaped section,"
-  echo "and every section mentioning a file in this diff, up to a hard byte cap."
-  echo "ABSENCE OF A SECTION BELOW IS NOT EVIDENCE THAT NOTHING IS SPECIFIED."
-  echo "If an outlined heading looks load-bearing for this diff and its body is not"
-  echo "included, file a minor finding whose description starts 'SPEC-EXCERPT:' naming"
-  echo "the heading; the driver re-runs with PLINTH_SPEC_INLINE_MAX=0 to send it whole."
-  echo "=== COMPLETE HEADING OUTLINE ==========================================="
-  grep -nE '^#{1,6} ' "$f" 2>/dev/null || true
-  echo "=== INCLUDED SECTIONS =================================================="
-  _spec_select "$f" "$cap" "$relre"
-  echo "=== END SPEC EXCERPT ==================================================="
-}
-inline_spec() {
-  if [ -f "$SPEC_PATH" ]; then inline_spec_file "$SPEC_PATH"; return; fi
-  if [ -d "$SPEC_PATH" ]; then
-    find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
-      grep -Iq . "$sf" 2>/dev/null || continue
-      echo "--- $sf ---"; inline_spec_file "$sf"
+# So: materialize the ratified base spec to a file and hand over its PATH. Cost drops
+# from ~23k tokens re-sent on every agent turn (~60x per round) to a one-line pointer
+# plus a heading outline — and unlike an excerpt, NOTHING is withheld, so the "a
+# requirement never reached the reviewer" fail-open does not exist on this path at all.
+# The excerpt path (below) remains for the AUDITOR, which runs from an empty directory
+# with tools forbidden and so genuinely cannot read anything.
+#
+# Per-ROUND directory so nothing is ever deleted: no recursive removal of a computed
+# path anywhere in the loop.
+materialize_base_spec() {  # <round> -> abs path on stdout, or nothing
+  local dest="$SDIR/base-spec-${1:-0}" name
+  mkdir -p "$dest" 2>/dev/null || return 0
+  if git cat-file -e "${base_tip}:${SPEC_PATH}" 2>/dev/null; then
+    name="$(basename "$SPEC_PATH")"
+    git show "${base_tip}:${SPEC_PATH}" > "$dest/$name" 2>/dev/null || return 0
+    printf '%s' "$dest/$name"; return 0
+  fi
+  if git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" >/dev/null 2>&1; then
+    git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" 2>/dev/null | while IFS= read -r f; do
+      mkdir -p "$dest/$(dirname "$f")" 2>/dev/null || continue
+      git show "${base_tip}:${SPEC_PATH}/$f" > "$dest/$f" 2>/dev/null || true
     done
+    printf '%s' "$dest"; return 0
+  fi
+  return 0
+}
+
+# One line per heading: tells the reviewer WHAT exists so it can decide whether to open
+# the file. ~300 tokens for an 87KB manual, versus ~23k to paste the whole thing.
+_spec_outline_for_prompt() {
+  local f="${BASE_SPEC_PATH:-}"
+  [ -n "$f" ] || { echo "(base spec unavailable — the loop could not materialize it; treat the spec as UNKNOWN and say so)"; return; }
+  if [ -f "$f" ]; then grep -nE '^#{1,6} ' "$f" 2>/dev/null | head -200; return; fi
+  if [ -d "$f" ]; then find "$f" -type f 2>/dev/null | sort | head -100; return; fi
+  echo "(base spec unavailable)"
+}
+
+# The spec reaches the PRIMARY by reference (materialize_base_spec, above): it runs
+# read-only IN the repo and can open the file, so nothing needs to be pasted into a
+# context that is re-sent every agent turn.
+#
+# The AUDITOR is different: it runs from an EMPTY directory with tools forbidden, so it
+# cannot open anything. It gets the heading OUTLINE only. Spec conformance is the
+# primary reviewer's job — the auditor is a second opinion on what the primary missed
+# (and, for L3, a security pass), neither of which needs the product requirements
+# pasted in full.
+#
+# An earlier v5.2 attempt compressed the spec with a relevance-selecting excerpt. It is
+# deleted rather than repaired: review round 2 found that it silently dropped every
+# spec form without column-zero ATX headings (YAML, JSON, plain text, Setext), treated
+# `#` inside fenced code as a heading, truncated its own selector at 30 tokens, and
+# advertised an excerpt escape-hatch prefix that no code implemented. All four defects
+# belong to machinery that only existed to work around pasting the spec at all.
+inline_spec() {
+  if [ -n "${BASE_SPEC_PATH:-}" ]; then
+    echo "(heading outline only — the auditor runs isolated and cannot open files;"
+    echo " spec CONFORMANCE is the primary reviewer's job, not this seat's)"
+    _spec_outline_for_prompt
     return
   fi
-  echo "(spec path not found: ${SPEC_PATH})"
+  echo "(canonical spec unavailable to this isolated seat — treat spec conformance as UNVERIFIED here and say so)"
 }
 inline_goal() {
   [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
@@ -2480,6 +2456,9 @@ ${inc}${evidence}${commits}"
     esac
   fi
   [ "$phase_src" = "env" ] || phase_src="file_or_default"
+  # Materialize the ratified base spec so the reviewer can READ it on demand
+  # instead of carrying it in every turn of its context.
+  BASE_SPEC_PATH="$(materialize_base_spec "$r")"
   # Stamp slice routing on the request (audit trail; never blocks).
   stamp_request_json "$SDIR" "$r" "$sha" "$baseref" "$m" "$SPEC_PATH" "$rphase" "$phase_src"
 
@@ -2922,8 +2901,15 @@ Output ONLY a JSON object (no prose, no markdown fences):
 === REVIEWER RULES (mandatory project blocking policy — apply these) ===
 $(inline_contract)
 
-=== CANONICAL SPEC (${SPEC_PATH}) ===
-$(inline_spec)
+=== CANONICAL SPEC (${SPEC_PATH}) — BY REFERENCE ===
+The RATIFIED spec (from the base ref, NOT this PR's working tree) is written to:
+  ${BASE_SPEC_PATH:-<unavailable>}
+READ IT with your own tools whenever the diff touches behaviour the spec constrains,
+and say in your summary whether you needed to. Do NOT read ${SPEC_PATH} from the
+working tree: that copy is PR-modifiable, and a PR must not ship the spec that judges
+it. NOTHING is withheld from you here — the complete ratified text is at that path.
+Its heading outline, so you can judge whether to open it:
+$(_spec_outline_for_prompt)
 
 === OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)

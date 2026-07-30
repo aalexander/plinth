@@ -942,6 +942,14 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **`shared/dashboard/smoke-snapshot.sh` is not hermetic.** Its quota assertions read
+  and restore the LIVE operator cache (`/tmp/plinth-dash-quota-<uid>/dash-quota.json`)
+  and hard-code expectations against it (`used_pct == 80`), so the test passes or fails
+  according to the operator's real usage at that moment. Verified pre-existing: the same
+  failure reproduces on an unmodified `bin/plinth`. It passes in CI (clean environment)
+  and passed locally earlier in the same session, then began failing once real usage
+  moved. A smoke test whose verdict depends on live state outside the fixture cannot
+  distinguish a regression from a Tuesday.
 - **`canary-lifecycle-build-harden.sh` can fail and still exit 0.** A mid-script
   abort (an unset variable inside an extracted function) printed its error and left
   the script exiting 0 locally, while the same failure exited 1 in CI. It therefore

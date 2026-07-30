@@ -6,14 +6,11 @@
 # 87KB manual (~23k tokens) and one round on a 62-line diff cost 2.73M input tokens
 # while a 6,000-line diff cost 5.1M — the diff was never the driver.
 #
-# Excerpting a spec is a FAIL-OPEN: a requirement that never reaches the reviewer
-# cannot be enforced. This canary is the bound on that. If it passes:
-#   1. a spec at or below the cap is sent VERBATIM (ordinary projects unaffected);
-#   2. above the cap the reviewer is told LOUDLY that it holds an excerpt, and that
-#      absence is not evidence — with a named escape hatch;
-#   3. the COMPLETE heading outline is always sent, so nothing is invisible;
-#   4. omitted sections are named, not silently dropped;
-#   5. the byte cap actually binds — the guarantee cannot rest on regex quality.
+# v5.2 sends the spec BY REFERENCE: the primary runs read-only IN the repo, so it gets
+# a materialized BASE copy's path plus a heading outline instead of 23k tokens of text.
+# Nothing is withheld, so there is no excerpt fail-open to bound — the earlier
+# excerpt machinery was deleted rather than repaired after review round 2 found four
+# defects in it, all belonging to a workaround for pasting the spec at all.
 # It drives the PRODUCTION functions extracted from shared/.plinth/review.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -23,93 +20,65 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "OK: $*"; }
 
-# ── extract the production functions (no re-implementation) ─────────────────
-python3 - "$REVIEW" "$TMP/specfns.sh" <<'PY'
+# ── (6) BY REFERENCE: the primary gets a PATH, not the document ──────────────
+# The primary reviewer runs `codex exec --sandbox read-only` IN the repo and can READ
+# files; the spec was only ever inlined because the working-tree copy is PR-modifiable.
+# So it now receives a materialized BASE copy's path plus a heading outline. This is
+# strictly better than the excerpt: ~99% smaller AND nothing is withheld, so the
+# "a requirement never reached the reviewer" fail-open does not exist on this path.
+python3 - "$REVIEW" "$TMP/byref.sh" <<'PY2'
 from pathlib import Path
 import sys
 s = Path(sys.argv[1]).read_text()
-i = s.index("SPEC_INLINE_MAX_DEFAULT=")
+i = s.index("materialize_base_spec() {")
 j = s.index("inline_goal() {")
 Path(sys.argv[2]).write_text(s[i:j])
-PY
+PY2
 # shellcheck disable=SC1090
-. "$TMP/specfns.sh"
-for fn in _spec_relevant_re _spec_select inline_spec_file inline_spec; do
-  type "$fn" >/dev/null 2>&1 || fail "$fn not extractable from review.sh"
+. "$TMP/byref.sh"
+type materialize_base_spec >/dev/null 2>&1 || fail "materialize_base_spec not extractable"
+type _spec_outline_for_prompt >/dev/null 2>&1 || fail "_spec_outline_for_prompt not extractable"
+
+BR=$(mktemp -d)
+(
+  cd "$BR" || exit 1
+  git init -q -b main . >/dev/null 2>&1 || exit 1
+  git config user.email t@t || exit 1; git config user.name t || exit 1
+  printf '# Requirements\nThe widget MUST retry.\n## Other\nprose\n' > SPEC.md || exit 1
+  git add -A || exit 1; git commit -qm base >/dev/null || exit 1
+  base_tip="$(git rev-parse HEAD)"; SDIR="$BR/session"; SPEC_PATH=SPEC.md
+  mkdir -p "$SDIR" || exit 1
+  # The PR modifies the spec in the working tree — the materialized copy must be BASE.
+  printf '# Requirements\nThe widget MUST NOT retry (tampered).\n' > SPEC.md || exit 1
+  out="$(materialize_base_spec 1)"
+  [ -n "$out" ] || { echo "materialize_base_spec produced no path"; exit 1; }
+  [ -f "$out" ] || { echo "materialized spec is not a file: $out"; exit 1; }
+  grep -q "MUST retry" "$out" || { echo "materialized copy is not the BASE spec"; exit 1; }
+  grep -q "tampered" "$out" && { echo "materialized the PR WORKING-TREE spec — a PR could ship the spec that judges it"; exit 1; }
+  # the outline names every heading, so nothing is invisible
+  BASE_SPEC_PATH="$out"
+  ol="$(_spec_outline_for_prompt)"
+  printf '%s' "$ol" | grep -q "Requirements" || { echo "outline missing a heading"; exit 1; }
+  printf '%s' "$ol" | grep -q "Other" || { echo "outline missing a heading"; exit 1; }
+  # the outline must be far smaller than the document it points at
+  [ "$(printf '%s' "$ol" | wc -c)" -lt "$(wc -c < "$out")" ] || { echo "outline is not smaller than the spec"; exit 1; }
+  # unavailable base spec must be announced, never silently empty
+  BASE_SPEC_PATH="" 
+  printf '%s' "$(_spec_outline_for_prompt)" | grep -q "unavailable" \
+    || { echo "an unavailable base spec must be announced to the reviewer"; exit 1; }
+) || fail "spec-by-reference is not base-pinned/announced correctly"
+# the prompt must hand over the path AND forbid the working-tree copy
+grep -q 'BASE_SPEC_PATH:-<unavailable>' "$REVIEW" || fail "the prompt does not hand the reviewer the base spec path"
+grep -q 'that copy is PR-modifiable' "$REVIEW" || fail "the prompt does not forbid reading the working-tree spec"
+grep -q 'NOTHING is withheld from you here' "$REVIEW" || fail "the prompt must state that nothing is withheld (no excerpt fail-open on this path)"
+grep -q 'BASE_SPEC_PATH="$(materialize_base_spec' "$REVIEW" || fail "run_round must materialize the base spec"
+pass "primary gets the spec BY REFERENCE (base-pinned, outlined, nothing withheld)"
+
+# ── the excerpt machinery must STAY deleted ─────────────────────────────────
+for gone in _spec_select _spec_relevant_re inline_spec_file SPEC_INLINE_MAX SPEC-EXCERPT:; do
+  grep -q -- "$gone" "$REVIEW" \
+    && fail "excerpt machinery reintroduced ($gone) — the spec goes by reference; a compressor for a payload we no longer send is a workaround, not a feature"
 done
-[ -n "${SPEC_INLINE_MAX_DEFAULT:-}" ] || fail "SPEC_INLINE_MAX_DEFAULT not extractable"
-
-# ── (1) at/below the cap → VERBATIM (no behaviour change for normal specs) ──
-small="$TMP/small.md"
-{ echo "# Requirements"; echo "The widget MUST retry."; } > "$small"
-REVIEWED_FILES_FULL="src/widget.py"
-SPEC_PATH="$small"
-out="$(inline_spec)"
-printf '%s' "$out" | grep -q "EXCERPTED" && fail "a small spec must be sent verbatim, not excerpted"
-[ "$(printf '%s' "$out")" = "$(cat "$small")" ] || fail "small spec was altered: $out"
-pass "spec at/below the cap is sent verbatim"
-
-# ── (2)(3)(4)(5) above the cap → honest, outlined, capped excerpt ───────────
-big="$TMP/big.md"
-: > "$big"
-i=0
-while [ "$i" -lt 40 ]; do
-  printf '## Section %s\n' "$i" >> "$big"
-  printf 'Filler prose about unrelated matters. %s\n' "$(head -c 700 < /dev/zero | tr '\0' 'x')" >> "$big"
-  i=$((i + 1))
-done
-printf '## Acceptance criteria\nThe retry path MUST return failure.\n' >> "$big"
-printf '## Widget interface\nsrc/widget.py exposes retry().\n' >> "$big"
-total=$(wc -c < "$big" | tr -d '[:space:]')
-[ "$total" -gt "$SPEC_INLINE_MAX_DEFAULT" ] || fail "fixture spec ($total B) must exceed the cap to test excerpting"
-SPEC_PATH="$big"
-out="$(inline_spec)"
-n_out=$(printf '%s' "$out" | wc -c | tr -d '[:space:]')
-
-# the cap actually binds
-[ "$n_out" -lt "$total" ] || fail "excerpt ($n_out B) is not smaller than the spec ($total B) — the cap does not bind"
-# and the reduction is material, not cosmetic
-[ "$n_out" -lt $(( total * 80 / 100 )) ] || fail "excerpt is >=80% of the spec ($n_out/$total) — no material reduction"
-# honesty: the reviewer must KNOW it holds an excerpt and that absence proves nothing
-printf '%s' "$out" | grep -q "SPEC EXCERPTED" || fail "excerpt lacks the loud banner"
-printf '%s' "$out" | grep -q "ABSENCE OF A SECTION BELOW IS NOT EVIDENCE" \
-  || fail "excerpt lacks the fail-open warning — a reviewer could read absence as 'not specified'"
-printf '%s' "$out" | grep -q "SPEC-EXCERPT:" || fail "excerpt lacks the named escape hatch for the reviewer"
-printf '%s' "$out" | grep -q "PLINTH_SPEC_INLINE_MAX=0" || fail "excerpt does not say how to get the whole document"
-# the COMPLETE outline is always present, so no heading is invisible
-want=$(grep -cE '^#{1,6} ' "$big")
-got=$(printf '%s' "$out" | sed -n '/COMPLETE HEADING OUTLINE/,/INCLUDED SECTIONS/p' | grep -cE ':#{1,6} ')
-[ "$want" = "$got" ] || fail "outline sent $got of $want headings — a heading would be invisible"
-# requirement-shaped sections survive selection
-printf '%s' "$out" | grep -q "The retry path MUST return failure" \
-  || fail "an 'Acceptance criteria' section was dropped — requirement-bearing sections must be kept"
-# diff-relevant sections survive selection
-printf '%s' "$out" | grep -q "exposes retry()" \
-  || fail "a section naming a file in the diff was dropped"
-# omissions are NAMED, never silent
-printf '%s' "$out" | grep -qE "NOT SELECTED|DROPPED AT THE CAP" \
-  || fail "sections were omitted without naming them"
-pass "excerpt is loud, outlined in full, keeps requirements + diff-relevant sections, names omissions"
-
-# ── the escape hatch really disables excerpting ─────────────────────────────
-# Compare via a FILE: command substitution strips trailing newlines, which would make
-# a byte-for-byte assertion fail for a reason that has nothing to do with the product.
-PLINTH_SPEC_INLINE_MAX=0 inline_spec > "$TMP/full.out"
-grep -q "EXCERPTED" "$TMP/full.out" && fail "PLINTH_SPEC_INLINE_MAX=0 must send the whole document"
-cmp -s "$TMP/full.out" "$big" || fail "PLINTH_SPEC_INLINE_MAX=0 did not reproduce the spec byte-for-byte"
-# a garbage cap falls back to the default rather than disabling the bound silently
-out_bad="$(PLINTH_SPEC_INLINE_MAX=banana inline_spec)"
-printf '%s' "$out_bad" | grep -q "SPEC EXCERPTED" \
-  || fail "an invalid PLINTH_SPEC_INLINE_MAX silently disabled the bound (must fall back to the default)"
-pass "PLINTH_SPEC_INLINE_MAX=0 sends the whole spec; an invalid value falls back to the default"
-
-# ── a generic basename must not select the entire document ──────────────────
-# `bin/plinth` → basename `plinth` matched nearly every line of this repo's own manual,
-# which selected everything and produced a 0% reduction. Distinctive tokens only.
-REVIEWED_FILES_FULL="bin/plinth"
-re="$(cd "$ROOT" && _spec_relevant_re)"
-printf '%s' "$re" | grep -qx "plinth" \
-  && fail "the project's own name is used as a selection token — it matches everything"
-pass "selection tokens exclude the project name (no whole-document selection)"
+pass "excerpt machinery stays deleted (no compressor for a payload we do not send)"
 
 echo "canary-spec-payload: ALL PASS"

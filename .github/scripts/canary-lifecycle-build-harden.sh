@@ -1330,9 +1330,17 @@ h63_rc=0
   done
   after="$(digest)" || exit 1
   [ "$before" = "$after" ] || { echo "--help mutated the project tree"; exit 1; }
-  # An option VALUE that looks like a help flag must stay a value.
+  # An option VALUE that looks like a help flag must stay a value — and the skip list
+  # must be PER COMMAND. A global list let `plinth harden --note --help` swallow the
+  # --help and EXECUTE harden, reintroducing #63 through its own fix (round 2).
   vout="$("$PLINTH" residual . --note --help 2>&1)" || true
   case "$vout" in Usage:*) echo "an option VALUE (--note --help) was read as a help request"; exit 1 ;; esac
+  [ -f .plinth/RESIDUAL.json ] || { echo "residual --note --help printed no usage but also wrote nothing — the value path did not run"; exit 1; }
+  for probe in "harden --note" "build -m" "checkpoint --port" "plan . --title" "lifecycle-migrate --body-file"; do
+    # shellcheck disable=SC2086
+    bout="$("$PLINTH" $probe --help 2>&1)" || true
+    case "$bout" in Usage:*) ;; *) echo "'$probe --help' did NOT print usage — a foreign option value swallowed the help flag and the command RAN"; exit 1 ;; esac
+  done
   # bad usage still exits 1 (only an EXPLICIT help request is a success)
   rc=0; "$PLINTH" >/dev/null 2>&1 || rc=$?
   [ "$rc" = 1 ] || { echo "no-args usage should exit 1, got $rc"; exit 1; }
