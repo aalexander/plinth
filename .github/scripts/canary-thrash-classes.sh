@@ -20,6 +20,26 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "OK: $*"; }
 
 # ── extract the production function (no re-implementation) ──────────────────
+# The never-demote lexicons live in shell constants injected via --arg. They MUST be
+# extracted with the function: an unset var becomes `test(""; "i")`, and an empty
+# regex matches EVERY string — which would make every finding look security-shaped
+# and silently disable all demotion. Assert they are non-empty for the same reason.
+awk '
+  /^SEC_DESC_RE=/ {print}
+  /^CORRECTNESS_DESC_RE=/ {print}
+' "$REVIEW" > "$TMP/lexicon.sh"
+# shellcheck disable=SC1090
+. "$TMP/lexicon.sh"
+[ -n "${SEC_DESC_RE:-}" ] || fail "SEC_DESC_RE not extractable from review.sh (an empty regex matches everything and would disable demotion entirely)"
+[ -n "${CORRECTNESS_DESC_RE:-}" ] || fail "CORRECTNESS_DESC_RE not extractable from review.sh"
+for tok in XSS CSRF plaintext 'account takeover' unquoted 'encryption key'; do
+  printf '%s' "$SEC_DESC_RE" | grep -qiF "$tok" \
+    || fail "SEC_DESC_RE lost the round-29 regression vocabulary '$tok'"
+done
+for tok in overwrit truncat 'deletes? the wrong'; do
+  printf '%s' "$CORRECTNESS_DESC_RE" | grep -qF "$tok" \
+    || fail "CORRECTNESS_DESC_RE lost the round-29 regression vocabulary '$tok'"
+done
 awk '
   /^thrash_policy_process_findings\(\)/ {p=1}
   p {print}
@@ -140,6 +160,37 @@ never_demote "coverage-asymp in HARDEN" hardening src/app.py \
   "coverage remains incomplete — wants additional coverage of the retry path"
 never_demote "canary-depth in HARDEN" hardening .github/scripts/canary-x.sh \
   "dual e2e merge is unexercised in free CI; needs a live dual-vendor seat"
+# ── ROUND-29 REGRESSION CORPUS — vocabulary this floor's author did NOT choose ──
+# The v5.1 floor shipped passing a canary written by the same person who wrote the
+# regexes, so it only ever proved "the floor knows the words I thought of". Round 29
+# defeated it with ordinary wording. These are the reviewer's OWN probe phrasings,
+# kept verbatim as the regression corpus. When extending the floor, add cases from
+# an outside source — never from the same head that wrote the pattern.
+never_demote "XSS"                     build src/render.js \
+  "reflected XSS: the template interpolates the query parameter without escaping"
+never_demote "CSRF"                    build src/routes.py \
+  "CSRF: the state-changing POST accepts requests without any token check"
+never_demote "plaintext passwords"     build src/users.go \
+  "passwords are stored in plaintext in the users table"
+never_demote "exposed encryption key"  build docs/deploy.md \
+  "the deploy example commits the encryption key into the repository"
+never_demote "account takeover"        build src/reset.ts \
+  "the reset link never expires, which allows account takeover"
+never_demote "unquoted shell"          build scripts/run.sh \
+  "the path is passed unquoted to sh, so a filename with a space executes arbitrary commands"
+never_demote "handoff overwrite"       build HANDOFF.md \
+  "the writer overwrites the existing handoff instead of appending"
+never_demote "checkpoint truncation"   build CHECKPOINT.md \
+  "long fences hit truncation and the routing block is cut off"
+never_demote "retry false success"     build src/retry.py \
+  "the retry helper returns success after the final attempt failed"
+never_demote "deletes the wrong row"   build src/db.py \
+  "the delete uses the display index, so it deletes the wrong row"
+# and the same wordings must survive being wrapped in demotable-looking prose
+never_demote "XSS inside coverage prose" build src/render.js \
+  "coverage remains incomplete here; also reflected XSS via the unescaped query parameter"
+never_demote "plaintext pw in docs prose" build docs/notes.md \
+  "the prose could be clearer, and it documents storing passwords in plaintext"
 pass "never-demote floor holds (security, correctness, data-loss, real test gaps, HARDEN coverage)"
 
 # ── (2) THE ASYMPTOTIC CLASSES DO DEMOTE IN BUILD (plan criterion #4) ───────

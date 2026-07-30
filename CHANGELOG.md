@@ -9,6 +9,33 @@ plus one verify (L2, APPROVED@HEAD), and the merge gates (L4 — floor + checks 
 optional rigor; a risk-triggered security pass (L3) covers security-shaped
 surfaces, which is what dual was actually being used for.
 
+- **Round-29 review fixes (all five real, all reproduced by the reviewer).** The
+  v5.1 canaries passed while these were broken, because a floor tested with its
+  own vocabulary proves nothing:
+  - **The never-demote floor was vocabulary-dependent.** Probes demoted XSS, CSRF,
+    plaintext passwords, exposed encryption keys, account takeover, unquoted shell
+    execution, handoff overwrite, checkpoint truncation, retry-returns-success, and
+    deleting the wrong row. `SEC_DESC_RE` / `CORRECTNESS_DESC_RE` are now single
+    shell constants injected into the demotion gate, built from the reviewer's
+    vocabulary rather than the author's, and the canary's regression corpus uses
+    the reviewer's exact phrasings. An unset lexicon now **fails loud** instead of
+    degrading to `test(""; "i")`, which matches every string and would silently
+    disable demotion entirely.
+  - **The audit-payload demotion ledger was dishonest.** Auditor findings need not
+    carry ids, and `thrash_ledger_rows` joined every id-less finding to the *first*
+    snapshot entry — recording a demoted blocker as `from:"major"`. It now pairs by
+    INDEX (which `map` preserves) and records `"unknown"` on a length mismatch
+    rather than a confident wrong answer.
+  - **`PLINTH_SECURITY_PASS=1` did not always force L3.** Tier-0 and
+    HANDOFF/CHECKPOINT-only approvals exit before the trigger, so it was hardcoded
+    `NOT_TRIGGERED` and `security_pass_required` was never evaluated. Both paths now
+    record `SKIPPED_NO_MODEL_ROUND` and fail closed when the knob demands coverage.
+  - **The two rigor implementations disagreed on env precedence.**
+    `PLINTH_CHECKPOINT_RIGOR=""` (set but empty) plus `PLINTH_CHECKPOINT_EFFORT=xhigh`
+    gave review=deep, writer=standard — so the loop could pay for a dual pass while
+    the checkpoint recorded standard. Set-but-empty is now an explicit clear in both.
+  - **`MANUAL.md` still documented `_EFFORT medium|high|xhigh`** as the preferred
+    interface with BUILD-only dual.
 - **Dual OFF by default — including HARDEN.** Through v5.0.x every
   hardening-phase round wanted a dual first pass. Phase alone is not evidence
   that a second *generalist* opinion earns a paid round. Dual now runs only on

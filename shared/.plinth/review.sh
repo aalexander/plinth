@@ -633,6 +633,22 @@ if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ]; then
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
+# ── NEVER-DEMOTE LEXICON — one source, injected into every fail-open gate ─────
+# Round 29 defeated the previous floor with ORDINARY security wording it did not
+# know: XSS, CSRF, plaintext passwords, exposed encryption keys, account takeover,
+# unquoted shell execution. The lesson is structural, not lexical: a keyword floor
+# tested with its OWN keywords proves nothing. This list is therefore built from
+# vocabulary the floor's author did not choose, and the canary probes it with the
+# reviewer's wording rather than ours.
+# STILL NOT A COMPLETE DEFENCE — see MANUAL "## Noticed": the durable fix is to
+# require a concrete failure_scenario on any blocking finding (schema-enforced),
+# so a defect claim cannot be demoted for lacking words we happened to enumerate.
+SEC_DESC_RE='auth bypass|authorization bypass|authentication bypass|unauthenticated|unauthorized|cross-tenant|broken access|access control|injection|SQL inject|command inject|prompt inject|shell inject|code inject|XSS|cross[- ]site script|CSRF|cross[- ]site request|SSRF|RCE|remote code|path traversal|directory traversal|open redirect|IDOR|insecure direct object|session fixation|session hijack|account takeover|privilege escalat|priv[- ]?esc|secret expos|credential leak|credential expos|hard[- ]?coded (secret|credential|password|token|key)|plain ?text|clear ?text|cleartext|plaintext password|password(s)? (are |is )?(stored )?in (plain|clear)|unsalted|unhashed password|encryption key|private key|api key|access token|bearer token|signing key|unsafe deserial|insecure deserial|deserializ|unquoted|shell metacharacter|eval of|arbitrary (code|command|file)|TOCTOU|race condition on|symlink attack|zip slip|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|tamper|fail[- ]?open|timing attack|constant[- ]time|weak (hash|cipher|random)|insecure random|predictable token'
+# Correctness / data-loss wording that must never be demoted either. Same origin:
+# the reviewer demoted handoff overwrite, checkpoint truncation, retry returning
+# success after failure, and deleting the wrong row through the old belt.
+CORRECTNESS_DESC_RE='data.?loss|overwrit|truncat|clobber|drops? the (previous|prior|existing|stored)|deletes? the wrong|wrong (row|record|file|entry|key|user)|off[- ]by[- ]one|returns? success (after|despite|on)|reports? success (after|despite|on)|swallow(s|ed)? the (error|exception|failure)|silently (ignores?|drops?|skips?|continues)|never (fires|runs|executes)|always (returns|passes|succeeds)|infinite loop|deadlock|corrupt'
+
 # ── L3 security pass trigger (v5.1 S4) ───────────────────────────────────────
 # v5.1 removes dual-as-habit. Dual was mostly being used as "get a second pair of
 # eyes on something security-shaped" — so that need is served DIRECTLY, by one
@@ -684,6 +700,39 @@ security_pass_wanted() {
   fi
 }
 
+
+# Honest security_pass status on the paths that approve WITHOUT a model round
+# (the Tier-0 deterministic floor and the HANDOFF/CHECKPOINT-only ephemera floor).
+# L3 cannot run on either: there is no reviewer round to attach it to. The bug this
+# replaces recorded a flat NOT_TRIGGERED there, which made the documented promise
+# "PLINTH_SECURITY_PASS=1 always forces the pass" false, and left
+# security_pass_required unevaluated. Now a triggered-but-unrunnable pass is
+# recorded as SKIPPED_NO_MODEL_ROUND, and the required knob fails CLOSED rather
+# than approving with coverage that never happened.
+record_no_model_security_pass() {
+  local vf="$1" ctx="$2" sp want why req status tmp
+  [ -f "$vf" ] || return 0
+  sp="$(security_pass_wanted "$RISK_JSON" "${PLINTH_SECURITY_PASS:-}")"
+  want="${sp%% *}"; why="${sp#* }"
+  req="$(bcfg security_pass_required 2>/dev/null || true)"
+  [ -n "$req" ] || [ "${base_has_config:-0}" = 1 ] || req="$(cfg security_pass_required 2>/dev/null || true)"
+  status="NOT_TRIGGERED"
+  [ "$want" = 1 ] && status="SKIPPED_NO_MODEL_ROUND"
+  tmp="$vf.sptmp"
+  if jq --arg s "$status" --arg w "$why" --arg c "$ctx" \
+       '. + {security_pass:{status:$s, trigger:$w, note:$c}}' "$vf" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$vf"
+  else
+    rm -f "$tmp"
+    echo "Plinth review: NOTE — could not record security_pass status on the verdict (${ctx})." >&2
+  fi
+  if [ "$want" = 1 ]; then
+    echo "Plinth review: NOTE — L3 security pass was TRIGGERED (${why}) but this approval has no model round (${ctx}); recorded SKIPPED_NO_MODEL_ROUND, never a silent NOT_TRIGGERED."
+    if [ "$req" = "true" ]; then
+      die_infra "L3 security pass triggered (${why}) with security_pass_required=true, but ${ctx} approves without a model round, so the pass cannot run. Clear the trigger or drop security_pass_required."
+    fi
+  fi
+}
 
 # ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
 # Every BINDING APPROVED (including Tier 0's deterministic one) mints — BEST-EFFORT, see
@@ -976,6 +1025,7 @@ if [ "$RISK" = "0" ]; then
 fi
 # HANDOFF-only floor: verdict already written; mint receipt now that helper exists.
 if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
+  record_no_model_security_pass "$SDIR/verdict.json" "HANDOFF/CHECKPOINT-only ephemera floor"
   mint_receipt 0
   echo "Plinth review: HANDOFF/CHECKPOINT-only change — APPROVED without model (session ephemera)."
   exit 0
@@ -1003,10 +1053,10 @@ if [ "$RISK" = "0" ]; then
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
           round:0, session_id:"", model:"deterministic-floor", review_phase:$rph, risk:$risk,
-          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts,
-          security_pass:{status:"NOT_TRIGGERED", trigger:"Tier 0 — deterministic floor, no model round"}}' \
+          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' \
           > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
+  record_no_model_security_pass "$SDIR/verdict.json" "Tier 0 deterministic floor"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
@@ -1678,30 +1728,48 @@ thrash_ledger_rows() {
   local post="$1" pre="$2" round="$3" phase="${4:-build}" mode="${5:-fresh}"
   [ -f "$post" ] || { printf '[]'; return 0; }
   [ -f "$pre" ] || printf '[]' > "$pre" 2>/dev/null || true
+  # PAIR BY INDEX, NOT BY id. thrash_policy_process_findings rewrites findings with
+  # `.findings |= map(...)`, which preserves order and length exactly — so position
+  # i in the post-policy array is position i in the pre-policy snapshot. Joining on
+  # id instead was WRONG for auditor payloads: auditor findings need not carry ids
+  # and nothing assigns them on that path, so every id-less finding matched the
+  # FIRST id-less snapshot entry and inherited its severity — a probe recorded a
+  # demoted blocker as from:"major". Index pairing has no such failure mode, and a
+  # length mismatch (which would mean the invariant broke) records "unknown" rather
+  # than a confident wrong answer.
   jq -c --slurpfile pre "$pre" --argjson round "$round" \
      --arg phase "$phase" --arg mode "$mode" '
      ($pre[0] // []) as $P
-     | [ .findings[]
-         | select((.description // "") | test("\\[THRASH:"))
-         | . as $f
-         | ((.description // "") | capture("\\[THRASH:(?<c>class:[a-z0-9-]+)") | .c) as $cls
-         | ( $P | map(select(.id == ($f.id // ""))) | first ) as $before
-         | { round: $round, id: ($f.id // ""), file: ($f.file // ""),
+     | (.findings // []) as $F
+     | [ range(0; ($F | length))
+         | . as $i
+         | $F[$i] as $f
+         | select((($f.description) // "") | test("\\[THRASH:"))
+         | ((($f.description) // "") | capture("\\[THRASH:(?<c>class:[a-z0-9-]+)") | .c) as $cls
+         | (if ($P | length) == ($F | length) then $P[$i] else null end) as $before
+         | { round: $round, id: (($f.id) // ""), file: (($f.file) // ""),
              class: $cls,
              from: (($before.severity) // "unknown"),
-             to: ($f.severity // ""),
+             to: (($f.severity) // ""),
              phase: $phase, mode: $mode }
          # Only real transitions: a marker already present from an earlier round
          # (sticky carries descriptions forward) must not re-enter the ledger.
+         # from=="unknown" is kept: an unrecoverable pairing is disclosed, not dropped.
          | select(.from != .to)
        ]' "$post" 2>/dev/null
 }
 
 thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids> [spec_path] [mode]
+  # An UNSET lexicon must fail LOUD. `test(""; "i")` matches EVERY string, so an
+  # empty value here would silently treat all findings as security-shaped — the
+  # failure would look like "demotion stopped working" with no error anywhere.
+  : "${SEC_DESC_RE:?SEC_DESC_RE is unset — refusing to run with an empty never-demote lexicon}"
+  : "${CORRECTNESS_DESC_RE:?CORRECTNESS_DESC_RE is unset — refusing to run with an empty never-demote lexicon}"
   local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" mode="${6:-fresh}" tmp
   [ -f "$f" ] || return 0
   tmp="$(mktemp)"
-  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" --arg mode "$mode" '
+  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" --arg mode "$mode" \
+     --arg secre "$SEC_DESC_RE" --arg corrre "$CORRECTNESS_DESC_RE" '
     def lines($s):
       if ($s == null or $s == "") then []
       else ($s | split("\n") | map(select(length > 0))) end;
@@ -1722,6 +1790,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         ));
     def is_external_security:
         is_security_surface
+        or ((.description // "") | test($secre; "i"))
         or ((.description // "") | test(
           "auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss|privilege escalat"; "i"
         ));
@@ -1751,6 +1820,7 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         or ((.description // "") | test(
           "(data|state|record|entry|entries|item|items|content|history|progress|verdict|receipt|queue)[^.]{0,24}\\b(is|are|was|were|get|gets|got|be) lost\\b"; "i"
         ))
+        or ((.description // "") | test($corrre; "i"))
         or ((.description // "") | test(
           "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not|clicking[[:space:]].*does|no[- ]?op\\b"; "i"
         ));
@@ -2042,14 +2112,24 @@ PY
   fi
   # Env overrides fence (operator / canary). Non-empty invalid → safe default + warn.
   # PLINTH_CHECKPOINT_RIGOR is authoritative; PLINTH_CHECKPOINT_EFFORT is the
-  # deprecated alias and only applies when the new name is unset.
-  local _rigor_env="" _rigor_env_name=""
-  if [ -n "${PLINTH_CHECKPOINT_RIGOR+x}" ] && [ -n "${PLINTH_CHECKPOINT_RIGOR}" ]; then
+  # deprecated alias and only applies when the new name is UNSET.
+  #
+  # "SET BUT EMPTY" IS AN EXPLICIT CLEAR, NOT ABSENCE — and it must mean the same
+  # thing here as in bin/plinth's writer, whose env() documents empty as an
+  # explicit clear. Treating empty as absence (the pre-fix behavior) made the two
+  # implementations disagree: `PLINTH_CHECKPOINT_RIGOR= PLINTH_CHECKPOINT_EFFORT=xhigh`
+  # yielded review=deep but writer=standard, so the loop could request (and pay
+  # for) a dual pass, or fail closed on a missing seat, while the checkpoint
+  # recorded standard. Presence of the KEY is therefore what suppresses the alias.
+  local _rigor_env="" _rigor_env_name="" _rigor_env_present=0
+  if [ -n "${PLINTH_CHECKPOINT_RIGOR+x}" ]; then
     _rigor_env="$PLINTH_CHECKPOINT_RIGOR"; _rigor_env_name="PLINTH_CHECKPOINT_RIGOR"
-  elif [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ] && [ -n "${PLINTH_CHECKPOINT_EFFORT}" ]; then
+    _rigor_env_present=1
+  elif [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ]; then
     _rigor_env="$PLINTH_CHECKPOINT_EFFORT"; _rigor_env_name="PLINTH_CHECKPOINT_EFFORT"
+    _rigor_env_present=1
   fi
-  if [ -n "$_rigor_env" ]; then
+  if [ "$_rigor_env_present" = 1 ] && [ -n "$_rigor_env" ]; then
     local _norm_env
     slice_rigor_warn_deprecated "$_rigor_env"
     _norm_env="$(slice_rigor_normalize "$_rigor_env")"
@@ -2059,6 +2139,9 @@ PY
       SLICE_RIGOR="standard"
       echo "Plinth review: NOTE — ${_rigor_env_name}='${_rigor_env}' invalid; defaulting rigor=standard." >&2
     fi
+  elif [ "$_rigor_env_present" = 1 ]; then
+    # Explicit clear: discard any fence value, do NOT consult the deprecated alias.
+    SLICE_RIGOR="standard"
   fi
   if [ -n "${PLINTH_CHECKPOINT_IMPLEMENT+x}" ] && [ -n "${PLINTH_CHECKPOINT_IMPLEMENT}" ]; then
     case "$PLINTH_CHECKPOINT_IMPLEMENT" in

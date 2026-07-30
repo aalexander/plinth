@@ -100,7 +100,8 @@ Everything between is the model's call.
 - `plinth checkpoint [path]`    — write/refresh root `CHECKPOINT.md` (resume + slice
   routing JSON). Preferred: set plan position env vars when you know them
   (`PLINTH_CHECKPOINT_SLICE_INDEX` + `_TOTAL`, optional `_TITLE`/`_ID`;
-  `_EFFORT` medium|high|xhigh; `_IMPLEMENT` driver|worker|either;
+  `_RIGOR` standard|deep (v5.1 — `_EFFORT` medium|high|xhigh is a deprecated alias,
+  read for one release and never re-emitted); `_IMPLEMENT` driver|worker|either;
   `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
   complete). If index is unset, the writer **seeds from PLAN.md only** (never
   from the spec fallback — all-done and first-open both require PLAN primary):
@@ -113,8 +114,9 @@ Everything between is the model's call.
   present and equals** the plan leaf count, and neither title nor id was
   supplied. Writer-seeded `plan_ref` is `PLAN.md` only when PLAN.md is primary;
   with no PLAN.md, `plan_ref` is null (never invented). `handoff` is an alias;
-  legacy `HANDOFF.md` is a pointer. Effort biases dual first-pass (`xhigh` → dual
-  in BUILD); never a ship gate (see MODELS live wiring).
+  legacy `HANDOFF.md` is a pointer. Rigor biases the OPTIONAL dual first-pass
+  (`deep` → dual in **either** phase; `standard` → no dual, including HARDEN);
+  never a ship gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
   drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
   findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
@@ -940,6 +942,37 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **Round 29 adjudication — DISMISSED (asymptotic, infrastructure that does not
+  exist).** Four findings ask for test depth no fixture can reach, so no amount of
+  work closes them: the dual-pass e2e merge path needs a live two-vendor seat
+  (`canary-checkpoint-routing.sh`); the advise-cancellation matrix needs
+  TERM-ignoring descendants across four vendor CLIs (`bin/plinth:1716`); the fake
+  advise CLIs inspect `FAKE_ADVISE_MODE` rather than argv (`bin/plinth:1837`); and
+  the openPlan / `.NET`-prefix assertions accept substrings rather than exact
+  structure (`canary-plan-progress.sh:425,1284`). They are true, recorded, and
+  non-blocking. The durable answer is not a wider fixture matrix: it is the v6.0
+  change that makes review advisory, so a reviewer can report depth gaps without
+  holding a branch.
+- **Round 29 adjudication — REAL, DEFERRED to a follow-up branch (see
+  `.plinth/RESIDUAL.json`).** Five reproduced plan-progress classifier defects:
+  valid 3/3 cursors rewind to 1/3 for checkbox / plain-bullet / H4 / shall plans;
+  planless fences retain stale id/title/index/total; numbered `Phase N Human
+  sign-off` is admitted by the unconditional `phase\s*\d+` strong-positive path;
+  pure human-gate leaves are treated as coding evidence by the verb override; and a
+  sweep still misses ~1 of 33 named Phase milestones. These affect **dash progress
+  display only** — no ship path, no security boundary, no data loss. Deferred so
+  the 5.1 train stops growing: every added fix enlarged the diff the next round
+  re-read, which is the feedback loop that produced 29 rounds.
+- **The never-demote lexicon is a misuse surface, not just maintenance debt.**
+  `SEC_DESC_RE` / `CORRECTNESS_DESC_RE` in `shared/.plinth/review.sh` were widened
+  after round 29 defeated the previous floor with ordinary wording (XSS, CSRF,
+  plaintext passwords, exposed encryption keys, account takeover, unquoted shell
+  execution). The list is longer now and still not complete, and *that is the
+  point*: a reader who sees "security is never demoted" reasonably believes it,
+  and it is false for any phrasing the author did not enumerate. Sticky's
+  `is_security_desc` was deliberately left NARROW — widening it changed sticky id
+  generation, and round 29 reproduced the hole only in the demotion path. v6.0
+  deletes the whole family rather than lengthening the list.
 - **`thrash_class` is still defined three times in the sticky blocks**
   (`shared/.plinth/review.sh`). v5.1 aligned the vocabularies rather than
   unifying the code: sticky uses its classes for identity/fingerprinting, not for

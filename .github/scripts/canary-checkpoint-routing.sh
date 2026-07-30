@@ -152,6 +152,25 @@ EOF
 done
 pass "review.sh and bin/plinth alias implementations agree on every token"
 
+# ── the one env-precedence case that actually broke (round 29) ───────────────
+# RIGOR set-but-EMPTY plus deprecated EFFORT=xhigh yielded review=deep but
+# writer=standard. "Set but empty" is an explicit clear in both now. Testing the
+# real regression, not a matrix of cases nobody hit.
+awk '/^SLICE_RIGOR=/ {p=1} /^# Review charter phase/ {exit} p {print}' "$REVIEW" > "$TMP/slice_early.sh"
+# shellcheck disable=SC1090
+. "$TMP/slice_early.sh"
+mkdir -p "$TMP/envprobe"
+got_review="$(cd "$TMP/envprobe" && PLINTH_CHECKPOINT_RIGOR= PLINTH_CHECKPOINT_EFFORT=xhigh \
+  bash -c '. "$1"; slice_load_routing 2>/dev/null; printf "%s" "$SLICE_RIGOR"' _ "$TMP/slice_early.sh")"
+[ "$got_review" = standard ] \
+  || fail "RIGOR='' (explicit clear) + EFFORT=xhigh: review.sh said '$got_review', expected standard"
+setup "$TMP/envp"
+got_writer="$(PLINTH_CHECKPOINT_RIGOR= PLINTH_CHECKPOINT_EFFORT=xhigh "$PLINTH" checkpoint . >/dev/null 2>&1
+  sed -n '/```json/,/```/p' CHECKPOINT.md | sed '1d;$d' | jq -r '.rigor' 2>/dev/null)"
+[ "$got_writer" = standard ] \
+  || fail "RIGOR='' + EFFORT=xhigh: writer said '$got_writer', expected standard (implementations disagree)"
+pass "set-but-empty rigor is an explicit clear in both implementations (round-29 regression)"
+
 # implement=worker hint
 setup "$TMP/w"
 PLINTH_CHECKPOINT_SLICE_ID=W1 PLINTH_CHECKPOINT_RIGOR=standard PLINTH_CHECKPOINT_IMPLEMENT=worker \

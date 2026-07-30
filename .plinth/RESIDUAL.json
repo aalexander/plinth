@@ -1,9 +1,45 @@
 {
   "schema": "plinth.residual/v1",
-  "bound": false,
+  "bound": true,
   "sha": "",
   "by": "austin",
-  "ts": "2026-07-29T16:14:15Z",
-  "note": "5.0.7 residual zero-debt: classifier mixed-phrase + production-path canaries closed; unbound",
-  "findings": []
+  "ts": "2026-07-30T04:10:00Z",
+  "note": "v5.1.0 ship-bias train: operator ratified deferring 5 reproduced plan-progress classifier defects (round 29) to a follow-up branch. Dash progress display only \u2014 no ship path, security boundary, or data loss. Deferred to stop the diff-growth feedback loop that produced 29 rounds; review treated as ADVICE per the v6 design.",
+  "findings": [
+    {
+      "id": "R29-1",
+      "file": "bin/plinth",
+      "line": 6505,
+      "severity": "major",
+      "desc": "valid 3/3 plan cursors rewind to 1/3 for checkbox, plain-bullet, H4 and shall plans; planless fences retain stale id/title/index/total"
+    },
+    {
+      "id": "R29-2",
+      "file": "bin/plinth",
+      "line": 5526,
+      "severity": "major",
+      "desc": "numbered 'Phase N Human sign-off' admitted by the unconditional phase\\s*\\d+ strong-positive path"
+    },
+    {
+      "id": "R29-3",
+      "file": "bin/plinth",
+      "line": 5548,
+      "severity": "major",
+      "desc": "pure human-gate leaves counted as coding progress because the verb override treats verbs as coding evidence"
+    },
+    {
+      "id": "R29-4",
+      "file": "bin/plinth",
+      "line": 5536,
+      "severity": "major",
+      "desc": "milestone sweep still misses ~1 of 33 named genuine Phase milestones"
+    },
+    {
+      "id": "R29-5",
+      "file": ".github/scripts/canary-plan-progress.sh",
+      "line": 425,
+      "severity": "minor",
+      "desc": "openPlan and .NET-prefix assertions accept substrings rather than exact structure"
+    }
+  ]
 }

@@ -1,9 +1,9 @@
-# Plan: Checkpoint + plan progress + slice effort (model routing)
+# Plan: Checkpoint + plan progress + slice rigor (dual-pass routing)
 
 Status: APPROVED_WITH_CHANGES (claude fable + codex) — implementing v1 · Product cut after residual closeout (#58)
 
 ## Goal
-Make plan position, resume state, and per-slice routing (effort + implement seat)
+Make plan position, resume state, and per-slice routing (rigor + implement seat)
 first-class, machine-readable, and visible on the dashboard — as extensions of
 **generalized model routing policy** (MODELS.md), not a separate ops product.
 

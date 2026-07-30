@@ -36,7 +36,7 @@ Dual OFF by default; risk-triggered L3 security; thrash demotes only allowlisted
 - **APPROVED possible here** for non-security-heavy work when open majors/blockers = 0.
 
 ### HARDEN / PR intent
-- **Dual: OFF default.** ON only `effort=xhigh` **or** `PLINTH_DUAL_PASS=1` / `--dual` equivalent.
+- **Dual: OFF default.** ON only `rigor=deep` **or** `PLINTH_DUAL_PASS=1` / `--dual` equivalent.
 - **Do not** dual merely because phase=hardening.
 - Dual **requested** (xhigh or override) + auditor missing → **BLOCK** or explicit `--ack-no-dual` (not silent log-only). Default dual-skip (wanted=false) stays log-only.
 - **L3 security:** if risk-classify security-sensitive **or** operator flag → one security-focused pass; fix security majors only; remint APPROVED@HEAD if needed.
@@ -85,14 +85,14 @@ Thrash text classifiers that already exist must be **tightened** to these class 
 
 ## Dual matrix (5.1 — replace HARDEN-always)
 
-`slice_dual_from_effort effort rphase override`:
+`slice_dual_from_rigor rigor rphase override`:
 
 | Condition | dual_wanted |
 |-----------|-------------|
 | `PLINTH_DUAL_PASS=1` / `--dual` | 1 |
 | `PLINTH_DUAL_PASS=0` | 0 |
-| `effort=xhigh` | 1 |
-| else (including HARDEN + medium/high) | **0** |
+| `rigor=deep` | 1 |
+| else (including HARDEN + standard) | **0** |
 
 Eligibility unchanged: fresh · r1 · Tier-2 · cross-vendor audit seat for actual run.  
 `dual_wanted` remains **policy desire** (stamp note).  
@@ -146,7 +146,7 @@ Update canaries: drop “HARDEN always dual”; assert OFF default + xhigh/overr
 - Residual stays **unbound** unless binding a real deferred major class with human note.
 
 ### S1 — Dual OFF default
-- Change `slice_dual_from_effort`: remove HARDEN always-on.
+- Change `slice_dual_from_rigor`: remove HARDEN always-on.
 - Messages, MODELS, canary-checkpoint-routing matrix.
 - Requested dual + missing auditor → block or ack path + canary.
 
@@ -215,7 +215,7 @@ because this file is the spec for the work.
 
 ## Success criteria
 
-1. `slice_dual_from_effort high hardening` → **0**; `xhigh build` → **1**; override 0/1 respected.  
+1. `slice_dual_from_rigor standard hardening` → **0**; `deep build` → **1**; override 0/1 respected.  
 2. Free canary min set ALL PASS; dual matrix canary updated.  
 3. Fabricated security major text is **not** thrash-demoted.  
 4. Coverage-asymp / dual-canary-depth majors **are** demoted in BUILD (and HARDEN thrash class path as designed).  

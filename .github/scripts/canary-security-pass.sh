@@ -158,4 +158,55 @@ if '[ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]' not in src:
 PY
 pass "no false concur: UNAVAILABLE recorded, required-knob fails closed, base-config read"
 
+# ── (7) the no-model approval paths must not silently claim NOT_TRIGGERED ───────
+# Round 29 walked straight past the trigger: Tier-0 and HANDOFF/CHECKPOINT-only
+# approvals exit BEFORE security_pass_wanted, so PLINTH_SECURITY_PASS=1 — documented
+# as always forcing L3 — was hardcoded NOT_TRIGGERED and security_pass_required was
+# never evaluated. The canary previously tested only the pure helper, which is why
+# it passed. These assertions target the INTEGRATION, not the helper.
+awk '/^record_no_model_security_pass\(\)/ {p=1} p {print} p && /^}$/ {exit}' "$REVIEW" > "$TMP/nomodel.sh"
+[ -s "$TMP/nomodel.sh" ] || fail "record_no_model_security_pass not extractable — the no-model paths would silently claim NOT_TRIGGERED again"
+python3 - "$REVIEW" <<'PY2'
+from pathlib import Path
+import sys
+src = Path(sys.argv[1]).read_text()
+# Both no-model approval paths must call the recorder BEFORE minting, so the verdict
+# and the receipt disclose the same thing.
+for ctx in ("Tier 0 deterministic floor", "HANDOFF/CHECKPOINT-only ephemera floor"):
+    if f'record_no_model_security_pass "$SDIR/verdict.json" "{ctx}"' not in src:
+        raise SystemExit(f"no-model path missing the honest security_pass recorder: {ctx}")
+i_t0 = src.index('record_no_model_security_pass "$SDIR/verdict.json" "Tier 0 deterministic floor"')
+i_m0 = src.index("mint_receipt 0", i_t0)
+if not i_t0 < i_m0:
+    raise SystemExit("Tier-0 recorder must run before mint_receipt")
+if 'security_pass:{status:"NOT_TRIGGERED", trigger:"Tier 0' in src:
+    raise SystemExit("Tier-0 still hardcodes NOT_TRIGGERED instead of evaluating the trigger")
+if "SKIPPED_NO_MODEL_ROUND" not in src:
+    raise SystemExit("a triggered-but-unrunnable pass must record SKIPPED_NO_MODEL_ROUND")
+if "security_pass_required=true, but ${ctx} approves without a model round" not in src:
+    raise SystemExit("security_pass_required must fail closed on the no-model paths")
+PY2
+[ "$?" = 0 ] || fail "no-model integration wiring missing"
+# Drive the real recorder: a forced pass on a no-model path records SKIPPED, not NOT_TRIGGERED.
+NM=$(mktemp -d)
+(
+  set -euo pipefail
+  cd "$NM"
+  # shellcheck disable=SC1090
+  . "$TMP/trig.sh"; . "$TMP/nomodel.sh"
+  bcfg() { :; }; cfg() { :; }; base_has_config=1
+  die_infra() { echo "DIE:$*"; exit 9; }
+  RISK_JSON='{"tier":0,"reasons":["empty diff"]}'
+  echo '{"verdict":"APPROVED","round":0}' > v.json
+  PLINTH_SECURITY_PASS=1 record_no_model_security_pass v.json "Tier 0 deterministic floor" >/dev/null
+  st=$(jq -r '.security_pass.status' v.json)
+  [ "$st" = "SKIPPED_NO_MODEL_ROUND" ] || { echo "forced pass on a no-model path recorded '$st', expected SKIPPED_NO_MODEL_ROUND"; exit 1; }
+  # untriggered stays NOT_TRIGGERED
+  echo '{"verdict":"APPROVED","round":0}' > v2.json
+  record_no_model_security_pass v2.json "Tier 0 deterministic floor" >/dev/null
+  st2=$(jq -r '.security_pass.status' v2.json)
+  [ "$st2" = "NOT_TRIGGERED" ] || { echo "untriggered recorded '$st2', expected NOT_TRIGGERED"; exit 1; }
+) || fail "no-model security_pass recorder behaves incorrectly"
+pass "no-model approval paths record SKIPPED_NO_MODEL_ROUND, never a silent NOT_TRIGGERED"
+
 echo "canary-security-pass: ALL PASS"
