@@ -1,5 +1,55 @@
 # Plinth changelog
 
+## v5.2.0 — the spec goes by reference; help is side-effect free — July 30, 2026
+
+### The spec goes BY REFERENCE, not by value
+
+The primary reviewer runs `codex exec --sandbox read-only` **in the repo** — it can
+already READ files. The only reason the spec was ever pasted into the prompt is that the
+working-tree copy is PR-modifiable, and a PR must not ship the spec that judges it. That
+argues for a **base copy**, not an inline copy.
+
+The loop now materializes the **ratified base spec** per round and hands the reviewer its
+**path** plus a heading outline, instructing it to read the file when the diff touches
+specified behaviour and never to read the working-tree copy.
+
+- **87,500 → 1,218 bytes in the prompt (23k → ~0.3k tokens, 99% off)**, and unlike an
+  excerpt **nothing is withheld** — the complete ratified text is on disk.
+- **It also restores thread resumption.** Observed in the v5.1.1 loop: `prior round
+  processed 2731788 input tokens (> 650000) — thread too large to resume; running a
+  verify round`. The payload exceeded the resume threshold, so every round started fresh
+  and re-read everything — the mechanism that makes round 2+ cheap was disabled *by the
+  payload size itself*.
+- The **isolated auditor** (empty cwd, tools forbidden, so it cannot open a file) gets
+  the heading **outline only**. Spec conformance is the primary's job; the auditor is a
+  second opinion on what the primary missed.
+- Measured with the real functions and canary-locked: the materialized copy is the
+  **base** spec even when the PR tampers with the working-tree one.
+
+### Deleted: the excerpt machinery
+
+An earlier v5.2 attempt compressed the spec with a relevance-selecting excerpt. Review
+round 2 found four defects in it — it silently dropped every spec form without
+column-zero ATX headings (YAML, JSON, plain text, Setext), treated `#` inside fenced code
+as a heading, truncated its own selector at 30 tokens, and advertised an escape-hatch
+prefix that no code implemented. **All four belonged to a workaround for pasting the spec
+at all, so the machinery was deleted rather than repaired.** A canary now fails if it
+returns: a compressor for a payload we no longer send is a workaround, not a feature.
+
+### Help is side-effect free (upstream #63)
+
+`plinth harden --help` ran the pathless harden: flipped BUILD→HARDEN and wrote three
+artifacts. `-h`/`--help` is intercepted ahead of all dispatch so no command can opt out,
+exits 0 so `plinth x --help && …` works, and leaves everything after `--` to the wrapped
+command.
+
+**The value-skip list is PER COMMAND.** A global list let `plinth harden --note --help`
+swallow the help flag and **execute harden** — reintroducing #63 through its own fix
+(caught by review round 2). Only the command that owns an option skips its value;
+`harden --note --help`, `build -m --help`, `checkpoint --port --help`,
+`plan . --title --help` and `lifecycle-migrate --body-file --help` are all canary-locked
+to print usage.
+
 ## v5.1.0 — ship-bias: dual is optional rigor — July 29, 2026
 
 Ship bias cuts sequential optional opinions, not the floor. The mandatory layers

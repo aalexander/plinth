@@ -392,21 +392,74 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # with no extension restriction, and .md/.rst/.txt-only would silently drop
 # YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
 # the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
-inline_spec() {
-  if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH"; return; fi
-  if [ -d "$SPEC_PATH" ]; then
-    find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
-      grep -Iq . "$sf" 2>/dev/null || continue
-      echo "--- $sf ---"; cat "$sf"
-    done
-    return
+# ── SPEC BY REFERENCE, NOT BY VALUE (v5.2) ───────────────────────────────────
+# The primary reviewer runs `codex exec --sandbox read-only` IN the repo: it can
+# already READ files. The ONLY reason the spec was ever pasted into the prompt is that
+# the WORKING-TREE copy is PR-modifiable — a PR must not ship the spec that judges it.
+# That argues for a BASE copy, not for an inline copy.
+#
+# So: materialize the ratified base spec to a file and hand over its PATH. Cost drops
+# from ~23k tokens re-sent on every agent turn (~60x per round) to a one-line pointer
+# plus a heading outline — and unlike an excerpt, NOTHING is withheld, so the "a
+# requirement never reached the reviewer" fail-open does not exist on this path at all.
+# The excerpt path (below) remains for the AUDITOR, which runs from an empty directory
+# with tools forbidden and so genuinely cannot read anything.
+#
+# Per-ROUND directory so nothing is ever deleted: no recursive removal of a computed
+# path anywhere in the loop.
+materialize_base_spec() {  # <round> -> abs path on stdout, or nothing
+  local dest="$SDIR/base-spec-${1:-0}" name
+  mkdir -p "$dest" 2>/dev/null || return 0
+  if git cat-file -e "${base_tip}:${SPEC_PATH}" 2>/dev/null; then
+    name="$(basename "$SPEC_PATH")"
+    git show "${base_tip}:${SPEC_PATH}" > "$dest/$name" 2>/dev/null || return 0
+    printf '%s' "$dest/$name"; return 0
   fi
-  echo "(spec path not found: ${SPEC_PATH})"
+  if git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" >/dev/null 2>&1; then
+    git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" 2>/dev/null | while IFS= read -r f; do
+      mkdir -p "$dest/$(dirname "$f")" 2>/dev/null || continue
+      git show "${base_tip}:${SPEC_PATH}/$f" > "$dest/$f" 2>/dev/null || true
+    done
+    printf '%s' "$dest"; return 0
+  fi
+  return 0
 }
 
-# Inline GOAL.md for the tools-forbidden auditor. The reviewer contract
-# (.plinth/reviewer.md) carries the metric-integrity rules; the auditor also needs the GOAL's actual eval/score contract to
-# judge metric gaming, and it cannot read files. Pure fn -> testable.
+# One line per heading: tells the reviewer WHAT exists so it can decide whether to open
+# the file. ~300 tokens for an 87KB manual, versus ~23k to paste the whole thing.
+_spec_outline_for_prompt() {
+  local f="${BASE_SPEC_PATH:-}"
+  [ -n "$f" ] || { echo "(base spec unavailable — the loop could not materialize it; treat the spec as UNKNOWN and say so)"; return; }
+  if [ -f "$f" ]; then grep -nE '^#{1,6} ' "$f" 2>/dev/null | head -200; return; fi
+  if [ -d "$f" ]; then find "$f" -type f 2>/dev/null | sort | head -100; return; fi
+  echo "(base spec unavailable)"
+}
+
+# The spec reaches the PRIMARY by reference (materialize_base_spec, above): it runs
+# read-only IN the repo and can open the file, so nothing needs to be pasted into a
+# context that is re-sent every agent turn.
+#
+# The AUDITOR is different: it runs from an EMPTY directory with tools forbidden, so it
+# cannot open anything. It gets the heading OUTLINE only. Spec conformance is the
+# primary reviewer's job — the auditor is a second opinion on what the primary missed
+# (and, for L3, a security pass), neither of which needs the product requirements
+# pasted in full.
+#
+# An earlier v5.2 attempt compressed the spec with a relevance-selecting excerpt. It is
+# deleted rather than repaired: review round 2 found that it silently dropped every
+# spec form without column-zero ATX headings (YAML, JSON, plain text, Setext), treated
+# `#` inside fenced code as a heading, truncated its own selector at 30 tokens, and
+# advertised an excerpt escape-hatch prefix that no code implemented. All four defects
+# belong to machinery that only existed to work around pasting the spec at all.
+inline_spec() {
+  if [ -n "${BASE_SPEC_PATH:-}" ]; then
+    echo "(heading outline only — the auditor runs isolated and cannot open files;"
+    echo " spec CONFORMANCE is the primary reviewer's job, not this seat's)"
+    _spec_outline_for_prompt
+    return
+  fi
+  echo "(canonical spec unavailable to this isolated seat — treat spec conformance as UNVERIFIED here and say so)"
+}
 inline_goal() {
   [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
   echo "--- GOAL.md ---"; cat GOAL.md
@@ -2403,6 +2456,9 @@ ${inc}${evidence}${commits}"
     esac
   fi
   [ "$phase_src" = "env" ] || phase_src="file_or_default"
+  # Materialize the ratified base spec so the reviewer can READ it on demand
+  # instead of carrying it in every turn of its context.
+  BASE_SPEC_PATH="$(materialize_base_spec "$r")"
   # Stamp slice routing on the request (audit trail; never blocks).
   stamp_request_json "$SDIR" "$r" "$sha" "$baseref" "$m" "$SPEC_PATH" "$rphase" "$phase_src"
 
@@ -2845,8 +2901,15 @@ Output ONLY a JSON object (no prose, no markdown fences):
 === REVIEWER RULES (mandatory project blocking policy — apply these) ===
 $(inline_contract)
 
-=== CANONICAL SPEC (${SPEC_PATH}) ===
-$(inline_spec)
+=== CANONICAL SPEC (${SPEC_PATH}) — BY REFERENCE ===
+The RATIFIED spec (from the base ref, NOT this PR's working tree) is written to:
+  ${BASE_SPEC_PATH:-<unavailable>}
+READ IT with your own tools whenever the diff touches behaviour the spec constrains,
+and say in your summary whether you needed to. Do NOT read ${SPEC_PATH} from the
+working tree: that copy is PR-modifiable, and a PR must not ship the spec that judges
+it. NOTHING is withheld from you here — the complete ratified text is at that path.
+Its heading outline, so you can judge whether to open it:
+$(_spec_outline_for_prompt)
 
 === OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)

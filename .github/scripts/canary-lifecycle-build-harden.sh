@@ -1287,5 +1287,65 @@ bash -c '
 ' || fail "plan seat product hollow checks failed"
 pass "residual-zero: plan seat product hollow/non-hollow path"
 
+# ── upstream #63: --help must be SIDE-EFFECT FREE for every command ──────────
+# `plinth harden --help` used to fall through to dispatch: it ran the pathless
+# harden, flipped BUILD→HARDEN, and wrote phase-<slug>.json + CHECKPOINT.md +
+# HANDOFF.md. A help flag that mutates the project is a trap — the operator asking
+# "what does this do?" is exactly the one who does not want it done. Digest the
+# whole tree before and after; byte-identical is the assertion, not "looks fine".
+# Every step is EXPLICITLY checked; nothing relies on errexit. A subshell on the
+# LEFT of `|| fail` runs with errexit suppressed, so `set -euo pipefail` inside it
+# does not abort on a failing `cd`/`git`/`plinth init` — the setup could collapse and
+# the later assertions would still "pass". Found by review (round 1, v5.1.1).
+H63="$TMP/h63"   # under $TMP so the EXIT trap removes it
+mkdir -p "$H63"
+h63_rc=0
+(
+  # Every step explicitly checked: a subshell on the LEFT of `||` runs with errexit
+  # suppressed, so `set -e` inside would NOT abort a failing cd/git/init and the
+  # assertions could "pass" on collapsed setup (review finding, v5.1.1 r1).
+  cd "$H63" || exit 1
+  git init -q -b main . >/dev/null 2>&1 || exit 1
+  git config user.email t@t || exit 1; git config user.name t || exit 1
+  "$PLINTH" init . >/dev/null 2>&1 || exit 1
+  echo s > SPEC.md || exit 1; git add -A || exit 1; git commit -qm base >/dev/null || exit 1
+  git checkout -qb feat >/dev/null 2>&1 || exit 1
+  # Portable digest: path + content for every tracked-or-untracked regular file, plus
+  # symlink targets. No GNU-only `-printf` (that silently produced nothing on BSD find
+  # and would have made this vacuous). `.git` excluded because git rewrites index
+  # metadata for reasons unrelated to plinth.
+  digest() {
+    { find . -path ./.git -prune -o -type f -print 2>/dev/null | sort | xargs shasum 2>/dev/null
+      find . -path ./.git -prune -o -type l -print 2>/dev/null | sort | while read -r l; do
+        printf 'link %s -> %s\n' "$l" "$(readlink "$l")"; done
+    } | shasum | cut -d" " -f1
+  }
+  before="$(digest)" || exit 1
+  case "$before" in ''|*[!0-9a-f]*) echo "digest empty/invalid — assertion would be vacuous"; exit 1 ;; esac
+  for c in harden build plan next checkpoint handoff residual lifecycle-migrate phase; do
+    out="$("$PLINTH" "$c" --help 2>&1)" || { echo "$c --help exited nonzero"; exit 1; }
+    case "$out" in Usage:*) ;; *) echo "$c --help did not print usage — it RAN the command"; exit 1 ;; esac
+    out2="$("$PLINTH" "$c" -h 2>&1)" || { echo "$c -h exited nonzero"; exit 1; }
+    case "$out2" in Usage:*) ;; *) echo "$c -h did not print usage"; exit 1 ;; esac
+  done
+  after="$(digest)" || exit 1
+  [ "$before" = "$after" ] || { echo "--help mutated the project tree"; exit 1; }
+  # An option VALUE that looks like a help flag must stay a value — and the skip list
+  # must be PER COMMAND. A global list let `plinth harden --note --help` swallow the
+  # --help and EXECUTE harden, reintroducing #63 through its own fix (round 2).
+  vout="$("$PLINTH" residual . --note --help 2>&1)" || true
+  case "$vout" in Usage:*) echo "an option VALUE (--note --help) was read as a help request"; exit 1 ;; esac
+  [ -f .plinth/RESIDUAL.json ] || { echo "residual --note --help printed no usage but also wrote nothing — the value path did not run"; exit 1; }
+  for probe in "harden --note" "build -m" "checkpoint --port" "plan . --title" "lifecycle-migrate --body-file"; do
+    # shellcheck disable=SC2086
+    bout="$("$PLINTH" $probe --help 2>&1)" || true
+    case "$bout" in Usage:*) ;; *) echo "'$probe --help' did NOT print usage — a foreign option value swallowed the help flag and the command RAN"; exit 1 ;; esac
+  done
+  # bad usage still exits 1 (only an EXPLICIT help request is a success)
+  rc=0; "$PLINTH" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || { echo "no-args usage should exit 1, got $rc"; exit 1; }
+) || h63_rc=$?
+[ "$h63_rc" = 0 ] || fail "--help is not side-effect free (upstream #63; rc=$h63_rc)"
+pass "--help/-h side-effect free for every phase-changing command (upstream #63)"
 
 echo "canary-lifecycle-build-harden: ALL PASS"
