@@ -1782,7 +1782,7 @@ $question"
       -e 's/not authenticated\.?//g' \
       -e 's/not signed in//g' \
       -e 's/login required//g' \
-      -e 's/\bunauthorized\b//g' \
+      -e 's/unauthorized//g' \
       -e 's/unauthorized \(401\)//g' \
       -e 's/401 unauthorized//g' \
       -e 's/error:?//g' \
@@ -5480,14 +5480,16 @@ def is_coding_section(ht: str) -> bool:
     """True only for sections that are operational coding milestones."""
     if not ht:
         return False
-    # Non-coding context wins over bare Phase/Release titles.
+    # Non-coding context on Phase/Release titles only when NO coding hint
+    # (so "Phase risk-scoring API" stays coding; "Phase 0 risks" does not).
     if re.search(
         r"\b(risk|approval|checklist|readiness|design decision|tradeoff|"
         r"human approval|deployment checklist|operational readiness|required human|"
         r"non-?goal|freeze|ratification|background|context)\b",
         ht, re.I,
     ) and not re.search(r"\bbuild (status|order)\b|\bslice\s*\d+\b", ht, re.I):
-        return False
+        if not CODING_ITEM_HINT_RE.search(ht):
+            return False
     # Strong positive: module build status / build order / Slice N / Phase N.
     if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b|\bphase\s*\d+\b", ht, re.I):
         return True
