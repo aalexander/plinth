@@ -173,6 +173,11 @@ jobs:
           set -euo pipefail
           # Dual is off by default in v5.1; this is the coverage that replaces it.
           ./.github/scripts/canary-security-pass.sh
+      - name: v6 adjudication receipt canary
+        run: |
+          set -euo pipefail
+          # The audit trail is the product here; this proves it cannot be hollowed out.
+          ./.github/scripts/canary-v6-adjudication.sh
       - name: Spec payload bound canary
         run: |
           set -euo pipefail

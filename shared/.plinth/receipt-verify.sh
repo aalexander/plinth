@@ -79,6 +79,25 @@ jq -e '
   # that is present, it does not require one to exist. When present, every entry
   # must name an allowlisted-looking class (class:*) and a real from→to pair, so a
   # receipt cannot disclose demotions in a form the reader cannot audit.
+  # v6: `basis` distinguishes approved (a model blessed it) from adjudicated (a review
+  # ran and the driver dispositioned every open finding on the record). Absent => the
+  # pre-v6 meaning, "approved" — old receipts keep verifying.
+  and ((has("basis") | not) or (.basis | IN("approved","adjudicated")))
+  # An ADJUDICATED receipt must carry dispositions that a human can audit. This is the
+  # whole point: a bad dismissal becomes VISIBLE rather than impossible. A dismissal or
+  # deferral with no stated reason is not a judgement, it is a shrug — rejected.
+  and (if (.basis? == "adjudicated") then
+        (.adjudications | type == "array" and length > 0 and (
+          map(
+            (type == "object")
+            and (.id | type == "string" and length > 0)
+            and (.severity | type == "string" and length > 0)
+            and (.disposition | type == "string" and IN("fixed","dismissed","deferred"))
+            and (if (.disposition == "dismissed" or .disposition == "deferred")
+                 then (.reason | type == "string" and length >= 20)
+                 else true end)
+          ) | all))
+       else true end)
   and (if has("demotions") then
         (.demotions | type == "array" and (
           map(
@@ -132,7 +151,19 @@ subj=$(printf 'plinth-review-subject-v1\0%s\0%s\0%s\0%s\0%s\0' \
 [ "$(r subject_digest)" = "sha256:${subj}" ] || fail "subject digest mismatch — receipt was not minted for this exact subject"
 
 # ── 7. Verdict ───────────────────────────────────────────────────────────────
-[ "$(r verdict)" = "APPROVED" ] || fail "receipt verdict is '$(r verdict)', not APPROVED"
+# v6: APPROVED (a model approved) and ADJUDICATED (a review ran; the driver
+# dispositioned every open finding with a stated reason) are both valid bases for a
+# ship. Anything else is not.
+_rv="$(r verdict)"
+case "$_rv" in
+  APPROVED) ;;
+  ADJUDICATED)
+    [ "$(r basis)" = "adjudicated" ] || fail "receipt verdict is ADJUDICATED but basis is '$(r basis)'"
+    _nadj="$(jq -r '.adjudications | length' "$RECEIPT" 2>/dev/null || echo 0)"
+    [ "$_nadj" -gt 0 ] || fail "ADJUDICATED receipt carries no adjudications"
+    ;;
+  *) fail "receipt verdict is '$_rv' — expected APPROVED or ADJUDICATED" ;;
+esac
 
 # ── 8. Override disclosure: exact tuple-set equality with the PR body ───────
 # The PR body must carry one disclosure line per ledger tuple, in the canonical
@@ -154,5 +185,9 @@ if [ "$lset" != "$bset" ]; then
   fail "override disclosure mismatch: the PR body's PLINTH-OVERRIDE lines must equal the receipt ledger exactly"
 fi
 
-echo "RECEIPT OK: APPROVED at ${HEAD_SHA} (round $(r round), subject sha256:${subj}, $(jq -r '.override_ledger | length' "$RECEIPT") override(s) disclosed)"
+if [ "$_rv" = "ADJUDICATED" ]; then
+  echo "RECEIPT OK: ADJUDICATED at ${HEAD_SHA} (round $(r round), $(jq -r '.adjudications | length' "$RECEIPT") finding(s) dispositioned: $(jq -r '[.adjudications[].disposition] | group_by(.) | map("\(length) \(.[0])") | join(", ")' "$RECEIPT"), subject sha256:${subj}, $(jq -r '.override_ledger | length' "$RECEIPT") override(s) disclosed)"
+else
+  echo "RECEIPT OK: APPROVED at ${HEAD_SHA} (round $(r round), subject sha256:${subj}, $(jq -r '.override_ledger | length' "$RECEIPT") override(s) disclosed)"
+fi
 exit 0

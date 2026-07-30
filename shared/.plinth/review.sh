@@ -1040,12 +1040,33 @@ mint_receipt() {  # mint_receipt <round>
     sp_status="$(jq -r '.security_pass.status // "UNKNOWN"' "$SDIR/verdict.json" 2>/dev/null || echo UNKNOWN)"
     [ -n "$sp_status" ] || sp_status="UNKNOWN"
   fi
+  # ── v6: the receipt asserts WHAT HAPPENED, not that a model blessed it ─────
+  # `basis` distinguishes the two honest ways a change can be ready:
+  #   approved    — a reviewer returned APPROVED with no open blockers/majors
+  #   adjudicated — a review RAN and the driver dispositioned every open finding
+  #                 on the record (fixed / dismissed+reason / deferred+reason)
+  # Both are auditable; only the second admits that the reviewer is a fallible
+  # opinion rather than an authority. A bad dismissal is now VISIBLE on the
+  # receipt, where before the driver's only options were comply or grind — and
+  # grinding is what produced a 30-round loop.
+  local basis="approved" adjudications="[]" adjfile="$SDIR/adjudications.json"
+  if [ -f "$adjfile" ]; then
+    adjudications="$(jq -c '.adjudications // []' "$adjfile" 2>/dev/null)" || adjudications=""
+    if [ -z "$adjudications" ]; then
+      echo "Plinth review: NOTE — receipt NOT minted: ${adjfile} exists but could not be parsed. Minting without it would claim adjudication that is not recorded."
+      return 0
+    fi
+    basis="adjudicated"
+  fi
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
     --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
     --argjson round "$mround" --argjson ledger "$ledger" --argjson ack "$ack_no_dual" \
     --argjson demotions "$demotions" --arg sp "$sp_status" \
+    --arg basis "$basis" --argjson adj "$adjudications" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
-      base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
+      base_ref:$br, merge_base_sha:$mb, subject_digest:$sd,
+      verdict:(if $basis=="approved" then "APPROVED" else "ADJUDICATED" end),
+      basis:$basis, adjudications:$adj,
       round:$round, override_ledger:$ledger, ack_no_dual:$ack,
       demotions:$demotions, security_pass:$sp}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
   # -f replaces THIS commit's note on re-approval; other commits' notes are

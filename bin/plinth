@@ -50,6 +50,8 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
        plinth residual [<path>] [--bind] [--note t] [--from-findings f]
                                                      (human residual land: draft/bind RESIDUAL.json @ HEAD)
+       plinth adjudicate [<path>] [--show|--all-fixed|--file d.json]
+                                                     (v6: disposition every open finding on the record)
        plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit "${1:-1}"; }
 [ $# -ge 1 ] || usage
 # HELP IS SIDE-EFFECT FREE, FOR EVERY COMMAND (upstream #63). `plinth harden --help`
@@ -85,6 +87,19 @@ unset _a _skip _valflags
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
 PLAN_DEEP=0
+# plinth adjudicate flags (v6)
+ADJ_MODE=show; ADJ_FILE=""
+if [ "$cmd" = "adjudicate" ]; then
+  for _f in "$@"; do
+    case "$_f" in
+      --show) ADJ_MODE=show ;;
+      --all-fixed) ADJ_MODE=all-fixed ;;
+      --file) ADJ_MODE=file ;;
+      *.json) [ "$ADJ_MODE" = file ] && ADJ_FILE="$_f" ;;
+    esac
+  done
+  case "$target" in --*) target="." ;; esac
+fi
 if [ "$cmd" = "plan" ]; then
   shift
   if [ "${1:-}" = "--deep" ]; then PLAN_DEEP=1; shift; fi
@@ -7650,8 +7665,84 @@ run_residual() {
   echo "  note: $note"
 }
 
+
+# ── plinth adjudicate (v6) ───────────────────────────────────────────────────
+# The v6 loop: the reviewer ADVISES, the driver ADJUDICATES on the record, CI GATES.
+# This writes the adjudication record the receipt carries. It exists because the
+# alternative — a driver whose only options are comply or grind — is what produced a
+# 30-round loop, and because a dismissal with a stated reason is strictly more
+# auditable than a finding silently argued down across paid rounds.
+#
+# Refuses to leave any open finding unaccounted for. That is the whole guarantee:
+# you may dismiss anything, but you may not IGNORE anything.
+#
+# Usage:
+#   plinth adjudicate [path] --show            list open findings needing disposition
+#   plinth adjudicate [path] --file d.json     apply dispositions from a file
+#   plinth adjudicate [path] --all-fixed       every open finding was fixed by the diff
+run_adjudicate() {
+  local root="${1:-$target}" mode="${ADJ_MODE:-show}" src="${ADJ_FILE:-}"
+  root="${root:-.}"
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "plinth adjudicate: not a git repo: $root" >&2; exit 1; }
+  local slug sdir latest
+  slug="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null | tr '/ ' '--')"
+  [ -n "$slug" ] || { echo "plinth adjudicate: detached HEAD — adjudication binds to a branch" >&2; exit 1; }
+  sdir="$root/.plinth/session/review/$slug"
+  [ -d "$sdir" ] || { echo "plinth adjudicate: no review session for '$slug' — a review must have RUN before you can adjudicate it (that is the point: advice first, then judgement)" >&2; exit 1; }
+  latest="$(ls "$sdir"/findings-*.json 2>/dev/null | sed 's/.*findings-//; s/\.json//' | sort -n | tail -1)"
+  [ -n "$latest" ] || { echo "plinth adjudicate: no findings in $sdir — nothing to adjudicate" >&2; exit 1; }
+  local ff="$sdir/findings-$latest.json"
+
+  local open_json
+  open_json="$(jq -c '[.findings[] | select(.status=="open" and (.severity=="blocker" or .severity=="major"))
+                       | {id: (.id // ((.file//"") + ":" + ((.line//0)|tostring))), file:(.file//""), severity:.severity, description:((.description//"")[0:160])}]' "$ff" 2>/dev/null)"     || { echo "plinth adjudicate: could not read $ff" >&2; exit 1; }
+  local n; n="$(printf '%s' "$open_json" | jq 'length')"
+
+  if [ "$mode" = show ]; then
+    echo "Open blocking findings from round $latest ($n):"
+    printf '%s' "$open_json" | jq -r '.[] | "  [\(.severity)] \(.id)\n      \(.file) — \(.description)"'
+    echo
+    echo "Disposition each one, then re-run with --file:"
+    echo '  {"adjudications":[{"id":"…","severity":"major","disposition":"fixed|dismissed|deferred","reason":"…"}]}'
+    echo "  fixed     — the diff addresses it (no reason required)"
+    echo "  dismissed — you judge it not a defect; reason REQUIRED (>=20 chars), and it lands on the receipt"
+    echo "  deferred  — real, but not this train; reason REQUIRED, and record it in the spec's ## Noticed"
+    return 0
+  fi
+
+  local adj
+  if [ "$mode" = all-fixed ]; then
+    adj="$(printf '%s' "$open_json" | jq -c '{adjudications: [.[] | {id, severity, disposition:"fixed", reason:"addressed by this diff"}]}')"
+  else
+    [ -n "$src" ] && [ -f "$src" ] || { echo "plinth adjudicate: --file <dispositions.json> required (or --all-fixed)" >&2; exit 1; }
+    adj="$(jq -c '{adjudications: (.adjudications // [])}' "$src" 2>/dev/null)"       || { echo "plinth adjudicate: $src is not valid JSON" >&2; exit 1; }
+  fi
+
+  # EVERY open finding must be accounted for. You may dismiss anything; you may not
+  # skip anything. An unaccounted finding is exactly the silent drop this replaces.
+  local missing
+  missing="$(jq -n --argjson open "$open_json" --argjson adj "$adj" \
+    '[$open[].id] - [$adj.adjudications[].id] | join(", ")')"
+  [ -z "$missing" ] || { echo "plinth adjudicate: these open findings have no disposition: $missing" >&2; exit 1; }
+  # Dismissals and deferrals need a real reason — the audit trail is the product here.
+  local weak
+  weak="$(jq -r '[.adjudications[] | select((.disposition=="dismissed" or .disposition=="deferred") and ((.reason // "") | length) < 20) | .id] | join(", ")' <<<"$adj")"
+  [ -z "$weak" ] || { echo "plinth adjudicate: dismissed/deferred need a reason of >=20 chars: $weak" >&2; exit 1; }
+  local badd
+  badd="$(jq -r '[.adjudications[] | select((.disposition // "") | IN("fixed","dismissed","deferred") | not) | .id] | join(", ")' <<<"$adj")"
+  [ -z "$badd" ] || { echo "plinth adjudicate: invalid disposition for: $badd (use fixed|dismissed|deferred)" >&2; exit 1; }
+
+  printf '%s\n' "$adj" > "$sdir/adjudications.json"
+  echo "Wrote $sdir/adjudications.json ($(jq '.adjudications|length' <<<"$adj") disposition(s) covering $n open finding(s))."
+  jq -r '.adjudications | group_by(.disposition)[] | "  \(length) \(.[0].disposition)"' <<<"$adj"
+  echo
+  echo "Now run ./.plinth/review.sh to mint an ADJUDICATED receipt at HEAD, then ship."
+  echo "The dispositions ride on the receipt: a dismissal is visible to anyone reading it."
+}
+
 case "$cmd" in
   statusline) statusline_render ;;
+  adjudicate) run_adjudicate "$target" ;;
   advise) run_advise "$@" ;;
   hookprobe) run_hookprobe "$@" ;;
   changelog-collate) run_changelog_collate "$@" ;;

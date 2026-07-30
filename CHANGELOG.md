@@ -1,5 +1,59 @@
 # Plinth changelog
 
+## v6.0.0 — the reviewer advises; the driver adjudicates; CI gates — July 30, 2026
+
+**Phase 1 of the deletion train (`docs/V6-DELETION.md`): receipt semantics.** Nothing
+downstream was shippable until this changed, because `receipt / verify` is a required
+status check that structurally encoded *"a model approved this"* — the exact requirement
+v6 removes.
+
+### The receipt asserts what HAPPENED, not that a model blessed it
+
+`basis` distinguishes two honest ways a change can be ready:
+
+| basis | meaning |
+|---|---|
+| `approved` | a reviewer returned APPROVED with no open blockers/majors (pre-v6 behaviour, unchanged) |
+| `adjudicated` | a review **ran**, and the driver dispositioned **every** open finding on the record |
+
+An `adjudicated` receipt carries `adjudications: [{id, severity, disposition, reason}]`
+with `disposition ∈ fixed | dismissed | deferred`.
+
+**This is strictly more honest than what it replaces.** Today a driver facing a wrong
+finding has two options: comply, or grind the loop until the reviewer relents — and
+grinding is what produced a 30-round loop on the v5.1 train, with the same findings
+re-reported at shifting counts on unchanged code. Under v6 the driver may dismiss
+anything, but the dismissal and its reason **ride on the receipt**, where a human or a
+later audit can see it. A bad judgement becomes *visible* rather than *impossible*.
+
+### The audit trail cannot be hollowed out
+
+- `dismissed` and `deferred` **require a reason of ≥20 characters**; a shrug is not a
+  judgement, and an empty reason is exactly the silent drop this design replaces.
+- `plinth adjudicate` refuses to leave any open finding unaccounted for: you may dismiss
+  anything, you may not *ignore* anything.
+- Unknown dispositions, empty adjudication lists, empty ids and unknown `basis` values are
+  all rejected by `receipt-verify.sh`.
+- **No flag day:** receipts without a `basis` field keep verifying with their pre-v6
+  meaning, so nothing in flight breaks.
+
+### New: `plinth adjudicate`
+
+```
+plinth adjudicate [path] --show         # list open findings needing disposition
+plinth adjudicate [path] --file d.json  # apply dispositions
+plinth adjudicate [path] --all-fixed    # every open finding addressed by the diff
+```
+It refuses to run when no review session exists — advice first, then judgement.
+
+### Not in this phase
+
+The deletions (thrash demotion family, sticky AUTO-RESOLVE, verify/resume modes,
+`round_cap`, ~120 lines of `reviewer.md`, the Stop gate's APPROVED@HEAD condition) follow
+in later trains. Shipping them together would repeat the mistake this release exists to
+correct: the v5.1 train bundled everything, and the review found five defects in the new
+mechanism because it was written at depth in one pass.
+
 ## v5.2.2 — unbreak the review loop on codex-cli >= 0.146.0 — July 30, 2026
 
 **The review loop was broken outright** for anyone on codex-cli 0.146.0 (released under
