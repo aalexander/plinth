@@ -942,6 +942,14 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **`canary-lifecycle-build-harden.sh` can fail and still exit 0.** A mid-script
+  abort (an unset variable inside an extracted function) printed its error and left
+  the script exiting 0 locally, while the same failure exited 1 in CI. It therefore
+  reported "26 OK" for what was really a run that stopped a third of the way through
+  — the full suite is 63. A canary that can report success on a partial run is the
+  "commentary is not evidence" failure applied to the evidence itself: it made a
+  green local run worthless, and only the CI job caught it. Wants an explicit
+  assertion count (expected vs actual OK lines) so a truncated run cannot pass.
 - **The residual escape hatch was booby-trapped (found by round 30).** `plinth
   residual` writes `.plinth/RESIDUAL.json`, and that path was NOT on the reviewer
   contract's tooling exemption list — so drafting the residual, the designed way out

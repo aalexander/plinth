@@ -24,10 +24,10 @@ pass() { echo "OK: $*"; }
 # extracted with the function: an unset var becomes `test(""; "i")`, and an empty
 # regex matches EVERY string — which would make every finding look security-shaped
 # and silently disable all demotion. Assert they are non-empty for the same reason.
-awk '
-  /^SEC_DESC_RE=/ {print}
-  /^CORRECTNESS_DESC_RE=/ {print}
-' "$REVIEW" > "$TMP/lexicon.sh"
+# The lexicon is LOCAL to the function (so standalone extraction can never get an
+# empty regex). Strip `local ` to source the values for assertion.
+sed -n 's/^  local \(SEC_DESC_RE=.*\)$/\1/p; s/^  local \(CORRECTNESS_DESC_RE=.*\)$/\1/p' \
+  "$REVIEW" > "$TMP/lexicon.sh"
 # shellcheck disable=SC1090
 . "$TMP/lexicon.sh"
 [ -n "${SEC_DESC_RE:-}" ] || fail "SEC_DESC_RE not extractable from review.sh (an empty regex matches everything and would disable demotion entirely)"

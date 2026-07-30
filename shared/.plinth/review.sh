@@ -633,21 +633,6 @@ if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ]; then
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
-# ── NEVER-DEMOTE LEXICON — one source, injected into every fail-open gate ─────
-# Round 29 defeated the previous floor with ORDINARY security wording it did not
-# know: XSS, CSRF, plaintext passwords, exposed encryption keys, account takeover,
-# unquoted shell execution. The lesson is structural, not lexical: a keyword floor
-# tested with its OWN keywords proves nothing. This list is therefore built from
-# vocabulary the floor's author did not choose, and the canary probes it with the
-# reviewer's wording rather than ours.
-# STILL NOT A COMPLETE DEFENCE — see MANUAL "## Noticed": the durable fix is to
-# require a concrete failure_scenario on any blocking finding (schema-enforced),
-# so a defect claim cannot be demoted for lacking words we happened to enumerate.
-SEC_DESC_RE='auth bypass|authorization bypass|authentication bypass|unauthenticated|unauthorized|cross-tenant|broken access|access control|injection|SQL inject|command inject|prompt inject|shell inject|code inject|XSS|cross[- ]site script|CSRF|cross[- ]site request|SSRF|RCE|remote code|path traversal|directory traversal|open redirect|IDOR|insecure direct object|session fixation|session hijack|account takeover|privilege escalat|priv[- ]?esc|secret expos|credential leak|credential expos|hard[- ]?coded (secret|credential|password|token|key)|plain ?text|clear ?text|cleartext|plaintext password|password(s)? (are |is )?(stored )?in (plain|clear)|unsalted|unhashed password|encryption key|private key|api key|access token|bearer token|signing key|unsafe deserial|insecure deserial|deserializ|unquoted|shell metacharacter|eval of|arbitrary (code|command|file)|TOCTOU|race condition on|symlink attack|zip slip|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|tamper|fail[- ]?open|timing attack|constant[- ]time|weak (hash|cipher|random)|insecure random|predictable token'
-# Correctness / data-loss wording that must never be demoted either. Same origin:
-# the reviewer demoted handoff overwrite, checkpoint truncation, retry returning
-# success after failure, and deleting the wrong row through the old belt.
-CORRECTNESS_DESC_RE='data.?loss|overwrit|truncat|clobber|drops? the (previous|prior|existing|stored)|deletes? the wrong|wrong (row|record|file|entry|key|user)|off[- ]by[- ]one|returns? success (after|despite|on)|reports? success (after|despite|on)|swallow(s|ed)? the (error|exception|failure)|silently (ignores?|drops?|skips?|continues)|never (fires|runs|executes)|always (returns|passes|succeeds)|infinite loop|deadlock|corrupt'
 
 # ── L3 security pass trigger (v5.1 S4) ───────────────────────────────────────
 # v5.1 removes dual-as-habit. Dual was mostly being used as "get a second pair of
@@ -1760,11 +1745,20 @@ thrash_ledger_rows() {
 }
 
 thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids> [spec_path] [mode]
-  # An UNSET lexicon must fail LOUD. `test(""; "i")` matches EVERY string, so an
-  # empty value here would silently treat all findings as security-shaped — the
-  # failure would look like "demotion stopped working" with no error anywhere.
-  : "${SEC_DESC_RE:?SEC_DESC_RE is unset — refusing to run with an empty never-demote lexicon}"
-  : "${CORRECTNESS_DESC_RE:?CORRECTNESS_DESC_RE is unset — refusing to run with an empty never-demote lexicon}"
+  # ── NEVER-DEMOTE LEXICON — defined HERE, inside the function, on purpose ────
+  # Round 29 defeated the previous floor with ordinary security wording it did not
+  # know: XSS, CSRF, plaintext passwords, exposed encryption keys, account takeover,
+  # unquoted shell execution. The lesson is structural: a keyword floor tested with
+  # its OWN keywords proves nothing, so this list comes from vocabulary the floor's
+  # author did not choose and the canary probes it with the reviewer's phrasings.
+  # LOCAL, not file-scope: five canaries extract this function standalone by sed
+  # range, and a file-scope dependency arrived EMPTY in all of them — `test(""; "i")`
+  # matches every string, which would silently treat all findings as security-shaped.
+  # A local cannot be unset, so that failure mode is gone by construction.
+  # STILL NOT COMPLETE — see MANUAL "## Noticed": the durable fix is requiring a
+  # concrete failure_scenario on blocking findings, not a longer word list.
+  local SEC_DESC_RE='auth bypass|authorization bypass|authentication bypass|unauthenticated|unauthorized|cross-tenant|broken access|access control|injection|SQL inject|command inject|prompt inject|shell inject|code inject|XSS|cross[- ]site script|CSRF|cross[- ]site request|SSRF|RCE|remote code|path traversal|directory traversal|open redirect|IDOR|insecure direct object|session fixation|session hijack|account takeover|privilege escalat|priv[- ]?esc|secret expos|credential leak|credential expos|hard[- ]?coded (secret|credential|password|token|key)|plain ?text|clear ?text|cleartext|plaintext password|password(s)? (are |is )?(stored )?in (plain|clear)|unsalted|unhashed password|encryption key|private key|api key|access token|bearer token|signing key|unsafe deserial|insecure deserial|deserializ|unquoted|shell metacharacter|eval of|arbitrary (code|command|file)|TOCTOU|race condition on|symlink attack|zip slip|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|tamper|fail[- ]?open|timing attack|constant[- ]time|weak (hash|cipher|random)|insecure random|predictable token'
+  local CORRECTNESS_DESC_RE='data.?loss|overwrit|truncat|clobber|drops? the (previous|prior|existing|stored)|deletes? the wrong|wrong (row|record|file|entry|key|user)|off[- ]by[- ]one|returns? success (after|despite|on)|reports? success (after|despite|on)|swallow(s|ed)? the (error|exception|failure)|silently (ignores?|drops?|skips?|continues)|never (fires|runs|executes)|always (returns|passes|succeeds)|infinite loop|deadlock|corrupt'
   local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" mode="${6:-fresh}" tmp
   [ -f "$f" ] || return 0
   tmp="$(mktemp)"
