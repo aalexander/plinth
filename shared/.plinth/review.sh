@@ -1504,7 +1504,7 @@ _reviewer_fail_detail() {
   if [ -f "$errlog" ] && [ "${elen:-0}" -gt 0 ] 2>/dev/null; then
     bits="$bits err=$(tail -c 600 "$errlog" 2>/dev/null | tr '\n' ' ' | tr -cd '\11\12\15\40-\176')"
   else
-    bits="$bits err=(empty — often payload/thread capacity on long verify; see PLINTH_VERIFY_MAX_*)"
+    bits="$bits err=(empty — codex exits 1 with NO stderr on a REJECTED --output-schema; check strict structured-output rules first: every property of every object must appear in `required`, with optionality expressed as a nullable type union. Also possible: payload/thread capacity on long verify, see PLINTH_VERIFY_MAX_*)"
   fi
   printf '%s' "$bits"
 }
