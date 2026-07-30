@@ -162,6 +162,17 @@ base_tip="$(git rev-parse --verify "$baseref")" \
 REVIEW_PATHSPEC=(.
   ':(exclude)HANDOFF.md' ':(exclude)CHECKPOINT.md'
 )
+# Drop vendored copies that are BYTE-IDENTICAL to a shared/ source (see
+# vendored_identical_paths). Provable, not heuristic: one differing byte keeps the
+# file in. Disclosed in the prompt so the reviewer knows what it is not seeing and
+# why — an undisclosed exclusion would be a blind spot rather than an optimization.
+VENDORED_EXCLUDED="$(vendored_identical_paths 2>/dev/null || true)"
+if [ -n "$VENDORED_EXCLUDED" ]; then
+  while IFS= read -r _vp; do
+    [ -n "$_vp" ] && REVIEW_PATHSPEC+=(":(exclude)$_vp")
+  done <<< "$VENDORED_EXCLUDED"
+  echo "Plinth review: excluding $(printf '%s\n' "$VENDORED_EXCLUDED" | grep -c .) vendored file(s) byte-identical to their shared/ source (already reviewed; see prompt disclosure)."
+fi
 EPHEMERA_RE='^(HANDOFF|CHECKPOINT)\.md$'
 diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
   || die_infra "git diff ${baseref}...HEAD failed"
@@ -433,6 +444,39 @@ _spec_outline_for_prompt() {
   if [ -f "$f" ]; then grep -nE '^#{1,6} ' "$f" 2>/dev/null | head -200; return; fi
   if [ -d "$f" ]; then find "$f" -type f 2>/dev/null | sort | head -100; return; fi
   echo "(base spec unavailable)"
+}
+
+# ── VENDORED DUPLICATES ARE NOT REVIEWED TWICE (v5.2.1) ──────────────────────
+# `plinth update` refreshes the INSTALLED .plinth/ and .claude/ copies from the
+# shared/ sources. Those copies are then BYTE-IDENTICAL to files that were already
+# reviewed and shipped — so putting them in the diff asks a model to read the same
+# bytes a second time. Measured on the 4.8.1 -> 5.2.0 refresh: a 209,453-byte prompt
+# that EXCEEDED the reviewer CLI's capacity and failed the round outright, of which
+# ~99.98% was duplicate content. The judgment-bearing change was 33 lines.
+#
+# The exclusion is PROVABLE, not heuristic: a path is dropped only when `cmp` says it
+# is byte-identical to its shared/ source. If it differs by a single byte it stays in
+# the diff. Identical bytes cannot carry a different meaning, so nothing is lost —
+# unlike a heuristic that guesses what matters.
+#
+# Echoes the excluded paths (one per line) so the caller can DISCLOSE them in the
+# prompt. Silence would turn a safe optimization into a blind spot.
+vendored_identical_paths() {
+  local f src
+  for f in $(git diff --name-only "${base_tip}...HEAD" 2>/dev/null | grep -E '^\.(plinth|claude)/' || true); do
+    case "$f" in
+      .plinth/session/*|.plinth/config|.plinth/protected-paths|.plinth/NEEDS-HUMAN.md| \
+      .plinth/RESIDUAL.json|.plinth/AGENTS-project.md|.plinth/DRIVER-project.md) continue ;;
+    esac
+    case "$f" in
+      .plinth/reviewer.md)     src="shared/reviewer.md" ;;
+      .plinth/MODELS.md)       src="shared/MODELS.md" ;;
+      .plinth/plinth-rules.md) src="shared/plinth-rules.md" ;;
+      *)                       src="shared/$f" ;;
+    esac
+    [ -f "$src" ] || continue
+    cmp -s "$f" "$src" && printf '%s\n' "$f"
+  done
 }
 
 # The spec reaches the PRIMARY by reference (materialize_base_spec, above): it runs
@@ -2916,6 +2960,13 @@ $(inline_goal)
 
 === TOOLING COMMITS IN RANGE (${baseref}..HEAD — COMPLETE list of commits touching version-pinned tooling, for the tamper policy; judge each by its subject label) ===
 $(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
+
+=== VENDORED FILES EXCLUDED FROM THIS DIFF (byte-identical to a reviewed source) ===
+${VENDORED_EXCLUDED:-(none)}
+Each path above is byte-for-byte identical to its shared/ source, which is the file
+this project reviews and ships; `plinth update` copies it into place. They are omitted
+so you are not asked to read the same bytes twice. Any vendored file that differs by
+even one byte is still in the diff below.
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
 $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
