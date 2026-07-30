@@ -87,6 +87,7 @@ Everything between is the model's call.
   preflight; review the diff, then commit
 - `plinth goal ~/Dev/<repo>`    — drop a GOAL.md draft for auto-research mode
 - `plinth plan [path]`          — light product plan: scaffold root `PLAN.md`
+  (canonical operational plan name for agents, checkpoint, and dash — no aliases)
   if missing (never overwrites). Default path: CWD. Runnable in-session.
 - `plinth plan --deep [path]`   — deep plan: ensure PLAN.md, then three
   independent agent seats in parallel → `PLAN-REVIEW.md` (security / completeness /
@@ -97,10 +98,31 @@ Everything between is the model's call.
   force review (logs `build_defer`). PR/merge still needs APPROVED@HEAD.
 - `plinth phase [path]`         — print lifecycle phase (build|harden).
 - `plinth checkpoint [path]`    — write/refresh root `CHECKPOINT.md` (resume + slice
-  routing JSON); `handoff` is an alias. Legacy `HANDOFF.md` is a pointer.
+  routing JSON). Preferred: set plan position env vars when you know them
+  (`PLINTH_CHECKPOINT_SLICE_INDEX` + `_TOTAL`, optional `_TITLE`/`_ID`;
+  `_RIGOR` standard|deep (v5.1 — `_EFFORT` medium|high|xhigh is a deprecated alias,
+  read for one release and never re-emitted); `_IMPLEMENT` driver|worker|either;
+  `_STATUS` ready|implementing|reviewing|blocked|done — **done** = whole plan
+  complete). If index is unset, the writer **seeds from PLAN.md only** (never
+  from the spec fallback — all-done and first-open both require PLAN primary):
+  first open stage, advance when checkboxes move ahead of the prior index, and
+  when **all** PLAN leaves are checked set `status=done` with index=total and
+  clear stale `slice_id`/`slice_title`. If a prior `status=done` fence exists but
+  PLAN later gains open work (unchecked checkboxes **or** more leaves than the
+  prior total — e.g. a new bullet), re-seed sets `status=implementing`. Conflicting `slice_id` + `slice_title` that resolve to different
+  leaves refuse a cursor. Numeric index applies only when **`slice_total` is
+  present and equals** the plan leaf count, and neither title nor id was
+  supplied. Writer-seeded `plan_ref` is `PLAN.md` only when PLAN.md is primary;
+  with no PLAN.md, `plan_ref` is null (never invented). `handoff` is an alias;
+  legacy `HANDOFF.md` is a pointer. Rigor biases the OPTIONAL dual first-pass
+  (`deep` → dual in **either** phase; `standard` → no dual, including HARDEN);
+  never a ship gate (see MODELS live wiring).
 - `plinth next [path]`          — print the single next action for autonomous
-  drivers (HANDOFF ## Next, plan-review blockers, open review findings, or
-  human_blocked). Exit 0=work, 2=human-blocked, 3=done.
+  drivers (route/hint from checkpoint, ## Next, plan-review blockers, open review
+  findings, or human_blocked). Exit 0=work, 2=human-blocked, 3=done.
+  NEEDS-HUMAN scopes: `[BLOCKING]`/`[BLOCKING:global]` always stop next;
+  `[BLOCKING:build]` stops BUILD; `[BLOCKING:harden]`/`[BLOCKING:ship]` stop
+  HARDEN but only **note** (do not block) during BUILD.
 - Lifecycle reference: `docs/LIFECYCLE.md`.
 - `plinth watch ~/Dev/<repo>`   — live session dashboard (add `--once` for a
   single frame); see "The dashboard" below
@@ -181,7 +203,9 @@ Everything between is the model's call.
   `.plinth/reviewer.md`, which the review harness passes to the reviewer explicitly.
 - `.plinth/NEEDS-HUMAN.md` is the blocked-on-you queue: the driver records
   what only you can supply (hashes, credentials, smoke runs, budget acks);
-  the dashboard shows a red banner while it's non-empty.
+  the dashboard shows a red banner while it's non-empty. Tag items
+  `[BLOCKING]`, `[BLOCKING:build]`, `[BLOCKING:harden]`, or `[BLOCKING:ship]`
+  so `plinth next` can keep BUILD cooking when only a ship/harden control is open.
 
 ## Quick start (first time on a project — follow exactly)
 0. Once per machine (SETUP.md has details): install Claude Code (the resident
@@ -702,6 +726,60 @@ it has run green with a real smoke_cmd.
 5. Let the driver loop. It exits into the normal review -> PR -> CI path, where the
    reviewer explicitly checks for metric gaming.
 
+## Ship bias — what is mandatory, and what is optional rigor (v5.1)
+
+Forced adversarial review after every committing session causes thrash: the loop
+keeps finding true-but-unfinishable things to say and never converges. v5.1 fixes
+that by naming which layers are the floor and which are optional, instead of
+running every available opinion on every diff.
+
+| Layer | What it is | Gates the ship? |
+|-------|-----------|-----------------|
+| **L1** | Free fail-open canaries (CI) | Signal only |
+| **L2** | **One** primary adversarial review (tier from `risk-classify`) → batch the fixes → **one** verify round | **Yes** — APPROVED@HEAD |
+| **L3** | Security-focused pass, **risk-triggered only**, security severities only | No — reported and recorded, not a merge check |
+| **L4** | CI floor + checks + `receipt / verify` (where wired, required, `strict:true`) | **Yes** — branch protection |
+
+**Dual first-pass is optional rigor, not the foundation.** Through v5.0.x every
+hardening-phase round ran a second full generalist review. That is off by default
+now, in every phase. Ask for it per-slice with `rigor: deep` in the CHECKPOINT
+fence, or per-run with `PLINTH_DUAL_PASS=1`. It is never a required check, and
+never turned on merely because the phase is hardening — phase alone is not
+evidence that a second *generalist* opinion earns a paid round.
+
+What dual was mostly being used for — a second pair of eyes on something
+security-shaped — is served directly by **L3**: when the diff touches an
+auth/crypto/secret surface, the tooling ship path, or a supply-chain vector
+(dependency manifests, submodules, symlinks), one security-scoped pass runs on the
+APPROVED path. If it cannot run, that is recorded as `security_pass: UNAVAILABLE`
+on the verdict and the receipt — never a false "clean". Set
+`security_pass_required = true` in `.plinth/config` to make a
+triggered-but-unavailable pass fail closed instead of continuing best-effort.
+
+**A diff with only minors open is APPROVED.** Open minors are required to land in
+the spec's `## Noticed` before the PR, so they survive as recorded backlog with
+you in the loop. Asymptotic findings — "the fixture cannot reach the live seat",
+"wants a wider CLI matrix", "coverage could go further" — are true, worth
+recording, and never blocking, in *either* phase. The reviewer test is not "is
+this worth doing?" but "can the driver finish it?".
+
+**Thrash demotion, and its bounds.** The harness deterministically demotes known
+thrash classes to minor so the loop converges. That is a fail-open, so it is
+bounded three ways, all of which you can audit:
+1. **An in-repo allowlist of seven class IDs** (`coverage-gap`, `canary-depth`,
+   `fake-cli-argv`, `handoff-ws`, `sticky-ledger`, `docs-prose`, `queue-nit`) in
+   `shared/.plinth/review.sh`. Findings are mapped to a class by the harness — there
+   is deliberately **no field** a reviewer or driver can set, so no participant in
+   the loop can classify its own finding as demotable.
+2. **Editing that vocabulary is Tier 2** by construction (it lives under
+   `.plinth/`), so widening the fail-open gets a full cross-vendor review.
+3. **Every demotion is disclosed on the receipt** (`demotions: [{class, from, to,
+   round, …}]`). An APPROVED that leaned on demotions is auditable from the git
+   note alone.
+Security, correctness, data loss and real test gaps are **never** demoted: both
+floors run ahead of every demotion arm, so a security finding filed against a docs
+file or an ephemera path still blocks.
+
 ## Hard blocks (don't rely on the model behaving)
 - Guard hook: common destructive commands (an enumerative, heuristic pattern set —
   bare and prefixed forms like `sudo rm -rf` are caught, but a command hidden inside a
@@ -864,6 +942,91 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **`canary-lifecycle-build-harden.sh` can fail and still exit 0.** A mid-script
+  abort (an unset variable inside an extracted function) printed its error and left
+  the script exiting 0 locally, while the same failure exited 1 in CI. It therefore
+  reported "26 OK" for what was really a run that stopped a third of the way through
+  — the full suite is 63. A canary that can report success on a partial run is the
+  "commentary is not evidence" failure applied to the evidence itself: it made a
+  green local run worthless, and only the CI job caught it. Wants an explicit
+  assertion count (expected vs actual OK lines) so a truncated run cannot pass.
+- **The residual escape hatch was booby-trapped (found by round 30).** `plinth
+  residual` writes `.plinth/RESIDUAL.json`, and that path was NOT on the reviewer
+  contract's tooling exemption list — so drafting the residual, the designed way out
+  of a loop that cannot converge, was filed as a TAMPERING **blocker**. Fixed in
+  `shared/reviewer.md`. Note the shape of this bug: the mechanism that exists to
+  stop endless rounds could only be used by triggering an endless round.
+- **The v5.1 loop DIVERGED, and that is the ship-bias evidence.** Round 29 → 14 open
+  blocking, round 30 → 15, with the same findings re-reported at shifting counts
+  ("drops 32 of 33 milestones" became "rejects 21 of 33" between rounds on unchanged
+  code). Rounds cost ~5.07M input tokens each because every round re-inlines
+  `base...HEAD` plus the contract plus the spec. ~29 rounds ≈ 145M input tokens to
+  ship a few hundred lines of real change. The loop was stopped here by operator
+  directive (review treated as ADVICE), not by reaching APPROVED. v6.0 addresses the
+  cause: reviewer advises, driver adjudicates on the record, CI gates — and the
+  receipt attests "a review ran + adjudications" instead of "a model approved".
+- **Round 29 adjudication — DISMISSED (asymptotic, infrastructure that does not
+  exist).** Four findings ask for test depth no fixture can reach, so no amount of
+  work closes them: the dual-pass e2e merge path needs a live two-vendor seat
+  (`canary-checkpoint-routing.sh`); the advise-cancellation matrix needs
+  TERM-ignoring descendants across four vendor CLIs (`bin/plinth:1716`); the fake
+  advise CLIs inspect `FAKE_ADVISE_MODE` rather than argv (`bin/plinth:1837`); and
+  the openPlan / `.NET`-prefix assertions accept substrings rather than exact
+  structure (`canary-plan-progress.sh:425,1284`). They are true, recorded, and
+  non-blocking. The durable answer is not a wider fixture matrix: it is the v6.0
+  change that makes review advisory, so a reviewer can report depth gaps without
+  holding a branch.
+- **Round 29 adjudication — REAL, DEFERRED to a follow-up branch (see
+  `.plinth/RESIDUAL.json`).** Five reproduced plan-progress classifier defects:
+  valid 3/3 cursors rewind to 1/3 for checkbox / plain-bullet / H4 / shall plans;
+  planless fences retain stale id/title/index/total; numbered `Phase N Human
+  sign-off` is admitted by the unconditional `phase\s*\d+` strong-positive path;
+  pure human-gate leaves are treated as coding evidence by the verb override; and a
+  sweep still misses ~1 of 33 named Phase milestones. These affect **dash progress
+  display only** — no ship path, no security boundary, no data loss. Deferred so
+  the 5.1 train stops growing: every added fix enlarged the diff the next round
+  re-read, which is the feedback loop that produced 29 rounds.
+- **The never-demote lexicon is a misuse surface, not just maintenance debt.**
+  `SEC_DESC_RE` / `CORRECTNESS_DESC_RE` in `shared/.plinth/review.sh` were widened
+  after round 29 defeated the previous floor with ordinary wording (XSS, CSRF,
+  plaintext passwords, exposed encryption keys, account takeover, unquoted shell
+  execution). The list is longer now and still not complete, and *that is the
+  point*: a reader who sees "security is never demoted" reasonably believes it,
+  and it is false for any phrasing the author did not enumerate. Sticky's
+  `is_security_desc` was deliberately left NARROW — widening it changed sticky id
+  generation, and round 29 reproduced the hole only in the demotion path. v6.0
+  deletes the whole family rather than lengthening the list.
+- **`thrash_class` is still defined three times in the sticky blocks**
+  (`shared/.plinth/review.sh`). v5.1 aligned the vocabularies rather than
+  unifying the code: sticky uses its classes for identity/fingerprinting, not for
+  demotion authority, and `canary-thrash-classes.sh` now asserts that every
+  `class:*` literal in the file is a member of the single demotable allowlist — so
+  a divergence fails CI. Collapsing the three definitions into one is still the
+  right cleanup; it was deliberately not attempted in the same train as the
+  demotion-bound changes, because a refactor of three duplicated jq blocks is
+  exactly where a silent classification bug would hide.
+- **`PLINTH_ACK_NO_DUAL` is disclosed via dedicated fields, not the
+  `override_ledger`.** It rides on the request, the verdict
+  (`dual_first_pass: ACK_NO_SEAT`) and the receipt (`ack_no_dual`), but it is not
+  one of the five allowlisted `PLINTH-OVERRIDE` names that `receipt-verify.sh`
+  checks for exact tuple equality against the PR body. So an acked seatless dual
+  is auditable on the receipt but is **not** machine-enforced into the PR body the
+  way a reviewer/model/cap override is. Deliberate scope call (that path enforces
+  strict tuple equality and widening it is its own change); if acked dual ever
+  becomes common, promote it into the ledger allowlist.
+- **Reviewer-contract changes bind from the NEXT branch, not this one.** The
+  contract is inlined from the RATIFIED BASE, so the v5.1 reviewer rules (S5:
+  asymptotic never major in either phase, security never Noticed, no `class:`
+  emission, only-minors-is-APPROVED) do not govern the review of the branch that
+  introduces them. The harness-side halves (demotion floors, class bounds) DO
+  apply immediately, since they are code. Expect the first real exercise of the
+  new contract text on the branch after 5.1.0 lands.
+- **L3 fires on every diff in this repo.** Plinth's own product surface is the
+  tooling ship path, which is one of the L3 triggers — so every review here runs
+  the security pass. That is the intended coverage for a repo whose diff *is* the
+  ship path, but it does mean the "risk-triggered" saving shows up in downstream
+  projects, not in Plinth itself.
+
 - **`plinth dash` backlog (v4.8 review):** (a) ThreadingHTTPServer still allows
   unlimited concurrent *caller threads* (builders are single-flight). (b) a
   discovered path with `.plinth/config` but no git repo paints branch
@@ -891,14 +1054,24 @@ installed copies.
   `url.insteadOf` rewrite), private-repo/PAT visibility of the pinned plinth source, and
   the real `gh api` response shape. Wants a documented RUNTIME receipt from the first PR
   that runs the check for real.
-- **`plinth advise` still reports every failure as "CLI missing or not signed in"**
-  (`bin/plinth` `run_advise`, all four vendor branches). v4.7 fixed the wiring bug
-  that this message was masking, but the mask itself remains: each branch is
-  `<cli> ... 2>/dev/null || { echo "$unavail"; ... }`, so a future flag change,
-  auth error, or model rejection is still reported as an absent CLI. That is what
-  made the variadic-prompt bug invisible for a full release. Fix: capture stderr
-  and surface its tail in the unavailable line (advise is non-blocking, so there is
-  no reason to hide the cause). Found in the v4.7 self-review pre-flight.
+- **`plinth advise` diagnostics (v5.0.8 / #62):** PATH vs auth vs nonzero exit are
+  distinguished; stderr is sampled. Auth is classified from **stderr**, from
+  **stdout on nonzero exit**, and from exit-0 only when stdout is a **short unauth
+  banner** (≤3 lines / ≤160 chars, narrow tokens like “Please sign in” / “not
+  logged in”, and no advice cues). Concise exit-0 advice that mentions
+  “authentication required” is still advice, not a login failure.
+- **Plan progress classifiers (v5.0.8):** coding-milestone heuristics are best-effort;
+  remaining edge cases may need PLAN.md checklist polish rather than perfect NLP.
+  Spec-dir entry files beyond SPEC/README/index/OVERVIEW/REQUIREMENTS/API still
+  need an explicit `spec_path` file.
+- **Review dual first-pass e2e (v5.0.8):** canaries exercise production
+  `stamp_request_json` and the dual_ok eligibility×policy matrix; full
+  `run_round` + `run_auditor` merge needs a live dual-vendor seat (not free-canary).
+- **Advise cancellation matrix (v5.0.8):** TERM+claude prompt cleanup is covered;
+  INT/HUP and all-vendor process-group matrices remain hardening backlog.
+- **Dashboard openPlan (v5.0.8):** canary covers openPlan, grid data-plan click,
+  plan-done-group, and `.leaf.active`; full browser details open-state matrix is
+  thinner than a Playwright pass.
 - **Every seat-swap path re-anchors coverage except a swap that lands on a fresh
   round anyway** (`shared/.plinth/review.sh`, #26 fix). The vendor check compares
   only the IMMEDIATELY preceding round's vendor, which is sound today because the

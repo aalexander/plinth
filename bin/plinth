@@ -1155,8 +1155,9 @@ open_items() {  # open_items <needs-human-file>
 #   **[BLOCKING] text
 #   **[BLOCKING — title] text
 #   [BLOCKING — title] text
+#   [BLOCKING:ship] / [BLOCKING:harden] / [BLOCKING:build] / [BLOCKING:global]
 # Used by queue, watch, and dash so counts and sort agree.
-_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-])'
+_nh_blocking_re='^(\*\*)?\[BLOCKING(\]|[[:space:]—–-]|:)'
 _nh_item_is_blocking() {  # <logical-item-text> → 0 if blocking
   printf '%s' "$1" | grep -qE "$_nh_blocking_re"
 }
@@ -1164,7 +1165,35 @@ _nh_count_blocking() {  # stdin logical items → count
   grep -cE "$_nh_blocking_re" || true
 }
 # jq expression (string): true when . is a blocking logical item text.
-_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-])")'
+_nh_blocking_jq='test("^(\\*\\*)?\\[BLOCKING(\\]|[ \\t—–-]|:)")'
+
+# Scope of a blocking NEEDS-HUMAN item (stdout: global|build|harden|ship).
+# Explicit only: [BLOCKING:ship] [BLOCKING:harden] [BLOCKING:build] [BLOCKING:global]
+# Bare [BLOCKING] / [BLOCKING — title] → always global (MANUAL contract; no heuristics).
+_nh_blocker_scope() {
+  local t="$1" s
+  # Leading marker only — never a later [BLOCKING:…] mentioned in item prose.
+  # Strip optional markdown bold, then require BLOCKING at start of the item.
+  s=$(printf '%s' "$t" | sed -E 's/^\*\*//' | sed -nE 's/^\[BLOCKING[[:space:]]*:[[:space:]]*([A-Za-z]+)[[:space:]]*(\]|[—–-]).*/\1/p' | head -1 | tr '[:upper:]' '[:lower:]')
+  case "$s" in
+    global|build|harden|ship) printf '%s\n' "$s"; return 0 ;;
+  esac
+  printf 'global\n'
+}
+
+# Does blocker scope apply to lifecycle phase? phase=build|harden. → 0 if applies.
+_nh_blocker_applies_to_phase() {
+  local phase="$1" scope="$2"
+  case "$phase" in
+    build)
+      case "$scope" in global|build) return 0 ;; *) return 1 ;; esac ;;
+    harden)
+      case "$scope" in global|harden|ship|build) return 0 ;; *) return 1 ;; esac ;;
+    *)
+      # Unknown phase: fail closed (treat as applying).
+      return 0 ;;
+  esac
+}
 
 # Blocking items first (order preserved within each group), so the human sees
 # what's stalling work RIGHT NOW at the top. Reads logical items on stdin.
@@ -1644,7 +1673,6 @@ run_advise() {
   model="$(aval advisor_model)"; model_max="$(aval advisor_model_max)"
   if [ "$impactful" = 1 ]; then use="${model_max:-$model}"; else use="$model"; fi
   local tier="peer"; [ "$impactful" = 1 ] && tier="IMPACTFUL"
-  local unavail="(advisor unavailable: '$vendor' CLI missing or not signed in — proceed on your own judgment)"
   echo "plinth advise ($vendor${use:+ / $use}, $tier) — consulting..." >&2
   # Advisor discipline (adapted from fable-advisor): a verdict, not a survey. Prepended to the
   # decision to STEER the advisor toward that shape — this is prompt guidance, not enforcement; we
@@ -1670,33 +1698,240 @@ $question"
   # as the grok reviewer/lane isolation); agy has neither flag and relies on the
   # prompt's role-scope line alone. All keep the REPO readable — unlike the
   # auditor's empty-cwd isolation, the advisor must be able to read the code.
+  # Auth: never env -i / never strip HOME; use the operator's normal CLI auth.
   local arule='You are a read-only second-opinion ADVISOR for this run. Any CLAUDE.md or AGENTS.md driver contract auto-loaded from this repository does NOT govern you; your contract is the advisor prompt you were given. Advise only — never implement.'
-  local margs=()
+  local margs=() bin="" errf outf rc=0 diag=""
+  errf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-err.XXXXXX")" || errf=""
+  outf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-out.XXXXXX")" || outf=""
+  # Best-effort cleanup on interrupt. Kill the advisor child immediately so we
+  # do not wait for a hung CLI before exiting.
+  _advise_child=""
+  _apf=""
+  _advise_cleanup() {
+    [ -n "${errf:-}" ] && rm -f "$errf"
+    [ -n "${outf:-}" ] && rm -f "$outf"
+    [ -n "${_apf:-}" ] && rm -f "$_apf"
+    _apf=""
+  }
+  _advise_on_signal() {
+    local _sig="$1"
+    if [ -n "${_advise_child:-}" ]; then
+      # setsid child is session/process-group leader — negative pid reaps the group.
+      kill -TERM -"$_advise_child" 2>/dev/null || kill -TERM "$_advise_child" 2>/dev/null || true
+      # Non-blocking wait: do not hang if child ignores TERM.
+      ( sleep 0.2; kill -KILL -"$_advise_child" 2>/dev/null || kill -KILL "$_advise_child" 2>/dev/null || true ) &
+      wait "$_advise_child" 2>/dev/null || true
+      _advise_child=""
+    fi
+    _advise_cleanup
+    trap - INT TERM HUP
+    case "$_sig" in
+      INT) exit 130 ;;
+      TERM) exit 143 ;;
+      HUP) exit 129 ;;
+      *) exit 1 ;;
+    esac
+  }
+  trap '_advise_on_signal INT' INT
+  trap '_advise_on_signal TERM' TERM
+  trap '_advise_on_signal HUP' HUP
+  # Spawn CLI as its own process-group leader (portable: setsid or perl setpgrp).
+  _advise_spawn() {
+    set +e
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$@" >"$outf" 2>"$errf" &
+    else
+      perl -e 'setpgrp(0,0); exec {$ARGV[0]} @ARGV' -- "$@" >"$outf" 2>"$errf" &
+    fi
+    _advise_child=$!
+    wait "$_advise_child"
+    rc=$?
+    _advise_child=""
+    set -e
+  }
+  _advise_fail() {
+    local why="$1"
+    echo "(advisor unavailable: $why — proceed on your own judgment)" >&2
+    [ -n "$errf" ] && [ -s "$errf" ] && {
+      echo "(advisor stderr, first 8 lines:)" >&2
+      head -n 8 "$errf" >&2 || true
+    }
+    _advise_cleanup
+    return 0
+  }
+  # Auth: stderr always; stdout on nonzero exit; exit-0 only as a SHORT unauth banner.
+  # Broad re is for CLI error streams (stderr / nonzero). Exit-0 short path uses a
+  # NARROW banner re and rejects advice cues so "authentication required before…" is
+  # not treated as a login prompt.
+  _advise_auth_re='not logged in|please run /login|please sign in|not authenticated\.?|not signed in|login required|\bunauthorized\b|auth(entication)? (fail|required|error)|unauthorized \(401\)|401 unauthorized|/login'
+  # Exit-0 short path: each non-empty line must be ONLY banner tokens (and light
+  # filler like "Error:" / "You are" / "to continue"), not advice that embeds
+  # those phrases mid-sentence.
+  _advise_line_is_banner() {
+    local _line="$1" _low _rest
+    [ -z "${_line//[[:space:]]/}" ] && return 1
+    _low=$(printf '%s' "$_line" | tr '[:upper:]' '[:lower:]')
+    # Must contain at least one real auth token (filler-only lines are not auth).
+    printf '%s' "$_low" | grep -qE 'not logged in|please run /login|please sign in|not authenticated|not signed in|unauthorized|login required|401 unauthorized|/login' \
+      || return 1
+    # Portable sed (macOS BSD sed has no \b).
+    _rest=$(printf '%s' "$_low" | sed -E \
+      -e 's/not logged in//g' \
+      -e 's/please run \/login//g' \
+      -e 's/please sign in//g' \
+      -e 's/not authenticated\.?//g' \
+      -e 's/not signed in//g' \
+      -e 's/login required//g' \
+      -e 's/unauthorized//g' \
+      -e 's/unauthorized \(401\)//g' \
+      -e 's/401 unauthorized//g' \
+      -e 's/error:?//g' \
+      -e 's/you are//g' \
+      -e 's/to continue//g' \
+      -e 's/login required//g' \
+      -e 's/not signed in//g' \
+      -e 's/\/login//g' \
+      -e 's/[^a-z]+//g')
+    [ -z "$_rest" ]
+  }
+  _advise_auth_hit() {
+    local _rc="$1" _al _ac _line _any=0
+    if [ -n "$errf" ] && [ -s "$errf" ] && grep -qiE "$_advise_auth_re" "$errf" 2>/dev/null; then
+      return 0
+    fi
+    if [ "$_rc" -ne 0 ] && [ -n "$outf" ] && [ -s "$outf" ] \
+       && grep -qiE "$_advise_auth_re" "$outf" 2>/dev/null; then
+      return 0
+    fi
+    if [ "$_rc" -eq 0 ] && [ -n "$outf" ] && [ -s "$outf" ]; then
+      _al=$(grep -cve '^[[:space:]]*$' "$outf" 2>/dev/null | head -1)
+      case "$_al" in ''|*[!0-9]*) _al=0 ;; esac
+      _ac=$(wc -c <"$outf" | tr -d ' ')
+      if [ "${_al:-99}" -le 3 ] && [ "${_ac:-9999}" -le 160 ]; then
+        while IFS= read -r _line || [ -n "$_line" ]; do
+          [ -z "${_line//[[:space:]]/}" ] && continue
+          if _advise_line_is_banner "$_line"; then
+            _any=1
+          else
+            return 1
+          fi
+        done <"$outf"
+        [ "$_any" = 1 ] && return 0
+      fi
+    fi
+    return 1
+  }
   case "$vendor" in
-    claude) [ -n "$use" ] && margs=(--model "$use")
+    claude)
+      bin="$(command -v claude 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "claude CLI not on PATH (command -v claude empty)"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(--model "$use")
       # Prompt via STDIN, never as a positional after --allowed-tools: that flag is
       # VARIADIC in the claude CLI (verified 2.1.220 — receipt:
-      # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt, which captures the
-      # behavior by argument ORDER rather than asserting it), so it swallowed the prompt
-      # argument and every consult died with "Input must be provided either through
-      # stdin or as a prompt argument" — which 2>/dev/null turned into the generic
-      # "CLI missing or not signed in". The advisor was silently unavailable for the
-      # DEFAULT advisor_vendor. Same stdin shape as the claude reviewer/auditor
-      # adapters in review.sh, which is why those were never affected.
-      printf '%s' "$aprompt" | claude -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk \
-        --allowed-tools "Read,Grep,Glob" 2>/dev/null || { echo "$unavail"; return 0; } ;;
-    codex)  [ -n "$use" ] && margs=(-m "$use")
-      printf '%s' "$aprompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only - 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
-    grok)   [ -n "$use" ] && margs=(-m "$use")
-      grok -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"} 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
-    agy|gemini) [ -n "$use" ] && margs=(--model "$use")
-      agy -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"} 2>/dev/null \
-        || { echo "$unavail"; return 0; } ;;
-    *) echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2; exit 1 ;;
+      # docs/receipts/claude-allowed-tools-variadic-2.1.220.txt).
+      # Do NOT redirect stderr to /dev/null — auth failures must be distinguishable
+      # from a missing binary (#62).
+      _apf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-prompt.XXXXXX")" || _apf=""
+      printf '%s' "$aprompt" >"$_apf"
+      # Redirect stdin from prompt file via fd (spawn helper owns out/err).
+      _advise_spawn bash -c 'exec "$@" <"$0"' "$_apf" "$bin" -p --safe-mode ${margs[@]+"${margs[@]}"} --permission-mode dontAsk --allowed-tools "Read,Grep,Glob"
+      rm -f "$_apf"
+      if _advise_auth_hit "$rc"; then
+        _advise_fail "claude at ${bin} is not signed in for this environment (run: claude /login); exit ${rc}"
+        return 0
+      fi
+      if [ "$rc" -ne 0 ]; then
+        diag="claude at ${bin} exited ${rc}"
+        [ ! -x "$bin" ] && diag="claude at ${bin} is not executable"
+        _advise_fail "$diag"
+        return 0
+      fi
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "claude at ${bin} produced empty output"; return 0
+      fi
+      cat "$outf"
+      _advise_cleanup
+      ;;
+    codex)
+      bin="$(command -v codex 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "codex CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(-m "$use")
+      _apf="$(mktemp "${TMPDIR:-/tmp}/plinth-advise-prompt.XXXXXX")" || _apf=""
+      printf '%s' "$aprompt" >"$_apf"
+      _advise_spawn bash -c 'exec "$@" <"$0"' "$_apf" "$bin" exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only -
+      rm -f "$_apf"
+      if _advise_auth_hit "$rc"; then
+        _advise_fail "codex at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
+      if [ "$rc" -ne 0 ]; then
+        _advise_fail "codex at ${bin} exited ${rc}"
+        return 0
+      fi
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "codex at ${bin} produced empty output"; return 0
+      fi
+      cat "$outf"
+      _advise_cleanup
+      ;;
+    grok)
+      bin="$(command -v grok 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "grok CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(-m "$use")
+      _advise_spawn "$bin" -p "$aprompt" --sandbox read-only --rules "$arule" ${margs[@]+"${margs[@]}"}
+      if _advise_auth_hit "$rc"; then
+        _advise_fail "grok at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
+      if [ "$rc" -ne 0 ]; then
+        _advise_fail "grok at ${bin} exited ${rc}"
+        return 0
+      fi
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "grok at ${bin} produced empty output"; return 0
+      fi
+      cat "$outf"
+      _advise_cleanup
+      ;;
+    agy|gemini)
+      bin="$(command -v agy 2>/dev/null || true)"
+      if [ -z "$bin" ]; then
+        _advise_fail "agy CLI not on PATH"
+        return 0
+      fi
+      [ -n "$use" ] && margs=(--model "$use")
+      _advise_spawn "$bin" -p "$aprompt" --sandbox ${margs[@]+"${margs[@]}"}
+      if _advise_auth_hit "$rc"; then
+        _advise_fail "agy at ${bin} is not signed in for this environment; exit ${rc}"
+        return 0
+      fi
+      if [ "$rc" -ne 0 ]; then
+        _advise_fail "agy at ${bin} exited ${rc}"
+        return 0
+      fi
+      if [ ! -s "$outf" ] || ! grep -q '[^[:space:]]' "$outf" 2>/dev/null; then
+        _advise_fail "agy at ${bin} produced empty output"; return 0
+      fi
+      cat "$outf"
+      _advise_cleanup
+      ;;
+    *)
+      _advise_cleanup
+      echo "unknown advisor_vendor '$vendor' (supported: claude|codex|grok|agy)" >&2
+      exit 1 ;;
   esac
+  trap - INT TERM HUP
 }
+
 
 # plinth hookprobe <grok|codex> — which wired .claude/ hook EVENTS does this vendor CLI
 # EXECUTE? Plinth's enforcement uses four (SessionStart = session-start.sh, PreToolUse =
@@ -4515,8 +4750,19 @@ build_dashboard_snapshot() {
       _rt="$(_checkpoint_parse_json "$(_checkpoint_read_path "$dir")")"
       [ -n "$_rt" ] || _rt="{}"
       if [ -f "$dir/CHECKPOINT.md" ] || [ -f "$dir/HANDOFF.md" ]; then _cp_bool=true; else _cp_bool=false; fi
-      printf "%s\n" "$card" | jq -c --argjson routing "$_rt" --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
-        '.lifecycle = ((.lifecycle // {}) + {checkpoint:$checkpoint, routing:(if ($routing|length)==0 then null else $routing end)})' \
+      _pp="$(_plan_progress_json "$dir" "$_rt")"
+      [ -n "$_pp" ] || _pp="null"
+      # Validate plan_progress JSON; corrupt → null (fail-soft).
+      if [ "$_pp" != "null" ] && ! printf '%s' "$_pp" | jq -e . >/dev/null 2>&1; then _pp="null"; fi
+      printf "%s\n" "$card" | jq -c \
+        --argjson routing "$_rt" \
+        --argjson checkpoint "$([ "$_cp_bool" = true ] && echo true || echo false)" \
+        --argjson plan_progress "$_pp" \
+        '.lifecycle = ((.lifecycle // {}) + {
+            checkpoint:$checkpoint,
+            routing:(if ($routing|length)==0 then null else $routing end),
+            plan_progress:(if $plan_progress == null then null else $plan_progress end)
+          })' \
         >> "$tmp" 2>/dev/null \
         || printf "%s\n" "$card" >> "$tmp"
     fi
@@ -4892,14 +5138,33 @@ for c in cands:
     if not isinstance(o, dict):
         continue
     if o.get("schema") == "plinth.checkpoint/v1" or any(
-        k in o for k in ("slice_id", "slice_index", "effort", "implement")
+        k in o for k in ("slice_id", "slice_index", "rigor", "effort", "implement")
     ):
         best = o
 if best is None:
     sys.exit(0)
+# v5.1 renamed the slice knob `effort: medium|high|xhigh` → `rigor: standard|deep`
+# (the old vocabulary belongs to MODEL reasoning effort and misled readers). The
+# deprecated key is still read for one release. CANONICAL RULE:
+# shared/.plinth/review.sh slice_rigor_normalize — canary-checkpoint-routing.sh
+# asserts this implementation and that one agree on every token.
+def _rigor(o):
+    tok = o.get("rigor")
+    if not isinstance(tok, str):
+        tok = o.get("effort")
+    if not isinstance(tok, str):
+        return None
+    if tok in ("standard", "deep"):
+        return tok
+    if tok == "xhigh":
+        return "deep"
+    if tok in ("medium", "high"):
+        return "standard"
+    return None
 out = {
     "schema": "plinth.checkpoint/v1",
-    "plan_ref": best.get("plan_ref") if isinstance(best.get("plan_ref"), str) else "PLAN.md",
+    # Preserve null plan_ref — do not invent PLAN.md when the fence had none.
+    "plan_ref": best.get("plan_ref") if isinstance(best.get("plan_ref"), str) else None,
     "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
     "slice_title": best.get("slice_title") if isinstance(best.get("slice_title"), str) else None,
     "slice_index": best.get("slice_index") if isinstance(best.get("slice_index"), int) and best["slice_index"] >= 1 else None,
@@ -4907,8 +5172,11 @@ out = {
     "status": best.get("status") if best.get("status") in (
         "ready", "implementing", "reviewing", "blocked", "done"
     ) else None,
-    "effort": best.get("effort") if best.get("effort") in ("medium", "high", "xhigh") else None,
-    "effort_rationale": best.get("effort_rationale") if isinstance(best.get("effort_rationale"), str) else None,
+    "rigor": _rigor(best),
+    "rigor_rationale": (
+        best.get("rigor_rationale") if isinstance(best.get("rigor_rationale"), str)
+        else (best.get("effort_rationale") if isinstance(best.get("effort_rationale"), str) else None)
+    ),
     "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
     "updated_at": best.get("updated_at") if isinstance(best.get("updated_at"), str) else None,
     "elapsed_secs_slice": best.get("elapsed_secs_slice") if isinstance(best.get("elapsed_secs_slice"), int) else None,
@@ -4925,30 +5193,43 @@ _checkpoint_build_json() {
   else
     prev="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
   fi
-  python3 - "$prev" <<'PY'
+  python3 - "$prev" "$root" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
+from pathlib import Path
 prev = {}
 if len(sys.argv) > 1 and sys.argv[1]:
     try:
         prev = json.loads(sys.argv[1])
     except Exception:
         prev = {}
+root = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else Path(".")
 def env(k, default=None):
+    """Unset → default; empty string → None (explicit clear for id/title)."""
+    if k not in os.environ:
+        return default
     v = os.environ.get(k)
-    return v if v not in (None, "") else default
-def env_int(k):
-    v = env(k)
-    if v is None:
+    return v if v not in (None, "") else None
+def env_int_key(k):
+    """Parse int from env if key set; empty → None. Caller handles missing key."""
+    v = os.environ.get(k, "")
+    if v == "":
         return None
     try:
         n = int(v)
         return n if n >= 1 else None
     except Exception:
         return None
-effort = env("PLINTH_CHECKPOINT_EFFORT", prev.get("effort"))
-if effort not in ("medium", "high", "xhigh"):
-    effort = "high"
+# Slice rigor (v5.1 rename of `effort`; see _checkpoint_parse_json). The writer
+# emits `rigor` ONLY — the deprecated key is read, never re-emitted, so a
+# refreshed checkpoint migrates itself off the colliding vocabulary.
+_rigor_alias = {"xhigh": "deep", "high": "standard", "medium": "standard"}
+rigor = env("PLINTH_CHECKPOINT_RIGOR")
+if rigor is None and "PLINTH_CHECKPOINT_RIGOR" not in os.environ:
+    rigor = env("PLINTH_CHECKPOINT_EFFORT", prev.get("rigor") or prev.get("effort"))
+rigor = _rigor_alias.get(rigor, rigor)
+if rigor not in ("standard", "deep"):
+    rigor = "standard"
 impl = env("PLINTH_CHECKPOINT_IMPLEMENT", prev.get("implement"))
 if impl not in ("driver", "worker", "either"):
     impl = prev.get("implement") if prev.get("implement") in ("driver", "worker", "either") else "either"
@@ -4957,16 +5238,88 @@ if status not in ("ready", "implementing", "reviewing", "blocked", "done"):
     status = prev.get("status") if prev.get("status") in (
         "ready", "implementing", "reviewing", "blocked", "done"
     ) else "implementing"
+# plan_ref: env wins; else prev only if that path still exists; else PLAN.md if present.
+_plan_ref = env("PLINTH_CHECKPOINT_PLAN_REF")
+if _plan_ref is None and "PLINTH_CHECKPOINT_PLAN_REF" not in os.environ:
+    _prev_ref = prev.get("plan_ref")
+    if isinstance(_prev_ref, str) and _prev_ref:
+        _cand = root / _prev_ref if not Path(_prev_ref).is_absolute() else Path(_prev_ref)
+        # Basename PLAN.md and file must still exist — never keep a ghost plan_ref.
+        if _cand.is_file() and Path(_prev_ref).name == "PLAN.md":
+            _plan_ref = _prev_ref
+        else:
+            _plan_ref = None
+    else:
+        _plan_ref = None
+if not _plan_ref:
+    _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
+# Never preserve a nested *PLAN.md path as operational plan_ref.
+if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
+    _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
+# Orphan PLAN cursor (narrow): root PLAN absent AND prior fence claimed a PLAN
+# path or whole-plan done with an index — clear ghost 100% over SPEC.
+# Planless projects may still keep operator slice_id/rigor routing without PLAN.md.
+_prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
+_no_root_plan = not (root / "PLAN.md").is_file()
+_orphan_plan = (
+    _no_root_plan
+    and (
+        (_prev_ref is not None and Path(_prev_ref).name == "PLAN.md")
+        or (
+            prev.get("status") == "done"
+            and isinstance(prev.get("slice_index"), int)
+        )
+    )
+)
+# Explicit env plan_ref=PLAN.md without a real file → null (never invent).
+if _plan_ref in ("PLAN.md", "./PLAN.md") and _no_root_plan:
+    _plan_ref = None
+if "PLINTH_CHECKPOINT_SLICE_ID" in os.environ:
+    _sid = env("PLINTH_CHECKPOINT_SLICE_ID")
+elif _orphan_plan:
+    _sid = None
+else:
+    _sid = prev.get("slice_id")
+if "PLINTH_CHECKPOINT_SLICE_TITLE" in os.environ:
+    _stitle = env("PLINTH_CHECKPOINT_SLICE_TITLE")
+elif _orphan_plan:
+    _stitle = None
+else:
+    _stitle = prev.get("slice_title")
+if "PLINTH_CHECKPOINT_SLICE_INDEX" in os.environ:
+    _sidx = env_int_key("PLINTH_CHECKPOINT_SLICE_INDEX")
+    # New index without title/id → do not inherit stale labels from prior fence.
+    if "PLINTH_CHECKPOINT_SLICE_ID" not in os.environ:
+        _sid = None
+    if "PLINTH_CHECKPOINT_SLICE_TITLE" not in os.environ:
+        _stitle = None
+elif _orphan_plan:
+    _sidx = None
+else:
+    _sidx = prev.get("slice_index")
+if "PLINTH_CHECKPOINT_SLICE_TOTAL" in os.environ:
+    _stot = env_int_key("PLINTH_CHECKPOINT_SLICE_TOTAL")
+elif _orphan_plan:
+    _stot = None
+else:
+    _stot = prev.get("slice_total")
+# Drop inherited status=done when PLAN is gone (would force 100% on SPEC fallback).
+if _orphan_plan and "PLINTH_CHECKPOINT_STATUS" not in os.environ and status == "done":
+    status = "implementing"
 out = {
     "schema": "plinth.checkpoint/v1",
-    "plan_ref": env("PLINTH_CHECKPOINT_PLAN_REF", prev.get("plan_ref") or "PLAN.md"),
-    "slice_id": env("PLINTH_CHECKPOINT_SLICE_ID", prev.get("slice_id")),
-    "slice_title": env("PLINTH_CHECKPOINT_SLICE_TITLE", prev.get("slice_title")),
-    "slice_index": env_int("PLINTH_CHECKPOINT_SLICE_INDEX") or prev.get("slice_index"),
-    "slice_total": env_int("PLINTH_CHECKPOINT_SLICE_TOTAL") or prev.get("slice_total"),
+    "plan_ref": _plan_ref,
+    "slice_id": _sid,
+    "slice_title": _stitle,
+    "slice_index": _sidx,
+    "slice_total": _stot,
     "status": status,
-    "effort": effort,
-    "effort_rationale": env("PLINTH_CHECKPOINT_EFFORT_RATIONALE", prev.get("effort_rationale")),
+    "rigor": rigor,
+    "rigor_rationale": env(
+        "PLINTH_CHECKPOINT_RIGOR_RATIONALE",
+        env("PLINTH_CHECKPOINT_EFFORT_RATIONALE",
+            prev.get("rigor_rationale") or prev.get("effort_rationale")),
+    ),
     "implement": impl,
     "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "elapsed_secs_slice": prev.get("elapsed_secs_slice"),
@@ -4977,6 +5330,882 @@ print(json.dumps(out, indent=2))
 PY
 }
 
+# Build lifecycle.plan_progress from PLAN.md (canonical) or spec (fallback).
+# Args: project root, optional routing JSON string from checkpoint. Fail-soft → empty stdout.
+# Operational plan filename is ALWAYS root PLAN.md — no aliases. Non-conforming
+# clients rename (e.g. IMPLEMENTATION-PLAN.md → PLAN.md).
+_plan_progress_json() {
+  local root="${1:-.}" routing="${2:-}"
+  python3 - "$root" "$routing" <<'PY' 2>/dev/null || true
+import json, os, re, sys
+from pathlib import Path
+
+# realpath so macOS /var vs /private/var does not break relative_to checks.
+root = Path(os.path.realpath(sys.argv[1]))
+routing = {}
+if len(sys.argv) > 2 and sys.argv[2]:
+    try:
+        routing = json.loads(sys.argv[2])
+        if not isinstance(routing, dict):
+            routing = {}
+    except Exception:
+        routing = {}
+
+def read_cfg_spec(p: Path):
+    cfg = p / ".plinth" / "config"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\s*spec_path\s*=\s*(.+?)\s*$", line)
+        if m:
+            v = m.group(1).strip().strip("\"'")
+            return v or None
+    return None
+
+def rel_to_root(path: Path):
+    try:
+        return str(Path(os.path.realpath(path)).relative_to(root))
+    except Exception:
+        return os.path.relpath(os.path.realpath(path), str(root))
+
+def resolve_file(rel):
+    if not rel:
+        return None
+    # Reject path escape before resolve.
+    raw = (root / rel)
+    path = Path(os.path.realpath(raw))
+    try:
+        path.relative_to(root)
+    except Exception:
+        # Allow when realpath prefixes differ but relpath stays inside.
+        rp = os.path.relpath(str(path), str(root))
+        if rp.startswith(".."):
+            return None
+    if path.is_file():
+        return path
+    if path.is_dir():
+        for name in (
+            "SPEC.md", "README.md", "index.md", "spec.md",
+            "OVERVIEW.md", "REQUIREMENTS.md", "requirements.md", "API.md",
+        ):
+            cand = path / name
+            if cand.is_file():
+                return Path(os.path.realpath(cand))
+    return None
+
+# Canonical operational plan: root PLAN.md ONLY (no filename aliases, no nested
+# docs/PLAN.md basename collision — that is a normal file, not the operational plan).
+plan_ref = routing.get("plan_ref") if isinstance(routing.get("plan_ref"), str) else None
+plan_path = resolve_file("PLAN.md")
+# plan_ref may only reaffirm root PLAN.md (never a nested path whose basename is PLAN.md).
+if plan_ref and plan_ref not in ("PLAN.md", "./PLAN.md"):
+    # Ignore non-root plan_ref for operational progress.
+    pass
+elif plan_ref in ("PLAN.md", "./PLAN.md"):
+    plan_path = resolve_file("PLAN.md")
+spec_rel = read_cfg_spec(root) or "SPEC.md"
+spec_path = resolve_file(spec_rel)
+
+sources = {
+    "plan": rel_to_root(plan_path) if plan_path else None,
+    "spec": rel_to_root(spec_path) if spec_path else None,
+}
+
+primary_path = plan_path or spec_path
+if not primary_path:
+    sys.exit(0)
+primary_kind = "plan" if plan_path else "spec"
+primary_rel = rel_to_root(primary_path)
+
+# Prefer product plan outline; when only spec exists, still derive stages.
+text = primary_path.read_text(encoding="utf-8", errors="replace")
+# Cap huge SPECs (e.g. MANUAL.md) for dashboard outline. Operational PLAN.md is
+# always fully read so late leaves never disappear from progress/seed.
+truncated = False
+if primary_kind != "plan" and len(text) > 120_000:
+    text = text[:120_000]
+    truncated = True
+
+def slug(s, n=48):
+    s = re.sub(r"\s+", " ", (s or "").strip())
+    s = re.sub(r"[^\w.\- ]+", "", s)[:n].strip().replace(" ", "-").lower()
+    return s or "item"
+
+CHECK_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$")
+BULLET_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
+# Through h4 so Slice N (###) expands to numbered substeps (####).
+H_RE = re.compile(r"^(#{1,4})\s+(.*)$")
+
+# Meta / non-coding PLAN sections — never stage points on the dash.
+SKIP_H2 = {
+    "ratification",
+    "users / context",
+    "users/context",
+    "non-goals",
+    "nongoals",
+    "problem",
+    "freeze definition",
+    "external gate register",
+    "risks / trust boundaries",
+    "open tradeoffs",
+    "open tradeoffs (with agent recommendation each)",
+}
+
+# Coding-milestone sections (operational build work).
+CODING_SECTION_RE = re.compile(
+    r"acceptance|criteria|require|behavior|features?\b|phase\b|module|build order|build status|"
+    r"implement(?:ation)?\s+sequence|implement|milestone|deliver|roadmap|"
+    r"feature work|engineering|sprint|slice\s*\d|slice\b|coding|work items|"
+    r"todo|next steps|remaining .+ roadmap|foundation\b|release\s*\d",
+    re.I,
+)
+NON_CODING_SECTION_RE = re.compile(
+    r"risk|tradeoff|non-?goal|gate register|freeze definition|ratification|"
+    r"users?\s*/|problem\b|dependenc|design decision|spec review|deficienc|"
+    r"external gate|open question|noticed|background|context\b|"
+    r"inventory|invariants?\b|annex|rationale|how plinth|process\b|"
+    r"\bdecisions\b|success criteria|assumptions|deferrals|testing strategy|"
+    r"repository and deployment|core contracts|dependency rules|gcp services|"
+    r"simplicity constraints|branch protocol|product and delivery|architecture\b|"
+    r"pin unresolved|resolve specification|merge the browser|specification conflicts|"
+    r"external and clinical decision|specification ratification|"
+    r"release gates|human approval|deployment checklist|operational readiness|"
+    r"required human|deployment approval",
+    re.I,
+)
+# Leaf titles that are not coding milestones (INV inventory, pure gates, human sign-off).
+NON_CODING_ITEM_RE = re.compile(
+    r"^(INV|REQ-FND|FND|REQ)-\d+\b|"
+    r"^Gate\s*G?\d+\b|"
+    r"\bINV-\d+\b\s*[—\-:]|"  # "INV-7 — …" invariant note as the item
+    r"^(Risks?|Notes?|Design decisions?|Deployment checklist|Operational readiness|"
+    r"External gate)\s*$|"
+    r"owner explicitly agrees|"
+    r"human (sign[- ]?off|gate|approval|ratification)|"
+    r"external(ly)? gated|"
+    # Human approval gates only — NOT coding work like "Build the sign-off workflow".
+    r"(^|\s)(owner|product|legal|security) (sign[- ]?off|approves? the (threat|privacy))\b|"
+    r"\bobtain (FDA|SOC)\b|"
+    r"^NB:|"
+    r"^RESOLVED\b|"
+    r"^Read:\s*SPEC|"
+    r"findings?, ordered by|"
+    r"maps every requirement R\d|"
+    r"BUILD-MATRIX\.md maps|"
+    r"Trial Definition of Done|"
+    r"feature freeze before|"
+    r"^zeroize\b.*\(INV-|"
+    r"where this document and a spec conflict|"
+    r"^Do not implement\b|"
+    r"^Keep ancestry-matched\b|"
+    r"^Record frame time\b",
+    re.I,
+)
+CODING_ITEM_HINT_RE = re.compile(
+    r"\b(phase\s*\d|module[- ]?\d|implement|build|wire|land|ship|E2E|"
+    r"playwright|test|code|API|schema|migrate|endpoint|UI|dashboard|"
+    r"review\.sh|canary|checkpoint|handler|service|crate|package)\b",
+    re.I,
+)
+
+def is_coding_section(ht: str) -> bool:
+    """True only for sections that are operational coding milestones."""
+    if not ht:
+        return False
+    # Non-coding context on Phase/Release titles only when NO coding hint
+    # (so "Phase risk-scoring API" stays coding; "Phase 0 risks" does not).
+    if re.search(
+        r"\b(risk|approval|checklist|readiness|design decision|tradeoff|"
+        r"human approval|deployment checklist|operational readiness|required human|"
+        r"non-?goal|freeze|ratification|background|context)\b",
+        ht, re.I,
+    ) and not re.search(r"\bbuild (status|order)\b|\bslice\s*\d+\b", ht, re.I):
+        if not CODING_ITEM_HINT_RE.search(ht):
+            return False
+    # Strong positive: module build status / build order / Slice N / Phase N.
+    if re.search(r"\bbuild status\b|\bbuild order\b|\bslice\s*\d+\b|\bphase\s*\d+\b", ht, re.I):
+        return True
+    if re.search(r"\bmodule[- ]?\d+", ht, re.I) and re.search(
+        r"\b(build|status|implement|complete|underway)\b", ht, re.I
+    ):
+        return True
+    # Exact Foundation / Release N as coding majors when not under "release gates".
+    if re.match(r"^(?:\d+[.)]\s*)?(Foundation|Release\s*\d+)\s*$", ht.strip(), re.I):
+        return True
+    # Non-coding wins over weak positives (e.g. "Module-00 design decisions").
+    if NON_CODING_SECTION_RE.search(ht):
+        return False
+    if CODING_SECTION_RE.search(ht):
+        return True
+    return False
+
+def is_coding_item(body: str, sec_title: str = "") -> bool:
+    if not body or body in ("…", "...", "—", "-"):
+        return False
+    if NON_CODING_ITEM_RE.search(body):
+        # Keep only coding work about sign-off / FDA / SOC APIs; drop pure gates
+        # and inventory/matrix noise matched by NON_CODING_ITEM_RE.
+        if re.search(r"sign[- ]?off|\bobtain (FDA|SOC)\b|\bSOC\b|\bFDA\b", body, re.I) and re.search(
+            r"\b(implement|build|wire|land|code|scaffold|add|test|persist|integrate|"
+            r"route|webhook|schema|endpoint|API|handler|service|UI)\b",
+            body,
+            re.I,
+        ):
+            pass  # keep coding sign-off work
+        else:
+            return False
+    if re.match(r"^(INV|FND|REQ-FND)-\d+\s*$", body.strip(), re.I):
+        return False
+    # Tooling/verify noise, not milestones
+    if re.match(
+        r"^`?(cargo (test|clippy|fmt|build)|Static gates:|clippy |fmt clean)",
+        body.strip(),
+        re.I,
+    ):
+        return False
+    st = sec_title or ""
+    # Build order: only module/phase milestone lines (M00, Module N, …)
+    if re.search(r"build order", st, re.I):
+        if not re.search(r"\bM\d{2}\b|\bmodule[- ]?\d|\*\*M\d+|\bphase\s*\d", body, re.I):
+            return False
+    return True
+
+def section_done_from_title(ht: str) -> bool:
+    return bool(re.search(r"\b(COMPLETE|DONE|FINISHED|SHIPPED)\b", ht or "", re.I))
+
+outline = []
+cur = None  # current H2/H3 section node
+title = None
+# When a non-coding parent is skipped, ignore descendants until a heading at
+# the same or higher level exits that subtree (so ### Phase under ## Release
+# gates is not admitted as a coding major).
+skip_below = None
+lines = text.splitlines()
+i = 0
+while i < len(lines):
+    line = lines[i]
+    hm = H_RE.match(line)
+    if hm:
+        level = len(hm.group(1))
+        ht = hm.group(2).strip()
+        if level == 1 and title is None:
+            title = ht
+            i += 1
+            continue
+        # #### substeps under ### Slice / module majors (expandable on the dash).
+        if level == 4:
+            if skip_below is not None and level > skip_below:
+                i += 1
+                continue
+            parent = (cur.get("title") if cur else "") or ""
+            under_slice = bool(re.search(r"\bslice\s*\d+\b", parent, re.I))
+            ht_item = re.sub(r"^\d+[.)]?\s+", "", ht).strip()
+            if cur is not None and is_coding_item(ht_item, parent) and (
+                re.match(r"^\d+[.)]?\s+\S", ht)
+                or CODING_ITEM_HINT_RE.search(ht_item)
+            ):
+                cur["children"].append({
+                    "id": f"{cur['id']}.{len(cur['children'])+1}",
+                    "title": ht_item or ht,
+                    "status": "done" if section_done_from_title(ht) else "open",
+                    "checkable": True,
+                    "checkbox": False,
+                    "progress": True,
+                    "kind": "subheading",
+                    "children": [],
+                })
+            i += 1
+            continue
+        if level >= 2:
+            if skip_below is not None and level > skip_below:
+                cur = None
+                i += 1
+                continue
+            if skip_below is not None and level <= skip_below:
+                skip_below = None
+            key = ht.lower().strip()
+            # Skip pure meta headings always for plan-like docs.
+            if key in SKIP_H2 or (NON_CODING_SECTION_RE.search(ht) and not is_coding_section(ht)):
+                cur = None
+                skip_below = level
+                i += 1
+                continue
+            if not is_coding_section(ht) and primary_kind == "plan":
+                # PLAN.md: only coding milestone sections (### Slice N, AC, …).
+                # Descendants of non-coding parents (Human approvals, etc.) skip too.
+                cur = None
+                skip_below = level
+                i += 1
+                continue
+            # Spec primary: keep requirement-like sections only.
+            if primary_kind == "spec" and not re.search(
+                r"require|criteria|shall|behavior|accept|feature", ht, re.I
+            ):
+                cur = None
+                i += 1
+                continue
+            # ## containers (e.g. "6. Implementation sequence") are not stages,
+            # unless they are themselves coding majors (Phase N / Foundation / AC /
+            # Requirements / Behavior / Features).
+            if level == 2 and not re.search(
+                r"acceptance|criteria|build order|slice\s*\d|phase\s*\d|"
+                r"^(?:\d+[.)]\s*)?(foundation|release\s*\d+)\s*$|"
+                r"require|behavior|features?\b|shall",
+                ht, re.I,
+            ):
+                cur = None
+                i += 1
+                continue
+            st = "done" if section_done_from_title(ht) else "open"
+            node = {
+                "id": f"s{len(outline)+1}-{slug(ht)}",
+                "title": ht,
+                "status": st,
+                "checkable": False,
+                "children": [],
+                "coding": True,
+            }
+            outline.append(node)
+            cur = node
+            i += 1
+            continue
+    if cur is None:
+        i += 1
+        continue
+    work_sec = is_coding_section(cur.get("title") or "")
+    sec_title = cur.get("title") or ""
+    # Prefer #### subheads as leaves under Slice N; skip body lists once present.
+    has_subheads = any(c.get("kind") == "subheading" for c in (cur.get("children") or []))
+    build_status_sec = bool(re.search(r"\bbuild status\b", sec_title, re.I))
+    cm = CHECK_RE.match(line)
+    if cm:
+        done = cm.group(3).lower() == "x"
+        body = cm.group(4).strip()
+        if (
+            work_sec
+            and not build_status_sec
+            and not has_subheads
+            and is_coding_item(body, sec_title)
+        ):
+            cur["children"].append({
+                "id": f"{cur['id']}.{len(cur['children'])+1}",
+                "title": body,
+                "status": "done" if done else "open",
+                "checkable": True,
+                "checkbox": True,
+                "progress": True,
+                "children": [],
+            })
+        i += 1
+        continue
+    bm = BULLET_RE.match(line)
+    if bm:
+        body = bm.group(3).strip()
+        if (
+            work_sec
+            and not build_status_sec
+            and not has_subheads
+            and is_coding_item(body, sec_title)
+        ):
+            in_ac = bool(re.search(
+                r"acceptance|criteria|work items|todo|require|behavior|feature",
+                sec_title, re.I,
+            ))
+            looks_coding = bool(
+                CODING_ITEM_HINT_RE.search(body)
+                or re.match(r"^(phase|module|implement|build|wire|land|\*\*M\d)", body, re.I)
+                or re.search(r"\bshall\b", body, re.I)
+                or len(body) < 140
+            )
+            if in_ac or looks_coding:
+                cur["children"].append({
+                    "id": f"{cur['id']}.{len(cur['children'])+1}",
+                    "title": body,
+                    "status": "done" if section_done_from_title(sec_title) else "open",
+                    "checkable": True,
+                    "checkbox": False,
+                    "progress": True,
+                    "children": [],
+                })
+        i += 1
+        continue
+    # Prose shall-lines under admitted sections (mixed list + shall ownership).
+    if (
+        work_sec
+        and not build_status_sec
+        and not has_subheads
+        and re.search(r"\bshall\b", line, re.I)
+        and len(line.strip()) > 12
+    ):
+        body = re.sub(r"^(?:\s*(?:[-*+]|\d+[.)])\s+)+", "", line.strip()).strip()
+        if is_coding_item(body, sec_title):
+            cur["children"].append({
+                "id": f"{cur['id']}.{len(cur['children'])+1}",
+                "title": body[:200],
+                "status": "done" if section_done_from_title(sec_title) else "open",
+                "checkable": True,
+                "checkbox": False,
+                "progress": True,
+                "kind": "shall",
+                "children": [],
+            })
+        i += 1
+        continue
+    i += 1
+
+# Collapse only leaf-less module/build-status majors. Slice N with #### keeps them.
+for sec in outline:
+    ht = sec.get("title") or ""
+    if sec.get("children"):
+        continue
+    if re.search(r"acceptance|criteria|work items|todo|build order", ht, re.I):
+        continue
+    if re.search(r"\bslice\s*\d+", ht, re.I):
+        # Slice with no #### yet: still show the slice as one leaf.
+        sec["children"] = [{
+            "id": f"{sec['id']}.1",
+            "title": ht,
+            "status": "done" if section_done_from_title(ht) else "open",
+            "checkable": True,
+            "checkbox": False,
+            "progress": True,
+            "kind": "slice",
+            "children": [],
+        }]
+        continue
+    collapse = bool(
+        re.search(r"\bbuild status\b|\bthis pass\b", ht, re.I)
+        or (
+            re.search(r"\bmodule\b", ht, re.I)
+            and re.search(r"\b(build|status|wiring|shell|adapter|complete|underway)\b", ht, re.I)
+        )
+    )
+    if collapse or re.search(r"\bmodule[- ]?\d+", ht, re.I):
+        st = "done" if section_done_from_title(ht) else "open"
+        if re.search(r"\bUNDERWAY|IN PROGRESS|WIP\b", ht, re.I):
+            st = "open"
+        sec["children"] = [{
+            "id": f"{sec['id']}.1",
+            "title": ht,
+            "status": st,
+            "checkable": True,
+            "checkbox": False,
+            "progress": True,
+            "children": [],
+        }]
+
+def harvest_shall(max_n=40):
+    shall = []
+    for line in lines:
+        t = line.strip()
+        if re.search(r"\bshall\b", t, re.I) and len(t) > 12:
+            shall.append(re.sub(r"^(?:\s*(?:[-*+]|\d+[.)])\s+)+", "", t).strip()[:200])
+        if len(shall) >= max_n:
+            break
+    return shall
+
+# Spec fallback: single Requirements major from shall-lines (once), never
+# duplicate the whole-document harvest into every empty admitted section.
+if primary_kind == "spec" and (not outline or not any(n.get("children") for n in outline)):
+    shall = [s for s in harvest_shall() if is_coding_item(s, "Requirements")]
+    if shall:
+        outline = [{
+            "id": "s1-requirements",
+            "title": "Requirements",
+            "status": "open",
+            "checkable": False,
+            "children": [
+                {
+                    "id": f"s1-requirements.{j+1}",
+                    "title": s,
+                    "status": "open",
+                    "checkable": True,
+                    "checkbox": False,
+                    "progress": True,
+                    "children": [],
+                }
+                for j, s in enumerate(shall[:40])
+            ],
+        }]
+elif primary_kind == "spec":
+    # Drop empty admitted sections rather than stuffing them with global shalls.
+    outline = [s for s in outline if s.get("children")]
+
+# If still empty, expose H1-only presence
+if not outline and title:
+    outline = [{
+        "id": "s1-doc",
+        "title": title,
+        "status": "open",
+        "checkable": False,
+        "children": [],
+    }]
+
+# Drop empty milestones (heading, no bullets) — keeps the track scannable.
+outline = [n for n in outline if (n.get("children") or n.get("checkable"))]
+
+if not outline:
+    sys.exit(0)
+
+# Work-only outline for the dashboard: strip notes / risks / tradeoffs / prose.
+# PLAN is the operational source of truth for *progress*; SPEC is requirements.
+# Non-progress children (notes) are not stage points.
+_work_outline = []
+for sec in outline:
+    kids = [c for c in (sec.get("children") or []) if c.get("progress", False)]
+    if kids:
+        sec = dict(sec)
+        sec["children"] = kids
+        _work_outline.append(sec)
+outline = _work_outline
+if not outline:
+    sys.exit(0)
+
+# Leaves that participate in progress % (work sections only).
+leaves = []
+all_items = []
+
+def collect(nodes):
+    for n in nodes:
+        ch = n.get("children") or []
+        if ch:
+            for c in ch:
+                if c.get("checkable"):
+                    all_items.append(c)
+                    if c.get("progress", True):
+                        leaves.append(c)
+                if c.get("children"):
+                    collect([c])
+        elif n.get("checkable"):
+            all_items.append(n)
+            if n.get("progress", True):
+                leaves.append(n)
+
+collect(outline)
+
+def match_text(a, b):
+    if not a or not b:
+        return False
+    a = a.lower().strip()
+    b = b.lower().strip()
+    if a == b or (len(a) > 24 and a in b) or (len(b) > 24 and b in a):
+        return True
+    ta = {t for t in re.split(r"[^a-z0-9]+", a) if len(t) > 3}
+    tb = {t for t in re.split(r"[^a-z0-9]+", b) if len(t) > 3}
+    if not ta or not tb:
+        return False
+    # Require strong overlap — loose matching was inventing "done" from HANDOFF prose.
+    need = max(4, min(len(ta), len(tb)) // 2)
+    return len(ta & tb) >= need
+
+# CHECKPOINT/HANDOFF ## Done — match only against individual bullet lines (not whole blob).
+# Seeding (PLINTH_PLAN_SEED=1) is checkbox-only — never advance from Done prose.
+done_lines = []
+if os.environ.get("PLINTH_PLAN_SEED") != "1":
+    for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
+        cp = root / cp_name
+        if not cp.is_file():
+            continue
+        raw_cp = cp.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^## Done\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
+        if not m:
+            continue
+        for line in m.group(1).splitlines():
+            t = line.strip()
+            t = re.sub(r"^[-*+]\s+", "", t)
+            t = re.sub(r"^\d+[.)]\s+", "", t)
+            t = t.strip()
+            if len(t) >= 24:
+                done_lines.append(t)
+
+    for n in leaves:
+        if n.get("status") == "done":
+            continue
+        leaf_title = n.get("title") or ""
+        for dl in done_lines:
+            if match_text(leaf_title, dl):
+                n["status"] = "done"
+                n["done_via"] = "checkpoint_done"
+                break
+
+si = routing.get("slice_index") if isinstance(routing.get("slice_index"), int) else None
+st = routing.get("slice_total") if isinstance(routing.get("slice_total"), int) else None
+cur_title = routing.get("slice_title") if isinstance(routing.get("slice_title"), str) else None
+cur_id = routing.get("slice_id") if isinstance(routing.get("slice_id"), str) else None
+# Client-reported position is authoritative when present (checkpoint is how clients
+# tell the dashboard where they are). status=done on the whole plan is a special case.
+cp_status = routing.get("status") if isinstance(routing.get("status"), str) else None
+
+# Infer Slice N from HANDOFF/CHECKPOINT prose when no routing fence (legacy handoffs).
+# e.g. "Continue **Slice 1** from PLAN.md".
+inferred_partial = False
+if not si and not cur_title and not cur_id:
+    for cp_name in ("CHECKPOINT.md", "HANDOFF.md"):
+        cp = root / cp_name
+        if not cp.is_file():
+            continue
+        raw_cp = cp.read_text(encoding="utf-8", errors="replace")
+        # Prefer ## Next section
+        nxt = ""
+        m = re.search(r"^## Next\b.*?\n(.*?)(?=^## |\Z)", raw_cp, flags=re.S | re.M)
+        if m:
+            nxt = m.group(1)
+        blob = nxt or raw_cp
+        m = re.search(
+            r"(?:continue|resume|finish|start|on)\s+\*?\*?slice\s*(\d+)\b|"
+            r"\bslice\s*(\d+)\b\s*(?:partial|from|—|-)",
+            blob,
+            flags=re.I,
+        )
+        if m:
+            n = int(m.group(1) or m.group(2))
+            if n >= 1:
+                si = n
+                inferred_partial = bool(
+                    re.search(rf"\bslice\s*{n}\b[^\n]{{0,40}}partial", raw_cp, flags=re.I)
+                    or re.search(rf"partial[^\n]{{0,40}}\bslice\s*{n}\b", raw_cp, flags=re.I)
+                )
+                # Match a leaf titled "Slice N …"
+                for leaf in leaves:
+                    t = leaf.get("title") or ""
+                    if re.search(rf"(?i)\bslice\s*{n}\b", t):
+                        cur_title = t
+                        break
+                if not cur_title:
+                    cur_title = f"Slice {n}"
+                break
+
+# Equal weights among progress leaves; cumulative end % on each leaf.
+if leaves:
+    base = 100 // len(leaves)
+    rem = 100 - base * len(leaves)
+    cum = 0
+    for i, n in enumerate(leaves):
+        w = base + (1 if i < rem else 0)
+        n["weight_pct"] = w
+        n["cum_pct_start"] = cum
+        cum += w
+        n["cum_pct_end"] = cum  # cumulative through this item
+    for sec in outline:
+        ch = [c for c in (sec.get("children") or []) if c.get("progress", True) and c.get("checkable")]
+        if ch:
+            sec["weight_pct"] = sum(c.get("weight_pct") or 0 for c in ch)
+            sec["cum_pct_end"] = max((c.get("cum_pct_end") or 0) for c in ch)
+        else:
+            sec["weight_pct"] = 0
+            sec["cum_pct_end"] = None
+elif outline:
+    base = 100 // len(outline)
+    rem = 100 - base * len(outline)
+    cum = 0
+    for i, sec in enumerate(outline):
+        w = base + (1 if i < rem else 0)
+        sec["weight_pct"] = w
+        sec["cum_pct_start"] = cum
+        cum += w
+        sec["cum_pct_end"] = cum
+
+# Resolve current — checkpoint first (client-authored), then checkboxes / first open.
+current = None
+current_via = None
+checkpoint_cursor = False
+
+# status=done paints whole-plan complete unless unchecked CHECKBOX leaves remain.
+# Non-checkbox plans (bullets/shall/####) are open by construction — trust done.
+_open_boxes = [
+    n for n in leaves
+    if n.get("checkbox") and n.get("status") != "done"
+] if leaves else []
+if cp_status == "done" and leaves and not truncated and not _open_boxes:
+    current = leaves[-1]
+    current_via = "checkpoint_status_done"
+    checkpoint_cursor = True
+else:
+    # 1) Explicit title/id: if both provided they must agree on the same leaf.
+    id_hit = None
+    title_hit = None
+    # slice_id may be a machine id OR a human title the client stuffed in id.
+    for n in leaves:
+        if cur_id and (
+            match_text(cur_id, n.get("id", "") or "")
+            or match_text(cur_id, n.get("title", "") or "")
+        ):
+            id_hit = n
+            break
+    for n in leaves:
+        if cur_title and match_text(cur_title, n.get("title", "")):
+            title_hit = n
+            break
+    if id_hit is not None and title_hit is not None:
+        if id_hit.get("id") == title_hit.get("id"):
+            current = id_hit
+            current_via = "slice_id+title"
+            checkpoint_cursor = True
+        # else conflict → leave current unset (no invented cursor)
+    elif title_hit is not None:
+        current = title_hit
+        current_via = "slice_title"
+        checkpoint_cursor = True
+    elif id_hit is not None:
+        current = id_hit
+        current_via = "slice_id"
+        checkpoint_cursor = True
+    # 2) Numeric index only when slice_total is present AND matches leaf count,
+    #    and no title/id was supplied (totals must match — no omit-total fallthrough).
+    if current is None and si and 1 <= si <= len(leaves):
+        if st is not None and st == len(leaves) and not cur_title and not cur_id:
+            current = leaves[si - 1]
+            current_via = "slice_index"
+            checkpoint_cursor = True
+
+if current is None:
+    for n in leaves:
+        if n.get("status") != "done":
+            current = n
+            current_via = "first_open"
+            break
+if current is None and outline:
+    current = outline[0]
+    current_via = "first_section"
+
+has_checkbox = any(n.get("checkbox") for n in leaves)
+progress_mode = "empty"
+
+# Checkpoint cursor is authoritative: prior items = done, current = active.
+# Clients report position via plinth checkpoint (slice_index/title/status).
+if leaves and current in leaves and checkpoint_cursor:
+    ci = leaves.index(current)
+    # Only whole-plan done authority paints 100%. A bare status=done with a
+    # mid-plan slice cursor must not mark open checkboxes complete.
+    if current_via == "checkpoint_status_done":
+        for n in leaves:
+            n["status"] = "done"
+            n["done_via"] = "checkpoint_status_done"
+        progress_mode = "checkpoint"
+        pct_force = 100
+    else:
+        for i, n in enumerate(leaves):
+            if i < ci:
+                n["status"] = "done"
+                n["done_via"] = "checkpoint_before_current"
+            elif i == ci:
+                n["status"] = "active"
+            else:
+                # Future items: keep explicit [x] if already checked; else open.
+                if not n.get("checkbox") or n.get("status") != "done":
+                    if n.get("status") != "done":
+                        n["status"] = "open"
+        progress_mode = "checkpoint"
+        pct_force = None
+elif has_checkbox:
+    progress_mode = "checkbox"
+    pct_force = None
+elif leaves:
+    progress_mode = "unchecked_list"
+    pct_force = None
+else:
+    progress_mode = "empty"
+    pct_force = None
+
+done_n = sum(1 for n in leaves if n.get("status") == "done")
+total_n = len(leaves)
+pct = None
+# Truncated outline that looks fully done is incomplete — never paint 100%.
+if truncated and total_n > 0 and done_n == total_n and pct_force is None:
+    notes_trunc_incomplete = True
+else:
+    notes_trunc_incomplete = False
+if pct_force is not None:
+    pct = pct_force
+elif notes_trunc_incomplete:
+    pct = None
+elif total_n > 0:
+    if progress_mode == "checkpoint" and current in leaves:
+        # Cumulative % through completed work (before active item).
+        if current.get("status") == "done":
+            pct = int(current.get("cum_pct_end") or 0)
+        else:
+            pct = int(current.get("cum_pct_start") or 0)
+            # HANDOFF "Slice N partial" → credit half of the active slice's weight
+            # so mid-slice build work is not stuck at 0% overall.
+            if inferred_partial:
+                half = int((current.get("weight_pct") or 0) // 2)
+                pct = min(99, pct + half)
+    else:
+        pct = int(round(100.0 * done_n / total_n))
+elif si and st and st >= 1 and si >= 1:
+    pct = int(round(100.0 * min(si, st) / st))
+    progress_mode = "slice_only"
+
+# Mark active on current + section rollup
+if current and current.get("status") != "done":
+    current["status"] = "active"
+for sec in outline:
+    ch = sec.get("children") or []
+    if current and (
+        any(c.get("id") == current.get("id") for c in ch) or sec.get("id") == current.get("id")
+    ):
+        if sec.get("status") != "done":
+            sec["status"] = "active"
+    check_ch = [c for c in ch if c.get("checkable") and c.get("progress", True)]
+    if check_ch and all(c.get("status") == "done" for c in check_ch):
+        sec["status"] = "done"
+
+related = []
+for k, v in sources.items():
+    if v and v != primary_rel:
+        related.append({"kind": k, "path": v})
+
+notes = [
+    "derived from " + primary_kind,
+    "weights are cumulative end-% on each item",
+]
+if progress_mode == "checkpoint":
+    notes.append("checkpoint is authoritative for position (client-reported)")
+elif progress_mode == "checkbox":
+    notes.append("checkboxes drive % (no checkpoint slice position)")
+elif progress_mode == "unchecked_list":
+    notes.append(
+        "no checkpoint slice_index/title and no [x] progress — client should "
+        "`plinth checkpoint` with PLINTH_CHECKPOINT_SLICE_INDEX/TOTAL (or title)"
+    )
+notes.append("ETA reserved-null")
+if truncated:
+    notes.append("source truncated at 120000 chars")
+if current_via:
+    notes.append("current via " + current_via)
+
+# Seeding must not treat a truncated window as "all done".
+if os.environ.get("PLINTH_PLAN_SEED") == "1" and truncated and leaves:
+    if all(n.get("status") == "done" for n in leaves):
+        # Late open leaves may exist beyond the 120k window — refuse completion.
+        notes.append("truncated: refuse all-done for seed")
+        # Mark a synthetic open so done_all jq fails; keep real leaf statuses for dash.
+        pass
+
+out = {
+    "schema": "plinth.plan_progress/v1",
+    "primary": primary_rel,
+    "primary_kind": primary_kind,
+    "sources": sources,
+    "related": related,
+    "title": title or primary_rel,
+    "pct_complete": pct,
+    "done": done_n if total_n else None,
+    "total": total_n if total_n else None,
+    "truncated": truncated,
+    "progress_mode": progress_mode,
+    "current": (
+        {"id": current.get("id"), "title": current.get("title"), "via": current_via}
+        if current else None
+    ),
+    "outline": outline,
+    "eta_secs": None,
+    "note": "; ".join(notes),
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+}
 
 # Classify snapshot kind: milestone vs keep_cooking (NOT the artifact name).
 _handoff_kind() {
@@ -5231,7 +6460,172 @@ _write_handoff() {
         detail:("reason="+$reason+" kind="+$kind+" advice="+$advice),head:$head}' \
       >> "$sdir/events.jsonl"; } 2>/dev/null || true
   # Append machine-readable routing block (canonical source of truth).
-  local cj
+  # Seed plan position on checkpoint when the client/driver did not set it:
+  # clients *should* set PLINTH_CHECKPOINT_SLICE_* ; if missing and prev has no
+  # index either, derive from PLAN progress (first open / active work item).
+  local cj _seed_pp _seed_idx _seed_tot _seed_title _seed_id
+  # Seed or advance plan position from PLAN.md when env index is unset.
+  # Re-seed when prev index is missing OR behind the first open leaf (checkbox progress).
+  if [ -z "${PLINTH_CHECKPOINT_SLICE_INDEX:-}" ]; then
+    local _prev_idx="" _seed_first=""
+    if [ -n "${_cp_prev_json:-}" ]; then
+      _prev_idx=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_index // empty' 2>/dev/null || true)
+    fi
+    # Seed discovery ignores prior routing so checked leaves stay done (not re-activated).
+    # PLINTH_PLAN_SEED=1: checkbox-only (ignore CHECKPOINT/HANDOFF Done prose).
+    _seed_pp="$(PLINTH_PLAN_SEED=1 _plan_progress_json "$root" '{}')"
+    if [ -n "$_seed_pp" ]; then
+      _seed_idx=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false) ] as $L
+        | ($L | to_entries | map(select(.value.status != "done")) | .[0]) as $e
+        | if $e == null then empty else ($e.key + 1) end
+      ' 2>/dev/null || true)
+      _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
+      ' 2>/dev/null || true)
+      _seed_title=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].title // empty
+      ' 2>/dev/null || true)
+      _seed_id=$(printf '%s' "$_seed_pp" | jq -r '
+        [ .outline[]?.children[]? | select(.progress != false and .status != "done") ][0].id // empty
+      ' 2>/dev/null || true)
+      _seed_first=1
+      _prev_status=""
+      if [ -n "${_cp_prev_json:-}" ]; then
+        _prev_status=$(printf '%s' "$_cp_prev_json" | jq -r '.status // empty' 2>/dev/null || true)
+      fi
+      _prev_tot=""
+      if [ -n "${_cp_prev_json:-}" ]; then
+        _prev_tot=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_total // empty' 2>/dev/null || true)
+      fi
+      case "$_prev_idx" in
+        ''|*[!0-9]*) ;;
+        *)
+          # Reseed when first-open moved (forward or back) or leaf total changed.
+          if [ -n "$_seed_idx" ] && [ "$_seed_idx" != "$_prev_idx" ]; then
+            _seed_first=1
+          elif [ -n "$_seed_tot" ] && [ -n "$_prev_tot" ] && [ "$_seed_tot" != "$_prev_tot" ]; then
+            _seed_first=1
+          else
+            _seed_first=0
+          fi
+          ;;
+      esac
+      # Prior whole-plan done but PLAN now has open work → re-seed (leave 100%).
+      if [ "$_prev_status" = "done" ] && [ -n "$_seed_idx" ]; then
+        _seed_first=1
+      fi
+      # Only seed from PLAN.md — never from spec-fallback leaves (first-open AND all-done).
+      _seed_primary=$(printf '%s' "$_seed_pp" | jq -r '.primary // empty' 2>/dev/null || true)
+      _seed_trunc=$(printf '%s' "$_seed_pp" | jq -r 'if .truncated == true then "true" else "false" end' 2>/dev/null || true)
+      _seed_is_plan=0
+      # Exact root PLAN.md only — never docs/PLAN.md or other basename collisions.
+      if [ "$_seed_primary" = "PLAN.md" ]; then
+        _seed_is_plan=1
+      else
+        _seed_first=0
+      fi
+      # Truncated PLAN parse: never keep status=done (unread late leaves may exist).
+      if [ "$_seed_is_plan" = 1 ] && [ "$_seed_trunc" = "true" ]; then
+        if [ "$_prev_status" = "done" ] || [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ]; then
+          export PLINTH_CHECKPOINT_STATUS=implementing
+        fi
+      fi
+      # All PLAN leaves done → mark whole plan done (clear stale mid-plan cursor labels).
+      _seed_done_all=$(printf '%s' "$_seed_pp" | jq -r '
+        if (.truncated == true) then "no"
+        else
+          ([.outline[]?.children[]? | select(.progress != false)] | length) as $t
+          | ([.outline[]?.children[]? | select(.progress != false and .status=="done")] | length) as $d
+          | if $t > 0 and $d == $t then "yes" else "no" end
+        end
+      ' 2>/dev/null || true)
+      # Explicit STATUS=done + no open checkboxes → treat as all-done (bullets/shall open by construction).
+      _seed_open_cb_pre=$(printf '%s' "$_seed_pp" | jq -r '
+        [.outline[]?.children[]?
+          | select(.progress != false and (.checkbox == true) and .status != "done")]
+        | length
+      ' 2>/dev/null || true)
+      case "$_seed_open_cb_pre" in ''|*[!0-9]*) _seed_open_cb_pre=0 ;; esac
+      if [ "$_seed_is_plan" = 1 ] && [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] \
+         && [ "$_seed_open_cb_pre" = 0 ] && [ -n "$_seed_tot" ] && [ "$_seed_tot" -gt 0 ]; then
+        _seed_done_all=yes
+      fi
+      # Remember whether operator set STATUS before we seed (open path only).
+      _user_set_status=0
+      if [ "${PLINTH_CHECKPOINT_STATUS+x}" = x ]; then _user_set_status=1; fi
+      if [ "$_seed_is_plan" = 1 ] && [ "$_seed_done_all" = "yes" ]; then
+        # All PLAN leaves checked → status=done is factual (not operator preference).
+        # Keeping blocked/implementing with index=total made dash show a mid-plan cursor.
+        export PLINTH_CHECKPOINT_STATUS=done
+        _seed_tot=$(printf '%s' "$_seed_pp" | jq -r '
+          [ .outline[]?.children[]? | select(.progress != false) ] | length | select(. > 0)
+        ' 2>/dev/null || true)
+        [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_tot"
+        [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
+        export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+        export PLINTH_CHECKPOINT_SLICE_ID=""
+        export PLINTH_CHECKPOINT_SLICE_TITLE=""
+        echo "  Seeded plan complete (all PLAN.md stages done)."
+        _seed_first=0
+      fi
+      if [ "$_seed_first" = 1 ]; then
+        case "$_seed_idx" in ''|*[!0-9]*) ;; *)
+          export PLINTH_CHECKPOINT_SLICE_INDEX="$_seed_idx"
+          [ -n "$_seed_tot" ] && export PLINTH_CHECKPOINT_SLICE_TOTAL="$_seed_tot"
+          [ -n "$_seed_title" ] && export PLINTH_CHECKPOINT_SLICE_TITLE="$_seed_title"
+          [ -n "$_seed_id" ] && export PLINTH_CHECKPOINT_SLICE_ID="$_seed_id"
+          export PLINTH_CHECKPOINT_PLAN_REF="PLAN.md"
+          # Reopen status=done when PLAN gains open work: open checkboxes OR
+          # more leaves than the prior fence total (new bullet/shall/####).
+          _seed_open_cb=$(printf '%s' "$_seed_pp" | jq -r '
+            [.outline[]?.children[]?
+              | select(.progress != false and .checkbox == true and .status != "done")]
+            | length
+          ' 2>/dev/null || true)
+          case "$_seed_open_cb" in ''|*[!0-9]*) _seed_open_cb=0 ;; esac
+          _prev_tot=""
+          if [ -n "${_cp_prev_json:-}" ]; then
+            _prev_tot=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_total // empty' 2>/dev/null || true)
+          fi
+          _grew=0
+          case "$_prev_tot" in
+            ''|*[!0-9]*) ;;
+            *)
+              if [ -n "$_seed_tot" ] && [ "$_seed_tot" -gt "$_prev_tot" ]; then
+                _grew=1
+              fi
+              ;;
+          esac
+          _reopen_done=0
+          if [ "$_seed_open_cb" -gt 0 ] || [ "$_grew" = 1 ]; then
+            _reopen_done=1
+          fi
+          # Status policy on open-plan seed:
+          # - env non-done (blocked/ready/…) sticks
+          # - env/prior done + open work (checkboxes or grown total) → implementing
+          # - prior ready/reviewing/blocked preserved
+          # - no prior/env → implementing
+          if [ "$_user_set_status" = 1 ]; then
+            if [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] && [ "$_reopen_done" = 1 ]; then
+              export PLINTH_CHECKPOINT_STATUS=implementing
+            fi
+          elif [ "$_prev_status" = "done" ]; then
+            if [ "$_reopen_done" = 1 ]; then
+              export PLINTH_CHECKPOINT_STATUS=implementing
+            else
+              export PLINTH_CHECKPOINT_STATUS=done
+            fi
+          elif [ -n "$_prev_status" ]; then
+            export PLINTH_CHECKPOINT_STATUS="$_prev_status"
+          else
+            export PLINTH_CHECKPOINT_STATUS=implementing
+          fi
+          echo "  Seeded plan position from PLAN/progress: ${_seed_idx}/${_seed_tot:-?} — ${_seed_title:-?}"
+        ;; esac
+      fi
+    fi
+  fi
   # Prefer in-memory prev JSON (pre-overwrite); fall back to re-parse.
   if [ -n "${_cp_prev_json:-}" ]; then
     cj="$(PLINTH_CHECKPOINT_PREV_JSON="$_cp_prev_json" _checkpoint_build_json "$root")"
@@ -5253,16 +6647,16 @@ _write_handoff() {
   echo "Wrote $out (snapshot: $reason / $kind); HANDOFF.md pointer refreshed"
   echo "NOTIFY: handoff ${kind} — ${advice}"
   echo "Automation: continuing immediately (no wait for compact/human)."
-  if printf '%s' "$cj" | jq -e '.effort != null or .slice_id != null' >/dev/null 2>&1; then
-    local _sid _eff _impl _rat
+  if printf '%s' "$cj" | jq -e '.rigor != null or .slice_id != null' >/dev/null 2>&1; then
+    local _sid _rig _impl _rat
     _sid=$(printf '%s' "$cj" | jq -r '.slice_id // "?"')
-    _eff=$(printf '%s' "$cj" | jq -r '.effort // "high"')
+    _rig=$(printf '%s' "$cj" | jq -r '.rigor // "standard"')
     _impl=$(printf '%s' "$cj" | jq -r '.implement // "either"')
-    _rat=$(printf '%s' "$cj" | jq -r '.effort_rationale // empty')
+    _rat=$(printf '%s' "$cj" | jq -r '.rigor_rationale // empty')
     if [ -n "$_rat" ]; then
-      echo "Route ${_sid}: ${_eff} · ${_impl} — ${_rat}"
+      echo "Route ${_sid}: ${_rig} · ${_impl} — ${_rat}"
     else
-      echo "Route ${_sid}: ${_eff} · ${_impl}"
+      echo "Route ${_sid}: ${_rig} · ${_impl}"
     fi
   fi
 }
@@ -5953,27 +7347,55 @@ run_next() {
     vsha=$(jq -r '.sha // empty' "$vfile" 2>/dev/null || true)
   fi
   nhf="$(needs_human_file "$root" 2>/dev/null || echo "")"
-  local blocking=""
+  local blocking="" deferred_blockers="" _bitem _bscope
   if [ -n "$nhf" ] && [ -s "$nhf" ]; then
-    blocking=$(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" | head -1 || true)
+    # Phase-scoped blockers (#61): ship/harden items do not stop BUILD next.
+    while IFS= read -r _bitem; do
+      [ -n "$_bitem" ] || continue
+      _bscope="$(_nh_blocker_scope "$_bitem")"
+      if _nh_blocker_applies_to_phase "$phase" "$_bscope"; then
+        blocking="$_bitem"
+        break
+      else
+        deferred_blockers="${deferred_blockers}${deferred_blockers:+$'\n'}${_bitem}"
+      fi
+    done < <(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" || true)
+  fi
+  # Non-blocking slice routing from checkpoint — emit on every next (never fails).
+  local _cj _sid _rig _impl _rat
+  _cj="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
+  _sid=""; _rig=""; _impl=""; _rat=""
+  if [ -n "$_cj" ]; then
+    _sid=$(printf '%s' "$_cj" | jq -r '.slice_id // empty' 2>/dev/null || true)
+    _rig=$(printf '%s' "$_cj" | jq -r '.rigor // empty' 2>/dev/null || true)
+    _impl=$(printf '%s' "$_cj" | jq -r '.implement // empty' 2>/dev/null || true)
+    _rat=$(printf '%s' "$_cj" | jq -r '.rigor_rationale // empty' 2>/dev/null || true)
+    # route: whenever any routing field is present (incl. implement-only fences).
+    if [ -n "$_rig" ] || [ -n "$_sid" ] || [ -n "$_impl" ]; then
+      if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_rig:-standard} · ${_impl:-either} — $_rat"
+      else echo "route: ${_sid:-?} · ${_rig:-standard} · ${_impl:-either}"; fi
+    fi
+    case "$_impl" in
+      worker)
+        echo "hint: implement=worker — prefer worker lane (volume-shaped; five-part spec); override freely" ;;
+      driver)
+        echo "hint: implement=driver — judgment-shaped exception; keep typing on the resident driver" ;;
+    esac
+  fi
+  # Deferred (out-of-phase) blockers — warn, do not human_block BUILD.
+  if [ -n "$deferred_blockers" ]; then
+    while IFS= read -r _bitem; do
+      [ -n "$_bitem" ] || continue
+      _bscope="$(_nh_blocker_scope "$_bitem")"
+      echo "note: deferred BLOCKING (${_bscope}) — not binding in phase=${phase}: ${_bitem}"
+    done <<< "$deferred_blockers"
   fi
   if [ -n "$blocking" ]; then
     echo "status: human_blocked"
     echo "action: resolve NEEDS-HUMAN blocking item"
     echo "detail: $blocking"
     echo "phase: $phase"
-  # Non-blocking slice routing from checkpoint (never fails next).
-  _cj="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
-  if [ -n "$_cj" ]; then
-    _sid=$(printf '%s' "$_cj" | jq -r '.slice_id // empty' 2>/dev/null || true)
-    _eff=$(printf '%s' "$_cj" | jq -r '.effort // empty' 2>/dev/null || true)
-    _impl=$(printf '%s' "$_cj" | jq -r '.implement // empty' 2>/dev/null || true)
-    _rat=$(printf '%s' "$_cj" | jq -r '.effort_rationale // empty' 2>/dev/null || true)
-    if [ -n "$_eff" ] || [ -n "$_sid" ]; then
-      if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either} — $_rat"
-      else echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either}"; fi
-    fi
-  fi
+    echo "scope: $(_nh_blocker_scope "$blocking")"
     exit 2
   fi
 

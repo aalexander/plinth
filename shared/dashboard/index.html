@@ -615,6 +615,149 @@
     cursor: pointer;
   }
   #nh-close:hover { color: var(--text); border-color: #484f58; }
+  /* Plan progress — card meter + drill-in track */
+  .plan-meter {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0.35rem 0 0.15rem;
+    min-width: 0;
+  }
+  .plan-meter .track {
+    flex: 1;
+    height: 6px;
+    border-radius: 99px;
+    background: rgba(48, 54, 61, 0.9);
+    overflow: hidden;
+    min-width: 48px;
+  }
+  .plan-meter .fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan), var(--purple));
+    transition: width 0.25s ease;
+  }
+  .plan-meter .pct {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--cyan);
+    min-width: 2.4em;
+    text-align: right;
+  }
+  .plan-meter .cur {
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 55%;
+  }
+  #nh-panel.plan-wide { width: min(640px, 100%); }
+  #nh-list.plan-track { gap: 0.55rem; list-style: none; margin: 0; padding: 0; }
+  #nh-list.plan-track > li { list-style: none; }
+  #nh-list.plan-track details.plan-sec,
+  #nh-list.plan-track details.plan-done-group {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(13, 17, 23, 0.45);
+    overflow: hidden;
+  }
+  #nh-list.plan-track details.plan-sec.active {
+    border-color: rgba(57, 210, 192, 0.4);
+    box-shadow: 0 0 0 1px rgba(57, 210, 192, 0.12);
+  }
+  #nh-list.plan-track details.plan-sec.done,
+  #nh-list.plan-track details.plan-done-group {
+    border-color: rgba(63, 185, 80, 0.3);
+    background: var(--green-bg);
+  }
+  #nh-list.plan-track summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.55rem 0.7rem;
+    font-family: var(--font);
+    font-size: 0.78rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    user-select: none;
+  }
+  #nh-list.plan-track summary::-webkit-details-marker { display: none; }
+  #nh-list.plan-track summary::before {
+    content: "▸";
+    color: var(--dim);
+    font-size: 0.7rem;
+    width: 0.85em;
+  }
+  #nh-list.plan-track details[open] > summary::before { content: "▾"; }
+  #nh-list.plan-track summary .sum-title { flex: 1; min-width: 0; font-weight: 600; }
+  #nh-list.plan-track details.plan-sec.active > summary .sum-title { color: var(--cyan); }
+  #nh-list.plan-track details.plan-sec.done > summary .sum-title,
+  #nh-list.plan-track details.plan-done-group > summary .sum-title { color: var(--green); }
+  #nh-list.plan-track summary .w {
+    font-family: var(--font);
+    font-size: 0.65rem;
+    color: var(--dim);
+  }
+  #nh-list.plan-track details.plan-sec.done > summary .w,
+  #nh-list.plan-track details.plan-done-group > summary .w { color: var(--green); }
+  #nh-list.plan-track .sec-body {
+    padding: 0 0.55rem 0.55rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  #nh-list.plan-track .leaf {
+    margin: 0;
+    padding: 0.45rem 0.6rem;
+    font-size: 0.74rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(13, 17, 23, 0.5);
+    font-family: var(--font);
+    line-height: 1.4;
+  }
+  #nh-list.plan-track .leaf.active {
+    border-color: var(--cyan);
+    background: var(--cyan-bg);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(57, 210, 192, 0.35), 0 0 12px rgba(57, 210, 192, 0.12);
+  }
+  #nh-list.plan-track .leaf.done {
+    border-color: rgba(63, 185, 80, 0.4);
+    background: var(--green-bg);
+    color: var(--text);
+  }
+  #nh-list.plan-track .leaf.open {
+    border-style: dashed;
+    color: var(--muted);
+  }
+  #nh-list.plan-track .mark {
+    font-family: var(--font);
+    color: var(--dim);
+    margin-right: 0.4rem;
+    font-weight: 700;
+  }
+  #nh-list.plan-track .leaf.active .mark { color: var(--cyan); }
+  #nh-list.plan-track .leaf.done .mark { color: var(--green); }
+  #nh-list.plan-track .leaf .w {
+    float: right;
+    font-family: var(--font);
+    font-size: 0.65rem;
+    color: var(--dim);
+    margin-left: 0.5rem;
+  }
+  #nh-list.plan-track .leaf.done .w { color: var(--green); }
+  #nh-list.plan-track .leaf.active .w { color: var(--cyan); }
+  .plan-meter .fill.done {
+    background: linear-gradient(90deg, #2ea043, var(--green));
+  }
+  .plan-meter .fill.active {
+    background: linear-gradient(90deg, var(--cyan), #1f6feb);
+  }
 </style>
 </head>
 <body>
@@ -988,28 +1131,48 @@
     // Only non-default lifecycle signals (BUILD is default — omit)
     if (life.phase === "harden") chips.push('<span class="chip orange">HARDEN</span>');
     if (life.dual_degraded) chips.push('<span class="chip yellow">DUAL↓</span>');
-    // Slice routing (generalized model policy) — from CHECKPOINT.md JSON
+    // Plan progress (derived from PLAN.md; spec fallback only) — glanceable surface
+    const pp = life.plan_progress && typeof life.plan_progress === "object"
+      ? life.plan_progress : null;
+    if (pp) {
+      const pLab = pp.pct_complete != null
+        ? ("PLAN " + Math.round(Number(pp.pct_complete)) + "%")
+        : "PLAN";
+      const pTitle = (pp.title || pp.primary || "plan") +
+        (pp.done != null && pp.total != null ? (" · " + pp.done + "/" + pp.total) : "") +
+        " — click for stages";
+      chips.push(
+        '<button type="button" class="chip cyan btn" data-plan="' + esc(p.path) +
+        '" title="' + esc(pTitle) + '">' + esc(pLab) + "</button>"
+      );
+    } else if (life.plan) {
+      chips.push('<span class="chip dim" title="PLAN.md present (no derived stages)">plan</span>');
+    }
+    // Slice routing (rigor/implement) — secondary chips
     const rt = life.routing && typeof life.routing === "object" ? life.routing : null;
     if (rt) {
-      if (rt.slice_index != null && rt.slice_total != null) {
+      if (rt.slice_index != null && rt.slice_total != null && !pp) {
         chips.push(
           '<span class="chip dim" title="Plan position (1-based)">' +
             "slice " + esc(String(rt.slice_index)) + "/" + esc(String(rt.slice_total)) +
             (rt.slice_id ? " · " + esc(String(rt.slice_id)) : "") +
             "</span>"
         );
-      } else if (rt.slice_id) {
+      } else if (rt.slice_id && !pp) {
         chips.push('<span class="chip dim" title="Current slice">' + esc(String(rt.slice_id)) + "</span>");
       }
-      if (rt.effort) {
+      // v5.1: the knob is `rigor` (standard|deep). `effort` is read as a fallback
+      // so a snapshot cached by an older builder still paints a chip instead of
+      // silently dropping it during the transition.
+      const rigor = rt.rigor || rt.effort;
+      if (rigor) {
         chips.push(
-          '<span class="chip" title="Slice effort (routing, non-blocking)">' +
-            esc(String(rt.effort)) +
+          '<span class="chip" title="Slice rigor (routing, non-blocking; deep = dual pass)">' +
+            esc(String(rigor)) +
             (rt.implement ? " · " + esc(String(rt.implement)) : "") +
             "</span>"
         );
       }
-      // v1: ETAs reserved-null — show only when non-null (future)
       if (rt.eta_secs_slice != null && Number(rt.eta_secs_slice) > 0) {
         chips.push('<span class="chip dim" title="Slice ETA">η ' + hum(Number(rt.eta_secs_slice)) + "</span>");
       }
@@ -1120,10 +1283,30 @@
       esc(p.branch) + " @" + esc(p.head),
       activity,
       session ? ("sess " + session) : null,
-      life.plan ? "plan" : null,
       life.plan_review ? "plan-review" : null,
       (life.checkpoint || life.handoff) ? "checkpoint" : null,
+      pp && pp.primary_kind ? ("src " + pp.primary_kind) : (life.plan ? "plan" : null),
     ].filter(Boolean).join(" · ");
+
+    // Plan progress meter (best glanceable signal for stage position)
+    let planMeter = "";
+    if (pp) {
+      const pct = pp.pct_complete != null ? Math.max(0, Math.min(100, Number(pp.pct_complete))) : null;
+      const curT = pp.current && pp.current.title
+        ? String(pp.current.title).replace(/\s+/g, " ").trim()
+        : "";
+      const curShort = curT.length > 52 ? curT.slice(0, 49) + "…" : curT;
+      const fillCls = (pct != null && pct >= 100) ? "fill done"
+        : (pct != null && pct > 0) ? "fill active" : "fill";
+      planMeter =
+        '<div class="plan-meter" title="' + esc(pp.note || "plan progress") + '">' +
+          '<div class="track"><div class="' + fillCls + '" style="width:' +
+            (pct != null ? pct : 0) + '%;opacity:' + (pct != null ? "1" : "0.25") +
+          '"></div></div>' +
+          (pct != null ? '<span class="pct">' + Math.round(pct) + "%</span>" : '<span class="pct dim">—</span>') +
+          (curShort ? '<span class="cur" title="' + esc(curT) + '">' + esc(curShort) + "</span>" : "") +
+        "</div>";
+    }
 
     // Show cleaned prompt only if headline is next (avoid duplicating same text)
     const showPrompt = prompt && next && prompt.toLowerCase() !== next.toLowerCase()
@@ -1139,6 +1322,7 @@
             '" title="Click to copy path: ' + esc(p.path) + '">' + esc(p.name) + "</button>" +
         "</div>" +
         '<div class="submeta" title="' + esc(p.path) + '">' + sub + "</div>" +
+        planMeter +
         (chips.length ? '<div class="chips">' + chips.join("") + "</div>" : "") +
         (headline
           ? '<div class="headline"><span class="lbl">' + esc(headlineLbl) + "</span>" +
@@ -1765,10 +1949,162 @@
     openProjectModal(path, "changes");
   }
 
+  function openPlan(path) {
+    openProjectModal(path, "plan");
+  }
+
   function openProjectModal(path, kind) {
     const p = projectsByPath[path];
     if (!p) return;
     if (!nhModal || !nhList || !nhTitle || !nhSub) return; // node smoke has no modal DOM
+    const panel = document.getElementById("nh-panel");
+    // Smoke/node stubs may lack Element.classList — guard before toggle.
+    if (panel && panel.classList && typeof panel.classList.toggle === "function") {
+      panel.classList.toggle("plan-wide", kind === "plan");
+    }
+    if (nhList && nhList.classList && typeof nhList.classList.toggle === "function") {
+      nhList.classList.toggle("plan-track", kind === "plan");
+    }
+    if (kind === "plan") {
+      const pp = (p.lifecycle && p.lifecycle.plan_progress) || null;
+      nhTitle.textContent = "PLAN — " + (p.name || path);
+      if (!pp) {
+        nhSub.textContent = path + " · no derived stages";
+        nhList.innerHTML = '<li class="muted">Add root PLAN.md (canonical operational plan), or a readable spec_path fallback.</li>';
+      } else {
+        const bits = [];
+        if (pp.pct_complete != null) bits.push(Math.round(Number(pp.pct_complete)) + "%");
+        if (pp.done != null && pp.total != null) bits.push(pp.done + "/" + pp.total + " done");
+        bits.push("primary " + (pp.primary || "?") + " (" + (pp.primary_kind || "?") + ")");
+        if (Array.isArray(pp.related) && pp.related.length) {
+          bits.push("also " + pp.related.map(function (r) {
+            return (r.kind || "") + ":" + (r.path || "");
+          }).join(", "));
+        }
+        if (pp.eta_secs != null && Number(pp.eta_secs) > 0) {
+          bits.push("η " + hum(Number(pp.eta_secs)));
+        } else {
+          bits.push("ETA —");
+        }
+        nhSub.textContent = bits.join(" · ") + " · " + path;
+        const rows = [];
+        const outline = Array.isArray(pp.outline) ? pp.outline : [];
+        if (!outline.length) {
+          rows.push('<li class="muted">(empty outline — work stages only; notes/risks omitted)</li>');
+        }
+
+        // Overall completion (same number as the card meter). Per-item
+        // cum_pct_end is only the planned share of the plan (e.g. item 3 of 12
+        // ends at ~24%) — NOT current completion. Never show that as "done %".
+        const overallPct = pp.pct_complete != null
+          ? Math.max(0, Math.min(100, Math.round(Number(pp.pct_complete))))
+          : null;
+
+        function leafHTML(leaf) {
+          const ls = (leaf && leaf.status) || "open";
+          const mark = ls === "done" ? "✓" : (ls === "active" ? "→" : "○");
+          let lw = "";
+          if (ls === "done" && overallPct != null) {
+            // Done steps: show overall completion (not planned slot %).
+            lw = '<span class="w" title="Overall plan completion">' + overallPct + "%</span>";
+          } else if (ls === "active" && overallPct != null) {
+            lw = '<span class="w" title="Overall plan completion (current)">' + overallPct + "%</span>";
+          }
+          // Future open steps: no % badge (avoids "24% on detail vs 8% overall").
+          return (
+            '<div class="leaf ' + esc(ls) + '">' + lw +
+              '<span class="mark">' + mark + "</span>" +
+              esc((leaf && leaf.title) || "") +
+            "</div>"
+          );
+        }
+
+        // Flatten work leaves for a top-level "completed" collapse.
+        const allLeaves = [];
+        outline.forEach(function (sec) {
+          (sec && Array.isArray(sec.children) ? sec.children : []).forEach(function (c) {
+            allLeaves.push(c);
+          });
+        });
+        const doneLeaves = allLeaves.filter(function (l) { return l && l.status === "done"; });
+        const activeLeaves = allLeaves.filter(function (l) { return l && l.status === "active"; });
+
+        if (doneLeaves.length) {
+          rows.push(
+            '<li><details class="plan-done-group">' +
+              "<summary>" +
+                '<span class="sum-title">✓ ' + doneLeaves.length + " completed" +
+                  (overallPct != null ? (" · " + overallPct + "% overall") : "") +
+                "</span>" +
+                (overallPct != null ? '<span class="w">' + overallPct + "%</span>" : "") +
+              "</summary>" +
+              '<div class="sec-body">' + doneLeaves.map(leafHTML).join("") + "</div>" +
+            "</details></li>"
+          );
+        }
+
+        if (activeLeaves.length) {
+          rows.push(
+            '<li><div class="sec-body" style="padding:0">' +
+              activeLeaves.map(leafHTML).join("") +
+            "</div></li>"
+          );
+        }
+
+        // Majors: expandable; open only when active (or no done/active collapse context).
+        outline.forEach(function (sec) {
+          const kids = (sec && Array.isArray(sec.children) ? sec.children : [])
+            .filter(function (k) { return k && k.status !== "done" && k.status !== "active"; });
+          // Skip empty majors once done/active are shown above
+          const secDone = (sec && sec.status) === "done";
+          const secActive = (sec && sec.status) === "active";
+          if (secDone && !kids.length) return; // fully done major folded into completed group
+          const remaining = (sec && Array.isArray(sec.children) ? sec.children : [])
+            .filter(function (k) { return k && k.status !== "done"; });
+          if (!remaining.length && !secActive) return;
+
+          const openAttr = secActive ? " open" : "";
+          const stCls = secActive ? "active" : (secDone ? "done" : "open");
+          // Section badge: overall % only when this major is the active/done focus.
+          const w = (secActive || secDone) && overallPct != null
+            ? ('<span class="w" title="Overall plan completion">' + overallPct + "%</span>")
+            : "";
+          const nLeft = remaining.length;
+          const sumLabel = esc((sec && sec.title) || "section") +
+            (nLeft ? (" · " + nLeft + " remaining") : "");
+          // Inside major: show only non-done (active already above; still show if only section view)
+          const bodyKids = remaining.filter(function (k) { return k.status !== "active"; });
+          if (!bodyKids.length && secActive) {
+            // Active already rendered; show collapsed major shell only if useful
+            rows.push(
+              '<li><details class="plan-sec ' + stCls + '"' + openAttr + ">" +
+                "<summary><span class=\"sum-title\">" + sumLabel + "</span>" + w + "</summary>" +
+                '<div class="sec-body"><div class="muted" style="font-size:0.72rem;padding:0.25rem 0.4rem">current step above</div></div>' +
+              "</details></li>"
+            );
+            return;
+          }
+          if (!bodyKids.length) return;
+          rows.push(
+            '<li><details class="plan-sec ' + stCls + '"' + openAttr + ">" +
+              "<summary><span class=\"sum-title\">" + sumLabel + "</span>" + w + "</summary>" +
+              '<div class="sec-body">' + bodyKids.map(leafHTML).join("") + "</div>" +
+            "</details></li>"
+          );
+        });
+
+        if (pp.note) {
+          rows.push('<li class="muted">' + esc(pp.note) + "</li>");
+        }
+        if (pp.progress_mode) {
+          rows.push('<li class="muted">mode: ' + esc(String(pp.progress_mode)) +
+            " · work stages only (notes/risks omitted)</li>");
+        }
+        nhList.innerHTML = rows.join("");
+      }
+      nhModal.classList.add("open");
+      return;
+    }
     if (kind === "changes") {
       const r = p.review || {};
       const items = Array.isArray(r.findings) ? r.findings : [];
@@ -1862,6 +2198,11 @@
         openChanges(ch.getAttribute("data-changes"));
         return;
       }
+      const pl = e.target && e.target.closest ? e.target.closest("[data-plan]") : null;
+      if (pl) {
+        openPlan(pl.getAttribute("data-plan"));
+        return;
+      }
       const t = e.target && e.target.closest
         ? (e.target.closest("[data-human]") || e.target.closest("[data-nh]"))
         : null;
@@ -1927,7 +2268,7 @@
     cardTone: cardTone, cardHTML: cardHTML, esc: esc,
     modelsLine: modelsLine, modelsHTML: modelsHTML, modelParts: modelParts,
     phaseBar: phaseBar, renderQuota: renderQuota,
-    openNeedsHuman: openNeedsHuman, openChanges: openChanges,
+    openNeedsHuman: openNeedsHuman, openChanges: openChanges, openPlan: openPlan,
     closeNeedsHuman: closeNeedsHuman, openProjectModal: openProjectModal,
     attentionScore: attentionScore, sortProjects: sortProjects, matchesFilter: matchesFilter,
     isRecentlyActive: isRecentlyActive,

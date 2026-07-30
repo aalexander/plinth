@@ -26,11 +26,18 @@ Drivers (Claude/codex/grok) and operators using Plinth on feature branches.
 8. `plinth plan` scaffolds PLAN.md; `plinth plan --deep` runs three existing seats
    (reviewer/audit/advisor config) as a best-effort plan review panel (not a new Delphi product).
 9. Review anti-thrash (instrument): cooperative-driver threat model; HANDOFF
-   excluded + HANDOFF-only **base…HEAD** floor; BUILD asymptotic coverage →
-   minor; out-of-pathspec demotion only for thrash classes; never demote
-   external security; sticky AUTO thrash-classes only; dual-pass in HARDEN
-   Tier-2 only; same-open soft cap; VERSION exact top-H2 match; NEEDS-HUMAN
-   project-owned.
+   excluded + HANDOFF-only **base…HEAD** floor; asymptotic coverage → minor
+   (BUILD by harness demotion, HARDEN by reviewer contract — never a blocking
+   major in either phase); demotion restricted to an **in-repo allowlist of
+   class IDs** assigned by the harness, never supplied by the reviewer or driver,
+   with every demotion disclosed on the receipt; out-of-pathspec demotion only
+   for those classes; never demote external security, correctness, data loss or
+   real test gaps (both belts run ahead of every demotion arm); sticky AUTO
+   thrash-classes only; **dual OFF by default in every phase** (v5.1 —
+   `rigor=deep` or `PLINTH_DUAL_PASS=1` only; a requested dual with no
+   cross-vendor seat fails closed), with security coverage supplied by the
+   risk-triggered **L3 security pass** instead; same-open soft cap; VERSION exact
+   top-H2 match; NEEDS-HUMAN project-owned.
 10. Phase slug encode (no feat/a-b vs feat/a/b collision); findings round sort
     by basename N; handoff preserves Goal/Evidence/Risks + pre-archive;
     `plinth next` exit 3 when idle.

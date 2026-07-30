@@ -159,6 +159,29 @@ jobs:
           set -euo pipefail
           # PLAN.md AC 1–4 + migrate/next/sticky units (no network).
           ./.github/scripts/canary-lifecycle-build-harden.sh
+      - name: Checkpoint + rigor/seat routing canary
+        run: |
+          set -euo pipefail
+          ./.github/scripts/canary-checkpoint-routing.sh
+      - name: Thrash demotion class bounds canary
+        run: |
+          set -euo pipefail
+          # Class demotion is a deliberate fail-open; this is the bound on it.
+          ./.github/scripts/canary-thrash-classes.sh
+      - name: L3 security pass trigger canary
+        run: |
+          set -euo pipefail
+          # Dual is off by default in v5.1; this is the coverage that replaces it.
+          ./.github/scripts/canary-security-pass.sh
+      - name: Plan progress derivation + dashboard surface canary
+        run: |
+          set -euo pipefail
+          ./.github/scripts/canary-plan-progress.sh
+      - name: Next phase-scoped BLOCKING + advise diagnostics canaries
+        run: |
+          set -euo pipefail
+          ./.github/scripts/canary-next-blocker-scope.sh
+          ./.github/scripts/canary-advise-diag.sh
       - name: Workflow run-blocks stay under the Actions expression limit
         run: |
           set -euo pipefail
@@ -1038,9 +1061,13 @@ jobs:
             git checkout -qb feat >/dev/null 2>&1; echo a > app.py; echo z > other.py; git add -A; git commit -qm r1 >/dev/null
             PATH="$VC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || true
             echo fixed > app.py; git add -A; git commit -qm fix >/dev/null
-            rc=0; PATH="$VC:$PATH" ./.plinth/review.sh main >/dev/null 2>&1 || rc=$?
+            rc=0; PATH="$VC:$PATH" ./.plinth/review.sh main >"$vd/r2.out" 2>&1 || rc=$?
             vj=".plinth/session/review/feat/verdict.json"
-            [ "$rc" = 0 ] || { echo "::error::v4.6 verify loop did not approve (rc=$rc)"; exit 1; }
+            # Print the loop's own output on failure. Discarding it (the previous
+            # `>/dev/null 2>&1`) meant this assertion could only ever report a bare
+            # rc, so a CI-only failure was undiagnosable from the log — the fixture
+            # hid the reason for its own red.
+            [ "$rc" = 0 ] || { echo "::error::v4.6 verify loop did not approve (rc=$rc)"; echo "--- review.sh output ---"; tail -40 "$vd/r2.out"; exit 1; }
             [ "$(jq -r .mode "$vj")" = verify ] || { echo "::error::round 2 was not a verify (mode=$(jq -r .mode "$vj"))"; exit 1; }
             [ "$(jq -r .round "$vj")" = 2 ] || { echo "::error::Tier-1 verify APPROVED did not bind (round=$(jq -r .round "$vj") — a confirmation ran?)"; exit 1; }
             grep -q 'CUMULATIVE FIX DIFF' "$VC/prompt-2" || { echo "::error::verify round did not use the scoped cumulative payload"; exit 1; }
@@ -1660,6 +1687,20 @@ jobs:
           r9e_reject "non-allowlisted override" '.override_ledger = [{round:1, name:"PLINTH_ANYTHING", value:"x"}]'
           r9e_reject "override value w/ space"  '.override_ledger = [{round:1, name:"PLINTH_REVIEWER_MODEL", value:"gpt 5.6"}]'
           r9e_reject "empty repo"               '.repo = ""'
+          # v5.1 demotion ledger: the field is OPTIONAL (pre-v5.1 receipts have
+          # none and must keep verifying — the baseline above proves that), but a
+          # ledger that IS present must be auditable, so its shape is bounded.
+          r9e_demotions_ok() {  # r9e_demotions_ok <label> <jq-filter>
+            r9e_receipt "$2" > "$R9E/r.json"
+            local rc; rc="$(r9e_run "$R9E/r.json")"
+            [ "$rc" = 0 ] || { echo "::error::(9e) $1: a well-formed receipt was rejected (rc=$rc) — receipt-verify is now too strict about the demotion ledger"; exit 1; }
+          }
+          r9e_demotions_ok "empty demotion ledger" '.demotions = []'
+          r9e_demotions_ok "valid demotion ledger" '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor",phase:"build",mode:"fresh"}]'
+          r9e_reject "demotions not an array"   '.demotions = {}'
+          r9e_reject "demotion class not namespaced" '.demotions = [{round:1,id:"F1",file:"a.py",class:"coverage-gap",from:"major",to:"minor"}]'
+          r9e_reject "demotion missing from"    '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",to:"minor"}]'
+          r9e_reject "demotion round not number" '.demotions = [{round:"1",id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor"}]'
           # size bound: >64KB must be rejected before any field is trusted
           r9e_receipt > "$R9E/big.json"
           python3 - "$R9E/big.json" <<'R9EPY'

@@ -1,5 +1,201 @@
 # Plinth changelog
 
+## v5.1.0 — ship-bias: dual is optional rigor — July 29, 2026
+
+Ship bias cuts sequential optional opinions, not the floor. The mandatory layers
+are unchanged: free fail-open canaries (L1), **one** primary adversarial review
+plus one verify (L2, APPROVED@HEAD), and the merge gates (L4 — floor + checks +
+`receipt / verify` with `strict:true` where wired). Dual first-pass moves to
+optional rigor; a risk-triggered security pass (L3) covers security-shaped
+surfaces, which is what dual was actually being used for.
+
+- **Round-29 review fixes (all five real, all reproduced by the reviewer).** The
+  v5.1 canaries passed while these were broken, because a floor tested with its
+  own vocabulary proves nothing:
+  - **The never-demote floor was vocabulary-dependent.** Probes demoted XSS, CSRF,
+    plaintext passwords, exposed encryption keys, account takeover, unquoted shell
+    execution, handoff overwrite, checkpoint truncation, retry-returns-success, and
+    deleting the wrong row. `SEC_DESC_RE` / `CORRECTNESS_DESC_RE` are now single
+    shell constants injected into the demotion gate, built from the reviewer's
+    vocabulary rather than the author's, and the canary's regression corpus uses
+    the reviewer's exact phrasings. An unset lexicon now **fails loud** instead of
+    degrading to `test(""; "i")`, which matches every string and would silently
+    disable demotion entirely.
+  - **The audit-payload demotion ledger was dishonest.** Auditor findings need not
+    carry ids, and `thrash_ledger_rows` joined every id-less finding to the *first*
+    snapshot entry — recording a demoted blocker as `from:"major"`. It now pairs by
+    INDEX (which `map` preserves) and records `"unknown"` on a length mismatch
+    rather than a confident wrong answer.
+  - **`PLINTH_SECURITY_PASS=1` did not always force L3.** Tier-0 and
+    HANDOFF/CHECKPOINT-only approvals exit before the trigger, so it was hardcoded
+    `NOT_TRIGGERED` and `security_pass_required` was never evaluated. Both paths now
+    record `SKIPPED_NO_MODEL_ROUND` and fail closed when the knob demands coverage.
+  - **The two rigor implementations disagreed on env precedence.**
+    `PLINTH_CHECKPOINT_RIGOR=""` (set but empty) plus `PLINTH_CHECKPOINT_EFFORT=xhigh`
+    gave review=deep, writer=standard — so the loop could pay for a dual pass while
+    the checkpoint recorded standard. Set-but-empty is now an explicit clear in both.
+  - **`MANUAL.md` still documented `_EFFORT medium|high|xhigh`** as the preferred
+    interface with BUILD-only dual.
+- **Dual OFF by default — including HARDEN.** Through v5.0.x every
+  hardening-phase round wanted a dual first pass. Phase alone is not evidence
+  that a second *generalist* opinion earns a paid round. Dual now runs only on
+  `rigor=deep` or `PLINTH_DUAL_PASS=1` (eligibility unchanged: fresh · r1 ·
+  Tier-2 · cross-vendor audit seat). Dual is **never** a required check.
+- **Slice knob renamed `effort` → `rigor: standard|deep`.** The old name and its
+  `medium|high|xhigh` values are the MODEL layer's vocabulary (harness
+  `/effort`, codex `model_reasoning_effort`) while the knob only ever decided
+  "run the dual pass?" — `shared/MODELS.md` used the word in three senses in one
+  file, and the collision misled a driver session into reading it as a
+  thinking-effort request. `slice_dual_from_effort` → `slice_dual_from_rigor`;
+  `SLICE_EFFORT` → `SLICE_RIGOR`; `PLINTH_CHECKPOINT_EFFORT` →
+  `PLINTH_CHECKPOINT_RIGOR`; `effort_rationale` → `rigor_rationale`.
+  MODELS.md now RESERVES `effort` for model reasoning effort.
+  - **Deprecation window:** the old fence key and env name are still **read**
+    (`medium|high` → `standard`, `xhigh` → `deep`) with a one-time stderr note.
+    The writer emits `rigor` only, so one `plinth checkpoint` migrates a
+    downstream `plinth.checkpoint/v1` fence. Dashboard falls back to `effort`
+    when painting a snapshot cached by an older builder.
+- **A REQUESTED dual with no usable seat now fails CLOSED** (exit 2) **before**
+  the paid primary round runs, rather than silently going single-pass while the
+  checkpoint claims deep rigor. `audit_vendor` unset or equal to the reviewer
+  vendor on a would-be-dual round is the trigger. Escape hatches: fix the seat,
+  drop to `rigor=standard`, or `PLINTH_ACK_NO_DUAL=1` — recorded on the request
+  (`slice_routing.ack_no_dual`), the verdict (`dual_first_pass: ACK_NO_SEAT`) and
+  the minted receipt (`ack_no_dual`). A **default** dual-skip stays log-only.
+- **Receipt:** additive `ack_no_dual` field. `receipt-verify.sh`'s schema check is
+  a positive conjunction and `subject_digest` covers only
+  repo/base/merge-base/head/tree, so older verifiers still validate new receipts.
+- **L3: risk-triggered security pass (S4).** Dual was mostly being used as "get a
+  second pair of eyes on something security-shaped", so v5.1 serves that need
+  directly: ONE security-focused pass on the binding-APPROVED path, scoped to
+  security severities only, when the diff touches a security-sensitive surface.
+  - Trigger comes from `risk-classify`'s own reason strings — auth/crypto/secret
+    surfaces, the tooling ship path, and the supply-chain vectors (dependency
+    manifests, submodules, symlinks) where a malicious change reads as ordinary
+    maintenance — or from `PLINTH_SECURITY_PASS=1`. `=0` declines explicitly.
+    The trigger list is in-repo, so narrowing it is Tier 2 by construction.
+  - **Unreadable or empty risk reasons fail TOWARD running the pass.** A pass that
+    runs unnecessarily costs one auditor call; one skipped because the reasons
+    could not be parsed is exactly the gap this layer exists to close.
+  - **Never a false concur.** Seat unavailable → `security_pass.status:
+    UNAVAILABLE` on the verdict. A same-vendor seat is *not* an independent
+    opinion, so it is recorded UNAVAILABLE rather than run and counted as
+    coverage. Not triggered → `NOT_TRIGGERED`. Status is folded into the receipt,
+    read back off the verdict, defaulting to `UNKNOWN` rather than anything
+    reassuring.
+  - **Not a merge gate** (matching the existing cross-vendor audit): security
+    findings are reported loudly and recorded, the verdict is not auto-unbound,
+    and the driver is instructed to fix security majors and remint APPROVED@HEAD.
+  - Optional `security_pass_required = true` in `.plinth/config` makes a
+    triggered-but-unavailable pass fail closed. Read from the **base** config, not
+    the working tree, so a PR cannot delete the knob that governs it.
+- **Reviewer contract (S5).** Three additions that make the ship-bias lifecycle
+  the reviewer's contract rather than only the harness's behavior:
+  - **Asymptotic findings are never major in EITHER phase.** Previously only BUILD
+    demoted asymptotic coverage, which left the hardening-phase ship review free
+    to file "the fixture cannot reach the live seat" as blocking — the exact
+    spiral that stalled the 5.0.8 loop. The test is not "is this worth doing?" but
+    "can the driver finish it?": if satisfying it needs infrastructure that does
+    not exist, it is minor by construction. Mixed findings must be split, since
+    the harness reads mixed wording as must-block.
+  - **Security is never minor and never Noticed** — every demotion rule stops at
+    security, stated explicitly rather than left implicit in the harness.
+  - **Reviewers must not emit `class:` IDs.** Classification is the instrument's
+    job precisely so no participant in the loop can classify its own finding as
+    demotable.
+  - **A diff with only minors open is APPROVED** — stated outright, with the
+    reason it is safe (open minors are required to land in `## Noticed`, so
+    withholding APPROVED to keep backlog visible buys nothing).
+- **Thrash demotion is now class-bounded (S2).** Demotion turns a reviewer major
+  into a minor, so it is a deliberate fail-open. It is bounded three ways:
+  - **In-repo vocabulary, single source.** `def demotable_classes` in
+    `shared/.plinth/review.sh` lists the seven demotable class IDs
+    (`coverage-gap`, `canary-depth`, `fake-cli-argv`, `handoff-ws`,
+    `sticky-ledger`, `docs-prose`, `queue-nit`). A finding is mapped to a class
+    only by the deterministic in-repo classifier — there is **no `class` field
+    read from the findings JSON**, so "the driver must not assign demotion
+    classes" holds by construction rather than by policy.
+  - **Tier-2 by construction.** The vocabulary lives under `.plinth/`, which
+    risk-classify's TOOLING pattern already classifies Tier 2, so widening the
+    fail-open cannot ship under a Tier-1 review. Canary-asserted end-to-end.
+  - **Every demotion records its class** in the `[THRASH:class:…]` marker, so
+    the receipt ledger (S3) can harvest it and laundering stays auditable.
+- **Demotion ledger on the receipt (S3).** Every demotion is recorded with the
+  class it was demoted under and the severity it came from (`{round, id, file,
+  class, from, to, phase, mode}`), appended to a cumulative per-loop artifact
+  (`demotions.jsonl`) and folded into the minted receipt as `demotions`. An
+  APPROVED that leaned on demotions is auditable from the note alone.
+  - `thrash_ledger_rows` is a separate extractable function, so the canary drives
+    the real row construction rather than a twin — the receipt is only as honest
+    as that mapping. Severities are snapshotted *before* the policy runs, because
+    the policy rewrites them in place and the `[THRASH:]` marker records only the
+    class, not the severity it came from.
+  - A stale marker carried forward by sticky with no severity transition does not
+    re-enter the ledger.
+  - A **missing** ledger file means no demotions (the empty array is correct); an
+    **unparseable** one refuses to mint rather than minting `[]` and hiding real
+    demotions — the same fail-closed shape as the override ledger.
+  - `receipt-verify.sh` bounds the ledger's SHAPE when present (`class:*`
+    namespaced, real `from`/`to`, numeric round) but never requires the field, so
+    pre-v5.1 receipts keep verifying. Verified end-to-end against the real
+    verifier, not only against the extracted schema.
+- **Never-demote floor now applies to every arm.** Pre-v5.1 the ephemera arm ran
+  *before* any precedence check, so a data-loss or security finding filed against
+  `HANDOFF.md`/`CHECKPOINT.md` was demoted on **path alone**. `is_external_security`
+  and `is_precedence_must_block` are now both checked at the top, ahead of every
+  demotion arm.
+- **Precedence belt learned passive-voice data loss.** A finding worded "the
+  stored slice state **is lost**" matched no belt token (`data.?loss`,
+  `erases the prior`) and demoted as `class:handoff-ws`. Found by the new canary,
+  not by review. Narrowly anchored to stateful nouns so ordinary prose is not
+  swept in.
+- **Coverage-shaped classes demote in BUILD only.** `coverage-gap`,
+  `canary-depth` and `fake-cli-argv` are not demoted in HARDEN, where coverage
+  depth and exotic robustness are explicitly in charter — the ship spiral is
+  stopped by the reviewer contract forbidding asymptotic majors, not by widening
+  a fail-open into the hardening phase.
+- **New canary `canary-thrash-classes.sh`** drives the production jq (never a
+  re-implementation): the allowlist is parsed out of `review.sh`; security /
+  correctness / data-loss / real-test-gap findings deliberately worded to *also*
+  trip a demotable classifier stay major; the named asymptotic classes do demote
+  in BUILD; a corpus sweep asserts no demotion ever happens without an
+  allowlisted, recorded class; and one vocabulary is shared with sticky's
+  fingerprint classes.
+- **Canaries:** `canary-checkpoint-routing.sh` rewritten for the new matrix — the
+  HARDEN-does-not-dual regression lock, the alias map, a **cross-implementation
+  agreement test** (the shell alias in `review.sh` vs the python alias in
+  `bin/plinth`, driven end-to-end per token), the fail-closed request-dual matrix
+  (block / ack / never-wedge on verify·r2·Tier-1), and ordering locks that the
+  fail-closed check precedes `reviewer_run` and the ack precedes `mint_receipt`.
+  The deprecation note's once-per-process claim is measured on the **production**
+  path, not on the helper in isolation — the guard cannot live inside the
+  command-substituted normalizer.
+
+## v5.0.8 — effort/seat live wiring — July 29, 2026
+- **#61 next blockers:** phase-scoped NEEDS-HUMAN — `[BLOCKING:ship|harden|build|global]`;
+  bare `[BLOCKING]` stays global. Ship/harden items do not stop BUILD `plinth next`
+  (deferred note); HARDEN still fails closed on ship/harden/global.
+- **#62 advise diagnostics:** distinguish CLI missing vs not signed in vs nonzero exit;
+  preserve stderr sample; never conflate into “missing or not signed in.” Auth from
+  stderr, stdout-on-nonzero, and exit-0 short unauth banners only (long auth prose is
+  advice).
+- **Effort → dual-pass:** checkpoint `effort=xhigh` enables dual first-pass in
+  BUILD (Tier-2 · fresh r1 · cross-vendor audit); HARDEN dual unchanged; medium/high
+  keep cooperative-driver BUILD posture. Default missing effort → high (no behavior
+  change). Never a ship gate.
+- **Implement → next hints:** `plinth next` prints non-blocking `hint:` for
+  `implement=worker|driver` on every path (route line also always when present).
+- **request.json:** stamps `slice_routing` (effort, implement, slice_id, dual_wanted).
+- **MODELS:** documents live wiring table; advise --impactful stays driver choice.
+- **Canaries:** dual matrix unit + implement-hint coverage.
+- **Dashboard plan progress:** derive `lifecycle.plan_progress` from root
+  **PLAN.md only** (spec_path coding-shaped fallback when PLAN absent — no
+  IMPLEMENTATION-PLAN aliases); card progress meter + PLAN chip; click-in stage
+  track expands Slice #### subheads. Checkpoint seeds PLAN only (all-done →
+  status=done; refuse conflicting id/title; no SPEC seed as plan_ref). Spec
+  harvest: Requirements/Behavior shall + Features lists; Phase/Foundation majors;
+  coding sign-off workflows kept. ETA reserved-null.
+
 ## v5.0.7 — residual zero-debt — July 29, 2026
 - **Thrash:** define precedence before coverage-asymptotic so mixed "helper
   extraction + real bug" descriptions stay major in BUILD.

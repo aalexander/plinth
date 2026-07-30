@@ -1,9 +1,122 @@
 {
   "schema": "plinth.residual/v1",
-  "bound": false,
-  "sha": "",
+  "bound": true,
+  "sha": "efaa41e2dae9b5f50eeb846c5ac0296153667ee7",
   "by": "austin",
-  "ts": "2026-07-29T16:14:15Z",
-  "note": "5.0.7 residual zero-debt: classifier mixed-phrase + production-path canaries closed; unbound",
-  "findings": []
+  "ts": "2026-07-30T04:03:51Z",
+  "note": "human residual land",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": ".plinth/RESIDUAL.json",
+      "line": 1,
+      "description": "TAMPERING: This modifies a pinned installed `.plinth/*` instrument file, while the prompt’s complete tooling-commit list is empty. Therefore no commit clearly labeled as a Plinth release/update authorizes the change; the tampering exception blocks regardless of the draft’s contents.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": ".github/scripts/canary-plan-progress.sh",
+      "line": 425,
+      "description": "Still open. Any `plan-done-group` substring satisfies the structure check; the closed-state regex only detects `open` after the class, and `.leaf.active` is accepted anywhere rather than tied to `pp.current`. The malformed structures from the prior finding still pass.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": ".github/scripts/canary-checkpoint-routing.sh",
+      "line": 406,
+      "description": "Still open. The canary invokes helpers and `stamp_request_json`, but `dual_ok_compose` and `requested_dual_blocks` still copy production predicates. It never executes real `run_round`/`run_auditor`, finding union, degradation cleanup, acknowledgement propagation, or final-verdict behavior. MANUAL.md:947 still incorrectly claims this requires a live seat; fake adapters can exercise the glue.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 1716,
+      "description": "Still open. The cancellation canary remains Claude+TERM only, uses a TERM-responsive fake, unconditionally KILLs the parent, discards its wait status, and checks only prompt files. INT/HUP, Codex/Grok/Agy, TERM-ignoring descendants, exit 130/143/129, descendant termination, and err/out cleanup remain untested changed behavior.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 6505,
+      "description": "Still open. The unconditional `seed_idx != prev_idx` branch still rewinds valid 3/3 checkbox, bullet, H4, and shall cursors to 1/3. The other reproduced siblings also remain: planless ready/implementing/reviewing/blocked fences retain stale id/title/index/total; planless done without an index retains stale state; same-count bullet replacement writes done at 1/2; same-index rename preserves old labels; nested-to-root PLAN transition preserves nested labels.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 1837,
+      "description": "Still open across all four vendor branches. Fake CLIs inspect only `FAKE_ADVISE_MODE`, never stdin or argv, so prompt/question construction, model selection, Claude safe/tool flags, Codex isolation flags, Grok rules, and Agy sandbox flags can regress while the canary remains green.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 5526,
+      "description": "Still open. Direct production-function probes admit every tested numbered human gate: `Phase 0 Human sign-off`, `Phase 1 Human sign-off`, `Phase 12 Product sign-off`, `Phase 2 Legal approval`, and `Phase 3 Required human approval`. The unconditional numbered-phase positive still overrides these non-coding meanings.",
+      "id": null
+    },
+    {
+      "severity": "minor",
+      "file": "bin/plinth",
+      "line": 1704,
+      "description": "Still open BUILD hardening. Prompt mktemp failure leaves `_apf` empty and the following redirect aborts under `set -e`; err/out creation failures and other early exits still lack EXIT cleanup and failure-injection coverage.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 5548,
+      "description": "Still open. Direct probes still classify all three pure gates as coding: `Land product sign-off before launch`, `Land security sign-off from the approver`, and `Build owner sign-off from the accountable executive`. The override’s second regex treats verbs such as land/build as sufficient instead of requiring a coding artifact.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "bin/plinth",
+      "line": 5536,
+      "description": "Still open. A direct sweep rejects 21 of the 33 named genuine Phase milestones: risk-scoring API, approval workflow, tradeoff analyzer, non-goal validator, ratification workflow, background job, context-propagation middleware, problem endpoint, dependency service, inventory API, invariant checker, annex generator, rationale UI, process worker, decisions service, deficiency dashboard, noticed exporter, assumptions validator, deferrals service, dependency-rules checker, and architecture service. MANUAL.md:962 and RESIDUAL.json:35 incorrectly reduce this to approximately one miss.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": ".github/scripts/canary-plan-progress.sh",
+      "line": 1284,
+      "description": "Still open. The `.NET` case is protected only by total child count. Regressing `.NET shall…` to `NET shall…` still leaves three children and passes; only the 3DS and 24-hour prefixes are asserted exactly.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "shared/.plinth/review.sh",
+      "line": 1522,
+      "description": "Still open across all four classifier sites. The three sticky classifiers at lines 1522, 1618, and 1676 retain the narrow security vocabulary, while the final demotion floor remains vocabulary-dependent despite being widened. For example, `coverage remains incomplete; any signed-in user can download another customer's invoice because ownership is never checked` matches no security/correctness token, becomes the coverage class, and can later auto-resolve. The canary checks a fixed corpus, not the claimed never-demote property.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "shared/.plinth/review.sh",
+      "line": 2557,
+      "description": "Still open, narrowed. Index pairing fixes the id-less auditor severity mismatch, but primary append/computation failures at lines 2557–2561 and audit append failure at 2879–2880 merely log that the receipt will under-report, then continue to mint a partial ledger. This still contradicts MANUAL.md:776 and the success criterion that every demotion is disclosed.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "shared/.plinth/review.sh",
+      "line": 729,
+      "description": "Still open across every required-pass failure branch. Trigger evaluation now runs, but the no-model path at line 729, auditor-unavailable path at 2989, and same-vendor path at 2998 call `die_infra` after an APPROVED verdict was persisted and never call `unbind_verdict`. `die_infra` only records last-error and exits, so the supposedly fail-closed APPROVED remains readable. The canary stubs `die_infra` and never asserts that the verdict becomes UNBOUND or disappears.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "MANUAL.md",
+      "line": 103,
+      "description": "Still open, narrowed. MANUAL.md and PLAN-checkpoint-routing.md now document the preferred rigor interface, but the locked design spec still uses current-tense `xhigh` at docs/SHIP-BIAS-5.1.md:41, 101, and 133. Its line 71 also says reviewer-emitted class IDs are the bound, contradicting the implemented and MANUAL-documented rule that no reviewer/driver class field is accepted.",
+      "id": null
+    },
+    {
+      "severity": "major",
+      "file": "shared/.plinth/review.sh",
+      "line": 1359,
+      "description": "NEW: The new per-loop artifacts are never cleared. The HANDOFF-only reset at lines 172–174, Tier-0 reset at 1043–1044, and ordinary new-loop reset at 1359–1362 all omit `demotions.jsonl` and `dual-no-seat-ack.json`; an absent-verdict restart has no cleanup either. A later loop can therefore mint prior-loop demotions and a phantom `ACK_NO_SEAT` into an unrelated receipt/verdict. The new canaries only grep mint wiring and do not exercise loop rollover.",
+      "id": null
+    }
+  ]
 }
