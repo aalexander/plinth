@@ -1,5 +1,33 @@
 # Plinth changelog
 
+## v5.2.2 — unbreak the review loop on codex-cli >= 0.146.0 — July 30, 2026
+
+**The review loop was broken outright** for anyone on codex-cli 0.146.0 (released under
+us; the repo's behavioural receipt documents 0.145.0). Every round failed with:
+
+```
+codex exec failed (round 1, mode fresh): prompt_bytes=… stderr_bytes=0 err=(empty)
+```
+
+**Root cause:** 0.146.0 enforces OpenAI's strict structured-output rule that *every*
+property of *every* object must appear in `required`, with optionality expressed as a
+nullable type union. `review-schema.json` marked `id` optional inside `findings.items`
+(the harness assigns ids via sticky, so reviewers need not supply one), so the schema was
+**rejected — exit 1 with completely empty stderr.**
+
+- `findings.items.required` now lists every property; `id` is `["string","null"]` so a
+  reviewer can still omit it by emitting `null`. Verified against the real CLI in both
+  shapes: empty findings, and a finding with `id: null`.
+- **The diagnostic misdirected the diagnosis.** It asserted "often payload/thread
+  capacity", which sent the investigation after payload size — and survived a genuine
+  85% payload reduction (209,453 → 31,276 prompt bytes) still failing. It now names a
+  rejected `--output-schema` as the first suspect, since that is the failure mode that
+  produces empty stderr.
+- **Canary:** `canary-digest-base.sh` now validates the shipped schema against strict
+  structured-output rules, so a vendor tightening cannot silently break every round again.
+
+Found only because the payload work removed the plausible-but-wrong explanation.
+
 ## v5.2.1 — do not review vendored duplicates — July 30, 2026
 - **`plinth update` produced an unreviewable diff.** The 4.8.1 → 5.2.0 refresh built a
   **209,453-byte** prompt that exceeded the reviewer CLI's capacity and failed the round

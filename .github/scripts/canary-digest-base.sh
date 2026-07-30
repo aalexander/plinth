@@ -87,3 +87,33 @@ VDIR="$(mktemp -d)"
   echo "OK receipt-verify entry-point without shasum (sha256sum fallback)"
 )
 echo "OK canary-digest-base.sh"
+
+# ── review-schema.json must satisfy STRICT structured-output rules ───────────
+# codex-cli 0.146.0 began enforcing them: every property of every object must appear
+# in `required` (optionality = a nullable type union). Our schema had `id` optional
+# inside findings.items, so 0.146.0 rejected it — exit 1 with EMPTY stderr, which the
+# loop reported as a payload-capacity problem. That broke the review loop outright for
+# anyone on >=0.146.0. A schema this canary passes cannot regress that way.
+python3 - "$ROOT/shared/.plinth/review-schema.json" <<'PY'
+import json, sys
+bad = []
+def walk(o, path="root"):
+    if isinstance(o, dict):
+        if o.get("type") == "object" and "properties" in o:
+            props = set(o["properties"])
+            req = set(o.get("required") or [])
+            if o.get("additionalProperties") is not False:
+                bad.append(f"{path}: additionalProperties must be false")
+            if props != req:
+                bad.append(f"{path}: required must list every property; missing {sorted(props-req)}")
+        for k, v in o.items(): walk(v, f"{path}.{k}")
+    elif isinstance(o, list):
+        for i, v in enumerate(o): walk(v, f"{path}[{i}]")
+walk(json.load(open(sys.argv[1])))
+if bad:
+    print("review-schema.json violates strict structured-output rules:")
+    for b in bad: print("  -", b)
+    raise SystemExit(1)
+PY
+[ "$?" = 0 ] || { echo "FAIL: review-schema.json is not strict-mode valid (codex >=0.146.0 rejects it: exit 1, empty stderr)"; exit 1; }
+echo "OK review-schema.json satisfies strict structured-output rules"
