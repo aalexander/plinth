@@ -296,6 +296,24 @@ mkf src/app.py minor "coverage remains incomplete [THRASH:class:coverage-gap →
 jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/S.json" > "$TMP/Spre.json"
 [ "$(thrash_ledger_rows "$TMP/S.json" "$TMP/Spre.json" 4 build verify)" = "[]" ] \
   || fail "a stale THRASH marker with no severity transition must not re-enter the ledger"
+# The AUDIT payload gets the same demotion policy applied (it changes the reported
+# blocking count), so its demotions must reach the ledger too — otherwise "every
+# demotion is disclosed on the receipt" is wider than the code. Exercise the same
+# shape the production audit block uses, tagged source:"audit".
+mkf docs/guide.md major "the prose here could be clearer about ordering" > "$TMP/A.json"
+jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/A.json" > "$TMP/Apre.json"
+thrash_policy_process_findings "$TMP/A.json" build "" "" SPEC.md fresh
+arows="$(thrash_ledger_rows "$TMP/A.json" "$TMP/Apre.json" 2 build audit)"
+printf '%s' "$arows" | jq -e 'length == 1 and .[0].class == "class:docs-prose" and .[0].mode == "audit"' >/dev/null \
+  || fail "audit-payload demotions must produce ledger rows: $arows"
+printf '%s' "$arows" | jq -c '.[] + {source:"audit"}' | jq -e '.source == "audit"' >/dev/null \
+  || fail "audit rows must be taggable with their source"
+grep -q 'source:"audit"' "$REVIEW" \
+  || fail "the production audit block must tag its demotion rows with source"
+grep -q 'thrash_ledger_rows "\$afind"' "$REVIEW" \
+  || fail "the production audit block must feed its demotions into the ledger"
+pass "audit-payload demotions also reach the ledger (tagged source=audit)"
+
 # the ledger is wired into mint_receipt, and refuses to mint on an unparseable one
 grep -q 'demotions:\$demotions' "$REVIEW" \
   || fail "mint_receipt must fold the demotion ledger into the receipt payload"

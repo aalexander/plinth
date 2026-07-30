@@ -51,7 +51,19 @@ fires "dependency manifest"    "dependency manifest: package-lock.json"
 fires "submodule"              "submodule: vendor/thing"
 fires "symlink"                "symlink: config/link"
 fires "buried among others"    "docs: README.md" "code: src/x.py" "security-sensitive: src/session.go"
-pass "security-sensitive / tooling / supply-chain surfaces fire the L3 pass"
+# The recorded reason must name the TRIGGERING PATH, not just the category: it is
+# the audit trail for why a paid pass ran. (ERE binds `a|b[^;]*` as `a` OR
+# `b[^;]*`, so an unparenthesized alternation silently drops the path for every
+# alternative but the last.)
+for probe in "security-sensitive: src/auth/login.py|src/auth/login.py" \
+             "tooling: .plinth/review.sh|.plinth/review.sh" \
+             "dependency manifest: package-lock.json|package-lock.json"; do
+  reason_in="${probe%%|*}"; want_path="${probe#*|}"
+  out="$(security_pass_wanted "$(rj "$reason_in")" "")"
+  printf '%s' "$(why "$out")" | grep -qF "$want_path" \
+    || fail "recorded reason dropped the triggering path (want '$want_path'): $out"
+done
+pass "security-sensitive / tooling / supply-chain surfaces fire the L3 pass (with the path recorded)"
 
 # ── (2) inert diffs do NOT (ship bias — no paid pass for nothing) ───────────
 quiet() {

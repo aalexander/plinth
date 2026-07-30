@@ -675,7 +675,10 @@ security_pass_wanted() {
     return 0
   fi
   if printf '%s' "$hits" | grep -Eiq "$(security_trigger_re)"; then
-    printf '1 %s' "$(printf '%s' "$hits" | tr ';' '\n' | grep -Eio "$(security_trigger_re)[^;]*" | head -1 | sed 's/[[:space:]]*$//')"
+    # PARENTHESIZE the alternation: `a|b[^;]*` binds as `a` OR `b[^;]*`, which
+    # would drop the triggering PATH from the recorded reason for every alternative
+    # but the last. The reason string is the audit trail for why a paid pass ran.
+    printf '1 %s' "$(printf '%s' "$hits" | tr ';' '\n' | grep -Eio "($(security_trigger_re))[^;]*" | head -1 | sed 's/[[:space:]]*$//')"
   else
     printf '0 no security-sensitive surface in risk reasons'
   fi
@@ -1000,7 +1003,9 @@ if [ "$RISK" = "0" ]; then
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
           round:0, session_id:"", model:"deterministic-floor", review_phase:$rph, risk:$risk,
-          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
+          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts,
+          security_pass:{status:"NOT_TRIGGERED", trigger:"Tier 0 — deterministic floor, no model round"}}' \
+          > "$SDIR/verdict.json"
   rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
@@ -2776,8 +2781,22 @@ $(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 $(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
       # Apply thrash demotions to the audit payload before counting (same policy).
+      # These demotions change the reported blocking count, so they belong on the
+      # receipt too — the claim is "every demotion is disclosed", and a demotion
+      # applied here but recorded nowhere would make that claim wider than the
+      # code. Tagged with source:"audit" so the ledger says which payload it came
+      # from. Best-effort, like the primary ledger append.
+      _apre="$(mktemp)"
+      jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' \
+        "$afind" > "$_apre" 2>/dev/null || echo '[]' > "$_apre"
       thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
         "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}" "fresh"
+      if _arows="$(thrash_ledger_rows "$afind" "$_apre" "$round" "$(review_phase_for_round)" "audit")" \
+         && [ -n "$_arows" ] && [ "$_arows" != "[]" ]; then
+        printf '%s\n' "$_arows" | jq -c '.[] + {source:"audit"}' >> "$SDIR/demotions.jsonl" 2>/dev/null \
+          || echo "Plinth review: NOTE — audit-payload demotion ledger append failed; the receipt will under-report demotions." >&2
+      fi
+      rm -f "$_apre"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
         --arg href '^(HANDOFF|CHECKPOINT)\\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
