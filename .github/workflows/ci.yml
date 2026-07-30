@@ -35,13 +35,13 @@ jobs:
   # .plinth/NEEDS-HUMAN.md). Downstream pins a Plinth release the same way (see templates/ci.yml).
   # Require `floor` and `checks` (the pinned jobs), not the `-current` twins.
   floor:
-    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@0d29565adcb2f3cdbb3a3833a41e9f38d0aa5eac # v4.8.0
+    uses: aalexander/plinth/.github/workflows/plinth-floor.yml@961f6aff1885e42a613a744fe262bdc3253a68de # v4.8.0
 
   floor-current:
     uses: ./.github/workflows/plinth-floor.yml
 
   checks:
-    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@0d29565adcb2f3cdbb3a3833a41e9f38d0aa5eac # v4.8.0
+    uses: aalexander/plinth/.github/workflows/plinth-checks.yml@961f6aff1885e42a613a744fe262bdc3253a68de # v4.8.0
 
   checks-current:
     uses: ./.github/workflows/plinth-checks.yml
@@ -56,4 +56,4 @@ jobs:
   # of the same context name `receipt / verify` (see MANUAL).
   receipt:
     if: github.event_name == 'pull_request'
-    uses: aalexander/plinth/.github/workflows/plinth-receipt.yml@0d29565adcb2f3cdbb3a3833a41e9f38d0aa5eac # v4.8.0
+    uses: aalexander/plinth/.github/workflows/plinth-receipt.yml@961f6aff1885e42a613a744fe262bdc3253a68de # v4.8.0
