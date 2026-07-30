@@ -124,18 +124,34 @@ code and can bounce a coding session to Opus mid-run — if a session feels diff
 that's why.) Anthropic intends to restore Fable 5 to standard subscription "when
 capacity allows" — check before buying credits in bulk.
 
-## Slice routing (effort + implement) — guidance, not a gate
+## Slice routing (rigor + implement) — guidance, not a gate
 
 Per-**slice** routing sits alongside seat assignment and risk tier. It does **not**
 override the reviewer gate (`risk-classify` still owns review depth).
 
 | Field | Values | Meaning |
 |-------|--------|---------|
-| **effort** | medium · high · xhigh | How hard to push this slice (seats, dual-pass bias, advise depth) |
+| **rigor** | standard · deep | Whether this slice wants the OPTIONAL dual first pass |
 | **implement** | driver · worker · either | Who types this slice under the active topology |
 
-**Defaults (non-blocking):** missing/invalid effort → treat as **high** and continue;
-never stop the loop because effort is unset or the driver cannot change it.
+**Defaults (non-blocking):** missing/invalid rigor → treat as **standard** and continue;
+never stop the loop because rigor is unset or the driver cannot change it.
+
+> **RESERVED VOCABULARY — do not reuse `effort`.** The words `effort` and
+> `medium|high|xhigh` belong to the **model** layer in this repo: harness
+> reasoning effort (`/effort`) and codex `model_reasoning_effort`. Through v5.0.x
+> this Plinth slice knob was *also* called `effort` with the *same* value set
+> while actually controlling only one thing — "run the dual pass?" — and readers
+> (human and agent) reliably misread "push this slice harder" as "think harder".
+> v5.1 renamed it to `rigor: standard|deep`. When adding a knob, check whether
+> the name or its value set is already owned by the model/harness layer; if it
+> is, name the intent instead. Same-name-same-meaning is fine — same-name-
+> different-meaning is the defect.
+>
+> The deprecated `effort` key (and `PLINTH_CHECKPOINT_EFFORT`) is still **read**
+> for one release — `medium|high` → `standard`, `xhigh` → `deep`, with a
+> one-time stderr note. The writer emits `rigor` only, so one `plinth checkpoint`
+> migrates a downstream fence off the old name.
 
 **implement recommendation (not always-worker):**
 - **worker** when the slice is volume-shaped and a complete five-part (or equivalent)
@@ -148,10 +164,10 @@ never stop the loop because effort is unset or the driver cannot change it.
   Verification and review requirements are unchanged.
 
 Recorded on root **CHECKPOINT.md** (`plinth.checkpoint/v1` JSON fence). Legacy
-**HANDOFF.md** is a pointer/fallback. Dashboard surfaces position + effort; ETAs
+**HANDOFF.md** is a pointer/fallback. Dashboard surfaces position + rigor; ETAs
 are reserved-null in v1 (no fabricated times).
 
-Risk tier (review) ⊥ effort (slice implement) ⊥ topology (who is resident).
+Risk tier (review) ⊥ rigor (optional dual) ⊥ topology (who is resident).
 
 ### Plan progress (dashboard)
 
@@ -181,29 +197,47 @@ PLAN chip; click-in track collapses completed work, expands the active major.
 
 ### Live wiring (what the product actually does)
 
-Guidance becomes code at these seats only — still **non-blocking** (missing effort
-defaults to **high**; never stops next / review / Stop):
+Guidance becomes code at these seats only — still **non-blocking** (missing rigor
+defaults to **standard**; never stops next / review / Stop):
 
 | Signal | Live effect |
 |--------|-------------|
-| **effort=xhigh** | Dual first-pass **also in BUILD** (Tier-2 · fresh r1 · cross-vendor audit seat present). HARDEN already duals; effort never *weakens* HARDEN dual. |
-| **effort=medium\|high** | BUILD keeps cooperative-driver posture (no dual unless `PLINTH_DUAL_PASS=1`). HARDEN dual unchanged. |
-| **effort unset/invalid** | Treated as **high**; review continues. |
+| **rigor=deep** | Dual first-pass wanted, in **either** phase (still needs Tier-2 · fresh r1 · cross-vendor audit seat). |
+| **rigor=standard** | **No dual, in either phase — including HARDEN.** One primary + one verify is the default ship path (`PLINTH_DUAL_PASS=1` to enable). |
+| **rigor unset/invalid** | Treated as **standard**; review continues. |
 | **implement=worker\|driver** | `plinth next` prints a non-blocking `hint:` line; driver may override freely. |
 | **implement=either** | No extra implement hint. |
-| **request-\<n\>.json** | Stamps `slice_routing.{effort,implement,slice_id,dual_wanted}` for the audit trail. |
+| **request-\<n\>.json** | Stamps `slice_routing.{rigor,implement,slice_id,dual_wanted,ack_no_dual}` for the audit trail. |
 
-`dual_wanted` is **policy desire** (effort × phase × `PLINTH_DUAL_PASS` override only).
+**v5.1 behavior change — HARDEN no longer forces dual.** Through v5.0.x every
+hardening-phase round wanted a dual first pass. Dual is **optional rigor, not the
+ship foundation**: the mandatory floor is one primary adversarial review plus one
+verify (L2) and the merge gates (L4), with a risk-triggered security pass (L3) for
+security-shaped surfaces. Phase alone is not evidence that a second *generalist*
+opinion earns a paid round.
+
+`dual_wanted` is **policy desire** (rigor × `PLINTH_DUAL_PASS` override only).
 It is **not** eligibility (fresh · r1 · Tier-2 · cross-vendor audit seat), **not**
 `dual_executed`, and **not** dual success (see `dual-degraded.json` when the audit
 seat fails). Unparseable CHECKPOINT fence → non-blocking stderr note + default
-effort=high (never silent “I wanted xhigh” rigor loss). Invalid non-empty env
-overrides → high / either (safe defaults), not “keep fence”.
+rigor=standard (never a silent “I wanted deep” rigor loss). Invalid non-empty env
+overrides → standard / either (safe defaults), not “keep fence”.
+
+**A REQUESTED dual with no usable seat fails CLOSED.** If `rigor=deep` or
+`PLINTH_DUAL_PASS=1` asked for dual on a round that would otherwise run it
+(fresh · r1 · Tier-2) and `audit_vendor` is unset or equals the reviewer vendor,
+the loop exits 2 **before** spending the paid primary round — rather than quietly
+running single-pass while the checkpoint claims deep rigor. Fix the seat, drop to
+`rigor=standard`, or acknowledge the gap with `PLINTH_ACK_NO_DUAL=1`, which is
+recorded on the request, the verdict (`dual_first_pass: ACK_NO_SEAT`) and the
+minted receipt (`ack_no_dual`). A **default** dual-skip (`dual_wanted=false`)
+stays log-only — that is the intended posture, not a degradation.
 
 Overrides: `PLINTH_DUAL_PASS=1\|0` forces dual on/off after the Tier-2/fresh/r1/vendor
-gates; `PLINTH_CHECKPOINT_EFFORT` / `PLINTH_CHECKPOINT_IMPLEMENT` override the fence
-for operators and canaries. Advise depth (`plinth advise --impactful`) remains a
-**driver choice** at xhigh — not auto-invoked.
+gates; `PLINTH_CHECKPOINT_RIGOR` / `PLINTH_CHECKPOINT_IMPLEMENT` override the fence
+for operators and canaries (`PLINTH_CHECKPOINT_EFFORT` is the deprecated alias and
+applies only when the new name is unset). Advise depth (`plinth advise --impactful`)
+remains a **driver choice** — not auto-invoked.
 
 ## Orchestration
 `/effort` -> `ultracode` for substantive tasks (model-managed dynamic workflows);

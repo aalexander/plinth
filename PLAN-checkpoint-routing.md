@@ -34,8 +34,8 @@ Fenced JSON at end of CHECKPOINT (or `.plinth/session/checkpoint.json` mirror):
   "slice_index": 3,
   "slice_total": 12,
   "status": "implementing|reviewing|blocked|done",
-  "effort": "medium|high|xhigh",
-  "effort_rationale": "one line",
+  "rigor": "standard|deep",
+  "rigor_rationale": "one line",
   "implement": "driver|worker|either",
   "updated_at": "ISO-8601",
   "elapsed_secs_slice": 0,
@@ -47,14 +47,21 @@ Fenced JSON at end of CHECKPOINT (or `.plinth/session/checkpoint.json` mirror):
 Markdown body keeps Goal/Done/Next/Restart for humans. Missing JSON → dashboard
 shows presence only (today’s behavior); never block the loop.
 
+> **v5.1 rename (2026-07-29):** the knob shipped in this train as
+> `effort: medium|high|xhigh`. That vocabulary is owned by the model layer
+> (reasoning effort), so v5.1 renamed it to `rigor: standard|deep` and reserved
+> `effort` for model reasoning effort only. The fence above shows the CURRENT
+> shape; the old key is read as a deprecated alias for one release. See
+> `shared/MODELS.md` → "Slice routing (rigor + implement)".
+
 ### 3. Dashboard
-Per-repo card: plan position (`i/n` + title), effort badge, slice ETA, plan ETA
+Per-repo card: plan position (`i/n` + title), rigor badge, slice ETA, plan ETA
 (null → “ETA unknown”). Snapshot adds `lifecycle.checkpoint` object from parse.
 
-### 4. Effort as routing (non-blocking)
-- medium | high | xhigh recommended for *upcoming* slice
-- Driver cannot change effort → do not block; default **high**, announce
-- Biases seats (worker volume, dual-pass, advise --impactful) via MODELS guidance
+### 4. Rigor as routing (non-blocking)
+- standard | deep recommended for *upcoming* slice (v5.0.x: medium|high|xhigh)
+- Driver cannot change rigor → do not block; default **standard**, announce
+- Biases the optional dual pass via MODELS guidance
 - Independent of risk tier (review depth still classifier-owned)
 
 ### 5. Implement seat (driver vs worker)
@@ -63,8 +70,8 @@ Per-repo card: plan position (`i/n` + title), effort badge, slice ETA, plan ETA
 - Checkpoint records `implement` recommendation; driver may override without gate
 
 ### 6. Docs home
-- MODELS.md: new “Slice routing (effort + implement)” under routing policy
-- plinth-rules / DRIVER: checkpoint resume; effort non-blocking
+- MODELS.md: new “Slice routing (rigor + implement)” under routing policy
+- plinth-rules / DRIVER: checkpoint resume; rigor non-blocking
 - MANUAL: checkpoint command + dashboard fields
 
 ## Acceptance criteria
@@ -73,8 +80,8 @@ Per-repo card: plan position (`i/n` + title), effort badge, slice ETA, plan ETA
 2. `plinth handoff` remains working alias
 3. Dashboard smoke shows checkpoint progress fields when JSON present; unknown ETA
    when null
-4. Missing effort never fails `plinth next` / review / stop
-5. MODELS documents effort vs risk tier independence and worker routing rule
+4. Missing rigor never fails `plinth next` / review / stop
+5. MODELS documents rigor vs risk tier independence and worker routing rule
 6. Canary or unit tests for JSON parse + HANDOFF fallback
 
 ## Advisor sign-off (2026-07-29)

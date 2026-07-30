@@ -828,12 +828,19 @@ mint_receipt() {  # mint_receipt <round>
   else
     echo "Plinth review: NOTE — receipt not minted (no sha256 tool)."; return 0
   fi
+  # ack_no_dual: a REQUESTED dual that ran with no cross-vendor seat, acknowledged
+  # by the operator. Disclosed on the receipt so the gap is auditable rather than
+  # invisible. Additive field — receipt-verify's schema check is a positive
+  # conjunction that ignores unknown keys, and subject_digest covers only
+  # repo/base/merge-base/head/tree, so an older verifier still validates this.
+  local ack_no_dual=false
+  [ -f "$SDIR/dual-no-seat-ack.json" ] && ack_no_dual=true
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
     --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
-    --argjson round "$mround" --argjson ledger "$ledger" \
+    --argjson round "$mround" --argjson ledger "$ledger" --argjson ack "$ack_no_dual" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
       base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
-      round:$round, override_ledger:$ledger}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+      round:$round, override_ledger:$ledger, ack_no_dual:$ack}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
   # -f replaces THIS commit's note on re-approval; other commits' notes are
   # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
   # and `git notes merge` first (the driver rules carry the recipe).
@@ -1696,59 +1703,108 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
-# ── Slice routing (CHECKPOINT effort/implement) — non-blocking bias ──────────
-# Risk tier (classifier) ⊥ effort (slice push) ⊥ implement (who types).
-# Missing/invalid effort → high (default). Never fails the review loop.
-# Env overrides (for operators / canaries): PLINTH_CHECKPOINT_EFFORT,
+# ── Slice routing (CHECKPOINT rigor/implement) — non-blocking bias ───────────
+# Risk tier (classifier) ⊥ rigor (optional dual rigor) ⊥ implement (who types).
+# Missing/invalid rigor → standard (default). Never fails the review loop.
+# Env overrides (for operators / canaries): PLINTH_CHECKPOINT_RIGOR,
 # PLINTH_CHECKPOINT_IMPLEMENT. Fence on CHECKPOINT.md (HANDOFF.md fallback).
-SLICE_EFFORT="high"
+#
+# NAMING (v5.1): this knob was `effort: medium|high|xhigh` through v5.0.x. That
+# vocabulary is owned by the MODEL layer (reasoning effort — `/effort`, codex
+# `model_reasoning_effort`), and reusing it for a Plinth dial that only ever
+# decided "run the optional dual pass?" actively misled readers of CHECKPOINT.md.
+# It is now `rigor: standard|deep`. The old key is still READ as a deprecated
+# alias for one release (medium|high → standard, xhigh → deep) so downstream
+# plinth.checkpoint/v1 fences keep parsing; the writer emits `rigor` only.
+SLICE_RIGOR="standard"
 SLICE_IMPLEMENT="either"
 SLICE_ID=""
 
-# Pure dual-bias matrix (testable). Args: effort, rphase, PLINTH_DUAL_PASS value.
-# stdout: 1 or 0. HARDEN always wants dual (ship rigor); effort never weakens it.
-# BUILD: only xhigh enables dual (medium/high keep cooperative-driver BUILD posture).
+# Pure dual-bias matrix (testable). Args: rigor, rphase, PLINTH_DUAL_PASS value.
+# stdout: 1 or 0. Dual is OPTIONAL RIGOR, never the ship foundation (v5.1
+# ship-bias): only rigor=deep or an explicit override wants it. HARDEN no longer
+# forces dual — phase alone is not evidence that a second generalist opinion is
+# worth a paid round; risk-triggered L3 security covers the security-shaped case.
+# `rphase` is still accepted (signature stability for callers/canaries, and the
+# request stamp records the phase the desire was computed under) but no longer
+# decides the outcome.
 # PLINTH_DUAL_PASS=1|0 forces on|off after the fresh/r1/Tier-2/vendor gates elsewhere.
-slice_dual_from_effort() {
-  local effort="${1:-high}" rphase="${2:-build}" override="${3:-}"
+slice_dual_from_rigor() {
+  local rigor="${1:-standard}" rphase="${2:-build}" override="${3:-}"
+  : "$rphase"
   case "$override" in
     1) echo 1; return 0 ;;
     0) echo 0; return 0 ;;
   esac
-  if [ "$rphase" = "hardening" ]; then echo 1; return 0; fi
-  case "$effort" in
-    xhigh) echo 1 ;;
+  case "$rigor" in
+    deep) echo 1 ;;
     *) echo 0 ;;
   esac
 }
 
+# Normalize a rigor token, accepting the deprecated v5.0.x effort vocabulary.
+# stdout: standard|deep, or empty when the token is not recognized at all (the
+# caller decides whether that is a warn-and-default or a silent skip).
+# PURE — no stderr, no globals. It is called through `$(...)`, and a warn-once
+# guard set inside a command substitution dies with the subshell, so the
+# deprecation notice belongs to the CALLER (slice_rigor_warn_deprecated), which
+# runs in the current shell. Announcing it here would print on every round while
+# claiming to print once.
+slice_rigor_normalize() {
+  case "${1:-}" in
+    standard|deep) printf '%s' "$1" ;;
+    xhigh) printf 'deep' ;;
+    medium|high) printf 'standard' ;;
+    *) : ;;
+  esac
+}
+
+# True when a token is the deprecated v5.0.x effort vocabulary.
+slice_rigor_is_legacy() {
+  case "${1:-}" in medium|high|xhigh) return 0 ;; *) return 1 ;; esac
+}
+
+# Announce the deprecated vocabulary ONCE per process. MUST be called from the
+# current shell (never inside `$(...)`) for the guard to hold.
+_RIGOR_ALIAS_WARNED=0
+slice_rigor_warn_deprecated() {
+  slice_rigor_is_legacy "${1:-}" || return 0
+  [ "$_RIGOR_ALIAS_WARNED" = 0 ] || return 0
+  _RIGOR_ALIAS_WARNED=1
+  echo "Plinth review: NOTE — slice knob '${1}' is the DEPRECATED v5.0.x \`effort\` vocabulary; use \`rigor: standard|deep\` (medium|high → standard, xhigh → deep). Read as an alias for one release." >&2
+}
+
 # Stamp request-N.json with slice_routing (called from run_round; also canary-callable).
-# dual_wanted = policy desire from effort×phase×override ONLY (pre eligibility).
+# dual_wanted = policy desire from rigor×override ONLY (pre eligibility).
 # Actual dual still needs fresh+r1+Tier-2+cross-vendor (see dual_ok in run_round).
+# ack_no_dual records an operator ack that a REQUESTED dual ran without a seat.
 # Args: sdir round sha baseref mode spec_path rphase phase_source
 stamp_request_json() {
   local sdir="$1" r="$2" sha="$3" baseref="$4" m="$5" spec="$6" rphase="$7" phase_src="$8"
-  local dual_wanted
-  dual_wanted="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+  local dual_wanted ack_no_dual=0
+  dual_wanted="$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+  [ "${PLINTH_ACK_NO_DUAL:-}" = "1" ] && ack_no_dual=1
   jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$spec" \
         --arg review_phase "$rphase" --arg phase_source "$phase_src" \
-        --arg effort "$SLICE_EFFORT" --arg implement "$SLICE_IMPLEMENT" \
+        --arg rigor "$SLICE_RIGOR" --arg implement "$SLICE_IMPLEMENT" \
         --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
+        --argjson ack_no_dual "$ack_no_dual" \
         '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
           review_phase:$review_phase, phase_source:$phase_source,
-          slice_routing:{effort:$effort, implement:$implement,
+          slice_routing:{rigor:$rigor, implement:$implement,
             slice_id:(if $slice_id=="" then null else $slice_id end),
             dual_wanted:($dual_wanted==1),
-            dual_wanted_note:"policy desire (effort×phase×override); not eligibility or dual_executed"}}' \
+            ack_no_dual:($ack_no_dual==1),
+            dual_wanted_note:"policy desire (rigor×override); not eligibility or dual_executed"}}' \
         > "$sdir/request-$r.json"
 }
 
 # Load slice routing into SLICE_* globals. Fail-soft always.
-# Invalid/non-empty env overrides → safe defaults (high/either), never silent keep of fence xhigh.
-# Present checkpoint/handoff file with unparseable fence → warn once; default high (no silent rigor loss claim).
+# Invalid/non-empty env overrides → safe defaults (standard/either), never a silent keep of fence deep.
+# Present checkpoint/handoff file with unparseable fence → warn once; default standard (no silent rigor loss claim).
 slice_load_routing() {
-  SLICE_EFFORT="high"
+  SLICE_RIGOR="standard"
   SLICE_IMPLEMENT="either"
   SLICE_ID=""
   local f="" parsed=""
@@ -1769,13 +1825,18 @@ for c in re.findall(r"```json\s*(\{.*?\})\s*```", raw, flags=re.S):
     if not isinstance(o, dict):
         continue
     if o.get("schema") == "plinth.checkpoint/v1" or any(
-        k in o for k in ("slice_id", "effort", "implement")
+        k in o for k in ("slice_id", "rigor", "effort", "implement")
     ):
         best = o
 if not best:
     sys.exit(0)
+# Emit the RAW rigor token (new key wins over the deprecated `effort` alias) and
+# let the shell normalize it — slice_rigor_normalize is the single source of the
+# vocabulary and of the one-time deprecation note.
 out = {
-    "effort": best.get("effort") if best.get("effort") in ("medium", "high", "xhigh") else None,
+    "rigor": best.get("rigor") if isinstance(best.get("rigor"), str) else (
+        best.get("effort") if isinstance(best.get("effort"), str) else None
+    ),
     "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
     "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
 }
@@ -1783,27 +1844,44 @@ print(json.dumps(out, separators=(",", ":")))
 PY
 )"
     if [ -n "$parsed" ]; then
-      local e i s
-      e="$(printf '%s' "$parsed" | jq -r '.effort // empty' 2>/dev/null || true)"
+      local e i s norm
+      e="$(printf '%s' "$parsed" | jq -r '.rigor // empty' 2>/dev/null || true)"
       i="$(printf '%s' "$parsed" | jq -r '.implement // empty' 2>/dev/null || true)"
       s="$(printf '%s' "$parsed" | jq -r '.slice_id // empty' 2>/dev/null || true)"
-      case "$e" in medium|high|xhigh) SLICE_EFFORT="$e" ;; esac
+      if [ -n "$e" ]; then
+        slice_rigor_warn_deprecated "$e"
+        norm="$(slice_rigor_normalize "$e")"
+        if [ -n "$norm" ]; then SLICE_RIGOR="$norm"
+        else
+          echo "Plinth review: NOTE — ${f} fence rigor='${e}' unrecognized; defaulting rigor=standard (no dual)." >&2
+        fi
+      fi
       case "$i" in driver|worker|either) SLICE_IMPLEMENT="$i" ;; esac
       [ -n "$s" ] && SLICE_ID="$s"
     else
-      # File present but no usable plinth.checkpoint/v1 fence — do not silently claim xhigh rigor.
-      echo "Plinth review: NOTE — ${f} present but checkpoint fence unparseable; slice effort defaults to high (single-pass BUILD bias)." >&2
+      # File present but no usable plinth.checkpoint/v1 fence — do not silently claim deep rigor.
+      echo "Plinth review: NOTE — ${f} present but checkpoint fence unparseable; slice rigor defaults to standard (single-pass bias)." >&2
     fi
   fi
   # Env overrides fence (operator / canary). Non-empty invalid → safe default + warn.
-  if [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ] && [ -n "${PLINTH_CHECKPOINT_EFFORT}" ]; then
-    case "$PLINTH_CHECKPOINT_EFFORT" in
-      medium|high|xhigh) SLICE_EFFORT="$PLINTH_CHECKPOINT_EFFORT" ;;
-      *)
-        SLICE_EFFORT="high"
-        echo "Plinth review: NOTE — PLINTH_CHECKPOINT_EFFORT='${PLINTH_CHECKPOINT_EFFORT}' invalid; defaulting effort=high." >&2
-        ;;
-    esac
+  # PLINTH_CHECKPOINT_RIGOR is authoritative; PLINTH_CHECKPOINT_EFFORT is the
+  # deprecated alias and only applies when the new name is unset.
+  local _rigor_env="" _rigor_env_name=""
+  if [ -n "${PLINTH_CHECKPOINT_RIGOR+x}" ] && [ -n "${PLINTH_CHECKPOINT_RIGOR}" ]; then
+    _rigor_env="$PLINTH_CHECKPOINT_RIGOR"; _rigor_env_name="PLINTH_CHECKPOINT_RIGOR"
+  elif [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ] && [ -n "${PLINTH_CHECKPOINT_EFFORT}" ]; then
+    _rigor_env="$PLINTH_CHECKPOINT_EFFORT"; _rigor_env_name="PLINTH_CHECKPOINT_EFFORT"
+  fi
+  if [ -n "$_rigor_env" ]; then
+    local _norm_env
+    slice_rigor_warn_deprecated "$_rigor_env"
+    _norm_env="$(slice_rigor_normalize "$_rigor_env")"
+    if [ -n "$_norm_env" ]; then
+      SLICE_RIGOR="$_norm_env"
+    else
+      SLICE_RIGOR="standard"
+      echo "Plinth review: NOTE — ${_rigor_env_name}='${_rigor_env}' invalid; defaulting rigor=standard." >&2
+    fi
   fi
   if [ -n "${PLINTH_CHECKPOINT_IMPLEMENT+x}" ] && [ -n "${PLINTH_CHECKPOINT_IMPLEMENT}" ]; then
     case "$PLINTH_CHECKPOINT_IMPLEMENT" in
@@ -1922,7 +2000,7 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
 
   local rphase
   rphase="$(review_phase_for_round)"
-  # Slice routing bias (effort/implement) — non-blocking; defaults high/either.
+  # Slice routing bias (rigor/implement) — non-blocking; defaults standard/either.
   slice_load_routing
   local phase_note
   if [ "$rphase" = "hardening" ]; then
@@ -2074,6 +2152,33 @@ ${inc}${evidence}${commits}"
   # Stamp slice routing on the request (audit trail; never blocks).
   stamp_request_json "$SDIR" "$r" "$sha" "$baseref" "$m" "$SPEC_PATH" "$rphase" "$phase_src"
 
+  # A REQUESTED dual with no usable audit seat fails CLOSED — and it fails here,
+  # BEFORE reviewer_run spends a paid round that structurally cannot deliver the
+  # rigor that was asked for. "Requested" means explicit: rigor=deep or
+  # PLINTH_DUAL_PASS=1. A DEFAULT dual-skip (dual_wanted=0) stays log-only — that
+  # is the v5.1 ship-bias posture, not a degradation.
+  # Scoped to rounds that would otherwise have run dual (fresh · r1 · Tier-2), so
+  # a resume/verify round or a Tier-1 diff under rigor=deep is never wedged by a
+  # seat it was never going to use.
+  if [ "$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")" = 1 ] \
+     && [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
+     && { [ -z "${AUDIT_VENDOR:-}" ] || [ "$AUDIT_VENDOR" = "$REVIEWER_VENDOR" ]; }; then
+    local _dual_req_why="rigor=deep"
+    [ "${PLINTH_DUAL_PASS:-}" = "1" ] && _dual_req_why="PLINTH_DUAL_PASS=1"
+    local _seat_why="audit_vendor unset"
+    [ -n "${AUDIT_VENDOR:-}" ] && _seat_why="audit seat '${AUDIT_VENDOR}' is the same vendor as the reviewer"
+    if [ "${PLINTH_ACK_NO_DUAL:-}" = "1" ]; then
+      echo "Plinth review: dual first-pass REQUESTED (${_dual_req_why}) but ${_seat_why} — proceeding on PLINTH_ACK_NO_DUAL=1; recorded ack_no_dual on request/verdict/receipt (primary review still binds)."
+      jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg why "$_dual_req_why" \
+            --arg seat "$_seat_why" --argjson round "$r" \
+        '{ack_no_dual:true, ts:$ts, round:$round, requested_by:$why, seat_reason:$seat,
+          note:"requested dual ran with no cross-vendor seat; operator acked"}' \
+        > "$SDIR/dual-no-seat-ack.json"
+    else
+      die_infra "dual first-pass REQUESTED (${_dual_req_why}) but ${_seat_why} — refusing to spend a paid round that cannot satisfy the requested rigor. Configure a cross-vendor audit_vendor, drop to rigor=standard (or PLINTH_DUAL_PASS=0), or acknowledge the gap with PLINTH_ACK_NO_DUAL=1 (recorded on request/verdict/receipt)."
+    fi
+  fi
+
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
   # the CLI read-only, writes the validated verdict to findings-$r.json, and sets RSID
   # + RUSAGE. A recoverable resume failure returns 1 → the caller falls back.
@@ -2112,18 +2217,17 @@ ${inc}${evidence}${commits}"
   [ -n "$thrash_scope" ] || thrash_scope="${REVIEWED_FILES_FULL:-}"
 
   # Dual first-pass: Tier 2 + fresh r1 + cross-vendor audit seat, then bias by
-  # phase/effort. HARDEN always wants dual (ship rigor). BUILD wants dual only
-  # when slice effort=xhigh (MODELS live wiring). medium|high keep cooperative-
-  # driver BUILD posture. Override: PLINTH_DUAL_PASS=1 forces on; =0 forces off.
-  # Effort never weakens HARDEN dual and never fails the loop if unset (→ high).
+  # rigor. v5.1: dual is OPTIONAL RIGOR and OFF by default in every phase —
+  # only rigor=deep or PLINTH_DUAL_PASS=1 wants it. HARDEN no longer forces it.
+  # A requested-dual-with-no-seat already failed closed (or was acked) above.
   local dual_ok=0
   if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
      && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
-    dual_ok="$(slice_dual_from_effort "$SLICE_EFFORT" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+    dual_ok="$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")"
     if [ "$dual_ok" = 0 ]; then
-      echo "Plinth review: dual first-pass skipped in BUILD (effort=${SLICE_EFFORT}; HARDEN, effort=xhigh, or PLINTH_DUAL_PASS=1 to enable)."
-    elif [ "$rphase" != "hardening" ] && [ "$SLICE_EFFORT" = "xhigh" ] && [ "${PLINTH_DUAL_PASS:-}" != "1" ]; then
-      echo "Plinth review: dual first-pass enabled by slice effort=xhigh (BUILD)."
+      echo "Plinth review: dual first-pass not requested (rigor=${SLICE_RIGOR}, phase=${rphase}) — one primary + verify is the default ship path; rigor=deep or PLINTH_DUAL_PASS=1 to enable."
+    elif [ "$SLICE_RIGOR" = "deep" ] && [ "${PLINTH_DUAL_PASS:-}" != "1" ]; then
+      echo "Plinth review: dual first-pass enabled by slice rigor=deep (phase=${rphase})."
     fi
   fi
   if [ "$dual_ok" = 1 ]; then
@@ -2517,6 +2621,15 @@ elif [ "$RISK" = "2" ]; then
   # change doesn't silently lose the promised independent second opinion (e.g. claude
   # primary + the default audit_vendor=claude).
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
+fi
+# Surface an acked seatless dual on the binding verdict BEFORE minting, so the
+# receipt and the verdict disclose the same gap (does not unbind — the primary
+# review is the gate; the ack is an audit trail, not a weakening of the verdict).
+if [ -f "$SDIR/dual-no-seat-ack.json" ]; then
+  jq -s '.[0] + {dual_first_pass: "ACK_NO_SEAT", ack_no_dual: .[1]}' \
+    "$SDIR/verdict.json" "$SDIR/dual-no-seat-ack.json" > "$SDIR/verdict.json.tmp" \
+    && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+  echo "Plinth review: NOTE dual first-pass was REQUESTED but ran with no cross-vendor seat, acked via PLINTH_ACK_NO_DUAL (see verdict.ack_no_dual; disclosed on the receipt)."
 fi
 mint_receipt "$round"
 # Surface dual_degraded on binding verdict when present (does not unbind — max automation).

@@ -5138,11 +5138,29 @@ for c in cands:
     if not isinstance(o, dict):
         continue
     if o.get("schema") == "plinth.checkpoint/v1" or any(
-        k in o for k in ("slice_id", "slice_index", "effort", "implement")
+        k in o for k in ("slice_id", "slice_index", "rigor", "effort", "implement")
     ):
         best = o
 if best is None:
     sys.exit(0)
+# v5.1 renamed the slice knob `effort: medium|high|xhigh` → `rigor: standard|deep`
+# (the old vocabulary belongs to MODEL reasoning effort and misled readers). The
+# deprecated key is still read for one release. CANONICAL RULE:
+# shared/.plinth/review.sh slice_rigor_normalize — canary-checkpoint-routing.sh
+# asserts this implementation and that one agree on every token.
+def _rigor(o):
+    tok = o.get("rigor")
+    if not isinstance(tok, str):
+        tok = o.get("effort")
+    if not isinstance(tok, str):
+        return None
+    if tok in ("standard", "deep"):
+        return tok
+    if tok == "xhigh":
+        return "deep"
+    if tok in ("medium", "high"):
+        return "standard"
+    return None
 out = {
     "schema": "plinth.checkpoint/v1",
     # Preserve null plan_ref — do not invent PLAN.md when the fence had none.
@@ -5154,8 +5172,11 @@ out = {
     "status": best.get("status") if best.get("status") in (
         "ready", "implementing", "reviewing", "blocked", "done"
     ) else None,
-    "effort": best.get("effort") if best.get("effort") in ("medium", "high", "xhigh") else None,
-    "effort_rationale": best.get("effort_rationale") if isinstance(best.get("effort_rationale"), str) else None,
+    "rigor": _rigor(best),
+    "rigor_rationale": (
+        best.get("rigor_rationale") if isinstance(best.get("rigor_rationale"), str)
+        else (best.get("effort_rationale") if isinstance(best.get("effort_rationale"), str) else None)
+    ),
     "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
     "updated_at": best.get("updated_at") if isinstance(best.get("updated_at"), str) else None,
     "elapsed_secs_slice": best.get("elapsed_secs_slice") if isinstance(best.get("elapsed_secs_slice"), int) else None,
@@ -5199,9 +5220,16 @@ def env_int_key(k):
         return n if n >= 1 else None
     except Exception:
         return None
-effort = env("PLINTH_CHECKPOINT_EFFORT", prev.get("effort"))
-if effort not in ("medium", "high", "xhigh"):
-    effort = "high"
+# Slice rigor (v5.1 rename of `effort`; see _checkpoint_parse_json). The writer
+# emits `rigor` ONLY — the deprecated key is read, never re-emitted, so a
+# refreshed checkpoint migrates itself off the colliding vocabulary.
+_rigor_alias = {"xhigh": "deep", "high": "standard", "medium": "standard"}
+rigor = env("PLINTH_CHECKPOINT_RIGOR")
+if rigor is None and "PLINTH_CHECKPOINT_RIGOR" not in os.environ:
+    rigor = env("PLINTH_CHECKPOINT_EFFORT", prev.get("rigor") or prev.get("effort"))
+rigor = _rigor_alias.get(rigor, rigor)
+if rigor not in ("standard", "deep"):
+    rigor = "standard"
 impl = env("PLINTH_CHECKPOINT_IMPLEMENT", prev.get("implement"))
 if impl not in ("driver", "worker", "either"):
     impl = prev.get("implement") if prev.get("implement") in ("driver", "worker", "either") else "either"
@@ -5230,7 +5258,7 @@ if isinstance(_plan_ref, str) and _plan_ref not in ("PLAN.md", "./PLAN.md"):
     _plan_ref = "PLAN.md" if (root / "PLAN.md").is_file() else None
 # Orphan PLAN cursor (narrow): root PLAN absent AND prior fence claimed a PLAN
 # path or whole-plan done with an index — clear ghost 100% over SPEC.
-# Planless projects may still keep operator slice_id/effort routing without PLAN.md.
+# Planless projects may still keep operator slice_id/rigor routing without PLAN.md.
 _prev_ref = prev.get("plan_ref") if isinstance(prev.get("plan_ref"), str) else None
 _no_root_plan = not (root / "PLAN.md").is_file()
 _orphan_plan = (
@@ -5286,8 +5314,12 @@ out = {
     "slice_index": _sidx,
     "slice_total": _stot,
     "status": status,
-    "effort": effort,
-    "effort_rationale": env("PLINTH_CHECKPOINT_EFFORT_RATIONALE", prev.get("effort_rationale")),
+    "rigor": rigor,
+    "rigor_rationale": env(
+        "PLINTH_CHECKPOINT_RIGOR_RATIONALE",
+        env("PLINTH_CHECKPOINT_EFFORT_RATIONALE",
+            prev.get("rigor_rationale") or prev.get("effort_rationale")),
+    ),
     "implement": impl,
     "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "elapsed_secs_slice": prev.get("elapsed_secs_slice"),
@@ -6615,16 +6647,16 @@ _write_handoff() {
   echo "Wrote $out (snapshot: $reason / $kind); HANDOFF.md pointer refreshed"
   echo "NOTIFY: handoff ${kind} — ${advice}"
   echo "Automation: continuing immediately (no wait for compact/human)."
-  if printf '%s' "$cj" | jq -e '.effort != null or .slice_id != null' >/dev/null 2>&1; then
-    local _sid _eff _impl _rat
+  if printf '%s' "$cj" | jq -e '.rigor != null or .slice_id != null' >/dev/null 2>&1; then
+    local _sid _rig _impl _rat
     _sid=$(printf '%s' "$cj" | jq -r '.slice_id // "?"')
-    _eff=$(printf '%s' "$cj" | jq -r '.effort // "high"')
+    _rig=$(printf '%s' "$cj" | jq -r '.rigor // "standard"')
     _impl=$(printf '%s' "$cj" | jq -r '.implement // "either"')
-    _rat=$(printf '%s' "$cj" | jq -r '.effort_rationale // empty')
+    _rat=$(printf '%s' "$cj" | jq -r '.rigor_rationale // empty')
     if [ -n "$_rat" ]; then
-      echo "Route ${_sid}: ${_eff} · ${_impl} — ${_rat}"
+      echo "Route ${_sid}: ${_rig} · ${_impl} — ${_rat}"
     else
-      echo "Route ${_sid}: ${_eff} · ${_impl}"
+      echo "Route ${_sid}: ${_rig} · ${_impl}"
     fi
   fi
 }
@@ -7330,18 +7362,18 @@ run_next() {
     done < <(open_items "$nhf" 2>/dev/null | grep -E "$_nh_blocking_re" || true)
   fi
   # Non-blocking slice routing from checkpoint — emit on every next (never fails).
-  local _cj _sid _eff _impl _rat
+  local _cj _sid _rig _impl _rat
   _cj="$(_checkpoint_parse_json "$(_checkpoint_read_path "$root")")"
-  _sid=""; _eff=""; _impl=""; _rat=""
+  _sid=""; _rig=""; _impl=""; _rat=""
   if [ -n "$_cj" ]; then
     _sid=$(printf '%s' "$_cj" | jq -r '.slice_id // empty' 2>/dev/null || true)
-    _eff=$(printf '%s' "$_cj" | jq -r '.effort // empty' 2>/dev/null || true)
+    _rig=$(printf '%s' "$_cj" | jq -r '.rigor // empty' 2>/dev/null || true)
     _impl=$(printf '%s' "$_cj" | jq -r '.implement // empty' 2>/dev/null || true)
-    _rat=$(printf '%s' "$_cj" | jq -r '.effort_rationale // empty' 2>/dev/null || true)
+    _rat=$(printf '%s' "$_cj" | jq -r '.rigor_rationale // empty' 2>/dev/null || true)
     # route: whenever any routing field is present (incl. implement-only fences).
-    if [ -n "$_eff" ] || [ -n "$_sid" ] || [ -n "$_impl" ]; then
-      if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either} — $_rat"
-      else echo "route: ${_sid:-?} · ${_eff:-high} · ${_impl:-either}"; fi
+    if [ -n "$_rig" ] || [ -n "$_sid" ] || [ -n "$_impl" ]; then
+      if [ -n "$_rat" ]; then echo "route: ${_sid:-?} · ${_rig:-standard} · ${_impl:-either} — $_rat"
+      else echo "route: ${_sid:-?} · ${_rig:-standard} · ${_impl:-either}"; fi
     fi
     case "$_impl" in
       worker)

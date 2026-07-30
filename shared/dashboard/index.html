@@ -1148,7 +1148,7 @@
     } else if (life.plan) {
       chips.push('<span class="chip dim" title="PLAN.md present (no derived stages)">plan</span>');
     }
-    // Slice routing (effort/implement) — secondary chips
+    // Slice routing (rigor/implement) — secondary chips
     const rt = life.routing && typeof life.routing === "object" ? life.routing : null;
     if (rt) {
       if (rt.slice_index != null && rt.slice_total != null && !pp) {
@@ -1161,10 +1161,14 @@
       } else if (rt.slice_id && !pp) {
         chips.push('<span class="chip dim" title="Current slice">' + esc(String(rt.slice_id)) + "</span>");
       }
-      if (rt.effort) {
+      // v5.1: the knob is `rigor` (standard|deep). `effort` is read as a fallback
+      // so a snapshot cached by an older builder still paints a chip instead of
+      // silently dropping it during the transition.
+      const rigor = rt.rigor || rt.effort;
+      if (rigor) {
         chips.push(
-          '<span class="chip" title="Slice effort (routing, non-blocking)">' +
-            esc(String(rt.effort)) +
+          '<span class="chip" title="Slice rigor (routing, non-blocking; deep = dual pass)">' +
+            esc(String(rigor)) +
             (rt.implement ? " · " + esc(String(rt.implement)) : "") +
             "</span>"
         );

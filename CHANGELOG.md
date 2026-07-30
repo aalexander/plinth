@@ -1,5 +1,53 @@
 # Plinth changelog
 
+## v5.1.0 — ship-bias: dual is optional rigor — July 29, 2026
+
+Ship bias cuts sequential optional opinions, not the floor. The mandatory layers
+are unchanged: free fail-open canaries (L1), **one** primary adversarial review
+plus one verify (L2, APPROVED@HEAD), and the merge gates (L4 — floor + checks +
+`receipt / verify` with `strict:true` where wired). Dual first-pass moves to
+optional rigor; a risk-triggered security pass (L3) covers security-shaped
+surfaces, which is what dual was actually being used for.
+
+- **Dual OFF by default — including HARDEN.** Through v5.0.x every
+  hardening-phase round wanted a dual first pass. Phase alone is not evidence
+  that a second *generalist* opinion earns a paid round. Dual now runs only on
+  `rigor=deep` or `PLINTH_DUAL_PASS=1` (eligibility unchanged: fresh · r1 ·
+  Tier-2 · cross-vendor audit seat). Dual is **never** a required check.
+- **Slice knob renamed `effort` → `rigor: standard|deep`.** The old name and its
+  `medium|high|xhigh` values are the MODEL layer's vocabulary (harness
+  `/effort`, codex `model_reasoning_effort`) while the knob only ever decided
+  "run the dual pass?" — `shared/MODELS.md` used the word in three senses in one
+  file, and the collision misled a driver session into reading it as a
+  thinking-effort request. `slice_dual_from_effort` → `slice_dual_from_rigor`;
+  `SLICE_EFFORT` → `SLICE_RIGOR`; `PLINTH_CHECKPOINT_EFFORT` →
+  `PLINTH_CHECKPOINT_RIGOR`; `effort_rationale` → `rigor_rationale`.
+  MODELS.md now RESERVES `effort` for model reasoning effort.
+  - **Deprecation window:** the old fence key and env name are still **read**
+    (`medium|high` → `standard`, `xhigh` → `deep`) with a one-time stderr note.
+    The writer emits `rigor` only, so one `plinth checkpoint` migrates a
+    downstream `plinth.checkpoint/v1` fence. Dashboard falls back to `effort`
+    when painting a snapshot cached by an older builder.
+- **A REQUESTED dual with no usable seat now fails CLOSED** (exit 2) **before**
+  the paid primary round runs, rather than silently going single-pass while the
+  checkpoint claims deep rigor. `audit_vendor` unset or equal to the reviewer
+  vendor on a would-be-dual round is the trigger. Escape hatches: fix the seat,
+  drop to `rigor=standard`, or `PLINTH_ACK_NO_DUAL=1` — recorded on the request
+  (`slice_routing.ack_no_dual`), the verdict (`dual_first_pass: ACK_NO_SEAT`) and
+  the minted receipt (`ack_no_dual`). A **default** dual-skip stays log-only.
+- **Receipt:** additive `ack_no_dual` field. `receipt-verify.sh`'s schema check is
+  a positive conjunction and `subject_digest` covers only
+  repo/base/merge-base/head/tree, so older verifiers still validate new receipts.
+- **Canaries:** `canary-checkpoint-routing.sh` rewritten for the new matrix — the
+  HARDEN-does-not-dual regression lock, the alias map, a **cross-implementation
+  agreement test** (the shell alias in `review.sh` vs the python alias in
+  `bin/plinth`, driven end-to-end per token), the fail-closed request-dual matrix
+  (block / ack / never-wedge on verify·r2·Tier-1), and ordering locks that the
+  fail-closed check precedes `reviewer_run` and the ack precedes `mint_receipt`.
+  The deprecation note's once-per-process claim is measured on the **production**
+  path, not on the helper in isolation — the guard cannot live inside the
+  command-substituted normalizer.
+
 ## v5.0.8 — effort/seat live wiring — July 29, 2026
 - **#61 next blockers:** phase-scoped NEEDS-HUMAN — `[BLOCKING:ship|harden|build|global]`;
   bare `[BLOCKING]` stays global. Ship/harden items do not stop BUILD `plinth next`

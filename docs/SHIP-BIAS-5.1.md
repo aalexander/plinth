@@ -150,6 +150,27 @@ Update canaries: drop “HARDEN always dual”; assert OFF default + xhigh/overr
 - Messages, MODELS, canary-checkpoint-routing matrix.
 - Requested dual + missing auditor → block or ack path + canary.
 
+**S1 SCOPE EXTENSION — ratified by operator 2026-07-29 (knob rename).**
+The slice knob shipped as `effort: medium|high|xhigh`, which collides with the
+MODEL layer's reasoning-effort vocabulary (`/effort`, codex
+`model_reasoning_effort`) while controlling only "run the dual pass?".
+`shared/MODELS.md` used the same word in three senses in one file, and the
+collision actively misled a driver session into reading the Plinth knob as a
+thinking-effort request. Renamed to **`rigor: standard|deep`**:
+- `slice_dual_from_effort` → `slice_dual_from_rigor`; `SLICE_EFFORT` →
+  `SLICE_RIGOR`; `PLINTH_CHECKPOINT_EFFORT` → `PLINTH_CHECKPOINT_RIGOR`.
+- The old fence key and env name are **read** for one release
+  (`medium|high` → `standard`, `xhigh` → `deep`) with a one-time stderr note;
+  the writer emits `rigor` only, so one `plinth checkpoint` migrates a
+  downstream fence. Two independent alias implementations exist (shell in
+  `review.sh`, python in `bin/plinth`) — the canary drives both per token and
+  fails on divergence.
+- `MODELS.md` now RESERVES `effort` / `medium|high|xhigh` for model reasoning
+  effort, so the collision cannot return by the same route.
+This is a `plinth.checkpoint/v1` fence-schema change (additive + aliased, so v1
+stays readable). Deliberate deviation from the locked plan, recorded here
+because this file is the spec for the work.
+
 ### S2 — Thrash class allowlist + floors
 - Introduce versioned allowlist of demotable class IDs (file or single source in review.sh extracted by canary).
 - Map known asymptotic phrases → demotable classes; keep `is_external_security` / `is_real_test_gap` / `is_precedence_must_block` as never-demote.
