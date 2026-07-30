@@ -633,6 +633,54 @@ if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ]; then
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
+# ── L3 security pass trigger (v5.1 S4) ───────────────────────────────────────
+# v5.1 removes dual-as-habit. Dual was mostly being used as "get a second pair of
+# eyes on something security-shaped" — so that need is served DIRECTLY, by one
+# security-focused pass on the surfaces that actually warrant it, instead of a
+# second full generalist review on everything.
+#
+# The trigger list is IN-REPO (this file, under .plinth/, already Tier 2 via
+# risk-classify's TOOLING pattern), so widening or narrowing it is reviewed
+# cross-vendor by construction — the same bound the demotion allowlist gets.
+#
+# Matched against the classifier's own reason strings (see risk-classify.sh
+# add_reason): auth/crypto/secret surfaces, the tooling ship path, and the
+# supply-chain vectors (dependency manifests, submodules, symlinks) where a
+# malicious change reads as ordinary maintenance.
+# PURE (stdout only) so the canary can drive the real matrix without a live seat.
+security_trigger_re() {
+  printf '%s' 'security-sensitive:|sensitive/tooling source moved:|tooling:|dependency manifest:|submodule|symlink'
+}
+
+# security_pass_wanted <risk-json> [env-flag] -> stdout: "1 <reason>" or "0 <reason>"
+# An explicit PLINTH_SECURITY_PASS=1 always wants it; =0 always declines it (an
+# operator escape for a diff they know is inert). Otherwise the classifier reasons
+# decide. Unreadable/absent risk JSON fails TOWARD running the pass: a security
+# pass that runs unnecessarily costs one auditor call, while one skipped because
+# the reasons could not be parsed is exactly the silent gap this layer exists to
+# close.
+security_pass_wanted() {
+  local rj="${1:-}" envflag="${2:-}" hits=""
+  case "$envflag" in
+    1) printf '1 PLINTH_SECURITY_PASS=1'; return 0 ;;
+    0) printf '0 PLINTH_SECURITY_PASS=0 (operator declined)'; return 0 ;;
+  esac
+  if [ -z "$rj" ]; then
+    printf '1 risk reasons unavailable — failing toward a security pass'
+    return 0
+  fi
+  hits="$(printf '%s' "$rj" | jq -r '[.reasons // [] | .[]] | join(" ; ")' 2>/dev/null)" || hits=""
+  if [ -z "$hits" ]; then
+    printf '1 risk reasons unparseable — failing toward a security pass'
+    return 0
+  fi
+  if printf '%s' "$hits" | grep -Eiq "$(security_trigger_re)"; then
+    printf '1 %s' "$(printf '%s' "$hits" | tr ';' '\n' | grep -Eio "$(security_trigger_re)[^;]*" | head -1 | sed 's/[[:space:]]*$//')"
+  else
+    printf '0 no security-sensitive surface in risk reasons'
+  fi
+}
+
 
 # ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
 # Every BINDING APPROVED (including Tier 0's deterministic one) mints — BEST-EFFORT, see
@@ -850,14 +898,22 @@ mint_receipt() {  # mint_receipt <round>
       return 0
     fi
   fi
+  # L3 security pass status (v5.1 S4) — read back off the verdict this receipt is
+  # minted for, so the note cannot claim security coverage the verdict does not
+  # record. Absent/unreadable verdict → "UNKNOWN", never a reassuring default.
+  local sp_status="UNKNOWN"
+  if [ -f "$SDIR/verdict.json" ]; then
+    sp_status="$(jq -r '.security_pass.status // "UNKNOWN"' "$SDIR/verdict.json" 2>/dev/null || echo UNKNOWN)"
+    [ -n "$sp_status" ] || sp_status="UNKNOWN"
+  fi
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
     --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
     --argjson round "$mround" --argjson ledger "$ledger" --argjson ack "$ack_no_dual" \
-    --argjson demotions "$demotions" \
+    --argjson demotions "$demotions" --arg sp "$sp_status" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
       base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
       round:$round, override_ledger:$ledger, ack_no_dual:$ack,
-      demotions:$demotions}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+      demotions:$demotions, security_pass:$sp}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
   # -f replaces THIS commit's note on re-approval; other commits' notes are
   # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
   # and `git notes merge` first (the driver rules carry the recipe).
@@ -2758,6 +2814,93 @@ elif [ "$RISK" = "2" ]; then
   # change doesn't silently lose the promised independent second opinion (e.g. claude
   # primary + the default audit_vendor=claude).
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
+fi
+
+# ── L3: risk-triggered SECURITY pass (v5.1 S4) ───────────────────────────────
+# ONE security-focused pass on the binding-APPROVED path when the diff touches a
+# security-sensitive surface. This is NOT a second full product review and NOT a
+# merge check — it is the targeted replacement for the generalist dual pass that
+# v5.1 removed from the default path.
+_sp="$(security_pass_wanted "$RISK_JSON" "${PLINTH_SECURITY_PASS:-}")"
+_sp_want="${_sp%% *}"; _sp_why="${_sp#* }"
+# Read the strictness knob from the BASE config, not the working tree: `cfg`
+# would let a PR that removes `security_pass_required = true` disable the very
+# check it is subject to. Fall back to the working tree only when the base has no
+# config at all (first adoption) — same resolution order as audit_vendor above.
+_sp_required="$(bcfg security_pass_required 2>/dev/null || true)"
+[ -n "$_sp_required" ] || [ "$base_has_config" = 1 ] || _sp_required="$(cfg security_pass_required 2>/dev/null || true)"
+if [ "$_sp_want" = "1" ]; then
+  # Seat: prefer the cross-vendor audit seat as the security specialist. A
+  # same-vendor "second opinion" is not independent, so it is recorded as
+  # UNAVAILABLE rather than run and counted as coverage.
+  if [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    echo "Plinth review: L3 security pass (${AUDIT_VENDOR}) — triggered by: ${_sp_why}…"
+    _spf="$SDIR/findings-security-$round.json"
+    _spprompt="You are a SECURITY reviewer. Everything you need is INLINE below. Do NOT use
+any tools, do NOT try to read files — output your verdict directly and NOW.
+
+SCOPE — this is NOT a general code review. Report ONLY security findings:
+authentication/authorization bypass, unauthenticated or cross-tenant access,
+injection (SQL/command/prompt), secret or credential exposure, unsafe
+deserialization, SSRF/RCE, path traversal, supply-chain risk, privilege
+escalation, and fail-open behaviour in a security, trust-boundary or ship-gate
+guarantee the code claims. Include data-loss defects that a hostile input can
+trigger.
+Do NOT report style, naming, coverage depth, docs prose, or non-security
+robustness — those are out of scope here and will be discarded.
+Severity: use blocker/major ONLY for a defect you can state as a concrete attack
+or failure path. If you find nothing in scope, say so with verdict APPROVED and
+an empty findings array — do NOT pad.
+Output ONLY a JSON object (no prose, no markdown fences):
+{\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
+
+=== REVIEWER RULES (for the tooling/UPSTREAM policy — apply these) ===
+$(inline_contract)
+
+=== CANONICAL SPEC (${SPEC_PATH}) ===
+$(inline_spec)
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
+$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
+    if run_auditor "$_spprompt" "$_spf"; then
+      _spblk="$(jq -r --arg re "$HARNESS_RE" \
+        '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
+           | select((.file | test($re)) | not)
+         ] | length' "$_spf" 2>/dev/null || echo 0)"
+      case "$_spblk" in ''|*[!0-9]*) _spblk=0 ;; esac
+      _spverd="$(jq -r '.verdict // "?"' "$_spf" 2>/dev/null || echo '?')"
+      jq --arg vn "$AUDIT_VENDOR" --arg why "$_sp_why" --arg v "$_spverd" --argjson b "$_spblk" \
+        '. + {security_pass: {status: "RAN", vendor: $vn, trigger: $why, verdict: $v, blocking: $b}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
+        && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      if [ "$_spblk" -gt 0 ]; then
+        echo "PLINTH SECURITY FINDINGS: the L3 pass (${AUDIT_VENDOR}) reported ${_spblk} blocking security finding(s) — see $_spf. The verdict is unchanged (L3 is not a merge gate), but per the ship-bias contract you MUST fix security majors and re-run the loop to remint APPROVED@HEAD. Do not open the PR on this receipt if any of them is real."
+      else
+        echo "Plinth review: L3 security pass clean (${_spverd}, 0 blocking security findings)."
+      fi
+    else
+      # run_auditor never false-concurs — this branch means the pass could not RUN.
+      jq --arg vn "$AUDIT_VENDOR" --arg why "$_sp_why" \
+        '. + {security_pass: {status: "UNAVAILABLE", vendor: $vn, trigger: $why, verdict: "UNAVAILABLE", blocking: 0}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      if [ "$_sp_required" = "true" ]; then
+        die_infra "L3 security pass was TRIGGERED (${_sp_why}) but could not run (seat '${AUDIT_VENDOR}'), and security_pass_required=true in .plinth/config — refusing to bind an APPROVED that claims security coverage it does not have. Fix the seat or clear the config knob."
+      fi
+      echo "Plinth review: NOTE — L3 security pass UNAVAILABLE (seat '${AUDIT_VENDOR}'); recorded on the verdict, primary review stands. v5.1 default is best-effort; set security_pass_required=true in .plinth/config to make this fail closed."
+    fi
+  else
+    jq --arg why "$_sp_why" --arg rv "$REVIEWER_VENDOR" \
+      '. + {security_pass: {status: "UNAVAILABLE", vendor: null, trigger: $why, verdict: "UNAVAILABLE", blocking: 0, note: ("no independent seat — audit_vendor == reviewer_vendor = " + $rv)}}' \
+      "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+    if [ "$_sp_required" = "true" ]; then
+      die_infra "L3 security pass was TRIGGERED (${_sp_why}) but there is no INDEPENDENT seat (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'), and security_pass_required=true in .plinth/config. Set audit_vendor to a different vendor."
+    fi
+    echo "Plinth review: NOTE — L3 security pass triggered (${_sp_why}) but skipped: audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}', so it would not be an independent opinion. Recorded UNAVAILABLE on the verdict (never a false concur)."
+  fi
+else
+  jq --arg why "$_sp_why" \
+    '. + {security_pass: {status: "NOT_TRIGGERED", trigger: $why, blocking: 0}}' \
+    "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
 fi
 # Surface an acked seatless dual on the binding verdict BEFORE minting, so the
 # receipt and the verdict disclose the same gap (does not unbind — the primary

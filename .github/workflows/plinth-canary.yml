@@ -168,6 +168,11 @@ jobs:
           set -euo pipefail
           # Class demotion is a deliberate fail-open; this is the bound on it.
           ./.github/scripts/canary-thrash-classes.sh
+      - name: L3 security pass trigger canary
+        run: |
+          set -euo pipefail
+          # Dual is off by default in v5.1; this is the coverage that replaces it.
+          ./.github/scripts/canary-security-pass.sh
       - name: Plan progress derivation + dashboard surface canary
         run: |
           set -euo pipefail

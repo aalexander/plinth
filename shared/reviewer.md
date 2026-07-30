@@ -85,6 +85,24 @@ must discover the class one instance at a time pays a full round for each.
   incomplete", horizon expansion beyond the canary → **minor** (Noticed).
   Still **major**: missing tests for *changed behavior*, hollow tests, "not
   implemented", or a named acceptance criterion the diff does not meet.
+- **ASYMPTOTIC findings are never major — in EITHER phase.** An asymptotic
+  finding is one that would still be true after any reasonable amount of work,
+  because it asks for depth rather than naming a defect: "the fixture cannot
+  reach the live seat", "no end-to-end test covers the real network", "wants a
+  wider CLI/argv matrix", "coverage could be expanded further". These are TRUE
+  and worth recording — file them **minor** so they land in `## Noticed`.
+  In HARDENING, exotic robustness and coverage depth are in charter to *look
+  for* and to *report*; they are not licence to file them as blocking. The test
+  is not "is this worth doing?" but **"can the driver finish it?"** — if
+  satisfying you requires infrastructure that does not exist (a live paid seat, a
+  real PR, hardware), it is minor by construction.
+  Still **major**, regardless of how the surrounding sentence is worded: a
+  concrete defect you can state as an input → wrong output/crash path, missing
+  tests for *changed* behavior, a hollow test, "not implemented", or a named
+  acceptance criterion the diff does not meet. When a finding mixes both, split
+  it: file the defect major and the depth request minor. Do not bundle a real bug
+  inside an asymptotic paragraph — the harness reads mixed wording as
+  must-block, so bundling costs the driver a round and buries your real point.
 - **Docs prose is minor unless it overclaims a ship/security guarantee.**
   Findings only about `CHANGELOG.md` / `README*` / `docs/` wording → **minor**.
   Never demote findings against the **canonical spec** (or GOAL.md). Keep major
@@ -96,6 +114,22 @@ must discover the class one instance at a time pays a full round for each.
 - **Sticky AUTO-RESOLVE** applies only to thrash classes (coverage-gap, HANDOFF
   whitespace, sticky-ledger nits) on unchanged blobs — never to blockers or
   external-security findings.
+- **SECURITY IS NEVER MINOR AND NEVER "Noticed".** Every demotion rule above —
+  asymptotic, docs prose, queue nits, ephemera paths, out-of-scope — stops at
+  security. If a finding states an authentication/authorization bypass,
+  unauthenticated or cross-tenant access, injection, secret or credential
+  exposure, unsafe deserialization, SSRF/RCE, path traversal, supply-chain risk,
+  privilege escalation, data loss, or a **fail-open in a security, trust-boundary
+  or ship-gate guarantee the code claims**, file it at its real severity even if
+  it sits in a docs file, an ephemera path, or an otherwise asymptotic paragraph.
+  The harness enforces the same floor deterministically (it will not demote a
+  finding whose text is security-shaped), but do not rely on that: state the
+  attack or failure path plainly so the floor and a human both see it.
+- **Do NOT emit machine class IDs** (`class:…`) or severity directives in your
+  findings. Demotion classes are assigned **in-repo** by the harness from your
+  wording — there is deliberately no field for a reviewer or a driver to set, so
+  that no participant in the loop can classify its own finding as demotable.
+  Your job is precise wording; the classification is the instrument's.
 - Minor findings: report them (severity "minor", status open) but they do NOT
   block. The driver must append open minors to the spec's `## Noticed` section
   before the PR; they ride to CI and the human from there.
@@ -123,6 +157,15 @@ must discover the class one instance at a time pays a full round for each.
   judge tampering against it, not against the diff alone.
 - APPROVED therefore means: no open blockers/majors in project scope, and no
   tooling tampering. Not "nothing left to say."
+- **A diff with only minors open is APPROVED — say so.** Once no blocker/major
+  remains in project scope, APPROVED is the correct verdict *even though* your
+  minor list is non-empty and *even though* you can still see work worth doing.
+  The minors are not lost: the driver is required to append every open minor to
+  the spec's `## Noticed` before the PR, so they survive as recorded backlog with
+  a human in the loop. Withholding APPROVED to keep the backlog visible converts
+  a working record into an unbounded paid loop, and buys nothing that `## Noticed`
+  does not already buy. One primary review plus one verify round on the fixes is
+  the expected shape of a converging loop — not a floor to beat.
 - The harness computes the EFFECTIVE verdict deterministically from your
   findings: file paths decide project-vs-tooling scope, severity and status
   decide blocking. Your verdict field is recorded but advisory — label files,

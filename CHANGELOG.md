@@ -38,6 +38,47 @@ surfaces, which is what dual was actually being used for.
 - **Receipt:** additive `ack_no_dual` field. `receipt-verify.sh`'s schema check is
   a positive conjunction and `subject_digest` covers only
   repo/base/merge-base/head/tree, so older verifiers still validate new receipts.
+- **L3: risk-triggered security pass (S4).** Dual was mostly being used as "get a
+  second pair of eyes on something security-shaped", so v5.1 serves that need
+  directly: ONE security-focused pass on the binding-APPROVED path, scoped to
+  security severities only, when the diff touches a security-sensitive surface.
+  - Trigger comes from `risk-classify`'s own reason strings — auth/crypto/secret
+    surfaces, the tooling ship path, and the supply-chain vectors (dependency
+    manifests, submodules, symlinks) where a malicious change reads as ordinary
+    maintenance — or from `PLINTH_SECURITY_PASS=1`. `=0` declines explicitly.
+    The trigger list is in-repo, so narrowing it is Tier 2 by construction.
+  - **Unreadable or empty risk reasons fail TOWARD running the pass.** A pass that
+    runs unnecessarily costs one auditor call; one skipped because the reasons
+    could not be parsed is exactly the gap this layer exists to close.
+  - **Never a false concur.** Seat unavailable → `security_pass.status:
+    UNAVAILABLE` on the verdict. A same-vendor seat is *not* an independent
+    opinion, so it is recorded UNAVAILABLE rather than run and counted as
+    coverage. Not triggered → `NOT_TRIGGERED`. Status is folded into the receipt,
+    read back off the verdict, defaulting to `UNKNOWN` rather than anything
+    reassuring.
+  - **Not a merge gate** (matching the existing cross-vendor audit): security
+    findings are reported loudly and recorded, the verdict is not auto-unbound,
+    and the driver is instructed to fix security majors and remint APPROVED@HEAD.
+  - Optional `security_pass_required = true` in `.plinth/config` makes a
+    triggered-but-unavailable pass fail closed. Read from the **base** config, not
+    the working tree, so a PR cannot delete the knob that governs it.
+- **Reviewer contract (S5).** Three additions that make the ship-bias lifecycle
+  the reviewer's contract rather than only the harness's behavior:
+  - **Asymptotic findings are never major in EITHER phase.** Previously only BUILD
+    demoted asymptotic coverage, which left the hardening-phase ship review free
+    to file "the fixture cannot reach the live seat" as blocking — the exact
+    spiral that stalled the 5.0.8 loop. The test is not "is this worth doing?" but
+    "can the driver finish it?": if satisfying it needs infrastructure that does
+    not exist, it is minor by construction. Mixed findings must be split, since
+    the harness reads mixed wording as must-block.
+  - **Security is never minor and never Noticed** — every demotion rule stops at
+    security, stated explicitly rather than left implicit in the harness.
+  - **Reviewers must not emit `class:` IDs.** Classification is the instrument's
+    job precisely so no participant in the loop can classify its own finding as
+    demotable.
+  - **A diff with only minors open is APPROVED** — stated outright, with the
+    reason it is safe (open minors are required to land in `## Noticed`, so
+    withholding APPROVED to keep backlog visible buys nothing).
 - **Thrash demotion is now class-bounded (S2).** Demotion turns a reviewer major
   into a minor, so it is a deliberate fail-open. It is bounded three ways:
   - **In-repo vocabulary, single source.** `def demotable_classes` in
