@@ -1,5 +1,20 @@
 # Plinth changelog
 
+## v5.1.1 — help is side-effect free — July 30, 2026
+- **upstream #63: `plinth <cmd> --help` executed the command.** `plinth harden
+  --help` ran the pathless harden: it flipped the project BUILD→HARDEN, wrote
+  `phase-<slug>.json`, `CHECKPOINT.md` and `HANDOFF.md`, and the driver had to run
+  `plinth build` to undo it. A help flag that mutates the project is a trap, not a
+  usability nit — the operator asking "what does this do?" is exactly the one who
+  does not want it done. `-h`/`--help` are now intercepted ahead of ALL parsing and
+  dispatch, so no per-command path can regress, and an explicit help request exits
+  **0** (bad usage still exits 1) so `plinth x --help && …` works in scripts.
+  Arguments after `--` are untouched, so `plinth smoke . -- cmd --help` still passes
+  the flag to the wrapped command.
+- **Regression lock**: the lifecycle canary digests the entire project tree before
+  and after `--help`/`-h` for all nine phase-changing commands and asserts it is
+  byte-identical — not "looks fine".
+
 ## v5.1.0 — ship-bias: dual is optional rigor — July 29, 2026
 
 Ship bias cuts sequential optional opinions, not the floor. The mandatory layers
