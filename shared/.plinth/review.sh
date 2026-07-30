@@ -392,21 +392,98 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # with no extension restriction, and .md/.rst/.txt-only would silently drop
 # YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
 # the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
+# ── SPEC PAYLOAD BOUND (v5.2) ────────────────────────────────────────────────
+# A reviewer CLI is AGENTIC: the prompt is re-sent on every turn of its loop, so a
+# large spec is not paid once — it is paid ~60 times. Measured on this repo:
+# spec_path=MANUAL.md is 87KB (~23k tokens) of USER DOCUMENTATION, and one round on a
+# 62-line diff cost 2.73M input tokens while a 6,000-line diff cost 5.1M. The diff was
+# never the driver; the re-sent fixed payload was.
+#
+# So a spec above the threshold is EXCERPTED, not truncated, and the reviewer is told
+# so LOUDLY. Excerpting a spec is a fail-open risk — a requirement that never reaches
+# the reviewer cannot be enforced — so the bound is built to keep the parts that carry
+# obligations:
+#   1. the COMPLETE heading outline (cheap, and shows exactly what exists);
+#   2. every section whose heading looks like it carries requirements;
+#   3. every section mentioning a path/basename from THIS diff;
+#   4. a loud banner naming what was omitted and how to ask for it.
+# Below the threshold nothing changes, so ordinary projects with a real spec are
+# unaffected. Override with PLINTH_SPEC_INLINE_MAX (0 = never excerpt).
+SPEC_INLINE_MAX_DEFAULT=24000
+_spec_relevant_re() {
+  # DISTINCTIVE tokens only. A bare basename like `plinth` (from bin/plinth) matches
+  # nearly every line of this repo's own manual, which made an earlier version select
+  # the entire document — 0% reduction. So: full paths and >=6-char basenames, minus
+  # the project name itself.
+  local proj names
+  proj="$(basename "$PWD" 2>/dev/null || echo __none__)"
+  names="$(printf '%s\n' ${REVIEWED_FILES_FULL:-} \
+    | tr ' ' '\n' | grep -E '.' \
+    | sed 's#\.[A-Za-z0-9]\+$##' \
+    | awk -v p="$proj" '{ b=$0; sub(/.*\//,"",b);
+        if (length(b) >= 6 && b != p) print b;
+        if ($0 ~ /\//) print $0 }' \
+    | sort -u | head -30 | paste -sd'|' -)"
+  printf '%s' "${names:-__no_files__}"
+}
+# Emit selected sections up to a HARD BYTE CAP, then name what was dropped. The cap is
+# the guarantee: selection heuristics can be wrong (an earlier keep-regex matched every
+# heading in a manual full of the words "gate" and "contract"), but a cap cannot be.
+_spec_select() {  # <file> <cap> <relre>
+  awk -v cap="$2" -v relre="$3" '
+    function flush() {
+      if (keep && buf != "") {
+        if (used + length(buf) <= cap) { printf "%s", buf; used += length(buf) }
+        else { omitted = omitted "\n  - " hdr " (omitted: cap reached)" }
+      } else if (buf != "" && hdr != "") {
+        omitted_unsel = omitted_unsel "\n  - " hdr
+      }
+    }
+    /^#{1,6} / { flush(); hdr = $0; buf = $0 "\n"
+      keep = (tolower(hdr) ~ /acceptance|requirement|criteri|invariant|non-goal|must not|shall/)
+      next }
+    { buf = buf $0 "\n"
+      if (!keep && relre != "__no_files__" && $0 ~ relre) keep = 1 }
+    END { flush()
+      if (omitted != "") printf "\n=== SECTIONS SELECTED BUT DROPPED AT THE CAP ===%s\n", omitted
+      if (omitted_unsel != "") printf "\n=== SECTIONS NOT SELECTED (headings only; ask if load-bearing) ===%s\n", omitted_unsel
+    }
+  ' "$1"
+}
+inline_spec_file() {  # <path> — verbatim below the cap, honestly excerpted above it
+  local f="$1" cap total relre
+  cap="${PLINTH_SPEC_INLINE_MAX:-$SPEC_INLINE_MAX_DEFAULT}"
+  case "$cap" in ''|*[!0-9]*) cap="$SPEC_INLINE_MAX_DEFAULT" ;; esac
+  total="$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')"
+  case "$total" in ''|*[!0-9]*) total=0 ;; esac
+  if [ "$cap" = 0 ] || [ "$total" -le "$cap" ]; then cat "$f"; return; fi
+  relre="$(_spec_relevant_re)"
+  echo "=== SPEC EXCERPTED — NOT the whole document ==========================="
+  echo "${f} is ${total} bytes. A reviewer CLI is agentic: the prompt is re-sent on"
+  echo "every turn of its loop, so a large spec is paid ~60x per round, not once."
+  echo "You are seeing the COMPLETE heading outline, every requirement-shaped section,"
+  echo "and every section mentioning a file in this diff, up to a hard byte cap."
+  echo "ABSENCE OF A SECTION BELOW IS NOT EVIDENCE THAT NOTHING IS SPECIFIED."
+  echo "If an outlined heading looks load-bearing for this diff and its body is not"
+  echo "included, file a minor finding whose description starts 'SPEC-EXCERPT:' naming"
+  echo "the heading; the driver re-runs with PLINTH_SPEC_INLINE_MAX=0 to send it whole."
+  echo "=== COMPLETE HEADING OUTLINE ==========================================="
+  grep -nE '^#{1,6} ' "$f" 2>/dev/null || true
+  echo "=== INCLUDED SECTIONS =================================================="
+  _spec_select "$f" "$cap" "$relre"
+  echo "=== END SPEC EXCERPT ==================================================="
+}
 inline_spec() {
-  if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH"; return; fi
+  if [ -f "$SPEC_PATH" ]; then inline_spec_file "$SPEC_PATH"; return; fi
   if [ -d "$SPEC_PATH" ]; then
     find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
       grep -Iq . "$sf" 2>/dev/null || continue
-      echo "--- $sf ---"; cat "$sf"
+      echo "--- $sf ---"; inline_spec_file "$sf"
     done
     return
   fi
   echo "(spec path not found: ${SPEC_PATH})"
 }
-
-# Inline GOAL.md for the tools-forbidden auditor. The reviewer contract
-# (.plinth/reviewer.md) carries the metric-integrity rules; the auditor also needs the GOAL's actual eval/score contract to
-# judge metric gaming, and it cannot read files. Pure fn -> testable.
 inline_goal() {
   [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
   echo "--- GOAL.md ---"; cat GOAL.md

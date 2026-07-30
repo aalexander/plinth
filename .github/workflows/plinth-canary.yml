@@ -173,6 +173,11 @@ jobs:
           set -euo pipefail
           # Dual is off by default in v5.1; this is the coverage that replaces it.
           ./.github/scripts/canary-security-pass.sh
+      - name: Spec payload bound canary
+        run: |
+          set -euo pipefail
+          # Excerpting a spec is a fail-open; this is the bound on it.
+          ./.github/scripts/canary-spec-payload.sh
       - name: Plan progress derivation + dashboard surface canary
         run: |
           set -euo pipefail

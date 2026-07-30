@@ -1,6 +1,36 @@
 # Plinth changelog
 
-## v5.1.1 — help is side-effect free — July 30, 2026
+## v5.2.0 — bound the review payload; help is side-effect free — July 30, 2026
+
+### Bound the spec payload (the real cost driver)
+
+A reviewer CLI is **agentic**: the prompt is re-sent on every turn of its loop, so an
+inlined spec is paid ~60x per round, not once. Measured here: `spec_path` is an 87KB
+manual (~23k tokens), and round 1 on a **62-line** diff cost **2.73M input tokens**
+while a **6,000-line** diff cost **5.1M**. A 100x smaller diff was only ~1.9x cheaper —
+**the diff was never the cost driver; the re-sent fixed payload was.** An earlier
+estimate in `docs/V6-DELETION.md` (delta-review takes rounds "5M → 200k") was wrong;
+the fixed payload is the larger half, and this change attacks it.
+
+- A spec **at or below** `PLINTH_SPEC_INLINE_MAX` (default 24000 bytes) is sent
+  **verbatim** — ordinary projects are unaffected.
+- Above it, the spec is **excerpted, not truncated**, and the reviewer is told so
+  loudly. Excerpting is a fail-open — a requirement that never reaches the reviewer
+  cannot be enforced — so the excerpt always carries: the **complete heading outline**
+  (nothing is invisible), every **requirement-shaped** section, every section
+  **naming a file in this diff**, the **names of omitted sections**, and an explicit
+  "ABSENCE OF A SECTION IS NOT EVIDENCE" warning plus a `SPEC-EXCERPT:` escape hatch
+  the reviewer can invoke to demand the whole document.
+- A **hard byte cap** enforces the reduction, because selection heuristics can be
+  wrong: an earlier keep-regex matched every heading in a manual full of the words
+  "gate" and "contract", and `bin/plinth` → basename `plinth` matched every line —
+  together producing a 0% reduction. The cap cannot be fooled that way.
+- Measured on this repo: **87,500 → 24,628 bytes (23k → 6k tokens), 72% off** the
+  per-turn payload, with all five honesty properties canary-locked.
+- `PLINTH_SPEC_INLINE_MAX=0` disables excerpting; an invalid value falls back to the
+  default rather than silently disabling the bound.
+
+### Help is side-effect free (upstream #63)
 - **upstream #63: `plinth <cmd> --help` executed the command.** `plinth harden
   --help` ran the pathless harden: it flipped the project BUILD→HARDEN, wrote
   `phase-<slug>.json`, `CHECKPOINT.md` and `HANDOFF.md`, and the driver had to run
@@ -11,9 +41,18 @@
   **0** (bad usage still exits 1) so `plinth x --help && …` works in scripts.
   Arguments after `--` are untouched, so `plinth smoke . -- cmd --help` still passes
   the flag to the wrapped command.
-- **Regression lock**: the lifecycle canary digests the entire project tree before
-  and after `--help`/`-h` for all nine phase-changing commands and asserts it is
-  byte-identical — not "looks fine".
+- **Value-aware scan**: an option VALUE that looks like a help flag stays a value —
+  `plinth residual --note --help` records the note rather than printing usage. The
+  tokens after `--note`/`--from-findings`/`--port`/`--body-file`/`--title`/`-m` are
+  skipped, and everything after `--` is left to the wrapped command.
+- **Regression lock**: the lifecycle canary digests every entry's path, type, mode and
+  content — including symlinks, empty directories and `.git` — before and after
+  `--help`/`-h` for all nine phase-changing commands, and asserts byte-identity. It
+  also asserts that a command wrapped after `--` actually RECEIVES `--help` (by
+  recording its argv), and that an option value is not mistaken for a flag. Every
+  setup step is explicitly checked: a subshell on the left of `|| fail` runs with
+  errexit suppressed, so `set -e` inside it would not have aborted on a failing
+  `cd`/`git`/`plinth init`, and the assertions could have "passed" on collapsed setup.
 
 ## v5.1.0 — ship-bias: dual is optional rigor — July 29, 2026
 

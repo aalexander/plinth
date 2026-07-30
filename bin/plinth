@@ -59,13 +59,19 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
 # a trap, not a usability nit — the operator asking "what does this do?" is precisely
 # the one who does not want it done. Intercepted here, ahead of ALL parsing and
 # dispatch, so it cannot regress per-command.
+# VALUE-AWARE: skip the token after an option that takes a value, so a value that
+# happens to look like a help flag stays a value. `plinth residual --note --help`
+# must record the note, not print usage. (Found by review, v5.1.1 round 1.)
+_skip=0
 for _a in "$@"; do
+  if [ "$_skip" = 1 ]; then _skip=0; continue; fi
   case "$_a" in
+    --note|--from-findings|--port|--body-file|--title|-m) _skip=1 ;;
     -h|--help) usage 0 ;;
     --) break ;;   # everything after `--` belongs to a wrapped command (plinth smoke)
   esac
 done
-unset _a
+unset _a _skip
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
 PLAN_DEEP=0
