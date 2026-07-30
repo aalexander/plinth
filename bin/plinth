@@ -5498,7 +5498,7 @@ def is_coding_section(ht: str) -> bool:
     ):
         return True
     # Exact Foundation / Release N as coding majors when not under "release gates".
-    if re.match(r"^(Foundation|Release\s*\d+)\s*$", ht.strip(), re.I):
+    if re.match(r"^(?:\d+[.)]\s*)?(Foundation|Release\s*\d+)\s*$", ht.strip(), re.I):
         return True
     # Non-coding wins over weak positives (e.g. "Module-00 design decisions").
     if NON_CODING_SECTION_RE.search(ht):
@@ -5511,13 +5511,16 @@ def is_coding_item(body: str, sec_title: str = "") -> bool:
     if not body or body in ("…", "...", "—", "-"):
         return False
     if NON_CODING_ITEM_RE.search(body):
-        # Coding verbs + sign-off as product work stay (not human gates).
-        if not re.search(
-            r"\b(implement|build|wire|land|code|scaffold)\b.*\bsign[- ]?off\b|"
-            r"\bsign[- ]?off\b.*\b(workflow|API|endpoint|handler|UI|service)\b",
+        # Keep only coding work about sign-off / FDA / SOC APIs; drop pure gates
+        # and inventory/matrix noise matched by NON_CODING_ITEM_RE.
+        if re.search(r"sign[- ]?off|\bobtain (FDA|SOC)\b|\bSOC\b|\bFDA\b", body, re.I) and re.search(
+            r"\b(implement|build|wire|land|code|scaffold|add|test|persist|integrate|"
+            r"route|webhook|schema|endpoint|API|handler|service|UI)\b",
             body,
             re.I,
         ):
+            pass  # keep coding sign-off work
+        else:
             return False
     if re.match(r"^(INV|FND|REQ-FND)-\d+\s*$", body.strip(), re.I):
         return False
@@ -5564,13 +5567,14 @@ while i < len(lines):
                 continue
             parent = (cur.get("title") if cur else "") or ""
             under_slice = bool(re.search(r"\bslice\s*\d+\b", parent, re.I))
-            if cur is not None and is_coding_item(ht, parent) and (
+            ht_item = re.sub(r"^\d+[.)]?\s+", "", ht).strip()
+            if cur is not None and is_coding_item(ht_item, parent) and (
                 re.match(r"^\d+[.)]?\s+\S", ht)
-                or CODING_ITEM_HINT_RE.search(ht)
+                or CODING_ITEM_HINT_RE.search(ht_item)
             ):
                 cur["children"].append({
                     "id": f"{cur['id']}.{len(cur['children'])+1}",
-                    "title": ht,
+                    "title": ht_item or ht,
                     "status": "done" if section_done_from_title(ht) else "open",
                     "checkable": True,
                     "checkbox": False,
@@ -5613,7 +5617,8 @@ while i < len(lines):
             # Requirements / Behavior / Features).
             if level == 2 and not re.search(
                 r"acceptance|criteria|build order|slice\s*\d|phase\s*\d|"
-                r"^foundation$|^release\s*\d+|require|behavior|features?\b|shall",
+                r"^(?:\d+[.)]\s*)?(foundation|release\s*\d+)\s*$|"
+                r"require|behavior|features?\b|shall",
                 ht, re.I,
             ):
                 cur = None
@@ -6457,11 +6462,17 @@ _write_handoff() {
       if [ -n "${_cp_prev_json:-}" ]; then
         _prev_status=$(printf '%s' "$_cp_prev_json" | jq -r '.status // empty' 2>/dev/null || true)
       fi
+      _prev_tot=""
+      if [ -n "${_cp_prev_json:-}" ]; then
+        _prev_tot=$(printf '%s' "$_cp_prev_json" | jq -r '.slice_total // empty' 2>/dev/null || true)
+      fi
       case "$_prev_idx" in
         ''|*[!0-9]*) ;;
         *)
-          # Only advance if plan's first open is strictly after prev index.
-          if [ -n "$_seed_idx" ] && [ "$_seed_idx" -gt "$_prev_idx" ]; then
+          # Reseed when first-open moved (forward or back) or leaf total changed.
+          if [ -n "$_seed_idx" ] && [ "$_seed_idx" != "$_prev_idx" ]; then
+            _seed_first=1
+          elif [ -n "$_seed_tot" ] && [ -n "$_prev_tot" ] && [ "$_seed_tot" != "$_prev_tot" ]; then
             _seed_first=1
           else
             _seed_first=0
@@ -6497,6 +6508,17 @@ _write_handoff() {
           | if $t > 0 and $d == $t then "yes" else "no" end
         end
       ' 2>/dev/null || true)
+      # Explicit STATUS=done + no open checkboxes → treat as all-done (bullets/shall open by construction).
+      _seed_open_cb_pre=$(printf '%s' "$_seed_pp" | jq -r '
+        [.outline[]?.children[]?
+          | select(.progress != false and (.checkbox == true) and .status != "done")]
+        | length
+      ' 2>/dev/null || true)
+      case "$_seed_open_cb_pre" in ''|*[!0-9]*) _seed_open_cb_pre=0 ;; esac
+      if [ "$_seed_is_plan" = 1 ] && [ "${PLINTH_CHECKPOINT_STATUS:-}" = "done" ] \
+         && [ "$_seed_open_cb_pre" = 0 ] && [ -n "$_seed_tot" ] && [ "$_seed_tot" -gt 0 ]; then
+        _seed_done_all=yes
+      fi
       # Remember whether operator set STATUS before we seed (open path only).
       _user_set_status=0
       if [ "${PLINTH_CHECKPOINT_STATUS+x}" = x ]; then _user_set_status=1; fi

@@ -60,6 +60,14 @@ case "$mode" in
     echo "Error: not authenticated."
     exit 0
     ;;
+  auth_unauthorized)
+    echo "Unauthorized"
+    exit 0
+    ;;
+  auth_error_unauth)
+    echo "Error: Unauthorized"
+    exit 0
+    ;;
   auth_stdout_nz)
     echo "Error: not authenticated."
     exit 2
@@ -147,6 +155,12 @@ pass "codex Please sign in to continue → auth"
 run_advise_vendor grok auth_error_not
 echo "$_adv_out" | grep -qi 'not signed in' || fail "Error not authenticated: $_adv_out"
 pass "grok Error: not authenticated. → auth"
+run_advise_vendor claude auth_unauthorized
+echo "$_adv_out" | grep -qi 'not signed in' || fail "Unauthorized: $_adv_out"
+pass "claude Unauthorized → auth"
+run_advise_vendor codex auth_error_unauth
+echo "$_adv_out" | grep -qi 'not signed in' || fail "Error Unauthorized: $_adv_out"
+pass "codex Error: Unauthorized → auth"
 
 run_advise_vendor codex auth_stdout_nz
 echo "$_adv_out" | grep -qi 'not signed in' || fail "auth_stdout_nz: $_adv_out"

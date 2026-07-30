@@ -888,13 +888,10 @@ echo "$cj" | jq -e '.status=="done" and .slice_index==2 and .slice_total==2' >/d
   || fail "all-done must force status=done even if env blocked: $cj"
 unset PLINTH_CHECKPOINT_STATUS
 # dashboard 100%
-out=$(cd "$TMP/seed6" && python3 - "$ROOT/bin/plinth" <<'PY'
-import re, subprocess, sys
-from pathlib import Path
-# extract progress via plinth is heavy; use checkpoint status=done assertion above
-print("ok")
-PY
-)
+cj6=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+out6=$(_plan_progress_json "$TMP/seed6" "$cj6")
+echo "$out6" | jq -e '.pct_complete==100 and .done==2' >/dev/null \
+  || fail "all-done dashboard 100: $(echo "$out6"|jq '{pct_complete,done,total}')"
 pass "all-done forces status=done over explicit blocked"
 
 # orphan PLAN with explicit index env still clears stale id/title/done (only keeps env index)
@@ -1281,8 +1278,11 @@ cat > "$TMP/a/SPEC.md" <<'S'
 S
 printf 'spec_path = SPEC.md\n' > "$TMP/a/.plinth/config"
 outs=$(_plan_progress_json "$TMP/a" '{}')
-echo "$outs" | jq -e '[.outline[].children[]?.title] | map(test("^3DS shall|^24-hour|^\\.NET shall")) | all' >/dev/null \
-  || fail "shall prefix corruption: $(echo "$outs"|jq '[.outline[].children[]?.title]')"
+echo "$outs" | jq -e '
+  ([.outline[].children[]?.title] | map(select(test("^3DS shall"))) | length) == 1
+  and ([.outline[].children[]?.title] | map(select(test("^24-hour"))) | length) == 1
+  and ([.outline[].children[]?.title] | length) >= 3
+' >/dev/null || fail "shall prefix corruption: $(echo "$outs"|jq '[.outline[].children[]?.title]')"
 pass "shall normalizer preserves 3DS/24-hour/.NET prefixes"
 
 # non-checkbox plan + status=done → 100%
@@ -1348,5 +1348,10 @@ cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
 echo "$cj" | jq -e '.status=="implementing" and .slice_total==3' >/dev/null \
   || fail "bullet after done reopens: $cj"
 pass "bullet after done reopens (plan grew)"
+cj=$(awk '/```json/{p=1;next}/```/{p=0}p' CHECKPOINT.md)
+outg=$(_plan_progress_json "$TMP/grow" "$cj")
+echo "$outg" | jq -e '.pct_complete != 100 and (.total//0) == 3' >/dev/null \
+  || fail "grow dashboard leaves 100: $(echo "$outg"|jq '{pct_complete,done,total}')"
+pass "grow dashboard leaves 100%"
 
 echo "canary-plan-progress: ALL PASS"
