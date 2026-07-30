@@ -1,8 +1,7 @@
 # Handoff (pointer)
 
-Canonical restart state: **CHECKPOINT.md**.  
-Architecture + implement slices: **docs/SHIP-BIAS-5.1.md**.
+Canonical restart state: **CHECKPOINT.md**.
 
 Read CHECKPOINT.md and continue from ## Next.
 
-<!-- refreshed 2026-07-30T01:30:00Z reason=plan-handoff-5.1 -->
+<!-- refreshed 2026-07-30T02:53:00Z reason=enter-build -->
