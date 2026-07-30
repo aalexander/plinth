@@ -163,6 +163,11 @@ jobs:
         run: |
           set -euo pipefail
           ./.github/scripts/canary-checkpoint-routing.sh
+      - name: Thrash demotion class bounds canary
+        run: |
+          set -euo pipefail
+          # Class demotion is a deliberate fail-open; this is the bound on it.
+          ./.github/scripts/canary-thrash-classes.sh
       - name: Plan progress derivation + dashboard surface canary
         run: |
           set -euo pipefail

@@ -38,6 +38,42 @@ surfaces, which is what dual was actually being used for.
 - **Receipt:** additive `ack_no_dual` field. `receipt-verify.sh`'s schema check is
   a positive conjunction and `subject_digest` covers only
   repo/base/merge-base/head/tree, so older verifiers still validate new receipts.
+- **Thrash demotion is now class-bounded (S2).** Demotion turns a reviewer major
+  into a minor, so it is a deliberate fail-open. It is bounded three ways:
+  - **In-repo vocabulary, single source.** `def demotable_classes` in
+    `shared/.plinth/review.sh` lists the seven demotable class IDs
+    (`coverage-gap`, `canary-depth`, `fake-cli-argv`, `handoff-ws`,
+    `sticky-ledger`, `docs-prose`, `queue-nit`). A finding is mapped to a class
+    only by the deterministic in-repo classifier — there is **no `class` field
+    read from the findings JSON**, so "the driver must not assign demotion
+    classes" holds by construction rather than by policy.
+  - **Tier-2 by construction.** The vocabulary lives under `.plinth/`, which
+    risk-classify's TOOLING pattern already classifies Tier 2, so widening the
+    fail-open cannot ship under a Tier-1 review. Canary-asserted end-to-end.
+  - **Every demotion records its class** in the `[THRASH:class:…]` marker, so
+    the receipt ledger (S3) can harvest it and laundering stays auditable.
+- **Never-demote floor now applies to every arm.** Pre-v5.1 the ephemera arm ran
+  *before* any precedence check, so a data-loss or security finding filed against
+  `HANDOFF.md`/`CHECKPOINT.md` was demoted on **path alone**. `is_external_security`
+  and `is_precedence_must_block` are now both checked at the top, ahead of every
+  demotion arm.
+- **Precedence belt learned passive-voice data loss.** A finding worded "the
+  stored slice state **is lost**" matched no belt token (`data.?loss`,
+  `erases the prior`) and demoted as `class:handoff-ws`. Found by the new canary,
+  not by review. Narrowly anchored to stateful nouns so ordinary prose is not
+  swept in.
+- **Coverage-shaped classes demote in BUILD only.** `coverage-gap`,
+  `canary-depth` and `fake-cli-argv` are not demoted in HARDEN, where coverage
+  depth and exotic robustness are explicitly in charter — the ship spiral is
+  stopped by the reviewer contract forbidding asymptotic majors, not by widening
+  a fail-open into the hardening phase.
+- **New canary `canary-thrash-classes.sh`** drives the production jq (never a
+  re-implementation): the allowlist is parsed out of `review.sh`; security /
+  correctness / data-loss / real-test-gap findings deliberately worded to *also*
+  trip a demotable classifier stay major; the named asymptotic classes do demote
+  in BUILD; a corpus sweep asserts no demotion ever happens without an
+  allowlisted, recorded class; and one vocabulary is shared with sticky's
+  fingerprint classes.
 - **Canaries:** `canary-checkpoint-routing.sh` rewritten for the new matrix — the
   HARDEN-does-not-dual regression lock, the alias map, a **cross-implementation
   agreement test** (the shell alias in `review.sh` vs the python alias in

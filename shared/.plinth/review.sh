@@ -1635,6 +1635,14 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     def is_precedence_must_block:
         is_external_security
         or is_real_test_gap
+        # "<something stateful> is lost" is data loss stated in the passive voice.
+        # The canary found this hole: a finding worded "stored state is lost" on
+        # HANDOFF.md matched no belt token and demoted as class:handoff-ws on path
+        # alone. Narrowly anchored to stateful nouns so ordinary prose (a reader
+        # being lost) is not swept in.
+        or ((.description // "") | test(
+          "(data|state|record|entry|entries|item|items|content|history|progress|verdict|receipt|queue)[^.]{0,24}\\b(is|are|was|were|get|gets|got|be) lost\\b"; "i"
+        ))
         or ((.description // "") | test(
           "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not|clicking[[:space:]].*does|no[- ]?op\\b"; "i"
         ));
@@ -1646,16 +1654,80 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
         and (is_real_test_gap | not)
         and (is_external_security | not)
         and (is_precedence_must_block | not);
-    def is_thrash_class:
-        is_coverage_asymp
-        or ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"))
-        or ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"))
-        or is_docs_prose;
+    # Asymptotic canary-DEPTH: "the fixture cannot reach the real seat/network".
+    # A true statement that is nonetheless not a product defect — the honest
+    # answer is a Noticed entry (and a runtime receipt), not another paid round.
+    def is_canary_depth:
+        ((.description // "") | test(
+          "dual[- ]?(pass )?e2e|dual[- ]?merge|live dual|dual-vendor seat|needs a live [^.]*seat|not free-canary|free-canary cannot|canary depth|fixture (cannot|can not) (reach|drive|exercise)|only a real (PR|network|run) can|unexercised (in|by) (free )?CI"; "i"
+        ));
+    # Fake/stub CLI argv theatre: asking for a wider matrix of synthetic CLI
+    # shims rather than naming a behavior that is wrong.
+    def is_fake_cli_argv:
+        ((.description // "") | test(
+          "fake CLI|stub CLI|fixture CLI|CLI (stub|shim|fake)|argv matrix|argv (permutation|combination)|synthetic (CLI|argv)"; "i"
+        ));
+    def is_handoff_ws_text:
+        ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"));
+    def is_sticky_ledger_text:
+        ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"));
     def is_queue_nit:
         # Only pure wording nits — never demote checked-off / deleted / lost blockers.
         ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
         and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checks? off|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
         and ((.description // "") | test("whitespace|wording|typo|formatting|blank line|nit"; "i"));
+
+    # ── DEMOTABLE CLASS VOCABULARY — SINGLE SOURCE (v5.1 S2) ─────────────────
+    # Class demotion is a FAIL-OPEN. It is bounded three ways, all required:
+    #  1. The vocabulary is fixed HERE, in-repo. A finding is mapped to a class
+    #     only by the deterministic classifier below — never from a `class` field
+    #     carried in the findings JSON. That is strictly stronger than trusting an
+    #     emitted class: there is no field for a driver (or a prompt-injected
+    #     reviewer) to set, so "driver must not assign demotion classes" holds by
+    #     construction rather than by policy.
+    #  2. This file lives under `.plinth/`, which the TOOLING pattern in
+    #     risk-classify.sh already classifies Tier 2 — so any edit to this
+    #     allowlist or to the demotion policy gets a full cross-vendor review by
+    #     construction. (No apostrophes in this jq program: it is single-quoted.)
+    #  3. Every demotion is recorded on the receipt (S3), so laundering is
+    #     auditable rather than silent.
+    # NEVER add a security, correctness, data-loss or real-test-gap class here.
+    # `.github/scripts/canary-thrash-classes.sh` extracts this array and asserts
+    # the classifier can emit nothing outside it.
+    def demotable_classes: [
+      "class:coverage-gap",
+      "class:canary-depth",
+      "class:fake-cli-argv",
+      "class:handoff-ws",
+      "class:sticky-ledger",
+      "class:docs-prose",
+      "class:queue-nit"
+    ];
+    # Coverage-shaped classes demote in BUILD only. In HARDEN, coverage depth and
+    # exotic robustness are explicitly IN charter (see phase_note), so demoting
+    # them there would contradict the charter the reviewer was given. The ship
+    # spiral is stopped by the reviewer contract forbidding asymptotic majors,
+    # not by widening a fail-open into the hardening phase.
+    def build_only_classes: ["class:coverage-gap", "class:canary-depth", "class:fake-cli-argv"];
+    def thrash_class_of:
+        # Precedence FIRST: a real bug, security finding, data loss or genuine
+        # test gap is never a demotable class, however it is worded.
+        if is_external_security or is_precedence_must_block then "class:none"
+        elif is_ephemera or is_handoff_ws_text then "class:handoff-ws"
+        elif is_queue_nit then "class:queue-nit"
+        elif is_sticky_ledger_text then "class:sticky-ledger"
+        elif is_fake_cli_argv then "class:fake-cli-argv"
+        elif is_canary_depth then "class:canary-depth"
+        elif is_coverage_asymp then "class:coverage-gap"
+        elif is_docs_prose and (is_overclaim | not) then "class:docs-prose"
+        else "class:none"
+        end;
+    def is_thrash_class: (thrash_class_of) != "class:none";
+    def class_demotable_now:
+        (thrash_class_of) as $c
+        | ($c != "class:none")
+          and ((demotable_classes | index($c)) != null)
+          and (if (build_only_classes | index($c)) != null then $phase == "build" else true end);
     # Outside fix pathspec and not a prior open id.
     def is_outside_delta:
         (($files | length) > 0)
@@ -1669,34 +1741,31 @@ thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids
     # is_precedence_must_block remains a belt for thrash_class edge mislabels.
     def is_out_of_scope_demote:
         is_outside_delta
-        and (is_precedence_must_block | not)
-        and is_thrash_class;
+        and is_thrash_class
+        and ((demotable_classes | index(thrash_class_of)) != null);
     .findings |= map(
       if (.status != "open") then .
       elif (.severity != "major" and .severity != "blocker") then .
+      # ── NEVER-DEMOTE FLOOR (both belts at the TOP, before any arm) ──────────
+      # Pre-v5.1 the ephemera arm ran BEFORE any precedence check, so a data-loss
+      # or security finding filed against HANDOFF.md/CHECKPOINT.md was demoted on
+      # path alone. The floor now applies to every arm without exception.
       elif is_external_security then .
-      elif is_ephemera then
-        .severity = "minor"
+      elif is_precedence_must_block then .
+      elif class_demotable_now then
+        (thrash_class_of) as $c
+        | .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: ephemera path — non-blocking]")
-      elif is_queue_nit then
-        .severity = "minor"
-        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: NEEDS-HUMAN queue nit — non-blocking]")
-      elif ($phase == "build") and is_coverage_asymp and (is_precedence_must_block | not) then
-        .severity = "minor"
-        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: asymptotic coverage → Noticed in BUILD]")
-      elif is_docs_prose and (is_overclaim | not) then
-        .severity = "minor"
-        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
-            + " [THRASH: docs prose → Noticed]")
+            + " [THRASH:" + $c + " → minor/Noticed"
+            + (if (build_only_classes | index($c)) != null then " in BUILD" else "" end)
+            + "]")
       elif is_out_of_scope_demote then
-        .severity = "minor"
+        (thrash_class_of) as $c
+        | .severity = "minor"
         | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
             + (if (($mode == "verify") or ($mode == "resume"))
-               then " [THRASH: outside fix delta - scoped for monotonic BUILD]"
-               else " [THRASH: thrash class outside pathspec - scoped]" end))
+               then " [THRASH:" + $c + " outside fix delta - scoped for monotonic BUILD]"
+               else " [THRASH:" + $c + " outside pathspec - scoped]" end))
       else .
       end
     )
