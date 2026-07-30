@@ -17,11 +17,18 @@
 set -euo pipefail
 input=$(cat)
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
+# Prefer session_id from PreToolUse JSON so dash/watch attribute blocks to the
+# correct SID (null only when the harness omits it).
+sid=$(printf '%s' "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+[ -n "$sid" ] || sid=""
 proj="${CLAUDE_PROJECT_DIR:-.}"
 block() {
   # Log the block for `plinth watch` (best-effort; never affects the verdict).
   { mkdir -p "$proj/.plinth/session" && jq -cn --arg tool "$tool" --arg detail "$1" \
-      '{ts:(now|todate), epoch:(now|floor), event:"guard_block", sid:null, tool:$tool, detail:($detail|.[0:160])}' \
+      --arg sid "$sid" \
+      '{ts:(now|todate), epoch:(now|floor), event:"guard_block",
+        sid:(if $sid == "" then null else $sid end),
+        tool:$tool, detail:($detail|.[0:160])}' \
       >> "$proj/.plinth/session/events.jsonl"; } 2>/dev/null || true
   echo "PLINTH BLOCKED: $1" >&2; exit 2
 }
@@ -94,14 +101,51 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
     branch="$(git -C "$proj" symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)"
     case "$branch" in main|master|HEAD) return 0 ;; esac   # base branch: PR-from-base is moot; not gated
     head="$(git -C "$proj" rev-parse HEAD 2>/dev/null)" || return 0
-    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
+    slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
     vf="$proj/.plinth/session/review/$slug/verdict.json"
+    [ -f "$vf" ] || vf="$proj/.plinth/session/review/$slug_legacy/verdict.json"
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
-      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+      rph="$(jq -r '.review_phase // empty' "$vf" 2>/dev/null || echo)"
+      # When lifecycle is harden, BUILD-stamped approvals do not authorize ship.
+      phase_now=build
+      pf="$proj/.plinth/session/phase-$slug.json"
+      [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
+      if [ -f "$pf" ]; then
+        if ! phase_now="$(jq -er '.phase' "$pf" 2>/dev/null)"; then
+          phase_now=harden  # corrupt phase → fail closed (match Stop)
+        else
+          case "$phase_now" in build|harden) ;; *) phase_now=harden ;; esac
+        fi
+      fi
+      if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
+        if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then
+          block "$what blocked — APPROVED@HEAD was produced under BUILD but phase is HARDEN. Re-run ./.plinth/review.sh under harden."
+        fi
+        return 0
+      fi
     fi
-    block "$what blocked — no APPROVED review at HEAD ($head) for branch '$branch'. Run ./.plinth/review.sh to APPROVED, then ship. (Client-side tripwire; the real gate is branch protection's required CI status checks.)"
+    # Human residual land (plinth residual --bind): bound RESIDUAL.json on the
+    # authorized tip ($head — current checkout for bare ship; resolved PR SHA for
+    # targeted merge). Only RESIDUAL.json + HANDOFF.md may change after bind;
+    # NEEDS-HUMAN is project-owned queue work and invalidates residual.
+    if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
+      local rb rsha ch
+      rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
+      rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] && [ -n "$head" ] \
+         && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" rev-parse --verify --quiet "$head^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" "$head" 2>/dev/null; then
+        ch="$(git -C "$proj" diff --name-only "$rsha" "$head" 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
+          return 0
+        fi
+      fi
+    fi
+    block "$what blocked — no APPROVED@HEAD and no bound residual for $head. Run review to APPROVED, or: plinth residual --bind && commit. (Client tripwire; CI/branch protection still apply.)"
   }
 
   # owner/repo from origin or -R/URL forms (github.com host only; no GHE olympics).
@@ -194,15 +238,49 @@ ship_gate() {  # <what> <unquoted-command> [original-command]
 
     branch="$resolved_branch"
     head="$resolved_sha"
-    slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+    slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
+    slug_legacy="$(printf '%s' "$branch" | tr '/ ' '--')"
     # Verdict lives in the worktree that ran the review; do not search other worktrees.
     vf="$proj/.plinth/session/review/$slug/verdict.json"
+    [ -f "$vf" ] || vf="$proj/.plinth/session/review/$slug_legacy/verdict.json"
     if [ -f "$vf" ]; then
       v="$(jq -r '.verdict // empty' "$vf" 2>/dev/null || echo)"
       vsha="$(jq -r '.sha // empty' "$vf" 2>/dev/null || echo)"
-      [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ] && return 0
+      rph="$(jq -r '.review_phase // empty' "$vf" 2>/dev/null || echo)"
+      phase_now=build
+      pf="$proj/.plinth/session/phase-$slug.json"
+      [ -f "$pf" ] || pf="$proj/.plinth/session/phase-$slug_legacy.json"
+      if [ -f "$pf" ]; then
+        if ! phase_now="$(jq -er '.phase' "$pf" 2>/dev/null)"; then
+          phase_now=harden
+        else
+          case "$phase_now" in build|harden) ;; *) phase_now=harden ;; esac
+        fi
+      fi
+      if [ "$v" = "APPROVED" ] && [ "$vsha" = "$head" ]; then
+        if [ "$phase_now" = "harden" ] && [ "$rph" = "build" ]; then
+          block "$what blocked — APPROVED@HEAD was produced under BUILD but phase is HARDEN. Re-run review under harden."
+        fi
+        return 0
+      fi
     fi
-    block "$what blocked — no APPROVED review at targeted PR head ($head) for branch '$branch'. Run the merge from the checkout/worktree that holds its verdict."
+    # Residual must authorize the *resolved PR tip* ($head), never checkout HEAD —
+    # otherwise a residual on the local branch authorizes an unrelated targeted merge.
+    if [ -f "$proj/.plinth/RESIDUAL.json" ]; then
+      local rb rsha ch
+      rb="$(jq -r '.bound // false' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || echo false)"
+      rsha="$(jq -r '.sha // empty' "$proj/.plinth/RESIDUAL.json" 2>/dev/null || true)"
+      if [ "$rb" = "true" ] && [ -n "$rsha" ] && [ -n "$head" ] \
+         && git -C "$proj" rev-parse --verify --quiet "$rsha^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" rev-parse --verify --quiet "$head^{commit}" >/dev/null 2>&1 \
+         && git -C "$proj" merge-base --is-ancestor "$rsha" "$head" 2>/dev/null; then
+        ch="$(git -C "$proj" diff --name-only "$rsha" "$head" 2>/dev/null || true)"
+        if [ -z "$ch" ] || ! printf '%s\n' "$ch" | grep -Ev '^\.plinth/RESIDUAL\.json$|^HANDOFF\.md$' | grep -q .; then
+          return 0
+        fi
+      fi
+    fi
+    block "$what blocked — no APPROVED/residual at targeted PR head ($head) for branch '$branch'."
   }
 
   # Parse only ordinary, directly-invoked gh forms. Unknown merge argv blocks
@@ -313,7 +391,10 @@ ORIGSEGS
       if [ -n "$target_ref" ] || [ -n "$target_repo" ]; then
         _ship_targeted
       else
-        _ship_bare
+        # plinth#49: bare `gh pr merge` is not origin/head-bound (gh default-repo /
+        # GH_REPO can desync authorize-from vs merge-into). Always refuse; require
+        # PR number/URL + -R origin + --match-head-commit (targeted path).
+        block "$what blocked — bare 'gh pr merge' is not repository/head-bound (gh default-repo or GH_REPO can desync authorize-from vs merge-into). Use: gh pr merge <n> -R <origin-owner/repo> --match-head-commit <origin-resolved-head-sha> …"
       fi
     done <<< "$disc"
   done <<< "$segments"
