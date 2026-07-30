@@ -138,9 +138,14 @@ must discover the class one instance at a time pays a full round for each.
   (NOT other, project-owned .claude/agents/*), .claude/settings.json,
   the driver shells CLAUDE.md and AGENTS.md at repo root, the reviewer contract
   .plinth/reviewer.md, and .plinth/ except AGENTS-project.md, DRIVER-project.md,
-  config, protected-paths, GOAL.md, and NEEDS-HUMAN.md — that last one the driver
-  is REQUIRED to maintain and commit; it is never tampering): prefix the
-  description "UPSTREAM:" — real findings,
+  config, protected-paths, GOAL.md, NEEDS-HUMAN.md, and **RESIDUAL.json** — the
+  last two the driver is REQUIRED to maintain and commit; neither is ever
+  tampering. `RESIDUAL.json` is written by `plinth residual` and is the DESIGNED
+  way out of a loop that cannot converge ("Residual land", above). Round 30 of the
+  v5.1 train filed drafting it as a TAMPERING **blocker**, which made the escape
+  hatch itself a blocking finding — the exact failure this exemption prevents.
+  A driver-written residual is a proposal; only a human `--bind` authorizes ship):
+  prefix the description "UPSTREAM:" — real findings,
   reported at observed severity, but they do NOT block this repo's verdict. The
   session cannot fix the instrument that judges it; the human routes them to the
   Plinth repo.

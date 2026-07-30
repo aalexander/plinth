@@ -942,6 +942,21 @@ Non-blocking findings and drive-by observations — the backlog inbox (see
 "Triage `## Noticed`" above). Fix in `shared/`/`bin/` product sources, never in
 installed copies.
 
+- **The residual escape hatch was booby-trapped (found by round 30).** `plinth
+  residual` writes `.plinth/RESIDUAL.json`, and that path was NOT on the reviewer
+  contract's tooling exemption list — so drafting the residual, the designed way out
+  of a loop that cannot converge, was filed as a TAMPERING **blocker**. Fixed in
+  `shared/reviewer.md`. Note the shape of this bug: the mechanism that exists to
+  stop endless rounds could only be used by triggering an endless round.
+- **The v5.1 loop DIVERGED, and that is the ship-bias evidence.** Round 29 → 14 open
+  blocking, round 30 → 15, with the same findings re-reported at shifting counts
+  ("drops 32 of 33 milestones" became "rejects 21 of 33" between rounds on unchanged
+  code). Rounds cost ~5.07M input tokens each because every round re-inlines
+  `base...HEAD` plus the contract plus the spec. ~29 rounds ≈ 145M input tokens to
+  ship a few hundred lines of real change. The loop was stopped here by operator
+  directive (review treated as ADVICE), not by reaching APPROVED. v6.0 addresses the
+  cause: reviewer advises, driver adjudicates on the record, CI gates — and the
+  receipt attests "a review ran + adjudications" instead of "a model approved".
 - **Round 29 adjudication — DISMISSED (asymptotic, infrastructure that does not
   exist).** Four findings ask for test depth no fixture can reach, so no amount of
   work closes them: the dual-pass e2e merge path needs a live two-vendor seat
