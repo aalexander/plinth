@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
-  "bound": true,
-  "sha": "",
-  "by": "austin",
+  "bound": false,
+  "sha": "1138bb65ba1cea62323d54b8778868465d251de4",
+  "by": "driver-draft (awaiting human --bind)",
   "ts": "2026-07-30T04:10:00Z",
-  "note": "v5.1.0 ship-bias train: operator ratified deferring 5 reproduced plan-progress classifier defects (round 29) to a follow-up branch. Dash progress display only \u2014 no ship path, security boundary, or data loss. Deferred to stop the diff-growth feedback loop that produced 29 rounds; review treated as ADVICE per the v6 design.",
+  "note": "DRAFT for human review, NOT bound. Round-29 adjudication: 5 reproduced plan-progress classifier defects deferred to a follow-up branch (dash progress display only \u2014 no ship path, security boundary, or data loss). Binding this authorizes ship at this tip without model APPROVED@HEAD, per shared/reviewer.md 'Residual land' \u2014 that authorization is the operator's to give, not the driver's.",
   "findings": [
     {
       "id": "R29-1",
