@@ -50,8 +50,22 @@ usage() { echo "Usage: plinth {init|update|goal|watch|statusline|queue} <project
        plinth next [<project-path>]                  (single next action: HANDOFF / NH / review / plan)
        plinth residual [<path>] [--bind] [--note t] [--from-findings f]
                                                      (human residual land: draft/bind RESIDUAL.json @ HEAD)
-       plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit 1; }
+       plinth lifecycle-migrate [<project-path>]     (open reviews → harden phase; corrupt phase fix)"; exit "${1:-1}"; }
 [ $# -ge 1 ] || usage
+# HELP IS SIDE-EFFECT FREE, FOR EVERY COMMAND (upstream #63). `plinth harden --help`
+# used to fall through to dispatch: it ran the pathless harden, flipped the project
+# from BUILD to HARDEN, wrote phase-<slug>.json, CHECKPOINT.md and HANDOFF.md, and the
+# driver had to run `plinth build` to undo it. A help flag that mutates the project is
+# a trap, not a usability nit — the operator asking "what does this do?" is precisely
+# the one who does not want it done. Intercepted here, ahead of ALL parsing and
+# dispatch, so it cannot regress per-command.
+for _a in "$@"; do
+  case "$_a" in
+    -h|--help) usage 0 ;;
+    --) break ;;   # everything after `--` belongs to a wrapped command (plinth smoke)
+  esac
+done
+unset _a
 cmd="$1"; target="${2:-}"; opt="${3:-}"
 # plan may be: plan | plan --deep | plan --deep PATH | plan PATH
 PLAN_DEEP=0

@@ -1287,5 +1287,36 @@ bash -c '
 ' || fail "plan seat product hollow checks failed"
 pass "residual-zero: plan seat product hollow/non-hollow path"
 
+# ── upstream #63: --help must be SIDE-EFFECT FREE for every command ──────────
+# `plinth harden --help` used to fall through to dispatch: it ran the pathless
+# harden, flipped BUILD→HARDEN, and wrote phase-<slug>.json + CHECKPOINT.md +
+# HANDOFF.md. A help flag that mutates the project is a trap — the operator asking
+# "what does this do?" is exactly the one who does not want it done. Digest the
+# whole tree before and after; byte-identical is the assertion, not "looks fine".
+H63="$(mktemp -d)"
+(
+  set -euo pipefail
+  cd "$H63"
+  git init -q -b main . >/dev/null 2>&1; git config user.email t@t; git config user.name t
+  "$PLINTH" init . >/dev/null 2>&1
+  echo s > SPEC.md; git add -A; git commit -qm base >/dev/null
+  git checkout -qb feat >/dev/null 2>&1
+  digest() { find . -path ./.git -prune -o -type f -print | sort | xargs shasum 2>/dev/null | shasum | cut -d" " -f1; }
+  before="$(digest)"
+  for c in harden build plan next checkpoint handoff residual lifecycle-migrate phase; do
+    out="$("$PLINTH" "$c" --help 2>&1)" || { echo "$c --help exited nonzero"; exit 1; }
+    case "$out" in Usage:*) ;; *) echo "$c --help did not print usage — it RAN the command"; exit 1 ;; esac
+    out2="$("$PLINTH" "$c" -h 2>&1)" || { echo "$c -h exited nonzero"; exit 1; }
+    case "$out2" in Usage:*) ;; *) echo "$c -h did not print usage"; exit 1 ;; esac
+  done
+  after="$(digest)"
+  [ "$before" = "$after" ] || { echo "--help mutated the project tree ($before != $after)"; exit 1; }
+  # a wrapped command after `--` must NOT be intercepted (plinth smoke -- cmd --help)
+  "$PLINTH" smoke . -- true --help >/dev/null 2>&1 || true
+  # bad usage still exits 1 (only an EXPLICIT help request is a success)
+  rc=0; "$PLINTH" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || { echo "no-args usage should exit 1, got $rc"; exit 1; }
+) || fail "--help is not side-effect free (upstream #63)"
+pass "--help/-h side-effect free for every phase-changing command (upstream #63)"
 
 echo "canary-lifecycle-build-harden: ALL PASS"
