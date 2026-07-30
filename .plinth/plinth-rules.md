@@ -140,15 +140,52 @@ reflexively.
 Work on a feature branch — never commit directly to the base branch. The Stop
 gate deliberately does not guard base branches (it logs and releases), and the
 PR needs a branch to exist. Branch first, then build.
+
+## Lifecycle — plan → build → harden → ship
+Default phase is **build**: the Stop gate does **not** require APPROVED@HEAD
+to end a turn that committed (it logs `build_defer`). Ship is unchanged —
+`gh pr create|merge` still needs APPROVED@HEAD. When the product is ready:
+`plinth harden`, then run `./.plinth/review.sh` until APPROVED, then open the PR.
+`plinth build` returns to default build. `plinth phase` prints the current phase.
+`plinth checkpoint` (alias `handoff`) writes root `CHECKPOINT.md`; **auto-snapshots** also run on
+`plinth harden`, `plinth build`, `plinth plan --deep`, and after review rounds
+(CHANGES_NEEDED / APPROVED). SessionStart nudges when CHECKPOINT (or legacy HANDOFF) exists.
+**Restart:** read `CHECKPOINT.md` (or legacy `HANDOFF.md`) and continue from ## Next.
+
+## Autonomous execution (max automation)
+Default: **keep cooking**. Never wait for optional compaction, human ack of a
+handoff, or a timer. Handoff snapshots **notify and return immediately**.
+
+Loop until one of:
+1. **Done** — HANDOFF ## Next empty / all acceptance criteria met and (if
+   shipping) APPROVED@HEAD + PR opened as required, or
+2. **Human-blocked** — open `[BLOCKING]` items in NEEDS-HUMAN, or a product
+   tradeoff that only the human can decide (record in NEEDS-HUMAN and stop
+   that path only), or
+3. **Hard fail** — infra exit 2 you cannot fix; record and surface.
+
+Otherwise: run `plinth next` (or pick the next item from CHECKPOINT ## Next, PLAN
+AC, or open review findings); implement; commit; continue. Mid-loop review
+CHANGES_NEEDED is a **checkpoint** (keep session). Phase changes / APPROVED are
+**milestones** (optional fresh session advice only — still do not wait).
+
+Advisor annotates only — never clears majors or sets APPROVED/phase.
+Prefer `plinth plan` / `plinth plan --deep` for large/new work; human owns
+true product ambiguity (park in NEEDS-HUMAN and continue other paths if any).
+Review anti-thrash: BUILD vs HARDENING phase; sticky ids; compact verify;
+Tier-2 dual first-pass when audit_vendor differs **and** review phase is HARDEN
+(or `PLINTH_DUAL_PASS=1`); BUILD skips dual merge by default.
+
 BUILD FIRST, REVIEW ONCE: implement the whole feature before invoking the paid
 loop — nothing requires mid-build rounds; only APPROVED-at-HEAD before the PR.
-Before the first paid round, run a FREE self-review pre-flight (your harness's
-built-in review command if it has one, else your own adversarial pass over the
-diff) plus this project's known defect classes, and fix what you find — a clean
-round 1 typically saves two to three paid rounds. Between rounds, batch the
-fixes for ALL open findings into ONE commit per round — never a round per fix.
-When the work is complete: commit, then run `./.plinth/review.sh`. Rounds on
-large diffs can exceed 10 minutes — if your shell tool caps there, run it in
+Before the first paid round (after `plinth harden`), run a FREE self-review
+pre-flight (your harness's built-in review command if it has one, else your own
+adversarial pass over the diff) plus this project's known defect classes, and
+fix what you find — a clean round 1 typically saves two to three paid rounds.
+Between rounds, batch the fixes for ALL open findings into ONE commit per round
+— never a round per fix.
+When ship-ready: `plinth harden`, commit if needed, then run `./.plinth/review.sh`.
+Rounds on large diffs can exceed 10 minutes — if your shell tool caps there, run it in
 the background and read the result; an interrupted round is safe to re-run
 (resume/fallback recovers). It reviews committed work only and refuses a dirty tree or an empty diff.
 Exit 0 = APPROVED, recorded in `.plinth/session/review/<slug>/verdict.json` (branch-keyed;
@@ -196,8 +233,8 @@ restart the loop or clear session state to dodge it). The PLINTH_* review overri
 PLINTH_REVIEWER_MODEL, PLINTH_AUDIT_VENDOR, PLINTH_AUDIT_MODEL, PLINTH_ROUND_CAP)
 are OPERATOR-ONLY: the driver must NEVER set them — using them to change the
 reviewer, drop the cross-vendor audit, or raise the round cap is the same
-tampering class as dodging the cap, whatever the intent. Every override any round
-recorded in session state (verdict.json for the latest round; the per-round
+tampering class as dodging the cap, whatever the intent. Every override recorded
+in any round of session state (verdict.json for the latest round; the per-round
 usage.jsonl ledger for every round) MUST be listed in the PR body's audit summary
 (seat, value, round) — in the canonical machine-checked form
 `PLINTH-OVERRIDE: NAME=VALUE (round N)`, one line per tuple. The receipt check

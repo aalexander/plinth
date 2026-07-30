@@ -85,7 +85,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 # can write last-error and release the Stop gate. The mkdir itself is deferred
 # to first use / the normal session setup below — die_infra creates the dir when needed.
 branch="$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
-slug="$(printf '%s' "$branch" | tr '/ ' '--')"
+# Always write encoded slug (feat/a-b ≠ feat/a/b). Consumers (next/guard/smoke)
+# resolve encoded first, then legacy — do NOT reassign SDIR to legacy here or
+# run receipts and review state diverge.
+slug="$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g')"
 SDIR=".plinth/session/review/${slug}"
 # NB: the codex CLI is required only for a model round (Tier 1/2); the check is
 # deferred to just before the first round so a Tier-0 (deterministic-floor)
@@ -101,15 +104,33 @@ command -v jq    >/dev/null 2>&1 || die_infra "jq not found"
 # SHA-bound review. Parse porcelain -z (NUL-delimited, UNquoted) and compare the EXACT
 # path — a substring/space-anchored regex would wrongly exempt a filename that merely
 # ends in "NEEDS-HUMAN.md" (filenames may contain spaces, e.g. "docs/foo NEEDS-HUMAN.md").
+# plinth#12: git status failure must fail CLOSED (not "clean"). Porcelain -z rename
+# records are XY path\0path2\0 — only the first record has the "XY " prefix.
+# Do NOT capture -z output in a bash $(...) var — command substitution strips NULs.
 dirty=0
+status_rc=0
+_status_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-status.XXXXXX")" || die_infra "mktemp failed for git status capture"
+git status --porcelain -z > "$_status_tmp" 2>/dev/null || status_rc=$?
+[ "$status_rc" -eq 0 ] \
+  || { rm -f "$_status_tmp"; die_infra "git status failed (rc=$status_rc) — cannot verify a clean tree for SHA-bound review"; }
 while IFS= read -r -d '' entry; do
-  path="${entry:3}"   # porcelain -z prefixes each record with "XY " (2 status + 1 space)
+  [ -n "$entry" ] || continue
+  # porcelain -z: first record is "XY path"; rename second path has no XY prefix.
+  # X/Y may be space (e.g. " M f", "M  f") — do not use a character class with space.
+  if [ "${#entry}" -ge 3 ] && [ "${entry:2:1}" = " " ]; then
+    path="${entry:3}"
+  else
+    path="$entry"
+  fi
   case "$path" in
     NEEDS-HUMAN.md|.plinth/NEEDS-HUMAN.md) ;;   # the queue — exempt
-    "") ;;                                       # defensive (e.g. a rename's second field)
+    HANDOFF.md|CHECKPOINT.md) ;;                 # checkpoint/handoff auto-refresh — not reviewable product
+    .plinth/RESIDUAL.json) ;;                    # same-open soft-cap draft
+    "") ;;
     *) dirty=1; break ;;
   esac
-done < <(git status --porcelain -z)
+done < "$_status_tmp"
+rm -f "$_status_tmp"
 [ "$dirty" = 0 ] \
   || die "working tree is dirty — commit (or stash) first; the verdict binds to a commit SHA"
 
@@ -132,8 +153,51 @@ fi
 base_tip="$(git rev-parse --verify "$baseref")" \
   || die_infra "cannot resolve tip of base ref '${baseref}'"
 
-diff="$(git diff "${base_tip}...HEAD")" || die_infra "git diff ${baseref}...HEAD failed"
-[ -n "$diff" ] || die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
+# Session restart ephemera — never part of the reviewed subject:
+#   HANDOFF.md  restart note (plinth handoff); Goal/Next whitespace thrash
+# NEEDS-HUMAN.md is project-owned queue (driver must maintain it). It is NOT
+# pathspec-excluded: a deletion must remain reviewable. Findings that only nit
+# queue wording are still demoted to minor by thrash policy (see is_queue_nit).
+# Root HANDOFF.md only — nested product docs named HANDOFF.md stay in review.
+REVIEW_PATHSPEC=(.
+  ':(exclude)HANDOFF.md' ':(exclude)CHECKPOINT.md'
+)
+EPHEMERA_RE='^(HANDOFF|CHECKPOINT)\.md$'
+diff="$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")" \
+  || die_infra "git diff ${baseref}...HEAD failed"
+if [ -z "$diff" ]; then
+  # Only HANDOFF.md changed — nothing to review.
+  only_ex="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null || true)"
+  if [ -n "$only_ex" ] && ! printf '%s\n' "$only_ex" | grep -Ev "$EPHEMERA_RE" >/dev/null; then
+    rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
+          "$SDIR/open-set-fp" "$SDIR/open-set-streak" 2>/dev/null || true
+    mkdir -p "$SDIR"
+    # Stamp review_phase from lifecycle (encoded or legacy phase file).
+    _rph=build
+    _pf=".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json"
+    [ -f "$_pf" ] || _pf=".plinth/session/phase-$(printf '%s' "$branch" | tr '/ ' '--').json"
+    case "$(jq -r '.phase // empty' "$_pf" 2>/dev/null || true)" in
+      harden) _rph=hardening ;;
+    esac
+    jq -n --arg sha "$sha" --arg base "$baseref" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg rph "$_rph" \
+      '{verdict:"APPROVED", reviewer_verdict:"EPHEMERA_ONLY", sha:$sha, base_ref:$base,
+        round:0, session_id:"", model:"deterministic-floor", review_phase:$rph,
+        risk:{tier:0,files:0,reasons:["HANDOFF/CHECKPOINT only — session ephemera, not reviewed"]},
+        usage:null, ts:$ts}' > "$SDIR/verdict.json"
+    rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
+    # mint_receipt is defined later — flag and mint at Tier-0 site (same as docs floor).
+    NEED_EPHEMERA_MINT=1
+  else
+  die "empty diff against ${baseref} at ${sha} — nothing would be reviewed. Commit your work or pass the right base branch."
+  fi
+fi
+if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
+  : # continue setup only until mint_receipt exists; skip model path below
+fi
+# Reviewed file list (full branch, pathspec) — thrash policy scopes NEW findings to these
+# (verify/resume narrow further inside run_round to the fix-diff + open ledger).
+REVIEWED_FILES_FULL="$(git diff --name-only "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
 
 # Per-project config (.plinth/config — the driver must not edit it; it is in protected-paths,
 # so a Claude driver's guard blocks edits at the tool level; a change is otherwise reviewed as
@@ -148,7 +212,8 @@ diff="$(git diff "${base_tip}...HEAD")" || die_infra "git diff ${baseref}...HEAD
 #                on every Tier-2 approval (and every 5th otherwise). Disagreement
 #                reported, not adjudicated.
 #   audit_model  optional MODEL OVERRIDE for audit_vendor (not a trigger)
-cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | head -1; }
+# head/tail close early under pipefail → writer gets SIGPIPE (exit 141). Drain or avoid.
+cfg() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" .plinth/config 2>/dev/null | { head -n1; cat >/dev/null 2>&1 || true; }; }
 # Reviewer model (for the dashboard): whatever codex actually runs — the model
 # line in ~/.codex/config.toml. Recorded in verdict.json so watch can show it
 # alongside the driver model without reading the user's codex config.
@@ -174,7 +239,7 @@ base_has_config=0; git cat-file -e "${base_tip}:.plinth/config" 2>/dev/null && b
 # review (pick a weak reviewer model, set audit_vendor to the primary's own vendor to
 # drop the cross-vendor audit, route its own findings to the run gate). Mirrors
 # risk-classify.sh + spec_path.
-bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | head -1; }
+bcfg() { printf '%s' "$basecfg" | sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" | { head -n1; cat >/dev/null 2>&1 || true; }; }
 SPEC_PATH="$(bcfg spec_path)"
 # First ADOPTION only (base config FILE absent): honor the working-tree spec_path. If the base
 # config FILE exists but omits spec_path (valid — it defaults to SPEC.md, even when the file is
@@ -327,21 +392,74 @@ EXEC_RE="$(printf '%s' "$EXEC_GATED" | tr -s ' ' '|')"
 # with no extension restriction, and .md/.rst/.txt-only would silently drop
 # YAML/JSON/other spec files. Binaries are skipped (grep -Iq) so a stray blob in
 # the tree can't corrupt the prompt. Pure fn of SPEC_PATH -> testable.
-inline_spec() {
-  if [ -f "$SPEC_PATH" ]; then cat "$SPEC_PATH"; return; fi
-  if [ -d "$SPEC_PATH" ]; then
-    find "$SPEC_PATH" -type f | sort | while IFS= read -r sf; do
-      grep -Iq . "$sf" 2>/dev/null || continue
-      echo "--- $sf ---"; cat "$sf"
-    done
-    return
+# ── SPEC BY REFERENCE, NOT BY VALUE (v5.2) ───────────────────────────────────
+# The primary reviewer runs `codex exec --sandbox read-only` IN the repo: it can
+# already READ files. The ONLY reason the spec was ever pasted into the prompt is that
+# the WORKING-TREE copy is PR-modifiable — a PR must not ship the spec that judges it.
+# That argues for a BASE copy, not for an inline copy.
+#
+# So: materialize the ratified base spec to a file and hand over its PATH. Cost drops
+# from ~23k tokens re-sent on every agent turn (~60x per round) to a one-line pointer
+# plus a heading outline — and unlike an excerpt, NOTHING is withheld, so the "a
+# requirement never reached the reviewer" fail-open does not exist on this path at all.
+# The excerpt path (below) remains for the AUDITOR, which runs from an empty directory
+# with tools forbidden and so genuinely cannot read anything.
+#
+# Per-ROUND directory so nothing is ever deleted: no recursive removal of a computed
+# path anywhere in the loop.
+materialize_base_spec() {  # <round> -> abs path on stdout, or nothing
+  local dest="$SDIR/base-spec-${1:-0}" name
+  mkdir -p "$dest" 2>/dev/null || return 0
+  if git cat-file -e "${base_tip}:${SPEC_PATH}" 2>/dev/null; then
+    name="$(basename "$SPEC_PATH")"
+    git show "${base_tip}:${SPEC_PATH}" > "$dest/$name" 2>/dev/null || return 0
+    printf '%s' "$dest/$name"; return 0
   fi
-  echo "(spec path not found: ${SPEC_PATH})"
+  if git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" >/dev/null 2>&1; then
+    git ls-tree -r --name-only "${base_tip}:${SPEC_PATH}" 2>/dev/null | while IFS= read -r f; do
+      mkdir -p "$dest/$(dirname "$f")" 2>/dev/null || continue
+      git show "${base_tip}:${SPEC_PATH}/$f" > "$dest/$f" 2>/dev/null || true
+    done
+    printf '%s' "$dest"; return 0
+  fi
+  return 0
 }
 
-# Inline GOAL.md for the tools-forbidden auditor. The reviewer contract
-# (.plinth/reviewer.md) carries the metric-integrity rules; the auditor also needs the GOAL's actual eval/score contract to
-# judge metric gaming, and it cannot read files. Pure fn -> testable.
+# One line per heading: tells the reviewer WHAT exists so it can decide whether to open
+# the file. ~300 tokens for an 87KB manual, versus ~23k to paste the whole thing.
+_spec_outline_for_prompt() {
+  local f="${BASE_SPEC_PATH:-}"
+  [ -n "$f" ] || { echo "(base spec unavailable — the loop could not materialize it; treat the spec as UNKNOWN and say so)"; return; }
+  if [ -f "$f" ]; then grep -nE '^#{1,6} ' "$f" 2>/dev/null | head -200; return; fi
+  if [ -d "$f" ]; then find "$f" -type f 2>/dev/null | sort | head -100; return; fi
+  echo "(base spec unavailable)"
+}
+
+# The spec reaches the PRIMARY by reference (materialize_base_spec, above): it runs
+# read-only IN the repo and can open the file, so nothing needs to be pasted into a
+# context that is re-sent every agent turn.
+#
+# The AUDITOR is different: it runs from an EMPTY directory with tools forbidden, so it
+# cannot open anything. It gets the heading OUTLINE only. Spec conformance is the
+# primary reviewer's job — the auditor is a second opinion on what the primary missed
+# (and, for L3, a security pass), neither of which needs the product requirements
+# pasted in full.
+#
+# An earlier v5.2 attempt compressed the spec with a relevance-selecting excerpt. It is
+# deleted rather than repaired: review round 2 found that it silently dropped every
+# spec form without column-zero ATX headings (YAML, JSON, plain text, Setext), treated
+# `#` inside fenced code as a heading, truncated its own selector at 30 tokens, and
+# advertised an excerpt escape-hatch prefix that no code implemented. All four defects
+# belong to machinery that only existed to work around pasting the spec at all.
+inline_spec() {
+  if [ -n "${BASE_SPEC_PATH:-}" ]; then
+    echo "(heading outline only — the auditor runs isolated and cannot open files;"
+    echo " spec CONFORMANCE is the primary reviewer's job, not this seat's)"
+    _spec_outline_for_prompt
+    return
+  fi
+  echo "(canonical spec unavailable to this isolated seat — treat spec conformance as UNVERIFIED here and say so)"
+}
 inline_goal() {
   [ -f GOAL.md ] || { echo "(no GOAL.md — metric-integrity review not applicable)"; return; }
   echo "--- GOAL.md ---"; cat GOAL.md
@@ -421,10 +539,32 @@ run_auditor() {  # run_auditor <prompt> <out-findings-json>
 m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
 sys.stdout.write(m.group(1) if m else "")' > "${out}.j" 2>/dev/null || return 1 ;;
     agy|gemini)
-      ( cd "$ad" && agy -p "$prompt" --sandbox ${margs[@]+"${margs[@]}"} ) > "$raw" 2>/dev/null || return 1
-      python3 -c 'import sys,re
-m=re.search(r"(\{.*\})", open(sys.argv[1]).read(), re.S)
-sys.stdout.write(m.group(1) if m else "")' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
+      # plinth#14: never put a multi-hundred-KB prompt on argv (E2BIG → silent UNAVAILABLE).
+      # Feed via stdin; refuse oversized prompts with a clear failure rather than empty error.
+      _agy_p="$(mktemp "${TMPDIR:-/tmp}/plinth-agy.XXXXXX")" || return 1
+      printf '%s' "$prompt" > "$_agy_p" || { rm -f "$_agy_p"; return 1; }
+      _agy_sz=$(wc -c < "$_agy_p" | tr -d ' ')
+      if [ "${_agy_sz:-0}" -gt 400000 ] 2>/dev/null; then
+        echo "agy audit prompt too large (${_agy_sz} bytes) — would E2BIG; audit UNAVAILABLE" >&2
+        rm -f "$_agy_p"; return 1
+      fi
+      # Always stdin + -p (non-interactive print mode). Never rely on @file
+      # expansion (agy may echo the literal path as a "successful" empty audit).
+      # Require a parseable findings object.
+      ( cd "$ad" && agy -p --sandbox ${margs[@]+"${margs[@]}"} < "$_agy_p" ) > "$raw" 2>/dev/null \
+        || { rm -f "$_agy_p"; return 1; }
+      rm -f "$_agy_p"
+      python3 -c 'import sys,re,json
+raw=open(sys.argv[1]).read()
+m=re.search(r"(\{.*\})", raw, re.S)
+if not m:
+    sys.exit(1)
+obj=json.loads(m.group(1))
+if not isinstance(obj, dict) or "findings" not in obj and "verdict" not in obj:
+    # Accept either full verdict schema or findings-bearing object
+    if not (isinstance(obj, dict) and ("verdict" in obj or "findings" in obj)):
+        sys.exit(1)
+sys.stdout.write(m.group(1))' "$raw" > "${out}.j" 2>/dev/null || return 1 ;;
     codex)
       ( cd "$ad" && printf '%s' "$prompt" | codex exec --skip-git-repo-check -c project_doc_max_bytes=0 \
           ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
@@ -505,24 +645,132 @@ merge_base="$(git merge-base "$base_tip" "$sha" 2>/dev/null)" || merge_base=""
 # (full review + clean-slate confirmation + cross-vendor audit) so an unclassified
 # high-consequence diff is over-reviewed, never under-reviewed.
 RISK=2; RISK_JSON='{"tier":2,"reasons":["classifier unavailable — failing closed to Tier 2"]}'
-if [ -x ".plinth/risk-classify.sh" ]; then
-  # Pass the pinned tip SHA (not the mutable base name) so classification cannot
-  # re-resolve a moved ref and disagree with the diff already taken.
-  out="$(./.plinth/risk-classify.sh "$base_tip" 2>/dev/null || true)"
-  t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
-  case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac  # unparseable => keep Tier 2
+# plinth#13/#15: never run a PR-controlled classifier before knowing the tooling floor.
+# If risk-classify.sh itself changed vs base, refuse working-tree execution (Tier 2).
+# Prefer the base-blob script when present so classification is not attacker shell.
+_cls_changed=0
+_tool_diff_rc=0
+_tool_names="$(git diff --name-only "${base_tip}..HEAD" 2>/dev/null)" || _tool_diff_rc=$?
+if [ "$_tool_diff_rc" -ne 0 ]; then
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["git diff --name-only for tooling floor failed — failing closed to Tier 2"]}'
+elif printf '%s\n' "$_tool_names" | grep -xF '.plinth/risk-classify.sh' >/dev/null 2>&1; then
+  _cls_changed=1
+  RISK=2; RISK_JSON='{"tier":2,"reasons":["risk-classify.sh changed in this PR — refuse working-tree classifier (fail closed Tier 2)"]}'
+else
+  # Run base-blob classifier when possible (not attacker working-tree shell).
+  _cls_tmp=""; _cls_src=""
+  if git cat-file -e "${base_tip}:.plinth/risk-classify.sh" 2>/dev/null; then
+    _cls_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-cls.XXXXXX")" || _cls_tmp=""
+    if [ -n "$_cls_tmp" ] && git show "${base_tip}:.plinth/risk-classify.sh" > "$_cls_tmp" 2>/dev/null; then
+      chmod +x "$_cls_tmp" 2>/dev/null || true
+      _cls_src="$_cls_tmp"
+    fi
+  elif [ -x ".plinth/risk-classify.sh" ]; then
+    # First-adoption: base has no classifier — working tree is the only copy.
+    _cls_src=".plinth/risk-classify.sh"
+  fi
+  if [ -n "$_cls_src" ]; then
+    out="$(bash "$_cls_src" "$base_tip" 2>/dev/null || true)"
+    t="$(printf '%s' "$out" | jq -r '.tier // empty' 2>/dev/null || true)"
+    case "$t" in 0|1|2) RISK="$t"; RISK_JSON="$out" ;; *) : ;; esac
+  fi
+  [ -n "$_cls_tmp" ] && rm -f "$_cls_tmp"
 fi
-# SELF-REFERENTIAL FLOOR (independent of the classifier): the classifier is version-pinned
-# tooling but is EXECUTED from the PR working tree, so a PR could rewrite it to emit Tier 0 and
-# skip BOTH the model round AND the tooling-tamper block (Tier 0 exits APPROVED before that
-# arithmetic). Check the diff directly: if it touches ANY version-pinned tooling path, it CANNOT
-# be Tier 0 — floor to Tier 2 so the full review + tamper arithmetic run. (This repo's own shared/
-# product edits do not match the root-anchored HARNESS_RE, so they are unaffected.)
-if [ "$RISK" = "0" ] && git diff --name-only "${base_tip}..HEAD" 2>/dev/null | grep -Eq "$HARNESS_RE"; then
-  RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the working-tree classifier to prevent a self-referential Tier-0 bypass"]}'
+# SELF-REFERENTIAL FLOOR: any version-pinned tooling path in the diff cannot be Tier 0.
+# Avoid grep -q under pipefail (SIGPIPE / exit 141 can skip this elevation).
+if [ "$RISK" = "0" ] && [ "$_tool_diff_rc" -eq 0 ]; then
+  if printf '%s
+' "$_tool_names" | grep -E "$HARNESS_RE" >/dev/null 2>&1; then
+    RISK=2; RISK_JSON='{"tier":2,"reasons":["diff touches version-pinned tooling — floored above the classifier to prevent a self-referential Tier-0 bypass"]}'
+  fi
 fi
 echo "Plinth review: risk Tier ${RISK} ($(printf '%s' "$RISK_JSON" | jq -r '.reasons[0] // "n/a"'))"
 
+
+# ── L3 security pass trigger (v5.1 S4) ───────────────────────────────────────
+# v5.1 removes dual-as-habit. Dual was mostly being used as "get a second pair of
+# eyes on something security-shaped" — so that need is served DIRECTLY, by one
+# security-focused pass on the surfaces that actually warrant it, instead of a
+# second full generalist review on everything.
+#
+# The trigger list is IN-REPO (this file, under .plinth/, already Tier 2 via
+# risk-classify's TOOLING pattern), so widening or narrowing it is reviewed
+# cross-vendor by construction — the same bound the demotion allowlist gets.
+#
+# Matched against the classifier's own reason strings (see risk-classify.sh
+# add_reason): auth/crypto/secret surfaces, the tooling ship path, and the
+# supply-chain vectors (dependency manifests, submodules, symlinks) where a
+# malicious change reads as ordinary maintenance.
+# PURE (stdout only) so the canary can drive the real matrix without a live seat.
+security_trigger_re() {
+  printf '%s' 'security-sensitive:|sensitive/tooling source moved:|tooling:|dependency manifest:|submodule|symlink'
+}
+
+# security_pass_wanted <risk-json> [env-flag] -> stdout: "1 <reason>" or "0 <reason>"
+# An explicit PLINTH_SECURITY_PASS=1 always wants it; =0 always declines it (an
+# operator escape for a diff they know is inert). Otherwise the classifier reasons
+# decide. Unreadable/absent risk JSON fails TOWARD running the pass: a security
+# pass that runs unnecessarily costs one auditor call, while one skipped because
+# the reasons could not be parsed is exactly the silent gap this layer exists to
+# close.
+security_pass_wanted() {
+  local rj="${1:-}" envflag="${2:-}" hits=""
+  case "$envflag" in
+    1) printf '1 PLINTH_SECURITY_PASS=1'; return 0 ;;
+    0) printf '0 PLINTH_SECURITY_PASS=0 (operator declined)'; return 0 ;;
+  esac
+  if [ -z "$rj" ]; then
+    printf '1 risk reasons unavailable — failing toward a security pass'
+    return 0
+  fi
+  hits="$(printf '%s' "$rj" | jq -r '[.reasons // [] | .[]] | join(" ; ")' 2>/dev/null)" || hits=""
+  if [ -z "$hits" ]; then
+    printf '1 risk reasons unparseable — failing toward a security pass'
+    return 0
+  fi
+  if printf '%s' "$hits" | grep -Eiq "$(security_trigger_re)"; then
+    # PARENTHESIZE the alternation: `a|b[^;]*` binds as `a` OR `b[^;]*`, which
+    # would drop the triggering PATH from the recorded reason for every alternative
+    # but the last. The reason string is the audit trail for why a paid pass ran.
+    printf '1 %s' "$(printf '%s' "$hits" | tr ';' '\n' | grep -Eio "($(security_trigger_re))[^;]*" | head -1 | sed 's/[[:space:]]*$//')"
+  else
+    printf '0 no security-sensitive surface in risk reasons'
+  fi
+}
+
+
+# Honest security_pass status on the paths that approve WITHOUT a model round
+# (the Tier-0 deterministic floor and the HANDOFF/CHECKPOINT-only ephemera floor).
+# L3 cannot run on either: there is no reviewer round to attach it to. The bug this
+# replaces recorded a flat NOT_TRIGGERED there, which made the documented promise
+# "PLINTH_SECURITY_PASS=1 always forces the pass" false, and left
+# security_pass_required unevaluated. Now a triggered-but-unrunnable pass is
+# recorded as SKIPPED_NO_MODEL_ROUND, and the required knob fails CLOSED rather
+# than approving with coverage that never happened.
+record_no_model_security_pass() {
+  local vf="$1" ctx="$2" sp want why req status tmp
+  [ -f "$vf" ] || return 0
+  sp="$(security_pass_wanted "$RISK_JSON" "${PLINTH_SECURITY_PASS:-}")"
+  want="${sp%% *}"; why="${sp#* }"
+  req="$(bcfg security_pass_required 2>/dev/null || true)"
+  [ -n "$req" ] || [ "${base_has_config:-0}" = 1 ] || req="$(cfg security_pass_required 2>/dev/null || true)"
+  status="NOT_TRIGGERED"
+  [ "$want" = 1 ] && status="SKIPPED_NO_MODEL_ROUND"
+  tmp="$vf.sptmp"
+  if jq --arg s "$status" --arg w "$why" --arg c "$ctx" \
+       '. + {security_pass:{status:$s, trigger:$w, note:$c}}' "$vf" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$vf"
+  else
+    rm -f "$tmp"
+    echo "Plinth review: NOTE — could not record security_pass status on the verdict (${ctx})." >&2
+  fi
+  if [ "$want" = 1 ]; then
+    echo "Plinth review: NOTE — L3 security pass was TRIGGERED (${why}) but this approval has no model round (${ctx}); recorded SKIPPED_NO_MODEL_ROUND, never a silent NOT_TRIGGERED."
+    if [ "$req" = "true" ]; then
+      die_infra "L3 security pass triggered (${why}) with security_pass_required=true, but ${ctx} approves without a model round, so the pass cannot run. Clear the trigger or drop security_pass_required."
+    fi
+  fi
+}
 
 # ── Receipt minting (auto mode, v4.7) ────────────────────────────────────────
 # Every BINDING APPROVED (including Tier 0's deterministic one) mints — BEST-EFFORT, see
@@ -718,12 +966,44 @@ mint_receipt() {  # mint_receipt <round>
   else
     echo "Plinth review: NOTE — receipt not minted (no sha256 tool)."; return 0
   fi
+  # ack_no_dual: a REQUESTED dual that ran with no cross-vendor seat, acknowledged
+  # by the operator. Disclosed on the receipt so the gap is auditable rather than
+  # invisible. Additive field — receipt-verify's schema check is a positive
+  # conjunction that ignores unknown keys, and subject_digest covers only
+  # repo/base/merge-base/head/tree, so an older verifier still validates this.
+  local ack_no_dual=false
+  [ -f "$SDIR/dual-no-seat-ack.json" ] && ack_no_dual=true
+  # DEMOTION LEDGER on the receipt (v5.1 S3). Thrash demotion is a fail-open, so
+  # every demotion this loop applied is disclosed on the receipt: what was
+  # demoted, under which allowlisted class, and from which severity. An APPROVED
+  # that leaned on demotions is then auditable from the note alone.
+  # A missing file means no demotions occurred — the empty array is the correct
+  # answer, not a fallback. An UNPARSEABLE file is different: minting `[]` there
+  # would under-report a real demotion, so refuse to mint rather than lie.
+  local demotions="[]"
+  if [ -f "$SDIR/demotions.jsonl" ]; then
+    demotions="$(jq -cs '.' "$SDIR/demotions.jsonl" 2>/dev/null)" || demotions=""
+    if [ -z "$demotions" ]; then
+      echo "Plinth review: NOTE — receipt NOT minted: the demotion ledger (${SDIR}/demotions.jsonl) exists but could not be parsed, and minting an empty array would hide demotions the receipt is supposed to disclose. Re-run the loop, or restore session state."
+      return 0
+    fi
+  fi
+  # L3 security pass status (v5.1 S4) — read back off the verdict this receipt is
+  # minted for, so the note cannot claim security coverage the verdict does not
+  # record. Absent/unreadable verdict → "UNKNOWN", never a reassuring default.
+  local sp_status="UNKNOWN"
+  if [ -f "$SDIR/verdict.json" ]; then
+    sp_status="$(jq -r '.security_pass.status // "UNKNOWN"' "$SDIR/verdict.json" 2>/dev/null || echo UNKNOWN)"
+    [ -n "$sp_status" ] || sp_status="UNKNOWN"
+  fi
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
     --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
-    --argjson round "$mround" --argjson ledger "$ledger" \
+    --argjson round "$mround" --argjson ledger "$ledger" --argjson ack "$ack_no_dual" \
+    --argjson demotions "$demotions" --arg sp "$sp_status" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
       base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
-      round:$round, override_ledger:$ledger}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+      round:$round, override_ledger:$ledger, ack_no_dual:$ack,
+      demotions:$demotions, security_pass:$sp}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
   # -f replaces THIS commit's note on re-approval; other commits' notes are
   # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
   # and `git notes merge` first (the driver rules carry the recipe).
@@ -737,6 +1017,58 @@ mint_receipt() {  # mint_receipt <round>
 # Tier 0: granted by the floor, no model round. Records a bound verdict so the
 # Stop gate and dashboard see APPROVED-at-HEAD like any other. The floor scanners
 # still run at PR; any code file would have bumped the tier above 0.
+# VERSION ↔ CHANGELOG top H2 exact token match (shared with canary).
+# Exit 0 = match, 1 = mismatch/missing. Not a substring: 5.0 ≠ v5.0.0.
+version_changelog_match() {
+  local verfile="${1:-VERSION}" clfile="${2:-CHANGELOG.md}" ver_txt top_entry
+  [ -f "$verfile" ] && [ -f "$clfile" ] || return 1
+  # Trim ends only — do not delete internal whitespace (5. 0.0 must not match 5.0.0).
+  ver_txt="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' < "$verfile" 2>/dev/null | head -1 || true)"
+  top_entry="$(awk '/^## /{print; exit}' "$clfile" 2>/dev/null || true)"
+  [ -n "$ver_txt" ] && [ -n "$top_entry" ] || return 1
+  # Reject internal whitespace in VERSION (not a valid version token).
+  case "$ver_txt" in *[[:space:]]*) return 1 ;; esac
+  # Extract the heading's version token (## vX.Y.Z or ## X.Y.Z) and compare
+  # equality after stripping a leading v — not a free substring of the title.
+  python3 -c 'import re,sys
+v,t=sys.argv[1],sys.argv[2]
+v=v[1:] if v[:1] in "vV" else v
+m=re.match(r"^##\s+v?([0-9][0-9A-Za-z._+-]*)", t.strip())
+sys.exit(0 if m and m.group(1)==v else 1)
+' "$ver_txt" "$top_entry" 2>/dev/null
+}
+
+if [ "$RISK" = "0" ]; then
+  # VERSION is Tier-0-eligible as release meta, but only when it matches the top
+  # CHANGELOG entry — otherwise a routine release-edit mistake would fail-open.
+  # Fail closed if git diff itself fails (empty pipe must not mean "VERSION unchanged").
+  _ver_names=""
+  _ver_diff_rc=0
+  _ver_names="$(git diff --name-only "${base_tip}...HEAD" 2>/dev/null)" || _ver_diff_rc=$?
+  if [ "$_ver_diff_rc" -ne 0 ]; then
+    RISK=1
+    RISK_JSON="$(jq -nc --argjson rc "$_ver_diff_rc"       '{tier:1,reasons:["git diff --name-only failed (rc=\($rc)) — VERSION/CHANGELOG Tier-0 floor refused"],files:0}')"
+    echo "Plinth review: git diff --name-only failed (rc=${_ver_diff_rc}) — elevating above Tier 0 to Tier 1."
+  elif printf '%s
+' "$_ver_names" | grep -qx 'VERSION'; then
+    # Shared helper (also used by canary) — must stay the production path.
+    if ! version_changelog_match VERSION CHANGELOG.md; then
+      ver_txt="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
+      top_entry="$(awk '/^## /{print; exit}' CHANGELOG.md 2>/dev/null || true)"
+      RISK=1
+      RISK_JSON="$(jq -nc --arg v "${ver_txt:-}" --arg t "${top_entry:-}"         '{tier:1,reasons:["VERSION does not exactly match CHANGELOG top H2 token (\($v) vs \($t)) — floor refused Tier 0"],files:0}')"
+      echo "Plinth review: VERSION/CHANGELOG exact top-entry match failed — elevating above Tier 0 to Tier 1."
+    fi
+  fi
+fi
+# HANDOFF-only floor: verdict already written; mint receipt now that helper exists.
+if [ "${NEED_EPHEMERA_MINT:-0}" = 1 ]; then
+  record_no_model_security_pass "$SDIR/verdict.json" "HANDOFF/CHECKPOINT-only ephemera floor"
+  mint_receipt 0
+  echo "Plinth review: HANDOFF/CHECKPOINT-only change — APPROVED without model (session ephemera)."
+  exit 0
+fi
+
 if [ "$RISK" = "0" ]; then
   # A Tier-0 grant is round 0 — by definition a NEW loop. It exits before the round
   # bookkeeping below, so it must do that branch's per-loop reset itself; otherwise a
@@ -748,13 +1080,21 @@ if [ "$RISK" = "0" ]; then
   # PR body contradicts session state. Clearing is the only consistent answer.
   rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl \
         "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
+  _rph=build
+  _pf=".plinth/session/phase-$(printf '%s' "$branch" | sed 's/\//%2F/g; s/ /%20/g').json"
+  [ -f "$_pf" ] || _pf=".plinth/session/phase-$(printf '%s' "$branch" | tr '/ ' '--').json"
+  case "$(jq -r '.phase // empty' "$_pf" 2>/dev/null || true)" in
+    harden) _rph=hardening ;;
+  esac
   jq -n --arg sha "$sha" --arg base "$baseref" --arg digest "$diff_digest" \
-        --arg mbase "$merge_base" \
+        --arg mbase "$merge_base" --arg rph "$_rph" \
         --argjson risk "$RISK_JSON" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{verdict:"APPROVED", reviewer_verdict:"TIER0_AUTO", sha:$sha, base_ref:$base,
-          round:0, session_id:"", model:"deterministic-floor", risk:$risk,
-          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' > "$SDIR/verdict.json"
-  rm -f "$SDIR/last-error"
+          round:0, session_id:"", model:"deterministic-floor", review_phase:$rph, risk:$risk,
+          diff_digest:$digest, merge_base:$mbase, usage:null, ts:$ts}' \
+          > "$SDIR/verdict.json"
+  rm -f "$SDIR/last-error" "$SDIR/dual-degraded.json"
+  record_no_model_security_pass "$SDIR/verdict.json" "Tier 0 deterministic floor"
   mint_receipt 0
   echo "Plinth review: Tier 0 (inert docs/text) — APPROVED by the deterministic floor, no model round. Open the PR; CI runs the scanners."
   exit 0
@@ -1008,8 +1348,11 @@ if [ -f "$SDIR/verdict.json" ]; then
     # clean-slate confirmation) instead of a warm re-read.
     fallback="fresh"
     [ -f "$SDIR/findings-${prev_round}.json" ] && fallback="verify"
-    if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
-      echo "Plinth review: last reviewed commit ${prev_sha} no longer exists (rebase?) — running a fresh full round."
+    # plinth#5: after rebase drops a reviewed commit, cat-file may still succeed if
+    # the object is dangling — require ancestry of current HEAD for resume/verify.
+    if ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null \
+       || ! git merge-base --is-ancestor "$prev_sha" "$sha" 2>/dev/null; then
+      echo "Plinth review: last reviewed commit ${prev_sha} is missing or not an ancestor of HEAD (rebase?) — running a fresh full round."
       mode="fresh"   # no valid anchor for an incremental diff
     else
       prev_in="$(jq -r '.usage.input_tokens // 0' "$SDIR/verdict.json")"
@@ -1052,7 +1395,9 @@ if [ -f "$SDIR/verdict.json" ]; then
     # session directory written by a v4.6 instrument can still hold one, so it
     # is swept here rather than left behind as a misleading artifact.
     rm -f "$SDIR"/request-*.json "$SDIR"/findings-*.json "$SDIR"/events-*.jsonl "$SDIR"/verdict.json \
-          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl"
+          "$SDIR/confirmed" "$SDIR/lastfullread" "$SDIR/usage.jsonl" \
+          "$SDIR/dual-degraded.json" "$SDIR"/findings-dual-*.json \
+          "$SDIR/open-set-fp" "$SDIR/open-set-streak" "$SDIR/sticky-ledger.json"
   fi
 fi
 
@@ -1094,13 +1439,30 @@ _reviewer_codex() {  # hard --output-schema; thread_id + usage from the --json e
   else
     printf '%s' "$prompt" | codex exec -c project_doc_max_bytes=0 ${margs[@]+"${margs[@]}"} --sandbox read-only --json \
       --output-schema "$SCHEMA" -o "$raw" - > "$evfile" 2> "$errlog" \
-      || die_infra "codex exec failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+      || die_infra "codex exec failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"
   fi
-  RSID="$(jq -r 'select(.type=="thread.started") | .thread_id // empty' "$evfile" | head -1)"
+  # jq|head / jq|tail SIGPIPE under pipefail ends the confirmation pass with 141
+  # after a valid APPROVED was already written (upstream #2). Slurp instead.
+  RSID="$(jq -rs '[.[] | select(.type=="thread.started") | .thread_id // empty] | first // empty' "$evfile" 2>/dev/null || true)"
   [ -n "$RSID" ] || die_infra "no thread id in $evfile — codex --json output changed?"
   jq . "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
     || die_infra "reviewer's final message is not valid JSON — see $raw"
-  RUSAGE="$(jq -c 'select(.type=="turn.completed") | .usage' "$evfile" | tail -1)"; [ -n "$RUSAGE" ] || RUSAGE="null"
+  RUSAGE="$(jq -rcs '[.[] | select(.type=="turn.completed") | .usage] | last // null' "$evfile" 2>/dev/null || true)"
+  [ -n "$RUSAGE" ] || RUSAGE="null"
+}
+
+# Bounded fail detail for die_infra (empty stderr on verify often = payload/CLI capacity).
+_reviewer_fail_detail() {
+  local errlog="$1" mode="$2" bits="" elen=0 plen=0
+  [ -f "$errlog" ] && elen="$(wc -c <"$errlog" 2>/dev/null | tr -d ' ' || echo 0)"
+  plen="${#prompt}"
+  bits="prompt_bytes=${plen} stderr_bytes=${elen} mode=${mode}"
+  if [ -f "$errlog" ] && [ "${elen:-0}" -gt 0 ] 2>/dev/null; then
+    bits="$bits err=$(tail -c 600 "$errlog" 2>/dev/null | tr '\n' ' ' | tr -cd '\11\12\15\40-\176')"
+  else
+    bits="$bits err=(empty — often payload/thread capacity on long verify; see PLINTH_VERIFY_MAX_*)"
+  fi
+  printf '%s' "$bits"
 }
 
 _reviewer_claude() {  # hard --json-schema -> .structured_output
@@ -1115,7 +1477,7 @@ _reviewer_claude() {  # hard --json-schema -> .structured_output
   printf '%s' "$prompt" | claude -p --safe-mode --output-format json \
     --json-schema "$(cat "$SCHEMA")" --allowed-tools "Read,Grep,Glob" --permission-mode dontAsk \
     ${margs[@]+"${margs[@]}"} ${rargs[@]+"${rargs[@]}"} > "$raw" 2> "$errlog" \
-    || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"; }
+    || { [ "$m" = "resume" ] && return 1; die_infra "claude -p failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"; }
   jq -e '.structured_output | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null \
     || die_infra "claude returned no schema-structured verdict — see $raw"
   RSID="$(jq -r '.session_id // empty' "$raw" 2>/dev/null)"
@@ -1132,7 +1494,7 @@ _reviewer_grok() {  # SOFT schema: demand raw JSON, read .structuredOutput else 
   grok --prompt-file "$pf" --output-format json --json-schema "$(cat "$SCHEMA")" \
     --rules "$GROK_ROLE_RULE" \
     --sandbox read-only ${margs[@]+"${margs[@]}"} > "$raw" 2> "$errlog" \
-    || die_infra "grok failed (round $r, mode $m): $(tail -3 "$errlog" 2>/dev/null | tr '\n' ' ')"
+    || die_infra "grok failed (round $r, mode $m): $(_reviewer_fail_detail "$errlog" "$m")"
   if ! jq -e '.structuredOutput | objects' "$raw" > "$SDIR/findings-$r.json" 2>/dev/null; then
     jq -r '.text // empty' "$raw" | python3 -c 'import sys,re
 m=re.search(r"(\{.*\})", sys.stdin.read(), re.S)
@@ -1160,8 +1522,743 @@ validate_findings() {  # <findings-json> — full schema shape: enums, integer l
           and (.file | type == "string")
           and (.description | type == "string")
           and (.line | (type == "number") and (. == floor))
-          and (((keys) - ["file","line","severity","description","status"]) == []))
+          and ((.id == null) or (.id | type == "string"))
+          and (((keys) - ["file","line","severity","description","status","id"]) == []))
   ' "$1" >/dev/null 2>&1
+}
+
+# Sticky findings + ids (anti-thrash): assign stable ids; auto-resolve reopens of
+# prior-resolved findings when the file blob at HEAD is unchanged AND the
+# finding identity matches (file + severity + full normalized description OR
+# thrash-class fingerprint). Known thrash classes (coverage-gap, handoff-ws, …)
+# collapse paraphrases onto one base id so reworded reopens sticky-resolve.
+# Fail-closed: short-prefix ids, missing ledger fields, or desc/file mismatch
+# never auto-resolve. Ledger: $SDIR/sticky-ledger.json
+sticky_process_findings() {  # <findings-json-path>
+  local f="$1" ledger="$SDIR/sticky-ledger.json" tmp
+  [ -f "$f" ] || return 0
+  [ -f "$ledger" ] || echo '{}' > "$ledger"
+  tmp="$(mktemp)"
+  # Assign missing ids from FULL normalized desc (not an 80-char prefix — collisions).
+  # Explicit reviewer ids are kept only when unique in this payload; collisions get a suffix.
+  # Always use base identity (file|severity|full-norm-desc|class) — never line-qualified
+  # ids that thrash when a sibling disappears. True text-identical siblings share
+  # one sticky id by design (anti-thrash).
+  jq '
+    def strip_sticky:
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
+    def normdesc:
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    # Class-stable fingerprints for paraphrased thrash classes (no severity —
+    # major→minor demotion must not mint a new id).
+    def is_real_test_gap_desc:
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
+    def is_security_desc:
+      test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i");
+    def thrash_class:
+      (normdesc) as $d
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      | ((.description // "") | is_security_desc) as $sec
+      # Never thrash-class security or AC/test-gap findings (AUTO-STICKY must not clear them).
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
+    def nid:
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
+    # Fill missing ids with base nid (identical siblings share id by design).
+    # Disambiguate EXPLICIT id collisions with a monotonic index (stable, unique).
+    # CRITICAL: reduce state must not replace the document (would drop
+    # verdict/summary and leave out/taken/seq — schema-invalid).
+    .findings |= map(
+      if (.id == null or .id == "") then . + {id: nid, _auto: true}
+      else . + {_auto: false}
+      end
+    )
+    | . as $root
+    | ([.findings[] | select(._auto == true) | .id] | unique) as $auto_ids
+    | (reduce range(0; ($root.findings|length)) as $i (
+        {out:[], taken:{}, seq:0};
+        if $i == 0 then
+          reduce $auto_ids[] as $a (.; .taken[$a] = true) else . end
+        | ($root.findings[$i]) as $f
+        | if $f._auto then
+            .out += [$f | del(._auto)]
+          else
+            . as $st
+            | ([$f.id] + [range(2; 200) | ($f.id + "#x" + tostring)]
+               | map(select(($st.taken[.] // false) | not))
+               | .[0]) as $cand
+            | if $cand != null then
+                .taken[$cand] = true
+                | .out += [$f | .id = $cand | del(._auto)]
+              else
+                .seq = (.seq + 1)
+                | until(
+                    (.taken[($f.id + "#u" + (.seq|tostring))] // false) | not;
+                    .seq = (.seq + 1)
+                  )
+                | ($f.id + "#u" + (.seq|tostring)) as $final
+                | .taken[$final] = true
+                | .out += [$f | .id = $final | del(._auto)]
+              end
+          end
+      ) | .out) as $newf
+    | $root | .findings = $newf
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+
+  # Build blob map for files mentioned
+  local blobs_json="{}"
+  while IFS= read -r fp; do
+    [ -n "$fp" ] || continue
+    local bh
+    # Unique sentinel per missing path — never "missing"=="missing" across files
+    # (that fail-opened AUTO-STICKY on absent paths / "no file exists" findings).
+    if bh=$(git rev-parse "HEAD:${fp}" 2>/dev/null); then
+      :
+    else
+      bh="absent:$(printf '%s' "$fp" | shasum -a 256 2>/dev/null | cut -d' ' -f1 || printf '%s' "$fp")"
+    fi
+    blobs_json=$(jq -cn --argjson b "$blobs_json" --arg f "$fp" --arg h "$bh" '$b + {($f): $h}')
+  done < <(jq -r '.findings[].file // empty' "$f" | sort -u)
+
+  # Auto-close sticky reopens only when ledger identity fully matches + same blob.
+  # Strip AUTO-STICKY/THRASH markers BEFORE normalizing punctuation.
+  # Class-stable thrash ids match on class key (not full paraphrased desc).
+  # Always use unqualified nid for ledger keys (line-suffixed ids are collision-only
+  # and would otherwise thrash when a sibling disappears).
+  jq --argjson blobs "$blobs_json" --slurpfile led "$ledger" '
+    def strip_sticky:
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
+    def normdesc:
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def is_real_test_gap_desc:
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
+    def thrash_class:
+      (normdesc) as $d
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
+    def base_id:
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
+    ($led[0] // {}) as $L
+    | .findings |= map(
+        (. as $f | ($f | base_id) as $bid
+         | (if (.id == null or .id == "") then $bid else .id end) as $disp
+         # AUTO-STICKY uses base identity, not display id —
+         # so renames/suffixes after sibling collapse cannot evade resolution.
+         # Class keys: match on class fingerprint (desc_norm may paraphrase).
+         | if .status == "open"
+              and ($L[$bid] != null)
+              and ($L[$bid].status == "resolved")
+              and ($L[$bid].blob != null) and ($blobs[.file] != null)
+              and ($L[$bid].blob == $blobs[.file])
+              # Fail-closed: never AUTO-STICKY on absent blobs (sentinel prefix).
+              and (($L[$bid].blob | startswith("absent:")) | not)
+              and (($blobs[.file] | startswith("absent:")) | not)
+              and ($L[$bid].file != null) and ($L[$bid].file == .file)
+              # AUTO-STICKY only for thrash classes — never blockers or general majors
+              # (cooperative-driver posture: sticky is anti-thrash, not anti-security).
+              and (.severity != "blocker")
+              and (($f | thrash_class) | startswith("class:"))
+           then .status = "resolved"
+                | .id = $disp
+                | .description = (($f | strip_sticky)
+                    + " [AUTO-STICKY: thrash class reopened without blob change — treated resolved]")
+           else .id = $disp end)
+      )
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+
+  # Ledger keyed by base_id (stable identity). Open-wins across siblings.
+  jq -n --slurpfile cur "$f" --slurpfile led "$ledger" --argjson blobs "$blobs_json" '
+    def strip_sticky:
+      ((.description // "")
+        | sub(" \\[AUTO-STICKY:[^\\]]*\\]"; "")
+        | sub(" \\[THRASH:[^\\]]*\\]"; ""));
+    def normdesc:
+      (strip_sticky | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; ""));
+    def is_real_test_gap_desc:
+      # Concrete missing-test wording (not asymptotic "coverage remains incomplete").
+      # Avoid jq \b (backspace). Keep all three sticky copies byte-identical.
+      test("acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|for the new |for this (new |changed )|changed behavior|missing tests? for|missing test cases include|hollow test|not implemented|this change (has|adds|introduces)|still untested:.*(new|changed|AC|criterion)|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor|quota parser"; "i");
+    def thrash_class:
+      (normdesc) as $d
+      | ((.description // "") | is_real_test_gap_desc) as $gap
+      | ((.description // "") | test("auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|secret expos|credential|SSRF|RCE|path traversal|privilege escalat"; "i")) as $sec
+      | if ($gap | not) and ($sec | not) and ($d | test("^(prior )?coverage (finding |remains )?incomplete|coverage remains incomplete|still untested:|missing (test )?cases include|no end to end review|wants (more |additional )?coverage"))
+          then "class:coverage-gap"
+        elif ($gap | not) and ($sec | not) and ($d | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain|heredoc adds separator"))
+          then "class:handoff-ws"
+        elif ($gap | not) and ($sec | not) and ($d | test("sticky (ledger|lookup|base id)|base_id ledger|sibling collapse"))
+          then "class:sticky-ledger"
+        else $d end;
+    def base_id:
+      (thrash_class) as $c
+      | if ($c | startswith("class:")) then
+          ((.file // "") + "|" + $c) | @base64
+        else
+          ((.file // "") + "|" + (.severity // "") + "|" + $c) | @base64
+        end;
+    ($led[0] // {}) as $L0
+    | reduce ($cur[0].findings // [])[] as $x ({led:$L0, open:{}};
+        ($x | base_id) as $bid
+        | if ($bid == null or $bid == "") then .
+          else
+            .led[$bid] = {
+              status: $x.status,
+              file: $x.file,
+              blob: ($blobs[$x.file] // null),
+              severity: $x.severity,
+              desc_norm: ($x | normdesc)
+            }
+            | if $x.status == "open" then .open[$bid] = true else . end
+          end)
+    | . as $acc
+    | reduce ($acc.open | keys[]) as $k ($acc.led; .[$k].status = "open")
+  ' > "$tmp" && mv "$tmp" "$ledger"
+}
+
+# Thrash policy (deterministic demotions after sticky). Posture: cooperative
+# driver; block external security + honest bugs + ship integrity; demote thrash.
+#   1) Never demote external_security / ship_integrity / data_loss (path + text)
+#   2) BUILD asymptotic coverage → minor (Noticed), not real test gaps
+#   3) Docs prose (not canonical spec) → minor unless ship/security overclaim
+#   4) Out-of-pathspec: thrash classes only (all modes) — never demote arbitrary
+#      new majors outside fix delta (real bugs stay blocking)
+#   5) HANDOFF ephemera → minor; NEEDS-HUMAN queue nits → minor (not deletions)
+# Markers: " [THRASH: …]"
+# mode: fresh|verify|resume
+# Demotion ledger rows for ONE round (v5.1 S3). Pure: reads the post-policy
+# findings plus a pre-policy severity snapshot, writes a compact JSON array to
+# stdout. Kept a separate function (not inlined in run_round) so the canary can
+# drive the REAL row construction rather than a twin — the receipt is only as
+# honest as this mapping.
+# Args: <post-findings.json> <pre-severity.json> <round> <phase> <mode>
+# stdout: [] or [{round,id,file,class,from,to,phase,mode}, ...]
+thrash_ledger_rows() {
+  local post="$1" pre="$2" round="$3" phase="${4:-build}" mode="${5:-fresh}"
+  [ -f "$post" ] || { printf '[]'; return 0; }
+  [ -f "$pre" ] || printf '[]' > "$pre" 2>/dev/null || true
+  # PAIR BY INDEX, NOT BY id. thrash_policy_process_findings rewrites findings with
+  # `.findings |= map(...)`, which preserves order and length exactly — so position
+  # i in the post-policy array is position i in the pre-policy snapshot. Joining on
+  # id instead was WRONG for auditor payloads: auditor findings need not carry ids
+  # and nothing assigns them on that path, so every id-less finding matched the
+  # FIRST id-less snapshot entry and inherited its severity — a probe recorded a
+  # demoted blocker as from:"major". Index pairing has no such failure mode, and a
+  # length mismatch (which would mean the invariant broke) records "unknown" rather
+  # than a confident wrong answer.
+  jq -c --slurpfile pre "$pre" --argjson round "$round" \
+     --arg phase "$phase" --arg mode "$mode" '
+     ($pre[0] // []) as $P
+     | (.findings // []) as $F
+     | [ range(0; ($F | length))
+         | . as $i
+         | $F[$i] as $f
+         | select((($f.description) // "") | test("\\[THRASH:"))
+         | ((($f.description) // "") | capture("\\[THRASH:(?<c>class:[a-z0-9-]+)") | .c) as $cls
+         | (if ($P | length) == ($F | length) then $P[$i] else null end) as $before
+         | { round: $round, id: (($f.id) // ""), file: (($f.file) // ""),
+             class: $cls,
+             from: (($before.severity) // "unknown"),
+             to: (($f.severity) // ""),
+             phase: $phase, mode: $mode }
+         # Only real transitions: a marker already present from an earlier round
+         # (sticky carries descriptions forward) must not re-enter the ledger.
+         # from=="unknown" is kept: an unrecoverable pairing is disclosed, not dropped.
+         | select(.from != .to)
+       ]' "$post" 2>/dev/null
+}
+
+thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids> [spec_path] [mode]
+  # ── NEVER-DEMOTE LEXICON — defined HERE, inside the function, on purpose ────
+  # Round 29 defeated the previous floor with ordinary security wording it did not
+  # know: XSS, CSRF, plaintext passwords, exposed encryption keys, account takeover,
+  # unquoted shell execution. The lesson is structural: a keyword floor tested with
+  # its OWN keywords proves nothing, so this list comes from vocabulary the floor's
+  # author did not choose and the canary probes it with the reviewer's phrasings.
+  # LOCAL, not file-scope: five canaries extract this function standalone by sed
+  # range, and a file-scope dependency arrived EMPTY in all of them — `test(""; "i")`
+  # matches every string, which would silently treat all findings as security-shaped.
+  # A local cannot be unset, so that failure mode is gone by construction.
+  # STILL NOT COMPLETE — see MANUAL "## Noticed": the durable fix is requiring a
+  # concrete failure_scenario on blocking findings, not a longer word list.
+  local SEC_DESC_RE='auth bypass|authorization bypass|authentication bypass|unauthenticated|unauthorized|cross-tenant|broken access|access control|injection|SQL inject|command inject|prompt inject|shell inject|code inject|XSS|cross[- ]site script|CSRF|cross[- ]site request|SSRF|RCE|remote code|path traversal|directory traversal|open redirect|IDOR|insecure direct object|session fixation|session hijack|account takeover|privilege escalat|priv[- ]?esc|secret expos|credential leak|credential expos|hard[- ]?coded (secret|credential|password|token|key)|plain ?text|clear ?text|cleartext|plaintext password|password(s)? (are |is )?(stored )?in (plain|clear)|unsalted|unhashed password|encryption key|private key|api key|access token|bearer token|signing key|unsafe deserial|insecure deserial|deserializ|unquoted|shell metacharacter|eval of|arbitrary (code|command|file)|TOCTOU|race condition on|symlink attack|zip slip|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|tamper|fail[- ]?open|timing attack|constant[- ]time|weak (hash|cipher|random)|insecure random|predictable token'
+  local CORRECTNESS_DESC_RE='data.?loss|overwrit|truncat|clobber|drops? the (previous|prior|existing|stored)|deletes? the wrong|wrong (row|record|file|entry|key|user)|off[- ]by[- ]one|returns? success (after|despite|on)|reports? success (after|despite|on)|swallow(s|ed)? the (error|exception|failure)|silently (ignores?|drops?|skips?|continues)|never (fires|runs|executes)|always (returns|passes|succeeds)|infinite loop|deadlock|corrupt'
+  local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" mode="${6:-fresh}" tmp
+  [ -f "$f" ] || return 0
+  tmp="$(mktemp)"
+  jq --arg phase "$phase" --arg scope "$scope_nl" --arg prior "$prior_nl" --arg spec "$sp" --arg mode "$mode" \
+     --arg secre "$SEC_DESC_RE" --arg corrre "$CORRECTNESS_DESC_RE" '
+    def lines($s):
+      if ($s == null or $s == "") then []
+      else ($s | split("\n") | map(select(length > 0))) end;
+    (lines($scope)) as $files
+    | (lines($prior)) as $prior_ids
+    | def is_ephemera:
+        ((.file // "") == "HANDOFF.md" or (.file // "") == "CHECKPOINT.md");
+    def is_canonical_spec:
+        ($spec != "" and (
+          (.file // "") == $spec
+          or ((.file // "") | startswith($spec + "/"))
+        ))
+        or ((.file // "") | test("(^|/)SPEC(\\.md)?$|(^|/)spec/|(^|/)GOAL\\.md$|(^|/)\\.plinth/AGENTS-project\\.md$"));
+    # Paths that can mint or weaken ship/security under honest operation.
+    def is_security_surface:
+        ((.file // "") | test(
+          "(^|/)(\\.plinth/(review|risk-classify|receipt|lane-guard)\\.sh$|guard\\.sh$)|(^|/)\\.claude/hooks/|(^|/)bin/plinth$|(^|/)(auth|crypto|secret|oauth|jwt|session)[^/]*\\.(py|ts|js|go|rs|sh)$"; "i"
+        ));
+    def is_external_security:
+        is_security_surface
+        or ((.description // "") | test($secre; "i"))
+        or ((.description // "") | test(
+          "auth bypass|authorization bypass|unauthenticated|cross-tenant|broken access|injection|SQL inject|command inject|prompt inject|secret expos|credential leak|unsafe deserial|SSRF|RCE|path traversal|supply.?chain|CVE-|ship gate|APPROVED@|receipt (forge|bypass)|fail[- ]?open.*(auth|secret|trust|ship)|data.?loss|privilege escalat"; "i"
+        ));
+    def is_docs_prose:
+        (is_canonical_spec | not)
+        and (is_external_security | not)
+        # Only prose under docs/ or root README — CHANGELOG is project release surface:
+        # never auto-demote (missing release notes / wrong version claims stay major).
+        and ((.file // "") | test("(^|/)README(\\.(md|markdown|rst|txt))?$|(^|/)docs/.*\\.(md|markdown|rst|adoc|txt)$"));
+    def is_overclaim:
+        ((.description // "") | test("fail[- ]?open|security|auth bypass|unauthenticated|secret|credential|injection|ship gate|APPROVED@|tamper|guarantee the code claims|data.?loss"; "i"));
+    def is_real_test_gap:
+        # Keep in sync with sticky is_real_test_gap_desc (plus thrash-only tokens).
+        ((.description // "") | test(
+          "acceptance criterion|(^|[^A-Za-z0-9_])AC[[:space:]]*[0-9]+|criterion[[:space:]]*[0-9]+|plan --deep|for (the |this )?(new |changed )|for the new |this change (has|adds|introduces)|missing tests? for|missing test cases include|hollow test|no (real )?assertion|changed behavior|lacks real tests|is not implemented|not implemented|canonical[- ]spec|documented behavior is not|still untested:|named changed behavior|quota parser|malformed reset|no end-to-end test covers|no end to end test covers|no end to end review covers|no end-to-end review covers|empty-vendor"; "i"
+        ));
+    # Precedence first so asymptotic thrash cannot swallow real-bug wording mixed
+    # into the same description (Helper extraction … Clicking Save does nothing).
+    def is_precedence_must_block:
+        is_external_security
+        or is_real_test_gap
+        # "<something stateful> is lost" is data loss stated in the passive voice.
+        # The canary found this hole: a finding worded "stored state is lost" on
+        # HANDOFF.md matched no belt token and demoted as class:handoff-ws on path
+        # alone. Narrowly anchored to stateful nouns so ordinary prose (a reader
+        # being lost) is not swept in.
+        or ((.description // "") | test(
+          "(data|state|record|entry|entries|item|items|content|history|progress|verdict|receipt|queue)[^.]{0,24}\\b(is|are|was|were|get|gets|got|be) lost\\b"; "i"
+        ))
+        or ((.description // "") | test($corrre; "i"))
+        or ((.description // "") | test(
+          "data.?loss|eras(e|es|ed|ing) (the )?(previous|prior|old|stored)|fail[- ]?open|spec (miss|violat)|documented (command|behavior|API|endpoint)|overclaim|broken (when|if|for|behavior)|incorrect (result|behavior|output)|renders? (NaN|undefined|null)|NaN%|regression|not implemented|real bug|trust.?boundar|no longer exists|crash(es)? on|throws? on empty|does nothing|has no effect|fails? to (save|write|update|delete)|button does not|clicking[[:space:]].*does|no[- ]?op\\b"; "i"
+        ));
+    def is_coverage_asymp:
+        # Horizon thrash / residual canary lists — not concrete missing-test/bug wording.
+        ((.description // "") | test(
+          "coverage remains incomplete|still untested:|missing (test )?cases include|prior coverage finding|wants (more |additional )?coverage|asymptotic coverage|expanded (behavioral )?coverage beyond|CHANGELOG.*(residual|follow-up)|residual canar|lists these as residual|helper extraction|several changed behaviors still lack|Several changed behaviors still lack|Existing coverage either injects"; "i"
+        ))
+        and (is_real_test_gap | not)
+        and (is_external_security | not)
+        and (is_precedence_must_block | not);
+    # Asymptotic canary-DEPTH: "the fixture cannot reach the real seat/network".
+    # A true statement that is nonetheless not a product defect — the honest
+    # answer is a Noticed entry (and a runtime receipt), not another paid round.
+    def is_canary_depth:
+        ((.description // "") | test(
+          "dual[- ]?(pass )?e2e|dual[- ]?merge|live dual|dual-vendor seat|needs a live [^.]*seat|not free-canary|free-canary cannot|canary depth|fixture (cannot|can not) (reach|drive|exercise)|only a real (PR|network|run) can|unexercised (in|by) (free )?CI"; "i"
+        ));
+    # Fake/stub CLI argv theatre: asking for a wider matrix of synthetic CLI
+    # shims rather than naming a behavior that is wrong.
+    def is_fake_cli_argv:
+        ((.description // "") | test(
+          "fake CLI|stub CLI|fixture CLI|CLI (stub|shim|fake)|argv matrix|argv (permutation|combination)|synthetic (CLI|argv)"; "i"
+        ));
+    def is_handoff_ws_text:
+        ((.description // "") | test("handoff whitespace|handoff preservation|trailing newline|sentinel retain"; "i"));
+    def is_sticky_ledger_text:
+        ((.description // "") | test("sticky (ledger|lookup)|sibling collapse"; "i"));
+    def is_queue_nit:
+        # Only pure wording nits — never demote checked-off / deleted / lost blockers.
+        ((.file // "") | test("(^|/)NEEDS-HUMAN\\.md$"))
+        and ((.description // "") | test("delet|remov(e|ed|al)|drop(ped)? the queue|lost (blocking|human)|empty(ing)? the queue|wipe|discard|eras(e|ed)|clear(ed)? the queue|checks? off|checked.?off|premature|mark(ed)? resolved|strike|cross.?out|\\[x\\]|\\[X\\]"; "i") | not)
+        and ((.description // "") | test("whitespace|wording|typo|formatting|blank line|nit"; "i"));
+
+    # ── DEMOTABLE CLASS VOCABULARY — SINGLE SOURCE (v5.1 S2) ─────────────────
+    # Class demotion is a FAIL-OPEN. It is bounded three ways, all required:
+    #  1. The vocabulary is fixed HERE, in-repo. A finding is mapped to a class
+    #     only by the deterministic classifier below — never from a `class` field
+    #     carried in the findings JSON. That is strictly stronger than trusting an
+    #     emitted class: there is no field for a driver (or a prompt-injected
+    #     reviewer) to set, so "driver must not assign demotion classes" holds by
+    #     construction rather than by policy.
+    #  2. This file lives under `.plinth/`, which the TOOLING pattern in
+    #     risk-classify.sh already classifies Tier 2 — so any edit to this
+    #     allowlist or to the demotion policy gets a full cross-vendor review by
+    #     construction. (No apostrophes in this jq program: it is single-quoted.)
+    #  3. Every demotion is recorded on the receipt (S3), so laundering is
+    #     auditable rather than silent.
+    # NEVER add a security, correctness, data-loss or real-test-gap class here.
+    # `.github/scripts/canary-thrash-classes.sh` extracts this array and asserts
+    # the classifier can emit nothing outside it.
+    def demotable_classes: [
+      "class:coverage-gap",
+      "class:canary-depth",
+      "class:fake-cli-argv",
+      "class:handoff-ws",
+      "class:sticky-ledger",
+      "class:docs-prose",
+      "class:queue-nit"
+    ];
+    # Coverage-shaped classes demote in BUILD only. In HARDEN, coverage depth and
+    # exotic robustness are explicitly IN charter (see phase_note), so demoting
+    # them there would contradict the charter the reviewer was given. The ship
+    # spiral is stopped by the reviewer contract forbidding asymptotic majors,
+    # not by widening a fail-open into the hardening phase.
+    def build_only_classes: ["class:coverage-gap", "class:canary-depth", "class:fake-cli-argv"];
+    def thrash_class_of:
+        # Precedence FIRST: a real bug, security finding, data loss or genuine
+        # test gap is never a demotable class, however it is worded.
+        if is_external_security or is_precedence_must_block then "class:none"
+        elif is_ephemera or is_handoff_ws_text then "class:handoff-ws"
+        elif is_queue_nit then "class:queue-nit"
+        elif is_sticky_ledger_text then "class:sticky-ledger"
+        elif is_fake_cli_argv then "class:fake-cli-argv"
+        elif is_canary_depth then "class:canary-depth"
+        elif is_coverage_asymp then "class:coverage-gap"
+        elif is_docs_prose and (is_overclaim | not) then "class:docs-prose"
+        else "class:none"
+        end;
+    def is_thrash_class: (thrash_class_of) != "class:none";
+    def class_demotable_now:
+        (thrash_class_of) as $c
+        | ($c != "class:none")
+          and ((demotable_classes | index($c)) != null)
+          and (if (build_only_classes | index($c)) != null then $phase == "build" else true end);
+    # Outside fix pathspec and not a prior open id.
+    def is_outside_delta:
+        (($files | length) > 0)
+        and ((.file // "") != "")
+        and ((.file // "") != ".")
+        and (((.file // "") as $fp | ($files | index($fp)) == null))
+        and (((.id // "") as $i | ($i == "" or ($prior_ids | index($i)) == null)));
+    # Outside fix pathspec: demote thrash classes only. Never demote arbitrary
+    # new majors/blockers in BUILD verify/resume solely for being out-of-delta —
+    # that fail-opened real bugs/data-loss/spec gaps that keyword lists miss.
+    # is_precedence_must_block remains a belt for thrash_class edge mislabels.
+    def is_out_of_scope_demote:
+        is_outside_delta
+        and is_thrash_class
+        and ((demotable_classes | index(thrash_class_of)) != null);
+    .findings |= map(
+      if (.status != "open") then .
+      elif (.severity != "major" and .severity != "blocker") then .
+      # ── NEVER-DEMOTE FLOOR (both belts at the TOP, before any arm) ──────────
+      # Pre-v5.1 the ephemera arm ran BEFORE any precedence check, so a data-loss
+      # or security finding filed against HANDOFF.md/CHECKPOINT.md was demoted on
+      # path alone. The floor now applies to every arm without exception.
+      elif is_external_security then .
+      elif is_precedence_must_block then .
+      elif class_demotable_now then
+        (thrash_class_of) as $c
+        | .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + " [THRASH:" + $c + " → minor/Noticed"
+            + (if (build_only_classes | index($c)) != null then " in BUILD" else "" end)
+            + "]")
+      elif is_out_of_scope_demote then
+        (thrash_class_of) as $c
+        | .severity = "minor"
+        | .description = (((.description // "") | sub(" \\[THRASH:[^\\]]*\\]"; ""))
+            + (if (($mode == "verify") or ($mode == "resume"))
+               then " [THRASH:" + $c + " outside fix delta - scoped for monotonic BUILD]"
+               else " [THRASH:" + $c + " outside pathspec - scoped]" end))
+      else .
+      end
+    )
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# ── Slice routing (CHECKPOINT rigor/implement) — non-blocking bias ───────────
+# Risk tier (classifier) ⊥ rigor (optional dual rigor) ⊥ implement (who types).
+# Missing/invalid rigor → standard (default). Never fails the review loop.
+# Env overrides (for operators / canaries): PLINTH_CHECKPOINT_RIGOR,
+# PLINTH_CHECKPOINT_IMPLEMENT. Fence on CHECKPOINT.md (HANDOFF.md fallback).
+#
+# NAMING (v5.1): this knob was `effort: medium|high|xhigh` through v5.0.x. That
+# vocabulary is owned by the MODEL layer (reasoning effort — `/effort`, codex
+# `model_reasoning_effort`), and reusing it for a Plinth dial that only ever
+# decided "run the optional dual pass?" actively misled readers of CHECKPOINT.md.
+# It is now `rigor: standard|deep`. The old key is still READ as a deprecated
+# alias for one release (medium|high → standard, xhigh → deep) so downstream
+# plinth.checkpoint/v1 fences keep parsing; the writer emits `rigor` only.
+SLICE_RIGOR="standard"
+SLICE_IMPLEMENT="either"
+SLICE_ID=""
+
+# Pure dual-bias matrix (testable). Args: rigor, rphase, PLINTH_DUAL_PASS value.
+# stdout: 1 or 0. Dual is OPTIONAL RIGOR, never the ship foundation (v5.1
+# ship-bias): only rigor=deep or an explicit override wants it. HARDEN no longer
+# forces dual — phase alone is not evidence that a second generalist opinion is
+# worth a paid round; risk-triggered L3 security covers the security-shaped case.
+# `rphase` is still accepted (signature stability for callers/canaries, and the
+# request stamp records the phase the desire was computed under) but no longer
+# decides the outcome.
+# PLINTH_DUAL_PASS=1|0 forces on|off after the fresh/r1/Tier-2/vendor gates elsewhere.
+slice_dual_from_rigor() {
+  local rigor="${1:-standard}" rphase="${2:-build}" override="${3:-}"
+  : "$rphase"
+  case "$override" in
+    1) echo 1; return 0 ;;
+    0) echo 0; return 0 ;;
+  esac
+  case "$rigor" in
+    deep) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
+# Normalize a rigor token, accepting the deprecated v5.0.x effort vocabulary.
+# stdout: standard|deep, or empty when the token is not recognized at all (the
+# caller decides whether that is a warn-and-default or a silent skip).
+# PURE — no stderr, no globals. It is called through `$(...)`, and a warn-once
+# guard set inside a command substitution dies with the subshell, so the
+# deprecation notice belongs to the CALLER (slice_rigor_warn_deprecated), which
+# runs in the current shell. Announcing it here would print on every round while
+# claiming to print once.
+slice_rigor_normalize() {
+  case "${1:-}" in
+    standard|deep) printf '%s' "$1" ;;
+    xhigh) printf 'deep' ;;
+    medium|high) printf 'standard' ;;
+    *) : ;;
+  esac
+}
+
+# True when a token is the deprecated v5.0.x effort vocabulary.
+slice_rigor_is_legacy() {
+  case "${1:-}" in medium|high|xhigh) return 0 ;; *) return 1 ;; esac
+}
+
+# Announce the deprecated vocabulary ONCE per process. MUST be called from the
+# current shell (never inside `$(...)`) for the guard to hold.
+_RIGOR_ALIAS_WARNED=0
+slice_rigor_warn_deprecated() {
+  slice_rigor_is_legacy "${1:-}" || return 0
+  [ "$_RIGOR_ALIAS_WARNED" = 0 ] || return 0
+  _RIGOR_ALIAS_WARNED=1
+  echo "Plinth review: NOTE — slice knob '${1}' is the DEPRECATED v5.0.x \`effort\` vocabulary; use \`rigor: standard|deep\` (medium|high → standard, xhigh → deep). Read as an alias for one release." >&2
+}
+
+# Stamp request-N.json with slice_routing (called from run_round; also canary-callable).
+# dual_wanted = policy desire from rigor×override ONLY (pre eligibility).
+# Actual dual still needs fresh+r1+Tier-2+cross-vendor (see dual_ok in run_round).
+# ack_no_dual records an operator ack that a REQUESTED dual ran without a seat.
+# Args: sdir round sha baseref mode spec_path rphase phase_source
+stamp_request_json() {
+  local sdir="$1" r="$2" sha="$3" baseref="$4" m="$5" spec="$6" rphase="$7" phase_src="$8"
+  local dual_wanted ack_no_dual=0
+  dual_wanted="$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+  [ "${PLINTH_ACK_NO_DUAL:-}" = "1" ] && ack_no_dual=1
+  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$spec" \
+        --arg review_phase "$rphase" --arg phase_source "$phase_src" \
+        --arg rigor "$SLICE_RIGOR" --arg implement "$SLICE_IMPLEMENT" \
+        --arg slice_id "${SLICE_ID:-}" --argjson dual_wanted "$dual_wanted" \
+        --argjson ack_no_dual "$ack_no_dual" \
+        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts,
+          review_phase:$review_phase, phase_source:$phase_source,
+          slice_routing:{rigor:$rigor, implement:$implement,
+            slice_id:(if $slice_id=="" then null else $slice_id end),
+            dual_wanted:($dual_wanted==1),
+            ack_no_dual:($ack_no_dual==1),
+            dual_wanted_note:"policy desire (rigor×override); not eligibility or dual_executed"}}' \
+        > "$sdir/request-$r.json"
+}
+
+# Load slice routing into SLICE_* globals. Fail-soft always.
+# Invalid/non-empty env overrides → safe defaults (standard/either), never a silent keep of fence deep.
+# Present checkpoint/handoff file with unparseable fence → warn once; default standard (no silent rigor loss claim).
+slice_load_routing() {
+  SLICE_RIGOR="standard"
+  SLICE_IMPLEMENT="either"
+  SLICE_ID=""
+  local f="" parsed=""
+  if [ -f CHECKPOINT.md ]; then f=CHECKPOINT.md
+  elif [ -f HANDOFF.md ]; then f=HANDOFF.md
+  fi
+  if [ -n "$f" ]; then
+    parsed="$(python3 - "$f" <<'PY' 2>/dev/null || true
+import json, re, sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+best = None
+for c in re.findall(r"```json\s*(\{.*?\})\s*```", raw, flags=re.S):
+    try:
+        o = json.loads(c)
+    except Exception:
+        continue
+    if not isinstance(o, dict):
+        continue
+    if o.get("schema") == "plinth.checkpoint/v1" or any(
+        k in o for k in ("slice_id", "rigor", "effort", "implement")
+    ):
+        best = o
+if not best:
+    sys.exit(0)
+# Emit the RAW rigor token (new key wins over the deprecated `effort` alias) and
+# let the shell normalize it — slice_rigor_normalize is the single source of the
+# vocabulary and of the one-time deprecation note.
+out = {
+    "rigor": best.get("rigor") if isinstance(best.get("rigor"), str) else (
+        best.get("effort") if isinstance(best.get("effort"), str) else None
+    ),
+    "implement": best.get("implement") if best.get("implement") in ("driver", "worker", "either") else None,
+    "slice_id": best.get("slice_id") if isinstance(best.get("slice_id"), str) else None,
+}
+print(json.dumps(out, separators=(",", ":")))
+PY
+)"
+    if [ -n "$parsed" ]; then
+      local e i s norm
+      e="$(printf '%s' "$parsed" | jq -r '.rigor // empty' 2>/dev/null || true)"
+      i="$(printf '%s' "$parsed" | jq -r '.implement // empty' 2>/dev/null || true)"
+      s="$(printf '%s' "$parsed" | jq -r '.slice_id // empty' 2>/dev/null || true)"
+      if [ -n "$e" ]; then
+        slice_rigor_warn_deprecated "$e"
+        norm="$(slice_rigor_normalize "$e")"
+        if [ -n "$norm" ]; then SLICE_RIGOR="$norm"
+        else
+          echo "Plinth review: NOTE — ${f} fence rigor='${e}' unrecognized; defaulting rigor=standard (no dual)." >&2
+        fi
+      fi
+      case "$i" in driver|worker|either) SLICE_IMPLEMENT="$i" ;; esac
+      [ -n "$s" ] && SLICE_ID="$s"
+    else
+      # File present but no usable plinth.checkpoint/v1 fence — do not silently claim deep rigor.
+      echo "Plinth review: NOTE — ${f} present but checkpoint fence unparseable; slice rigor defaults to standard (single-pass bias)." >&2
+    fi
+  fi
+  # Env overrides fence (operator / canary). Non-empty invalid → safe default + warn.
+  # PLINTH_CHECKPOINT_RIGOR is authoritative; PLINTH_CHECKPOINT_EFFORT is the
+  # deprecated alias and only applies when the new name is UNSET.
+  #
+  # "SET BUT EMPTY" IS AN EXPLICIT CLEAR, NOT ABSENCE — and it must mean the same
+  # thing here as in bin/plinth's writer, whose env() documents empty as an
+  # explicit clear. Treating empty as absence (the pre-fix behavior) made the two
+  # implementations disagree: `PLINTH_CHECKPOINT_RIGOR= PLINTH_CHECKPOINT_EFFORT=xhigh`
+  # yielded review=deep but writer=standard, so the loop could request (and pay
+  # for) a dual pass, or fail closed on a missing seat, while the checkpoint
+  # recorded standard. Presence of the KEY is therefore what suppresses the alias.
+  local _rigor_env="" _rigor_env_name="" _rigor_env_present=0
+  if [ -n "${PLINTH_CHECKPOINT_RIGOR+x}" ]; then
+    _rigor_env="$PLINTH_CHECKPOINT_RIGOR"; _rigor_env_name="PLINTH_CHECKPOINT_RIGOR"
+    _rigor_env_present=1
+  elif [ -n "${PLINTH_CHECKPOINT_EFFORT+x}" ]; then
+    _rigor_env="$PLINTH_CHECKPOINT_EFFORT"; _rigor_env_name="PLINTH_CHECKPOINT_EFFORT"
+    _rigor_env_present=1
+  fi
+  if [ "$_rigor_env_present" = 1 ] && [ -n "$_rigor_env" ]; then
+    local _norm_env
+    slice_rigor_warn_deprecated "$_rigor_env"
+    _norm_env="$(slice_rigor_normalize "$_rigor_env")"
+    if [ -n "$_norm_env" ]; then
+      SLICE_RIGOR="$_norm_env"
+    else
+      SLICE_RIGOR="standard"
+      echo "Plinth review: NOTE — ${_rigor_env_name}='${_rigor_env}' invalid; defaulting rigor=standard." >&2
+    fi
+  elif [ "$_rigor_env_present" = 1 ]; then
+    # Explicit clear: discard any fence value, do NOT consult the deprecated alias.
+    SLICE_RIGOR="standard"
+  fi
+  if [ -n "${PLINTH_CHECKPOINT_IMPLEMENT+x}" ] && [ -n "${PLINTH_CHECKPOINT_IMPLEMENT}" ]; then
+    case "$PLINTH_CHECKPOINT_IMPLEMENT" in
+      driver|worker|either) SLICE_IMPLEMENT="$PLINTH_CHECKPOINT_IMPLEMENT" ;;
+      *)
+        SLICE_IMPLEMENT="either"
+        echo "Plinth review: NOTE — PLINTH_CHECKPOINT_IMPLEMENT='${PLINTH_CHECKPOINT_IMPLEMENT}' invalid; defaulting implement=either." >&2
+        ;;
+    esac
+  fi
+}
+
+# Review charter phase for prompts (build vs hardening). Default build; harden
+# when lifecycle phase=harden, or PLINTH_REVIEW_PHASE, or HARDENING in last commit subject.
+# Corrupt/unknown phase file → hardening (fail closed — match Stop / CLI helper).
+review_phase_for_round() {
+  local slug pf p envp file_phase=""
+  # Exact allowlist only — typos/HARDEN must not silently weaken to BUILD.
+  # Unknown env values are ignored (fall through to lifecycle file / default).
+  # Precedence: lifecycle harden cannot be downgraded by a stale
+  # PLINTH_REVIEW_PHASE=build (operator harden env still upgrades).
+  _phase_from_file() {
+    local s f ph
+    s=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | sed 's/\//%2F/g; s/ /%20/g')
+    f=".plinth/session/phase-${s}.json"
+    if [ -f "$f" ]; then
+      ph=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+      case "$ph" in
+        build) echo build; return 0 ;;
+        harden) echo hardening; return 0 ;;
+        *) echo hardening; return 0 ;;  # corrupt/unknown → fail closed
+      esac
+    fi
+    s=$(printf '%s' "$(git symbolic-ref --short -q HEAD 2>/dev/null || echo HEAD)" | tr '/ ' '--')
+    f=".plinth/session/phase-${s}.json"
+    if [ -f "$f" ]; then
+      ph=$(jq -r '.phase // empty' "$f" 2>/dev/null || true)
+      case "$ph" in
+        build) echo build; return 0 ;;
+        harden) echo hardening; return 0 ;;
+        *) echo hardening; return 0 ;;
+      esac
+    fi
+    return 1
+  }
+  file_phase="$(_phase_from_file || true)"
+  if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
+    envp="$(printf '%s' "${PLINTH_REVIEW_PHASE}" | tr '[:upper:]' '[:lower:]')"
+    case "$envp" in
+      hardening|harden)
+        echo hardening; return ;;
+      build)
+        # Do not let stale env downgrade an explicit lifecycle harden.
+        if [ "$file_phase" = "hardening" ]; then
+          echo "Plinth review: NOTE — PLINTH_REVIEW_PHASE=build ignored; lifecycle phase is harden." >&2
+          echo hardening; return
+        fi
+        echo build; return ;;
+      *)
+        echo "Plinth review: NOTE — ignoring invalid PLINTH_REVIEW_PHASE='${PLINTH_REVIEW_PHASE}' (want build|harden|hardening)." >&2
+        ;;
+    esac
+  fi
+  if [ -n "$file_phase" ]; then
+    echo "$file_phase"; return
+  fi
+  if git log -1 --format=%s 2>/dev/null | grep -qiE 'HARDENING:|hardening pass'; then
+    echo hardening; return
+  fi
+  echo build
 }
 
 run_round() {  # run_round <fresh|resume> <round> <session-id-if-resume>
@@ -1208,11 +2305,24 @@ the prior spec ('${SPEC_PATH}') and the new one ('${WSPEC}')."
     fi
   fi
 
+  local rphase
+  rphase="$(review_phase_for_round)"
+  # Slice routing bias (rigor/implement) — non-blocking; defaults standard/either.
+  slice_load_routing
+  local phase_note
+  if [ "$rphase" = "hardening" ]; then
+    phase_note="REVIEW PHASE: HARDENING — full adversarial rigor including exotic robustness is in-charter."
+  else
+    phase_note="REVIEW PHASE: BUILD — block only on: spec miss, real bugs, data loss, fail-open in claimed guarantees, enforcement overclaims, missing real tests, security that is a real bug. File pure adversarial-hardening / exotic input theater as severity minor (Noticed backlog), not major — unless it is a true trust-boundary defect."
+  fi
+
   if [ "$m" = "fresh" ]; then
     prompt="You are an independent adversarial reviewer. Your CONTRACT is inlined below
 (the shared reviewer rules + this project's specific rules); apply every rule in it,
 including the Verdict policy (blockers/majors in project code block; minors and UPSTREAM
 tooling findings are reported but non-blocking; tooling tampering blocks).
+${phase_note}
+Optional finding field \"id\": stable short string for sticky tracking across rounds.
 
 === REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
 $(inline_contract)
@@ -1223,6 +2333,12 @@ Review this diff (${baseref}...HEAD at ${sha}) against the canonical spec at: ${
 scope creep, violations of project-specific rules, and — for GOAL.md tasks —
 metric gaming. Your final message is machine-parsed: verdict, summary, and
 concrete findings (use line 0 for file-level findings; status \"open\").
+OUT OF SCOPE: HANDOFF.md (session restart ephemera) is excluded from this diff —
+do not file findings against it. NEEDS-HUMAN.md is project-owned (deletions
+block); queue wording nits may be minor. BUILD: asymptotic coverage gaps are
+minor (Noticed), not major — missing tests for changed behavior still major.
+Docs prose (not the canonical spec) is minor unless a ship/security overclaim.
+Stay on the reviewed pathspec for NEW findings.
 Findings on execution-gated paths whose truth depends on real libraries or
 hardware you cannot observe statically: prefix the description \"RUNTIME:\" —
 they route to the run gate instead of blocking.
@@ -1236,84 +2352,142 @@ round-trip, so within-pass exhaustiveness is far cheaper than another round.${sp
 DIFF:
 ${diff}${evidence}${commits}"
   elif [ "$m" = "verify" ]; then
-    # SCOPED verify (payload chunking): a verify round exists to check the FIXES,
-    # not to re-read the branch. It anchors at the LAST UNANCHORED FULL READ
-    # (lastfullread — round 1, or the latest clean-slate confirmation), so its
-    # payload is CUMULATIVE: open findings + every fix since a full pass. That
-    # closes the coverage story for binding verifies — full read at the anchor
-    # plus this diff = the whole branch — without re-sending the full branch
-    # diff + finding history that overflowed the CLI on long loops (upstream
-    # issue #20). The reviewer keeps read-only repo access for context.
-    # Fallback to the full diff when no usable anchor exists (anchor object
-    # missing, or legacy state). Existence-checked only: a rebase that keeps
-    # the old anchor object alive is NOT detected — ancestry guard is backlog
-    # (MANUAL ## Noticed).
+    # SCOPED + COMPACT verify: open findings as a one-line ledger; fix diff only;
+    # do not free-explore the whole repo (anti-thrash).
+    # Cap ledger + fix-diff size so long threads do not kill codex with empty
+    # stderr (upstream #20). Override: PLINTH_VERIFY_MAX_FINDINGS / PLINTH_VERIFY_MAX_BYTES.
     local prior vanchor="" vinc="" vscope vlabel vpayload vrule
-    prior="$(jq -c '{findings: [.findings[] | select(.status == "open")]}' "$SDIR/findings-$((r - 1)).json")"
+    local vmaxf="${PLINTH_VERIFY_MAX_FINDINGS:-40}" vmaxb="${PLINTH_VERIFY_MAX_BYTES:-400000}"
+    case "$vmaxf" in ''|*[!0-9]*) vmaxf=40 ;; esac
+    case "$vmaxb" in ''|*[!0-9]*) vmaxb=400000 ;; esac
+    # Prefer blockers/majors; cap count (ids preserved; note truncation in prompt).
+    # Fail closed on corrupt prior — never substitute empty ledger (would drop opens).
+    if ! validate_findings "$SDIR/findings-$((r - 1)).json"; then
+      die_infra "verify prior findings-$((r - 1)).json fails schema — refusing compact verify (corrupt prior)"
+    fi
+    prior="$(jq -c --argjson n "$vmaxf" '
+      [.findings[] | select(.status == "open")
+        | {id:(.id//null),file,line,severity,description,
+           _rank:(if .severity=="blocker" then 0 elif .severity=="major" then 1 else 2 end)}]
+      | sort_by(._rank) | map(del(._rank))
+      | .[0:$n]
+      ' "$SDIR/findings-$((r - 1)).json")"       || die_infra "verify prior ledger jq failed"
+    local prior_meta
+    prior_meta="$(jq -c --argjson n "$vmaxf" '
+      [.findings[] | select(.status == "open")]
+      | {total: length, capped: ([length, $n] | min), truncated: (length > $n)}
+      ' "$SDIR/findings-$((r - 1)).json")"       || die_infra "verify prior meta jq failed"
     vanchor="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
     if [ -n "$vanchor" ] && git cat-file -e "${vanchor}^{commit}" 2>/dev/null; then
-      vinc="$(git diff "${vanchor}..HEAD" 2>/dev/null || true)"
+      vinc="$(git diff "${vanchor}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
     fi
     if [ -n "$vinc" ]; then
-      vscope="SCOPED to the fixes: below is the CUMULATIVE fix diff since the last full
-review pass (${vanchor}) — together with that full pass it covers the whole branch, so
-do NOT re-read the rest of the branch."
-      vrule="evidence in the fix diff, not the driver's claim. You have read-only repo
-   access: read the touched files for surrounding context when the diff alone is
-   not enough"
+      vscope="SCOPED to the fixes: CUMULATIVE fix diff since last full read (${vanchor}).
+Do NOT re-read the whole branch. Prefer opening only files cited in open findings or present in this diff."
+      vrule="evidence in the fix diff, not the driver's claim"
       vlabel="CUMULATIVE FIX DIFF (${vanchor}..${sha})"
       vpayload="$vinc"
     else
-      vscope="no usable fix-diff anchor exists (anchor object missing or legacy state) — the FULL diff is below."
+      vscope="no usable fix-diff anchor — FULL diff below. Still: do not invent non-blocking hardening nits on untouched lines."
       vrule="evidence in the diff, not the driver's claim"
       vlabel="DIFF (${baseref}...HEAD at ${sha})"
       vpayload="$diff"
     fi
-    prompt="Fix-verification round ${r} (fresh session). Your CONTRACT is inlined below;
-apply its Verdict policy. This is a FRESH session — assume nothing from prior rounds
-beyond the open findings listed. ${vscope}
+    local vtrunc_note=""
+    VERIFY_PAYLOAD_TRUNCATED=""
+    VERIFY_LEDGER_TRUNCATED=""
+    if [ "${#vpayload}" -gt "$vmaxb" ]; then
+      vpayload="${vpayload:0:$vmaxb}"
+      VERIFY_PAYLOAD_TRUNCATED=1
+      vtrunc_note="
+NOTE: fix-diff payload TRUNCATED to ${vmaxb} bytes (PLINTH_VERIFY_MAX_BYTES). This round
+CANNOT bind APPROVED; unsent tail is fail-closed. Prefer smaller commits or raise the cap."
+    fi
+    if printf '%s' "$prior_meta" | jq -e '.truncated == true' >/dev/null 2>&1; then
+      VERIFY_LEDGER_TRUNCATED=1
+      vtrunc_note="${vtrunc_note}
+NOTE: open-findings ledger capped to ${vmaxf} (prefer blockers/majors; total was $(printf '%s' "$prior_meta" | jq -r '.total')).
+Unsent prior opens are re-carried as open after this round (fail closed) — do not invent resolutions."
+    fi
+    # Full reviewer contract (never truncate — binding criteria live past byte 12000).
+    prompt="Fix-verification round ${r} (fresh session, COMPACT scope on DIFF only). ${phase_note}
+${vscope}
+${vtrunc_note}
 
-=== REVIEWER CONTRACT (.plinth/reviewer.md + .plinth/AGENTS-project.md) ===
+=== REVIEWER CONTRACT (.plinth/reviewer.md + project rules — FULL, not summarized) ===
 $(inline_contract)
 === END REVIEWER CONTRACT ===
 
-Below: (1) the OPEN findings from the previous round, (2) the diff to review.
-1) For each open finding, mark status \"resolved\" or \"open\" — resolved requires
-   ${vrule}.
-2) Review the diff below with first-pass rigor for NEW defects; report them
-   status \"open\". BE EXHAUSTIVE within this pass: SWEEP the whole diff for EVERY sibling
-   of any defect class you find — each missed sibling costs a full extra round-trip.
-$(bind_note "$m" "$RISK")
-
-OPEN PRIOR FINDINGS:
+OPEN PRIOR FINDINGS (ledger — preserve ids; do not resolve without evidence):
 ${prior}
+
+1) For each open finding, status \"resolved\" or \"open\" — resolved requires ${vrule}.
+   Do NOT reopen a resolved finding class on unchanged code as a new major.
+2) NEW defects only on the fix diff / touched lines; siblings of a new class OK.
+   BUILD phase: hardening theater → minor. $(bind_note "$m" "$RISK")
 
 ${vlabel}:
 ${vpayload}${evidence}${commits}"
   else
-    # Incremental only: the thread already holds the prior full diff. Re-sending
-    # everything is what overflowed large threads (the anvil deadlock).
-    local inc
-    inc="$(git diff "${prev_sha}..HEAD" 2>/dev/null || true)"
+    # Incremental only: the thread already holds the prior full diff.
+    # Same HANDOFF pathspec as the full review diff — session ephemera stays out.
+    local inc prior_ids
+    inc="$(git diff "${prev_sha}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
     [ -n "$inc" ] || inc="$diff"
-    prompt="Fix-verification round ${r}. The driver has committed changes since your last
-review; HEAD is now ${sha}. Below is the INCREMENTAL diff from the commit you
-last reviewed (${prev_sha}) to the new HEAD — you already hold the prior full
-diff in this conversation.
-1) Re-check each finding you previously reported and mark its status \"resolved\"
-   or \"open\" — resolved requires evidence in the changes, not the driver's claim.
-2) Review the new changes below with the same rigor as a first pass; report new
-   findings with status \"open\".
-Verdict is APPROVED only if no finding remains open. $(bind_note "$m" "$RISK")
+    prior_ids="$(jq -c '[.findings[] | select(.status=="open") | {id:(.id//null),file,line,severity,description}]' \
+      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || echo '[]')"
+    prompt="Fix-verification round ${r} (resume, INCREMENTAL). ${phase_note}
+HEAD is now ${sha}. You hold prior full context; below is only ${prev_sha}..HEAD.
+1) Re-check open findings (ledger); mark resolved/open with evidence in the changes.
+   Sticky: do not reopen prior-resolved classes on unchanged files as new majors.
+2) New defects on the incremental diff only. $(bind_note "$m" "$RISK")
+
+OPEN LEDGER (full descriptions — preserve ids):
+${prior_ids}
 
 INCREMENTAL DIFF (${prev_sha}..${sha}):
 ${inc}${evidence}${commits}"
   fi
 
-  jq -n --arg sha "$sha" --arg base "$baseref" --arg mode "$m" --argjson round "$r" \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg spec "$SPEC_PATH" \
-        '{sha:$sha, base_ref:$base, round:$round, mode:$mode, spec_path:$spec, ts:$ts}' \
-        > "$SDIR/request-$r.json"
+  local phase_src="default"
+  if [ -n "${PLINTH_REVIEW_PHASE:-}" ]; then
+    case "$(printf '%s' "$PLINTH_REVIEW_PHASE" | tr '[:upper:]' '[:lower:]')" in
+      build|harden|hardening) phase_src="env" ;;
+    esac
+  fi
+  [ "$phase_src" = "env" ] || phase_src="file_or_default"
+  # Materialize the ratified base spec so the reviewer can READ it on demand
+  # instead of carrying it in every turn of its context.
+  BASE_SPEC_PATH="$(materialize_base_spec "$r")"
+  # Stamp slice routing on the request (audit trail; never blocks).
+  stamp_request_json "$SDIR" "$r" "$sha" "$baseref" "$m" "$SPEC_PATH" "$rphase" "$phase_src"
+
+  # A REQUESTED dual with no usable audit seat fails CLOSED — and it fails here,
+  # BEFORE reviewer_run spends a paid round that structurally cannot deliver the
+  # rigor that was asked for. "Requested" means explicit: rigor=deep or
+  # PLINTH_DUAL_PASS=1. A DEFAULT dual-skip (dual_wanted=0) stays log-only — that
+  # is the v5.1 ship-bias posture, not a degradation.
+  # Scoped to rounds that would otherwise have run dual (fresh · r1 · Tier-2), so
+  # a resume/verify round or a Tier-1 diff under rigor=deep is never wedged by a
+  # seat it was never going to use.
+  if [ "$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")" = 1 ] \
+     && [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
+     && { [ -z "${AUDIT_VENDOR:-}" ] || [ "$AUDIT_VENDOR" = "$REVIEWER_VENDOR" ]; }; then
+    local _dual_req_why="rigor=deep"
+    [ "${PLINTH_DUAL_PASS:-}" = "1" ] && _dual_req_why="PLINTH_DUAL_PASS=1"
+    local _seat_why="audit_vendor unset"
+    [ -n "${AUDIT_VENDOR:-}" ] && _seat_why="audit seat '${AUDIT_VENDOR}' is the same vendor as the reviewer"
+    if [ "${PLINTH_ACK_NO_DUAL:-}" = "1" ]; then
+      echo "Plinth review: dual first-pass REQUESTED (${_dual_req_why}) but ${_seat_why} — proceeding on PLINTH_ACK_NO_DUAL=1; recorded ack_no_dual on request/verdict/receipt (primary review still binds)."
+      jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg why "$_dual_req_why" \
+            --arg seat "$_seat_why" --argjson round "$r" \
+        '{ack_no_dual:true, ts:$ts, round:$round, requested_by:$why, seat_reason:$seat,
+          note:"requested dual ran with no cross-vendor seat; operator acked"}' \
+        > "$SDIR/dual-no-seat-ack.json"
+    else
+      die_infra "dual first-pass REQUESTED (${_dual_req_why}) but ${_seat_why} — refusing to spend a paid round that cannot satisfy the requested rigor. Configure a cross-vendor audit_vendor, drop to rigor=standard (or PLINTH_DUAL_PASS=0), or acknowledge the gap with PLINTH_ACK_NO_DUAL=1 (recorded on request/verdict/receipt)."
+    fi
+  fi
 
   # Dispatch to the configured reviewer vendor (codex|claude|grok). The adapter runs
   # the CLI read-only, writes the validated verdict to findings-$r.json, and sets RSID
@@ -1322,8 +2496,193 @@ ${inc}${evidence}${commits}"
     || { echo "Plinth review: resume of the reviewer session failed — falling back."; return 1; }
   validate_findings "$SDIR/findings-$r.json" \
     || die_infra "reviewer output violates the verdict schema (verdict/severity/status enum or a missing required field) — a schema-invalid finding would be silently dropped by the verdict arithmetic; see $SDIR/findings-$r.json"
+  sticky_process_findings "$SDIR/findings-$r.json"
+  # Re-validate after sticky (status/description may change; ids added).
+  validate_findings "$SDIR/findings-$r.json" \
+    || die_infra "findings invalid after sticky process — see $SDIR/findings-$r.json"
   RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
+  # Sticky may have cleared all open majors while model said CHANGES_NEEDED — recompute later.
   case "$RVERDICT" in APPROVED|CHANGES_NEEDED) ;; *) die_infra "invalid verdict '$RVERDICT' in findings-$r.json" ;; esac
+
+  # Scope + prior-open ledger for thrash policy (applied after dual merge below).
+  local thrash_scope thrash_prior=""
+  thrash_scope="${REVIEWED_FILES_FULL:-}"
+  if [ "$m" = "verify" ]; then
+    local vanchor_tp
+    vanchor_tp="$(cat "$SDIR/lastfullread" 2>/dev/null || true)"
+    if [ -n "$vanchor_tp" ] && git cat-file -e "${vanchor_tp}^{commit}" 2>/dev/null; then
+      thrash_scope="$(git diff --name-only "${vanchor_tp}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
+    fi
+  elif [ "$m" = "resume" ] && [ -n "${prev_sha:-}" ]; then
+    thrash_scope="$(git diff --name-only "${prev_sha}..HEAD" -- "${REVIEW_PATHSPEC[@]}" 2>/dev/null || true)"
+  fi
+  # Prior open findings stay in scope for re-check even if their file is not in the fix diff.
+  if [ "$r" -gt 1 ] && [ -f "$SDIR/findings-$((r - 1)).json" ]; then
+    thrash_prior="$(jq -r '.findings[] | select(.status=="open") | .id // empty' \
+      "$SDIR/findings-$((r - 1)).json" 2>/dev/null || true)"
+    thrash_scope="$(printf '%s\n%s\n' "$thrash_scope" \
+      "$(jq -r '.findings[] | select(.status=="open") | .file // empty' \
+        "$SDIR/findings-$((r - 1)).json" 2>/dev/null || true)")"
+  fi
+  [ -n "$thrash_scope" ] || thrash_scope="${REVIEWED_FILES_FULL:-}"
+
+  # Dual first-pass: Tier 2 + fresh r1 + cross-vendor audit seat, then bias by
+  # rigor. v5.1: dual is OPTIONAL RIGOR and OFF by default in every phase —
+  # only rigor=deep or PLINTH_DUAL_PASS=1 wants it. HARDEN no longer forces it.
+  # A requested-dual-with-no-seat already failed closed (or was acked) above.
+  local dual_ok=0
+  if [ "$m" = "fresh" ] && [ "$r" = "1" ] && [ "$RISK" = "2" ] \
+     && [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    dual_ok="$(slice_dual_from_rigor "$SLICE_RIGOR" "$rphase" "${PLINTH_DUAL_PASS:-}")"
+    if [ "$dual_ok" = 0 ]; then
+      echo "Plinth review: dual first-pass not requested (rigor=${SLICE_RIGOR}, phase=${rphase}) — one primary + verify is the default ship path; rigor=deep or PLINTH_DUAL_PASS=1 to enable."
+    elif [ "$SLICE_RIGOR" = "deep" ] && [ "${PLINTH_DUAL_PASS:-}" != "1" ]; then
+      echo "Plinth review: dual first-pass enabled by slice rigor=deep (phase=${rphase})."
+    fi
+  fi
+  if [ "$dual_ok" = 1 ]; then
+    echo "Plinth review: dual first-pass — cross-vendor audit seat (${AUDIT_VENDOR}) on same SHA…"
+    local dual_out dual_prompt
+    dual_out="$SDIR/findings-dual-$r.json"
+    dual_prompt="You are a SECOND independent reviewer on the SAME branch SHA (dual first pass).
+${phase_note}
+Output ONLY JSON matching the review schema (verdict, summary, findings with file/line/severity/description/status).
+Focus on what a single primary might miss: security, fail-open, hollow tests, spec gaps.
+
+=== CONTRACT ===
+$(inline_contract)
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
+${diff}"
+    if run_auditor "$dual_prompt" "$dual_out" 2>/dev/null; then
+      # Union open majors/blockers from dual into primary findings (provenance in description).
+      local merged
+      merged="$(mktemp)"
+      jq -n --slurpfile p "$SDIR/findings-$r.json" --slurpfile d "$dual_out" '
+        ($p[0]) as $P | ($d[0] // {findings:[]}) as $D
+        | ($D.findings // [] | map(select(.status=="open" and (.severity=="blocker" or .severity=="major")))
+            | map(.description = ("[DUAL-PASS " + (.severity) + "] " + (.description // ""))
+                  | .status = "open")) as $extra
+        | $P
+        | .findings = ((.findings // []) + $extra)
+        | .summary = ((.summary // "") + " Dual-pass merged " + ($extra|length|tostring) + " secondary major(s).")
+      ' > "$merged" && mv "$merged" "$SDIR/findings-$r.json"
+      sticky_process_findings "$SDIR/findings-$r.json"
+      validate_findings "$SDIR/findings-$r.json" || true
+      # Dual succeeded — clear any prior degradation marker from an earlier failed attempt.
+      rm -f "$SDIR/dual-degraded.json"
+      echo "Plinth review: dual first-pass merged $(jq '[.findings[]|select(.description|startswith("[DUAL-PASS"))]|length' "$SDIR/findings-$r.json") secondary finding(s)."
+    else
+      echo "Plinth review: dual first-pass UNAVAILABLE (audit seat failed) — continuing with primary only; recorded dual_degraded (Tier-2 still binds on primary + later audit-on-APPROVED when available)."
+      jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$AUDIT_VENDOR" \
+        '{dual_degraded:true, ts:$ts, audit_vendor:$v, note:"primary continues; bind allowed; surface dual_degraded on verdict"}' \
+        > "$SDIR/dual-degraded.json"
+    fi
+  fi
+
+  # Deterministic thrash demotions (coverage/docs/scope/ephemera) — after dual so
+  # secondary majors get the same treatment.
+  # Snapshot severities FIRST: the policy rewrites them in place, so from→to can
+  # only be recovered by comparing against a pre-policy copy (the [THRASH:] marker
+  # records the class, not the severity it came from).
+  local pre_sev; pre_sev="$(mktemp)"
+  jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' \
+    "$SDIR/findings-$r.json" > "$pre_sev" 2>/dev/null || echo '[]' > "$pre_sev"
+  thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior" "${SPEC_PATH:-}" "$m"
+  validate_findings "$SDIR/findings-$r.json" \
+    || die_infra "findings invalid after thrash policy — see $SDIR/findings-$r.json"
+  demoted_n="$(jq '[.findings[] | select(.description | test("\\[THRASH:"))] | length' \
+    "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
+  case "$demoted_n" in ''|*[!0-9]*) demoted_n=0 ;; esac
+  # DEMOTION LEDGER (v5.1 S3): every demotion is recorded with its class and the
+  # severity it came from, appended to a cumulative per-loop artifact and folded
+  # into the minted receipt. Demotion is a fail-open; this is what makes using it
+  # auditable rather than silent. Best-effort by construction — a ledger append
+  # that fails must never fail the review — but the failure is announced.
+  if [ "$demoted_n" -gt 0 ]; then
+    echo "Plinth review: thrash/delta policy demoted ${demoted_n} finding(s) to minor (mode=${m}, phase=${rphase})."
+    local dem_rows
+    if dem_rows="$(thrash_ledger_rows "$SDIR/findings-$r.json" "$pre_sev" "$r" "$rphase" "$m")" \
+       && [ -n "$dem_rows" ]; then
+      if ! printf '%s\n' "$dem_rows" | jq -c '.[]' >> "$SDIR/demotions.jsonl" 2>/dev/null; then
+        echo "Plinth review: NOTE — demotion ledger append failed; the receipt will under-report demotions for round ${r}." >&2
+      fi
+    else
+      echo "Plinth review: NOTE — could not compute the demotion ledger for round ${r}; the receipt will under-report demotions." >&2
+    fi
+  fi
+  rm -f "$pre_sev"
+
+  # VERIFY fail-closed: re-inject prior open findings the capped ledger never
+  # showed the model (and that the model did not adjudicate by id). After thrash
+  # so demotions already applied. Prevents APPROVED while unsent blockers drop.
+  if [ "$m" = "verify" ] && [ "$r" -gt 1 ] && [ -f "$SDIR/findings-$((r - 1)).json" ]; then
+    local _vf_prev _vf_tmp _vf_n=0
+    _vf_prev="$SDIR/findings-$((r - 1)).json"
+    # Schema-corrupt prior (e.g. {} or findings:[]) must not silently drop history.
+    if ! validate_findings "$_vf_prev"; then
+      die_infra "verify prior findings-$((r - 1)).json fails schema — refusing re-carry/APPROVED (corrupt or empty prior)"
+    fi
+    _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-merge.XXXXXX")" || die_infra "mktemp failed for verify prior re-merge"
+    if ! jq -c --slurpfile prev "$_vf_prev" '
+      . as $cur
+      | ($cur.findings // []) as $cf
+      | ([ $cf[] | select(.id != null) | .id ] | unique) as $seen_ids
+      | ([ $cf[] | select(.id == null) | ((.file//"") + "|" + (.severity//"") + "|" + (.description//"")) ] | unique) as $seen_fp
+      | [ ($prev[0].findings // [])[]
+          | select(.status == "open")
+          | select(
+              ( (.id != null) and ((.id as $i | $seen_ids | index($i)) == null) )
+              or ( (.id == null) and (((.file//"") + "|" + (.severity//"") + "|" + (.description//"")) as $fp
+                    | ($seen_fp | index($fp)) == null) )
+            )
+          | {
+              file: (.file // ""),
+              line: (if (.line|type) == "number" then .line else 0 end),
+              severity: (if .severity == "blocker" or .severity == "major" or .severity == "minor" then .severity else "major" end),
+              description: ((.description // "") + " [VERIFY-CARRY: not in capped ledger / not re-adjudicated — remains open]"),
+              status: "open",
+              id: (if .id == null then null else .id end)
+            }
+        ] as $carry
+      | $cur
+      | .findings = (($cf | map({
+            file: (.file // ""),
+            line: (if (.line|type) == "number" then .line else 0 end),
+            severity, description, status,
+            id: (if .id == null then null else .id end)
+          })) + $carry)
+      | if ($carry | length) > 0 and .verdict == "APPROVED" then .verdict = "CHANGES_NEEDED" else . end
+      | {verdict, summary, findings, _n: ($carry | length)}
+    ' "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null; then
+      rm -f "$_vf_tmp"
+      die_infra "verify prior re-merge failed — refusing to approve with a capped ledger (see findings-$((r-1)).json)"
+    fi
+    _vf_n="$(jq -r '._n // 0' "$_vf_tmp" 2>/dev/null || echo 0)"
+    jq -c 'del(._n)' "$_vf_tmp" > "${_vf_tmp}.out" 2>/dev/null \
+      && mv "${_vf_tmp}.out" "$SDIR/findings-$r.json" || {
+        rm -f "$_vf_tmp" "${_vf_tmp}.out"
+        die_infra "verify prior re-merge strip failed"
+      }
+    rm -f "$_vf_tmp"
+    case "$_vf_n" in ''|*[!0-9]*) _vf_n=0 ;; esac
+    if [ "$_vf_n" -gt 0 ]; then
+      echo "Plinth review: verify re-carried ${_vf_n} prior open finding(s) not in the capped ledger (fail closed)."
+      RVERDICT="$(jq -r '.verdict // empty' "$SDIR/findings-$r.json")"
+    fi
+    # Truncated fix-diff: refuse APPROVED regardless of raw model verdict
+    # (effective promotion below must also not APPROVE).
+    if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ]; then
+      RVERDICT="CHANGES_NEEDED"
+      _vf_tmp="$(mktemp "${TMPDIR:-/tmp}/plinth-verify-trunc.XXXXXX")" || die_infra "mktemp failed for verify trunc"
+      jq -c 'del(.verify_carried) | .verdict = "CHANGES_NEEDED" | .summary = ((.summary // "") + " [VERIFY: fix-diff truncated — cannot APPROVE]") | {verdict, summary, findings}' \
+        "$SDIR/findings-$r.json" > "$_vf_tmp" 2>/dev/null \
+        && mv "$_vf_tmp" "$SDIR/findings-$r.json" || rm -f "$_vf_tmp"
+      echo "Plinth review: verify fix-diff was truncated (PLINTH_VERIFY_MAX_BYTES) — refusing APPROVED this round."
+    fi
+    validate_findings "$SDIR/findings-$r.json" \
+      || die_infra "findings invalid after verify prior re-merge — see $SDIR/findings-$r.json"
+  fi
 
   # Verdict arithmetic is the instrument's job, not the reviewer's judgment
   # (anvil round 12: the reviewer labeled a tooling finding UPSTREAM per policy,
@@ -1334,9 +2693,13 @@ ${inc}${evidence}${commits}"
   local blocking tamper RRAW
   # RUNTIME: findings on declared exec-gated paths don't block (dual-keyed:
   # reviewer prefix AND config path match) — they join the run gate instead.
+  # HANDOFF ephemera: never blocks (pathspec + thrash demotion; defense in depth).
+  # NEEDS-HUMAN is NOT auto-nonblocking here — thrash demotes queue nits only.
   blocking="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+    --arg href '^(HANDOFF|CHECKPOINT)\\.md$' \
     '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
        | select((.file | test($re)) | not)
+       | select((.file // "" | test($href)) | not)
        | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
      ] | length' \
     "$SDIR/findings-$r.json")"
@@ -1360,6 +2723,11 @@ ${inc}${evidence}${commits}"
     RVERDICT="CHANGES_NEEDED"
     echo "Plinth review: reviewer said APPROVED but ${blocking} open blocker/major project finding(s) exist — effective verdict CHANGES_NEEDED."
   fi
+  # VERIFY payload truncation: never promote to APPROVED (even when blocking=0).
+  if [ -n "${VERIFY_PAYLOAD_TRUNCATED:-}" ] && [ "$RVERDICT" = "APPROVED" ]; then
+    RVERDICT="CHANGES_NEEDED"
+    echo "Plinth review: verify fix-diff truncated — effective verdict CHANGES_NEEDED (cannot APPROVE partial coverage)."
+  fi
 
   local usage="$RUSAGE"; [ -n "$usage" ] || usage="null"
   # Non-fresh Tier-2 APPROVED does not bind until clean-slate confirmation. Persist
@@ -1376,9 +2744,10 @@ ${inc}${evidence}${commits}"
         --arg model "$REVIEWER_MODEL" --argjson risk "$RISK_JSON" --arg digest "$diff_digest" \
         --arg vendor "$REVIEWER_VENDOR" --argjson overrides "$OVERRIDES" \
         --arg mbase "$merge_base" \
+        --arg rphase "$rphase" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson extra "$write_extra" \
-        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts}
+        '{verdict:$verdict, reviewer_verdict:$raw, sha:$sha, base_ref:$base, round:$round, session_id:$sid, mode:$mode, model:$model, vendor:$vendor, risk:$risk, diff_digest:$digest, merge_base:$mbase, usage:$usage, ts:$ts, review_phase:$rphase}
          + $extra
          + (if $overrides == {} then {} else {overrides: $overrides} end)' \
         > "$SDIR/verdict.json"
@@ -1444,8 +2813,59 @@ if [ "$RVERDICT" = "CHANGES_NEEDED" ]; then
   jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' \
     "$SDIR/findings-$round.json"
   echo "Fix the findings, commit, and re-run ./.plinth/review.sh (state: $SDIR/)."
+  # Soft cap: identical open blocking id-set for N consecutive rounds → human
+  # (exit 2). Distinct from hard round_cap (which kills progressing loops too).
+  # Override: PLINTH_SAME_OPEN_CAP=<n> (default 3); 0 disables.
+  same_cap="${PLINTH_SAME_OPEN_CAP:-3}"
+  case "$same_cap" in ''|*[!0-9]*) same_cap=3 ;; esac
+  open_fp="$(jq -r '
+      [.findings[]
+        | select(.status=="open" and (.severity=="blocker" or .severity=="major"))
+        | .id // ((.file//"") + "|" + (.severity//"") + "|" + (.description//""))]
+      | unique | sort | join("\n")' "$SDIR/findings-$round.json" 2>/dev/null || true)"
+  prev_fp="$(cat "$SDIR/open-set-fp" 2>/dev/null || true)"
+  streak="$(cat "$SDIR/open-set-streak" 2>/dev/null || echo 0)"
+  case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+  if [ -n "$open_fp" ] && [ "$open_fp" = "$prev_fp" ]; then
+    streak=$((streak + 1))
+  else
+    streak=1
+  fi
+  printf '%s\n' "$open_fp" > "$SDIR/open-set-fp"
+  printf '%s\n' "$streak" > "$SDIR/open-set-streak"
+  if [ "$same_cap" -gt 0 ] && [ "$streak" -ge "$same_cap" ]; then
+    first_open="$(jq -r --argjson n "$same_cap" '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+      | if . then "HUMAN: same open set \($n)+ rounds — adjudicate: \(.file):\(.line) — \(.description[0:80])" else empty end' \
+      "$SDIR/findings-$round.json" 2>/dev/null || true)"
+    # Draft residual at HEAD for human binding (does not auto-ship; plinth residual --commit).
+    if [ -x "./bin/plinth" ]; then
+      PLINTH_RESIDUAL_NOTE="same-open soft cap after ${streak} rounds" \
+        ./bin/plinth residual "$PWD" --from-findings "$SDIR/findings-$round.json" 2>/dev/null || true
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="${first_open:-plinth residual; commit RESIDUAL.json; ship}" \
+        ./bin/plinth handoff "$PWD" 2>/dev/null || true
+    elif command -v plinth >/dev/null 2>&1; then
+      PLINTH_RESIDUAL_NOTE="same-open soft cap after ${streak} rounds" \
+        plinth residual "$PWD" --from-findings "$SDIR/findings-$round.json" 2>/dev/null || true
+      PLINTH_HANDOFF_REASON=review-same-open-cap PLINTH_HANDOFF_NEXT="${first_open:-plinth residual}" \
+        plinth handoff "$PWD" 2>/dev/null || true
+    fi
+    die_infra "same-open soft cap: open set unchanged for ${streak} rounds (cap ${same_cap}). Drafted .plinth/RESIDUAL.json — human: review items, 'plinth residual --bind' (or edit + commit), then ship. Or fix and re-run. Override: PLINTH_SAME_OPEN_CAP=0."
+  fi
+  # Checkpoint handoff + seed ## Next from first open major (autonomous routing).
+  first_open="$(jq -r '[.findings[]|select(.status=="open" and (.severity=="blocker" or .severity=="major"))][0]
+    | if . then "Fix [\(.severity)] \(.file):\(.line) — \(.description[0:100]); commit; re-run ./.plinth/review.sh" else empty end' \
+    "$SDIR/findings-$round.json" 2>/dev/null || true)"
+  if [ -x "./bin/plinth" ]; then
+    PLINTH_HANDOFF_REASON=review-changes-needed PLINTH_HANDOFF_NEXT="$first_open" \
+      ./bin/plinth handoff "$PWD" 2>/dev/null || true
+  elif command -v plinth >/dev/null 2>&1; then
+    PLINTH_HANDOFF_REASON=review-changes-needed PLINTH_HANDOFF_NEXT="$first_open" \
+      plinth handoff "$PWD" 2>/dev/null || true
+  fi
   exit 1
 fi
+# Converged — clear same-open streak so a later loop starts fresh.
+rm -f "$SDIR/open-set-fp" "$SDIR/open-set-streak"
 nonblocking="$(jq -r '.findings[] | select(.status=="open") | "  [\(.severity)] \(.file):\(.line) — \(.description)"' "$SDIR/findings-$round.json")"
 if [ -n "$nonblocking" ]; then
   echo "Non-blocking findings (minors -> '## Noticed'; UPSTREAM -> Plinth repo; RUNTIME -> the run gate, burn down with 'plinth smoke'):"
@@ -1481,8 +2901,15 @@ Output ONLY a JSON object (no prose, no markdown fences):
 === REVIEWER RULES (mandatory project blocking policy — apply these) ===
 $(inline_contract)
 
-=== CANONICAL SPEC (${SPEC_PATH}) ===
-$(inline_spec)
+=== CANONICAL SPEC (${SPEC_PATH}) — BY REFERENCE ===
+The RATIFIED spec (from the base ref, NOT this PR's working tree) is written to:
+  ${BASE_SPEC_PATH:-<unavailable>}
+READ IT with your own tools whenever the diff touches behaviour the spec constrains,
+and say in your summary whether you needed to. Do NOT read ${SPEC_PATH} from the
+working tree: that copy is PR-modifiable, and a PR must not ship the spec that judges
+it. NOTHING is withheld from you here — the complete ratified text is at that path.
+Its heading outline, so you can judge whether to open it:
+$(_spec_outline_for_prompt)
 
 === OPTIMIZATION GOAL (if present, apply the .plinth/reviewer.md metric-integrity rules) ===
 $(inline_goal)
@@ -1491,11 +2918,30 @@ $(inline_goal)
 $(git log --format='%h %s' "${base_tip}..HEAD" -- $HARNESS_PATHS 2>/dev/null)
 
 === DIFF (${baseref}...HEAD at ${sha}) ===
-$(git diff "${base_tip}...HEAD")"
+$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
     if run_auditor "$aprompt" "$afind"; then
+      # Apply thrash demotions to the audit payload before counting (same policy).
+      # These demotions change the reported blocking count, so they belong on the
+      # receipt too — the claim is "every demotion is disclosed", and a demotion
+      # applied here but recorded nowhere would make that claim wider than the
+      # code. Tagged with source:"audit" so the ledger says which payload it came
+      # from. Best-effort, like the primary ledger append.
+      _apre="$(mktemp)"
+      jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' \
+        "$afind" > "$_apre" 2>/dev/null || echo '[]' > "$_apre"
+      thrash_policy_process_findings "$afind" "$(review_phase_for_round)" \
+        "${REVIEWED_FILES_FULL:-}" "" "${SPEC_PATH:-}" "fresh"
+      if _arows="$(thrash_ledger_rows "$afind" "$_apre" "$round" "$(review_phase_for_round)" "audit")" \
+         && [ -n "$_arows" ] && [ "$_arows" != "[]" ]; then
+        printf '%s\n' "$_arows" | jq -c '.[] + {source:"audit"}' >> "$SDIR/demotions.jsonl" 2>/dev/null \
+          || echo "Plinth review: NOTE — audit-payload demotion ledger append failed; the receipt will under-report demotions." >&2
+      fi
+      rm -f "$_apre"
       ablk="$(jq -r --arg re "$HARNESS_RE" --arg xre "$EXEC_RE" \
+        --arg href '^(HANDOFF|CHECKPOINT)\\.md$' \
         '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
            | select((.file | test($re)) | not)
+           | select((.file // "" | test($href)) | not)
            | select( (($xre != "") and ((.description // "") | startswith("RUNTIME:")) and (.file | test($xre))) | not )
          ] | length' "$afind" 2>/dev/null || echo 0)"
       case "$ablk" in ''|*[!0-9]*) ablk=0 ;; esac
@@ -1528,6 +2974,116 @@ elif [ "$RISK" = "2" ]; then
   # primary + the default audit_vendor=claude).
   echo "Plinth review: NOTE — no cross-vendor Tier-2 audit (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'). Set audit_vendor to a DIFFERENT vendor (codex|claude|grok|agy) for an independent second opinion."
 fi
+
+# ── L3: risk-triggered SECURITY pass (v5.1 S4) ───────────────────────────────
+# ONE security-focused pass on the binding-APPROVED path when the diff touches a
+# security-sensitive surface. This is NOT a second full product review and NOT a
+# merge check — it is the targeted replacement for the generalist dual pass that
+# v5.1 removed from the default path.
+_sp="$(security_pass_wanted "$RISK_JSON" "${PLINTH_SECURITY_PASS:-}")"
+_sp_want="${_sp%% *}"; _sp_why="${_sp#* }"
+# Read the strictness knob from the BASE config, not the working tree: `cfg`
+# would let a PR that removes `security_pass_required = true` disable the very
+# check it is subject to. Fall back to the working tree only when the base has no
+# config at all (first adoption) — same resolution order as audit_vendor above.
+_sp_required="$(bcfg security_pass_required 2>/dev/null || true)"
+[ -n "$_sp_required" ] || [ "$base_has_config" = 1 ] || _sp_required="$(cfg security_pass_required 2>/dev/null || true)"
+if [ "$_sp_want" = "1" ]; then
+  # Seat: prefer the cross-vendor audit seat as the security specialist. A
+  # same-vendor "second opinion" is not independent, so it is recorded as
+  # UNAVAILABLE rather than run and counted as coverage.
+  if [ -n "${AUDIT_VENDOR:-}" ] && [ "$AUDIT_VENDOR" != "$REVIEWER_VENDOR" ]; then
+    echo "Plinth review: L3 security pass (${AUDIT_VENDOR}) — triggered by: ${_sp_why}…"
+    _spf="$SDIR/findings-security-$round.json"
+    _spprompt="You are a SECURITY reviewer. Everything you need is INLINE below. Do NOT use
+any tools, do NOT try to read files — output your verdict directly and NOW.
+
+SCOPE — this is NOT a general code review. Report ONLY security findings:
+authentication/authorization bypass, unauthenticated or cross-tenant access,
+injection (SQL/command/prompt), secret or credential exposure, unsafe
+deserialization, SSRF/RCE, path traversal, supply-chain risk, privilege
+escalation, and fail-open behaviour in a security, trust-boundary or ship-gate
+guarantee the code claims. Include data-loss defects that a hostile input can
+trigger.
+Do NOT report style, naming, coverage depth, docs prose, or non-security
+robustness — those are out of scope here and will be discarded.
+Severity: use blocker/major ONLY for a defect you can state as a concrete attack
+or failure path. If you find nothing in scope, say so with verdict APPROVED and
+an empty findings array — do NOT pad.
+Output ONLY a JSON object (no prose, no markdown fences):
+{\"verdict\":\"APPROVED\"|\"CHANGES_NEEDED\",\"summary\":string,\"findings\":[{\"file\":string,\"line\":number,\"severity\":\"blocker\"|\"major\"|\"minor\",\"description\":string,\"status\":\"open\"|\"resolved\"}]}
+
+=== REVIEWER RULES (for the tooling/UPSTREAM policy — apply these) ===
+$(inline_contract)
+
+=== CANONICAL SPEC (${SPEC_PATH}) ===
+$(inline_spec)
+
+=== DIFF (${baseref}...HEAD at ${sha}) ===
+$(git diff "${base_tip}...HEAD" -- "${REVIEW_PATHSPEC[@]}")"
+    if run_auditor "$_spprompt" "$_spf"; then
+      _spblk="$(jq -r --arg re "$HARNESS_RE" \
+        '[.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "major"))
+           | select((.file | test($re)) | not)
+         ] | length' "$_spf" 2>/dev/null || echo 0)"
+      case "$_spblk" in ''|*[!0-9]*) _spblk=0 ;; esac
+      _spverd="$(jq -r '.verdict // "?"' "$_spf" 2>/dev/null || echo '?')"
+      jq --arg vn "$AUDIT_VENDOR" --arg why "$_sp_why" --arg v "$_spverd" --argjson b "$_spblk" \
+        '. + {security_pass: {status: "RAN", vendor: $vn, trigger: $why, verdict: $v, blocking: $b}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" \
+        && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      if [ "$_spblk" -gt 0 ]; then
+        echo "PLINTH SECURITY FINDINGS: the L3 pass (${AUDIT_VENDOR}) reported ${_spblk} blocking security finding(s) — see $_spf. The verdict is unchanged (L3 is not a merge gate), but per the ship-bias contract you MUST fix security majors and re-run the loop to remint APPROVED@HEAD. Do not open the PR on this receipt if any of them is real."
+      else
+        echo "Plinth review: L3 security pass clean (${_spverd}, 0 blocking security findings)."
+      fi
+    else
+      # run_auditor never false-concurs — this branch means the pass could not RUN.
+      jq --arg vn "$AUDIT_VENDOR" --arg why "$_sp_why" \
+        '. + {security_pass: {status: "UNAVAILABLE", vendor: $vn, trigger: $why, verdict: "UNAVAILABLE", blocking: 0}}' \
+        "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+      if [ "$_sp_required" = "true" ]; then
+        die_infra "L3 security pass was TRIGGERED (${_sp_why}) but could not run (seat '${AUDIT_VENDOR}'), and security_pass_required=true in .plinth/config — refusing to bind an APPROVED that claims security coverage it does not have. Fix the seat or clear the config knob."
+      fi
+      echo "Plinth review: NOTE — L3 security pass UNAVAILABLE (seat '${AUDIT_VENDOR}'); recorded on the verdict, primary review stands. v5.1 default is best-effort; set security_pass_required=true in .plinth/config to make this fail closed."
+    fi
+  else
+    jq --arg why "$_sp_why" --arg rv "$REVIEWER_VENDOR" \
+      '. + {security_pass: {status: "UNAVAILABLE", vendor: null, trigger: $why, verdict: "UNAVAILABLE", blocking: 0, note: ("no independent seat — audit_vendor == reviewer_vendor = " + $rv)}}' \
+      "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+    if [ "$_sp_required" = "true" ]; then
+      die_infra "L3 security pass was TRIGGERED (${_sp_why}) but there is no INDEPENDENT seat (audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}'), and security_pass_required=true in .plinth/config. Set audit_vendor to a different vendor."
+    fi
+    echo "Plinth review: NOTE — L3 security pass triggered (${_sp_why}) but skipped: audit_vendor == reviewer_vendor = '${REVIEWER_VENDOR}', so it would not be an independent opinion. Recorded UNAVAILABLE on the verdict (never a false concur)."
+  fi
+else
+  jq --arg why "$_sp_why" \
+    '. + {security_pass: {status: "NOT_TRIGGERED", trigger: $why, blocking: 0}}' \
+    "$SDIR/verdict.json" > "$SDIR/verdict.json.tmp" && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+fi
+# Surface an acked seatless dual on the binding verdict BEFORE minting, so the
+# receipt and the verdict disclose the same gap (does not unbind — the primary
+# review is the gate; the ack is an audit trail, not a weakening of the verdict).
+if [ -f "$SDIR/dual-no-seat-ack.json" ]; then
+  jq -s '.[0] + {dual_first_pass: "ACK_NO_SEAT", ack_no_dual: .[1]}' \
+    "$SDIR/verdict.json" "$SDIR/dual-no-seat-ack.json" > "$SDIR/verdict.json.tmp" \
+    && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+  echo "Plinth review: NOTE dual first-pass was REQUESTED but ran with no cross-vendor seat, acked via PLINTH_ACK_NO_DUAL (see verdict.ack_no_dual; disclosed on the receipt)."
+fi
 mint_receipt "$round"
+# Surface dual_degraded on binding verdict when present (does not unbind — max automation).
+if [ -f "$SDIR/dual-degraded.json" ]; then
+  jq -s '.[0] + {dual_first_pass: "DEGRADED", dual_degraded: .[1]}' \
+    "$SDIR/verdict.json" "$SDIR/dual-degraded.json" > "$SDIR/verdict.json.tmp" \
+    && mv "$SDIR/verdict.json.tmp" "$SDIR/verdict.json"
+  echo "Plinth review: NOTE dual first-pass was DEGRADED this loop (see verdict.dual_degraded)."
+fi
 echo "APPROVED recorded in $SDIR/verdict.json (Tier ${RISK}, digest ${diff_digest:0:12}) — open the PR. The CI floor runs automatically."
+# Milestone handoff (notify only — continue immediately; never wait for compact).
+if [ -x "./bin/plinth" ]; then
+  PLINTH_HANDOFF_REASON=review-approved ./bin/plinth handoff "$PWD" 2>/dev/null || true
+elif command -v plinth >/dev/null 2>&1; then
+  PLINTH_HANDOFF_REASON=review-approved plinth handoff "$PWD" 2>/dev/null || true
+fi
+echo "Handoff refreshed (milestone). Automation: do not wait for compact — open PR or plinth next."
 exit 0

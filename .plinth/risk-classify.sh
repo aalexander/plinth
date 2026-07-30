@@ -49,7 +49,13 @@ SPEC_PATH="$(printf '%s' "$basecfg" | sed -n 's/^spec_path[[:space:]]*=[[:space:
 SPECRE='(^|/)SPEC(\.md)?$|(^|/)spec/|(^|/)SPEC/'
 is_spec() { [ "$1" = "$SPEC_PATH" ] || [ "${1#"$SPEC_PATH"/}" != "$1" ] || printf '%s' "$1" | grep -Eq "$SPECRE"; }
 
-raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null || true)"
+# plinth#11: never treat a failed git diff as empty (Tier 0). Infra fail → Tier 2.
+raw=""; raw_rc=0
+raw="$(git diff --raw -M -C "${baseref}...HEAD" 2>/dev/null)" || raw_rc=$?
+if [ "$raw_rc" -ne 0 ]; then
+  printf '{"tier":2,"files":0,"base_ref":"%s","reasons":["git diff --raw failed (rc=%s) — failing closed to Tier 2"]}\n' "$baseref" "$raw_rc"
+  exit 0
+fi
 [ -n "$raw" ] || { printf '{"tier":0,"reasons":["empty diff"],"files":0,"base_ref":"%s"}\n' "$baseref"; exit 0; }
 
 # High-consequence path signals (Tier 2). Case-insensitive matching below.
@@ -70,7 +76,9 @@ TEST_CONFIG='(^|/)(conftest\.py|pytest\.ini)$|(^|/)(jest|vitest|playwright|cypre
 SKIPADD='(@[a-zA-Z.]*[Ss]kip|\.skip\(|\bxit\(|\bxdescribe\(|t\.Skip|@Ignore|@Disabled|pytest\.mark\.skip|#\[ignore\])'
 # Tier-0-eligible (inert) docs. NOTE: no bare \.txt$ (CMakeLists.txt/constraints
 # .txt are code); .txt only for anchored metadata names or under docs/.
-DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$'
+# Root VERSION only (paired with CHANGELOG in review.sh) — nested pkg/VERSION
+# is operational package meta, not release prose (must not get free Tier 0).
+DOCS='\.(md|markdown|rst|adoc)$|(^|/)(README|LICENSE|NOTICE|AUTHORS|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT)(\.(md|markdown|rst|txt|adoc))?$|(^|/)docs/.*\.txt$|^VERSION$'
 
 tier=0; reasons=(); nfiles=0
 add_reason() { reasons+=("$1"); }
@@ -87,6 +95,13 @@ while IFS=$'\t' read -r meta p2 p3; do
     *)     oldpath=""; path="$p2" ;;
   esac
   [ -n "${path:-}" ] || continue
+  # HANDOFF.md is session restart ephemera — skip ordinary mods only. Renames/
+  # copies *into* HANDOFF must still classify the OLD path (else product.txt →
+  # HANDOFF.md + inert docs launders a product deletion to Tier 0).
+  # NEEDS-HUMAN stays counted (project-owned queue; deletion is not Tier 0).
+  if [ "$path" = "HANDOFF.md" ] && [ -z "$oldpath" ]; then
+    continue
+  fi
   nfiles=$((nfiles + 1))
 
   # Object type/mode: name-status hides these. A symlink, submodule, executable,

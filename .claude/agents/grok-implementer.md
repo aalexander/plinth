@@ -190,23 +190,22 @@ except subprocess.TimeoutExpired:
    the scope check (the artifact lands under `.plinth/session/`, which the pre-run snapshot
    covers, so recording it earlier would read as a sensitive-path violation):
 
-       .plinth/lane-guard.sh delegation grok <the RUN_RC value> <the OUT path>
+       .plinth/lane-guard.sh delegation grok <the RUN_RC value> <the OUT path> <the BEFORE sha>
 
-   It preserves grok's own transcript + exit code as an artifact under
-   `.plinth/session/lanes/` and prints one `delegation recorded: ...` line — put that line
-   VERBATIM on the report's DELEGATION line. Exit 3 = no transcript (missing or empty):
-   nothing shows grok ran for this receipt, so the ONLY honest status is `unavailable` —
-   even if the CLI already wrote to the shared checkout (crash after edits, lost temp,
-   wrong pasted OUT). On that path: still run scope if you can; put the ACTUAL dirty files
-   on CHANGES; put `tree dirty after unavailable — driver must inspect/revert to BEFORE`
-   on GAPS; do NOT imply the tree is clean. `STATUS: complete` without a receipt line is a
-   false report.
+   Pass the literal BEFORE sha from step 0 as the 4th argument so the receipt is bound
+   to THIS run (not a stale OUT paste). It preserves grok's own transcript + exit code as
+   an artifact under `.plinth/session/lanes/` and prints one `delegation recorded: ...`
+   line — put that line VERBATIM on the report's DELEGATION line. Exit 3 = no transcript
+   (missing or empty): nothing shows grok ran for this receipt, so the ONLY honest status
+   is `unavailable` — even if the CLI already wrote to the shared checkout (crash after
+   edits, lost temp, wrong pasted OUT). On that path: still run scope if you can; put the
+   ACTUAL dirty files on CHANGES; put `tree dirty after unavailable — driver must
+   inspect/revert to BEFORE` on GAPS; do NOT imply the tree is clean. `STATUS: complete`
+   without a receipt line that includes `before=<BEFORE>` is a false report.
    HONEST BOUND, and do not let this claim grow: the receipt proves a non-empty transcript
    EXISTS and preserves it for the driver to open. It does NOT prove which model wrote the
-   diff — `model=` is grok's own self-report, and an agent that implemented the task itself
-   could write a file. It also does NOT prove the transcript belongs to THIS run (no
-   BEFORE/SNAP binding — a stale OUT paste still records). It makes a skipped delegation
-   DETECTABLE (no artifact, no receipt, nothing for the driver to read), not impossible.
+   diff — `model=` is grok's own self-report. Binding BEFORE makes a skipped or
+   cross-run pasted OUT DETECTABLE; it does not make self-implementation impossible.
 
 ## What you return
 
