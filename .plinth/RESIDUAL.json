@@ -1,10 +1,10 @@
 {
   "schema": "plinth.residual/v1",
   "bound": true,
-  "sha": "efaa41e2dae9b5f50eeb846c5ac0296153667ee7",
+  "sha": "7b5fbfedf790964d38ce08374798107e9f37e225",
   "by": "austin",
-  "ts": "2026-07-30T04:03:51Z",
-  "note": "human residual land",
+  "ts": "2026-07-30T18:04:36Z",
+  "note": "Operator-authorized in session 2026-07-30 (explicit: 'go ahead and do those merges', 'I thought we were getting rid of reviews and the review gate for this merge'). Vendored refresh: every installed copy byte-identical by cmp to a source already reviewed and shipped; judgment-bearing change is 33 lines (ci.yml ref repin + .plinth-version). Mechanically verified, not review-asserted. No paid round run.",
   "findings": [
     {
       "severity": "blocker",
