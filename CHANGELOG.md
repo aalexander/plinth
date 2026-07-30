@@ -1,5 +1,22 @@
 # Plinth changelog
 
+## v5.2.1 — do not review vendored duplicates — July 30, 2026
+- **`plinth update` produced an unreviewable diff.** The 4.8.1 → 5.2.0 refresh built a
+  **209,453-byte** prompt that exceeded the reviewer CLI's capacity and failed the round
+  outright (`codex exec failed … prompt_bytes=209453`). Of that, **~99.98% was duplicate
+  content**: the installed `.plinth/`/`.claude/` copies are byte-identical to the
+  `shared/` sources already reviewed and shipped. The judgment-bearing change was 33 lines.
+- Vendored paths that are **byte-identical** to their `shared/` source are now excluded
+  from the review pathspec. The test is `cmp`, not a heuristic — **one differing byte
+  keeps the file in review**, so nothing can hide behind the exclusion. Verified live:
+  on the branch that introduced this change, `.plinth/review.sh` was correctly RETAINED
+  because its source had been edited.
+- **Disclosed, never silent.** The excluded paths are listed in the prompt with the
+  reason, and announced on stdout. An undisclosed exclusion is a blind spot, not an
+  optimization.
+- Session artifacts, `config`, `protected-paths`, `NEEDS-HUMAN.md`, `RESIDUAL.json`,
+  `AGENTS-project.md` and `DRIVER-project.md` are never treated as vendored.
+
 ## v5.2.0 — the spec goes by reference; help is side-effect free — July 30, 2026
 
 ### The spec goes BY REFERENCE, not by value
