@@ -74,7 +74,24 @@ jq -e '
           and (.name | type == "string" and IN("PLINTH_REVIEWER_VENDOR","PLINTH_REVIEWER_MODEL","PLINTH_AUDIT_VENDOR","PLINTH_AUDIT_MODEL","PLINTH_ROUND_CAP"))
           and (.value | type == "string" and length <= 128 and test("^\\S+$"))
         ) | all))
-' "$RECEIPT" > /dev/null 2>&1 || fail "receipt is not a valid plinth.review-receipt/v1 (schema/bounds/override-allowlist; override values must be non-empty and whitespace-free)"
+  # Demotion ledger (v5.1). ABSENT is valid: receipts minted before v5.1 have no
+  # such field and must keep verifying — this check bounds the SHAPE of a ledger
+  # that is present, it does not require one to exist. When present, every entry
+  # must name an allowlisted-looking class (class:*) and a real from→to pair, so a
+  # receipt cannot disclose demotions in a form the reader cannot audit.
+  and (if has("demotions") then
+        (.demotions | type == "array" and (
+          map(
+            (type == "object")
+            and (.round | type == "number")
+            and (.class | type == "string" and test("^class:[a-z0-9-]+$"))
+            and (.from | type == "string" and length > 0)
+            and (.to | type == "string" and length > 0)
+            and (.id | type == "string")
+            and (.file | type == "string")
+          ) | all))
+       else true end)
+' "$RECEIPT" > /dev/null 2>&1 || fail "receipt is not a valid plinth.review-receipt/v1 (schema/bounds/override-allowlist/demotion-shape; override values must be non-empty and whitespace-free, demotion entries need class:*/from/to)"
 
 r() { jq -r ".$1" "$RECEIPT"; }
 

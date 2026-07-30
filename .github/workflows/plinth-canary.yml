@@ -1678,6 +1678,20 @@ jobs:
           r9e_reject "non-allowlisted override" '.override_ledger = [{round:1, name:"PLINTH_ANYTHING", value:"x"}]'
           r9e_reject "override value w/ space"  '.override_ledger = [{round:1, name:"PLINTH_REVIEWER_MODEL", value:"gpt 5.6"}]'
           r9e_reject "empty repo"               '.repo = ""'
+          # v5.1 demotion ledger: the field is OPTIONAL (pre-v5.1 receipts have
+          # none and must keep verifying — the baseline above proves that), but a
+          # ledger that IS present must be auditable, so its shape is bounded.
+          r9e_demotions_ok() {  # r9e_demotions_ok <label> <jq-filter>
+            r9e_receipt "$2" > "$R9E/r.json"
+            local rc; rc="$(r9e_run "$R9E/r.json")"
+            [ "$rc" = 0 ] || { echo "::error::(9e) $1: a well-formed receipt was rejected (rc=$rc) — receipt-verify is now too strict about the demotion ledger"; exit 1; }
+          }
+          r9e_demotions_ok "empty demotion ledger" '.demotions = []'
+          r9e_demotions_ok "valid demotion ledger" '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor",phase:"build",mode:"fresh"}]'
+          r9e_reject "demotions not an array"   '.demotions = {}'
+          r9e_reject "demotion class not namespaced" '.demotions = [{round:1,id:"F1",file:"a.py",class:"coverage-gap",from:"major",to:"minor"}]'
+          r9e_reject "demotion missing from"    '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",to:"minor"}]'
+          r9e_reject "demotion round not number" '.demotions = [{round:"1",id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor"}]'
           # size bound: >64KB must be rejected before any field is trusted
           r9e_receipt > "$R9E/big.json"
           python3 - "$R9E/big.json" <<'R9EPY'

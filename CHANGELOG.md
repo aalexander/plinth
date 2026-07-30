@@ -52,6 +52,25 @@ surfaces, which is what dual was actually being used for.
     fail-open cannot ship under a Tier-1 review. Canary-asserted end-to-end.
   - **Every demotion records its class** in the `[THRASH:class:…]` marker, so
     the receipt ledger (S3) can harvest it and laundering stays auditable.
+- **Demotion ledger on the receipt (S3).** Every demotion is recorded with the
+  class it was demoted under and the severity it came from (`{round, id, file,
+  class, from, to, phase, mode}`), appended to a cumulative per-loop artifact
+  (`demotions.jsonl`) and folded into the minted receipt as `demotions`. An
+  APPROVED that leaned on demotions is auditable from the note alone.
+  - `thrash_ledger_rows` is a separate extractable function, so the canary drives
+    the real row construction rather than a twin — the receipt is only as honest
+    as that mapping. Severities are snapshotted *before* the policy runs, because
+    the policy rewrites them in place and the `[THRASH:]` marker records only the
+    class, not the severity it came from.
+  - A stale marker carried forward by sticky with no severity transition does not
+    re-enter the ledger.
+  - A **missing** ledger file means no demotions (the empty array is correct); an
+    **unparseable** one refuses to mint rather than minting `[]` and hiding real
+    demotions — the same fail-closed shape as the override ledger.
+  - `receipt-verify.sh` bounds the ledger's SHAPE when present (`class:*`
+    namespaced, real `from`/`to`, numeric round) but never requires the field, so
+    pre-v5.1 receipts keep verifying. Verified end-to-end against the real
+    verifier, not only against the extracted schema.
 - **Never-demote floor now applies to every arm.** Pre-v5.1 the ephemera arm ran
   *before* any precedence check, so a data-loss or security finding filed against
   `HANDOFF.md`/`CHECKPOINT.md` was demoted on **path alone**. `is_external_security`

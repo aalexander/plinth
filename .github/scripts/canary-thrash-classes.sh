@@ -253,4 +253,104 @@ RC=$(mktemp -d)
 rm -rf "$RC"
 pass "editing the demotion vocabulary is Tier 2 (cross-vendor review by construction)"
 
+# ── (6) DEMOTION LEDGER → receipt (v5.1 S3) ─────────────────────────────────
+# The receipt is what makes the demotion fail-open auditable, so drive the REAL
+# row builder (thrash_ledger_rows extracted from production) rather than a twin.
+awk '
+  /^thrash_ledger_rows\(\)/ {p=1}
+  p {print}
+  p && /^}$/ {exit}
+' "$REVIEW" > "$TMP/ledger_fn.sh"
+# shellcheck disable=SC1090
+. "$TMP/ledger_fn.sh"
+type thrash_ledger_rows >/dev/null 2>&1 || fail "thrash_ledger_rows not extractable from review.sh"
+
+# a demoted finding produces exactly one row carrying class + from→to
+mkf src/app.py major "coverage remains incomplete — wants additional coverage of the timeout path" > "$TMP/L.json"
+jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/L.json" > "$TMP/Lpre.json"
+thrash_policy_process_findings "$TMP/L.json" build "" "" SPEC.md fresh
+rows="$(thrash_ledger_rows "$TMP/L.json" "$TMP/Lpre.json" 3 build fresh)"
+printf '%s' "$rows" | jq -e 'length == 1' >/dev/null || fail "expected one ledger row: $rows"
+printf '%s' "$rows" | jq -e '.[0]
+  | .class == "class:coverage-gap"
+  and .from == "major" and .to == "minor"
+  and .round == 3 and .phase == "build" and .mode == "fresh"
+  and .id == "F1" and .file == "src/app.py"' >/dev/null \
+  || fail "ledger row does not record class/from→to/round: $rows"
+# a blocker records from=blocker (the severity it actually came from)
+mkf src/app.py blocker "coverage remains incomplete — wants additional coverage of the retry path" > "$TMP/B.json"
+jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/B.json" > "$TMP/Bpre.json"
+thrash_policy_process_findings "$TMP/B.json" build "" "" SPEC.md fresh
+printf '%s' "$(thrash_ledger_rows "$TMP/B.json" "$TMP/Bpre.json" 1 build fresh)" \
+  | jq -e '.[0].from == "blocker" and .[0].to == "minor"' >/dev/null \
+  || fail "a demoted blocker must record from=blocker"
+# nothing demoted → empty ledger (an empty array is the correct answer)
+mkf src/b.py major "the retry loop double-counts attempts and returns the wrong total" > "$TMP/N.json"
+jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/N.json" > "$TMP/Npre.json"
+thrash_policy_process_findings "$TMP/N.json" build "" "" SPEC.md fresh
+[ "$(thrash_ledger_rows "$TMP/N.json" "$TMP/Npre.json" 1 build fresh)" = "[]" ] \
+  || fail "a non-demoted finding must produce no ledger row"
+# an unchanged severity carrying a stale marker (sticky forwards descriptions)
+# must NOT re-enter the ledger on a later round
+mkf src/app.py minor "coverage remains incomplete [THRASH:class:coverage-gap → minor/Noticed in BUILD]" > "$TMP/S.json"
+jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' "$TMP/S.json" > "$TMP/Spre.json"
+[ "$(thrash_ledger_rows "$TMP/S.json" "$TMP/Spre.json" 4 build verify)" = "[]" ] \
+  || fail "a stale THRASH marker with no severity transition must not re-enter the ledger"
+# the ledger is wired into mint_receipt, and refuses to mint on an unparseable one
+grep -q 'demotions:\$demotions' "$REVIEW" \
+  || fail "mint_receipt must fold the demotion ledger into the receipt payload"
+grep -q 'demotions.jsonl' "$REVIEW" \
+  || fail "the cumulative demotion ledger artifact must be read at mint time"
+grep -q 'receipt NOT minted: the demotion ledger' "$REVIEW" \
+  || fail "an unparseable demotion ledger must refuse to mint rather than mint an empty array"
+grep -q 'thrash_ledger_rows "\$SDIR/findings-\$r.json"' "$REVIEW" \
+  || fail "run_round must call the production ledger builder"
+pass "demotion ledger rows (class, from→to, no stale re-entry) + receipt wiring"
+
+# ── (7) receipt-verify bounds the ledger SHAPE but never requires it ─────────
+VERIFY="$ROOT/shared/.plinth/receipt-verify.sh"
+# Pull the jq schema program out of the verifier and drive it directly: the full
+# script needs a PR context (head sha, repo, network), but the schema conjunction
+# is the part that must accept old receipts and reject malformed ledgers.
+python3 - "$VERIFY" "$TMP/schema.jq" <<'PY'
+from pathlib import Path
+import re, sys
+src = Path(sys.argv[1]).read_text()
+m = re.search(r"jq -e '\n(.*?)\n' \"\$RECEIPT\"", src, re.S)
+if not m:
+    raise SystemExit("could not extract the receipt schema jq program from receipt-verify.sh")
+Path(sys.argv[2]).write_text(m.group(1) + "\n")
+PY
+[ -s "$TMP/schema.jq" ] || fail "empty schema extraction"
+base_receipt='{"schema":"plinth.review-receipt/v1","repo":"o/r",
+  "head_sha":"'"$(printf 'a%.0s' $(seq 40))"'",
+  "head_tree_sha":"'"$(printf 'b%.0s' $(seq 40))"'",
+  "base_ref":"main","merge_base_sha":"'"$(printf 'c%.0s' $(seq 40))"'",
+  "subject_digest":"sha256:'"$(printf 'd%.0s' $(seq 64))"'",
+  "verdict":"APPROVED","round":2,"override_ledger":[]}'
+schema_ok() { printf '%s' "$1" | jq -e --from-file "$TMP/schema.jq" >/dev/null 2>&1; }
+# a pre-v5.1 receipt with NO demotions field still verifies (fail-open on old)
+schema_ok "$base_receipt" || fail "a receipt without a demotions field must still verify"
+# a valid ledger verifies
+schema_ok "$(printf '%s' "$base_receipt" | jq -c '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor",phase:"build",mode:"fresh"}]')" \
+  || fail "a well-formed demotion ledger must verify"
+# an empty ledger verifies
+schema_ok "$(printf '%s' "$base_receipt" | jq -c '.demotions = []')" \
+  || fail "an empty demotion ledger must verify"
+# malformed ledgers are rejected — a receipt must not disclose demotions in a
+# form the reader cannot audit
+schema_reject() {
+  local label="$1" filter="$2"
+  ! schema_ok "$(printf '%s' "$base_receipt" | jq -c "$filter")" \
+    || fail "receipt schema accepted a malformed demotion ledger ($label)"
+}
+schema_reject "not an array"        '.demotions = {}'
+schema_reject "class not namespaced" '.demotions = [{round:1,id:"F1",file:"a.py",class:"coverage-gap",from:"major",to:"minor"}]'
+schema_reject "class empty"          '.demotions = [{round:1,id:"F1",file:"a.py",class:"",from:"major",to:"minor"}]'
+schema_reject "missing from"         '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",to:"minor"}]'
+schema_reject "empty to"             '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:""}]'
+schema_reject "round not a number"   '.demotions = [{round:"1",id:"F1",file:"a.py",class:"class:coverage-gap",from:"major",to:"minor"}]'
+schema_reject "uppercase class"      '.demotions = [{round:1,id:"F1",file:"a.py",class:"class:Coverage",from:"major",to:"minor"}]'
+pass "receipt-verify bounds the demotion ledger shape, never requires the field"
+
 echo "canary-thrash-classes: ALL PASS"

@@ -835,12 +835,29 @@ mint_receipt() {  # mint_receipt <round>
   # repo/base/merge-base/head/tree, so an older verifier still validates this.
   local ack_no_dual=false
   [ -f "$SDIR/dual-no-seat-ack.json" ] && ack_no_dual=true
+  # DEMOTION LEDGER on the receipt (v5.1 S3). Thrash demotion is a fail-open, so
+  # every demotion this loop applied is disclosed on the receipt: what was
+  # demoted, under which allowlisted class, and from which severity. An APPROVED
+  # that leaned on demotions is then auditable from the note alone.
+  # A missing file means no demotions occurred — the empty array is the correct
+  # answer, not a fallback. An UNPARSEABLE file is different: minting `[]` there
+  # would under-report a real demotion, so refuse to mint rather than lie.
+  local demotions="[]"
+  if [ -f "$SDIR/demotions.jsonl" ]; then
+    demotions="$(jq -cs '.' "$SDIR/demotions.jsonl" 2>/dev/null)" || demotions=""
+    if [ -z "$demotions" ]; then
+      echo "Plinth review: NOTE — receipt NOT minted: the demotion ledger (${SDIR}/demotions.jsonl) exists but could not be parsed, and minting an empty array would hide demotions the receipt is supposed to disclose. Re-run the loop, or restore session state."
+      return 0
+    fi
+  fi
   receipt="$(jq -cn --arg repo "$repo_nwo" --arg hs "$sha" --arg ht "$htree" \
     --arg br "$(canon_base "$baseref")" --arg mb "$mb" --arg sd "sha256:${subj}" \
     --argjson round "$mround" --argjson ledger "$ledger" --argjson ack "$ack_no_dual" \
+    --argjson demotions "$demotions" \
     '{schema:"plinth.review-receipt/v1", repo:$repo, head_sha:$hs, head_tree_sha:$ht,
       base_ref:$br, merge_base_sha:$mb, subject_digest:$sd, verdict:"APPROVED",
-      round:$round, override_ledger:$ledger, ack_no_dual:$ack}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
+      round:$round, override_ledger:$ledger, ack_no_dual:$ack,
+      demotions:$demotions}')" || { echo "Plinth review: NOTE — receipt not minted (jq failed)."; return 0; }
   # -f replaces THIS commit's note on re-approval; other commits' notes are
   # untouched. Never force-push the ref itself — on a non-fast-forward, fetch
   # and `git notes merge` first (the driver rules carry the recipe).
@@ -1589,6 +1606,36 @@ sticky_process_findings() {  # <findings-json-path>
 #   5) HANDOFF ephemera → minor; NEEDS-HUMAN queue nits → minor (not deletions)
 # Markers: " [THRASH: …]"
 # mode: fresh|verify|resume
+# Demotion ledger rows for ONE round (v5.1 S3). Pure: reads the post-policy
+# findings plus a pre-policy severity snapshot, writes a compact JSON array to
+# stdout. Kept a separate function (not inlined in run_round) so the canary can
+# drive the REAL row construction rather than a twin — the receipt is only as
+# honest as this mapping.
+# Args: <post-findings.json> <pre-severity.json> <round> <phase> <mode>
+# stdout: [] or [{round,id,file,class,from,to,phase,mode}, ...]
+thrash_ledger_rows() {
+  local post="$1" pre="$2" round="$3" phase="${4:-build}" mode="${5:-fresh}"
+  [ -f "$post" ] || { printf '[]'; return 0; }
+  [ -f "$pre" ] || printf '[]' > "$pre" 2>/dev/null || true
+  jq -c --slurpfile pre "$pre" --argjson round "$round" \
+     --arg phase "$phase" --arg mode "$mode" '
+     ($pre[0] // []) as $P
+     | [ .findings[]
+         | select((.description // "") | test("\\[THRASH:"))
+         | . as $f
+         | ((.description // "") | capture("\\[THRASH:(?<c>class:[a-z0-9-]+)") | .c) as $cls
+         | ( $P | map(select(.id == ($f.id // ""))) | first ) as $before
+         | { round: $round, id: ($f.id // ""), file: ($f.file // ""),
+             class: $cls,
+             from: (($before.severity) // "unknown"),
+             to: ($f.severity // ""),
+             phase: $phase, mode: $mode }
+         # Only real transitions: a marker already present from an earlier round
+         # (sticky carries descriptions forward) must not re-enter the ledger.
+         | select(.from != .to)
+       ]' "$post" 2>/dev/null
+}
+
 thrash_policy_process_findings() {  # <findings-json> <phase> <scope> <prior-ids> [spec_path] [mode]
   local f="$1" phase="${2:-build}" scope_nl="${3:-}" prior_nl="${4:-}" sp="${5:-}" mode="${6:-fresh}" tmp
   [ -f "$f" ] || return 0
@@ -2341,15 +2388,36 @@ ${diff}"
 
   # Deterministic thrash demotions (coverage/docs/scope/ephemera) — after dual so
   # secondary majors get the same treatment.
+  # Snapshot severities FIRST: the policy rewrites them in place, so from→to can
+  # only be recovered by comparing against a pre-policy copy (the [THRASH:] marker
+  # records the class, not the severity it came from).
+  local pre_sev; pre_sev="$(mktemp)"
+  jq -c '[.findings[] | {id: (.id // ""), severity: (.severity // ""), file: (.file // "")}]' \
+    "$SDIR/findings-$r.json" > "$pre_sev" 2>/dev/null || echo '[]' > "$pre_sev"
   thrash_policy_process_findings "$SDIR/findings-$r.json" "$rphase" "$thrash_scope" "$thrash_prior" "${SPEC_PATH:-}" "$m"
   validate_findings "$SDIR/findings-$r.json" \
     || die_infra "findings invalid after thrash policy — see $SDIR/findings-$r.json"
   demoted_n="$(jq '[.findings[] | select(.description | test("\\[THRASH:"))] | length' \
     "$SDIR/findings-$r.json" 2>/dev/null || echo 0)"
   case "$demoted_n" in ''|*[!0-9]*) demoted_n=0 ;; esac
+  # DEMOTION LEDGER (v5.1 S3): every demotion is recorded with its class and the
+  # severity it came from, appended to a cumulative per-loop artifact and folded
+  # into the minted receipt. Demotion is a fail-open; this is what makes using it
+  # auditable rather than silent. Best-effort by construction — a ledger append
+  # that fails must never fail the review — but the failure is announced.
   if [ "$demoted_n" -gt 0 ]; then
     echo "Plinth review: thrash/delta policy demoted ${demoted_n} finding(s) to minor (mode=${m}, phase=${rphase})."
+    local dem_rows
+    if dem_rows="$(thrash_ledger_rows "$SDIR/findings-$r.json" "$pre_sev" "$r" "$rphase" "$m")" \
+       && [ -n "$dem_rows" ]; then
+      if ! printf '%s\n' "$dem_rows" | jq -c '.[]' >> "$SDIR/demotions.jsonl" 2>/dev/null; then
+        echo "Plinth review: NOTE — demotion ledger append failed; the receipt will under-report demotions for round ${r}." >&2
+      fi
+    else
+      echo "Plinth review: NOTE — could not compute the demotion ledger for round ${r}; the receipt will under-report demotions." >&2
+    fi
   fi
+  rm -f "$pre_sev"
 
   # VERIFY fail-closed: re-inject prior open findings the capped ledger never
   # showed the model (and that the model did not adjudicate by id). After thrash
