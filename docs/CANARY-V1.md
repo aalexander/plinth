@@ -616,19 +616,51 @@ security triggers) · `lane-guard` · `advise` · lean-payload machinery
 (spec-by-reference, vendored-identity exclusion) · NEEDS-HUMAN queue ·
 checkpoint/handoff.
 
-## v1 slices
+## v1 slices (revised after round 3 — the gate moved)
 
-```json
-{"slices":[
- {"id":"c1","objective":"repo scaffold + one-page contract + metrics.jsonl + stop table wired into driver docs","files":["contract.md","bin/canary"],"checks":["contract fits one page","metrics ledger appends"],"budget":"1 session","assumptions":["trusted-driver model ratified"]},
- {"id":"c2","objective":"plan compiler: requirements -> probes; slices as data; plan-diff dispositions","files":["bin/canary","plan.schema.json"],"checks":["untestable req cannot gate","plan diff requires reason"],"budget":"1 session","assumptions":["spec-evolution design holds"]},
- {"id":"c3","objective":"evidence ledger + adjudication-completeness CI gate (deterministic)","files":["bin/canary",".github/"],"checks":["ledger bound to finding set","completeness check is pure jq"],"budget":"1 session","assumptions":["receipt notes plumbing harvests cleanly"]},
- {"id":"c4","objective":"advisory review lane (once-per-PR, lean payload, fail-loud) + async sweep skeleton","files":[".github/","bin/canary"],"checks":["CLI error fails the job loudly","never triggers per push"],"budget":"1 session","assumptions":["headless vendor CLIs stable"]},
- {"id":"c5","objective":"security floor: scanners + trigger list + specialist pass + asymmetric dismissal","files":[".github/","triggers.json"],"checks":["prototype touching auth gets the pass","security dismissal opens BLOCKING"],"budget":"1 session","assumptions":["cross-family seat available"]},
- {"id":"c6","objective":"panel machinery: 10th-man/pre-mortem/oracle roles + disagreement locator","files":["bin/canary"],"checks":["dissent adjudicated on record","disagreements marked on plan"],"budget":"1 session","assumptions":[]},
- {"id":"c7","objective":"self-tuning: mutation-testing job, dismissal-rate pruning, error budget","files":[".github/","bin/canary"],"checks":["surviving mutant flags probe","pruning proposal generated from ledger"],"budget":"2 sessions","assumptions":["enough ledger history to compute rates"]}
-]}
-```
+Round 3's F1 changed the shape: the pinned surface is a **protected supervisor in a
+second repository**, not a script in this one. That is a trust root, so it comes
+first and everything else is decoration on top of it (oracle round 1: *"prove the
+completeness gate first"*). Slices are dependency-ordered; each names **what must
+be PROVEN**, not merely built.
+
+**Bootstrap problem, stated up front:** Canary cannot gate its own construction —
+the gate does not exist yet. Slices g0–g3 are therefore built under **Plinth's**
+existing loop (which works, is measured, and is maintenance-frozen but alive) plus
+manual human review of the trust root. From g4 onward Canary gates itself. The
+handover point is explicit and recorded rather than drifted through.
+
+### Trust root (second repo: `canary-gate`, branch-protected, separate CODEOWNERS)
+
+| id | objective | must be PROVEN | budget |
+|---|---|---|---|
+| **g0** | Protected reusable workflow + required-check registration; immutable full-SHA entrypoint; isolated execution; trusted event acquisition | A PR that edits its own workflow to emit the expected check name **cannot** turn the required check green (F1 fixture) | 1 session |
+| **g1** | Object-DB inventory: commit/tree traversal from trusted-origin SHAs; blob **content digests**; git config/hooks/filters/textconv disabled | A PR-controlled `.gitattributes`/config/worktree substitution **cannot** alter the derived inventory (F2 fixture); symlink=120000 unfollowed, submodule=160000 gitlink, LFS fetch-or-fail, case-fold/Unicode collisions rejected | 1 session |
+| **g2** | Payload binding + lane supervision: pinned invoker builds payload from g1, records payload digest, captures lane identity/version, argv, exit, stdout/stderr digests; lossless finding normalization | Omitting one file from the model payload while submitting the correct SHA and seed **fails** (R1 fixture); a lossful adapter that drops a finding **fails** (F3 fixture); zero-findings is distinguishable from missing/invalid | 1–2 sessions |
+| **g3** | Coverage gate + attestation: adjudication/hazard-disposition checks (pure jq), in-toto Statement w/ Canary predicate, Sigstore identity, fail-closed decision | Stale / cancelled / never-fired review ⇒ **red**; a valid attestation verifies against pinned expectations; unknown schema ⇒ red, never green | 1 session |
+
+### Driver side (main repo, gated by the trust root from here on)
+
+| id | objective | must be PROVEN | budget |
+|---|---|---|---|
+| **c1** | One-page contract · `metrics.jsonl` · stop table · seat map as versioned config with rationale + last-calibrated | Contract fits one page; ledger appends; a seat map lacking family independence is **reported, not silently used** | 1 session |
+| **c2** | Plan-as-data: slice schema, plan-diff dispositions, `discovery` slice type, reference-class estimates | Untestable requirement cannot gate; a plan diff without a reason is rejected | 1 session |
+| **c3** | `canary adjudicate`: dispositions with **expiry + provenance**; standing/dedupe caps; delete-before-fix dismissals require the deletion within one train | Every open finding accounted for; a reasonless dismissal rejected; an expired `deferred` turns the ledger **red** | 1 session |
+| **c4** | Security anchors + impact ladder: CWE(Base/Variant only)/ASVS(pinned version+level, requirement-level)/STRIDE/CVE-GHSA-OSV/SLSA/LLM-Top-10/ATLAS; structured basis (adversary · authority boundary · property · impact); widen-never-narrow | A Pillar/Class CWE is **rejected** as an anchor; a hazard claim without structured basis is malformed; a driver **cannot** narrow a label; dedupe is location-primary and does **not** false-merge two CWE-79 sinks | 1–2 sessions |
+| **c5** | Security floor: deny-skip manifest (narrow identity, owner, rationale, **expiry**, dependency-change invalidation); manifest-widening PRs are hazard-class; scanners; specialist pass | A new parse/auth/network site outside the manifest **fires** the pass; `triggers.json` **cannot** change in a product PR; a manifest PR fires the pass on itself | 1–2 sessions |
+| **c6** | Advisory lanes + async sweep: once-per-PR, lean payload, fail-loud; sweep hazard findings **blocking-by-adjudication** | A known-buggy fixture yields ≥1 finding (rotating seeds) or the lane is **declared dead**; a CLI error fails loudly; never triggers per push | 1 session |
+| **c7** | Detection gaps: authz policy declared as data → compiled probes; multi-tenancy repo-level invariant probe | A missing tenant scope is caught by an invariant probe that no diff-scoped reviewer would see | 1–2 sessions |
+| **c8** | Panel machinery: assigned roles, licence to find nothing, calibration fields, **seeded panel controls**, prior-art sweep step | A seeded design defect is detected; a formulaic "no dissent found" is distinguishable from a real survival | 1 session |
+| **c9** | Self-tuning: mutation testing (**advisory ratio, never a gate**), dismissal-rate pruning with hard exclusions, error budget as a floor | A surviving mutant flags a probe; a security/rare-event check is **never** proposed for pruning; the budget never relaxes hazard handling | 2 sessions |
+
+**Ordering rationale:** g0 before everything — an unprotected gate makes every later
+guarantee decorative. g1 before g2 — you cannot bind a payload to an inventory you
+cannot derive. g2 before g3 — attesting a comparison you have not implemented is
+theatre. c4 before c5 — the manifest is expressed in anchor terms. c6 after c3 —
+findings need somewhere to be dispositioned. c9 last: it needs ledger history.
+
+**Mutation testing** was pulled forward from c9 in round 2 to sit immediately after
+probe compilation (c2/c7 boundary) — advisory only, reported as a trend.
 
 ## Non-goals (v1)
 
