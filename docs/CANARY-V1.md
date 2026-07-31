@@ -383,12 +383,65 @@ dutiful objections alongside the real ones. Amended rules:
    (did the author cave to pressure?). Either rate drifting toward zero means
    the panel has become theatre.
 
+---
+
+## Prior-art sweep — required before finalizing, never before generating
+
+**Elon step 1 has a corollary: the dumbest requirement is one that re-solves a
+solved problem.** Round 1 of this charter invented a private vocabulary for
+hazard classes while MITRE (CWE), OWASP (ASVS) and Microsoft (STRIDE) had
+maintained public, versioned, mechanically-checkable ones for two decades. The
+panel caught it; the process should have.
+
+**Ordering is the whole design, and it is deliberate:**
+
+| Step | Why in this order |
+|---|---|
+| 1. **Generate independently** — candidate solution(s) first, no literature search | Researching first **anchors** the design onto the first existing answer found and silently deletes the option space. Creativity is cheapest before exposure. |
+| 2. **Prior-art sweep** — what does the state of the art do? | Reinvention is only visible once you have something concrete to compare against. |
+| 3. **Reconcile, on the record** | Neither anchoring nor reinvention: a recorded comparison. |
+
+**The sweep gates plan finalization and mechanism implementation — never
+ideation.** Four questions:
+
+1. Is there a **standard, specification or published taxonomy** covering this?
+   (Versioned, externally maintained, mechanically checkable?)
+2. Is there a **reference implementation or well-worn library** — and what did it
+   learn the hard way that we have not yet?
+3. What is the **named failure mode** of the existing solution — the legitimate
+   reason someone might not adopt it?
+4. What does adopting it **cost** (coupling, version drift, scope mismatch)
+   versus maintaining our own?
+
+**Default: adopt the standard.** A bespoke mechanism ships only with a recorded
+disposition naming the criterion on which it beats the prior art — the same
+primitive as every other judgement, so "we built our own" is auditable. Adopted
+standards are **version-pinned** (a lesson already paid for: ASVS 5.0 renumbered
+chapters; CWE deprecates ids on MITRE's schedule).
+
+**In the gauntlet, prior art enters as a CANDIDATE.** The tournament already runs
+blind A/B between independently generated candidates; the state-of-the-art
+solution is added as one of them, judged on the same compiled probes and hazard
+cases. If the bespoke design cannot beat the standard head-to-head, the standard
+wins by default and nobody argues about it. Measured instance: the invented hazard
+vocabulary lost to CWE/ASVS/STRIDE outright, and the replacement was strictly
+better on every criterion — mechanical checkability, scanner dedupe,
+non-removability by the driver.
+
+**A skipped sweep is itself recorded.** Prototype-tier slices may defer it, but no
+mechanism reaches a hazard-class surface or a gate without one. The sweep costs one
+seat and one call; the measured cost of skipping it was a full redesign of the
+security section across two panel rounds.
+
 ## Driver contract (one page — this is the whole thing)
 
-1. **Challenge requirements first.** Every requirement has an owner and a
-   reason. Requirements compile to probes; what cannot compile is guidance and
-   cannot gate. Argue with dumb requirements before building — deletion is a
-   disposition, not a failure.
+1. **Challenge requirements first, then check the prior art.** Every requirement
+   has an owner and a reason. Requirements compile to probes; what cannot compile
+   is guidance and cannot gate. Argue with dumb requirements before building —
+   deletion is a disposition, not a failure. **Generate your solution first, then
+   sweep the state of the art before finalizing**: researching first anchors you,
+   never researching reinvents badly. Adopting the standard is the default; a
+   bespoke mechanism needs a recorded reason it beats the prior art.
 2. **Delete before you fix.** Before debugging anything, ask whether the code
    survives the next architecture. A defect in deleted code is a free pass.
 3. **Probes gate; hazards gate; everything else advises.** Deterministic checks
