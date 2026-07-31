@@ -616,7 +616,130 @@ security triggers) · `lane-guard` · `advise` · lean-payload machinery
 (spec-by-reference, vendored-identity exclusion) · NEEDS-HUMAN queue ·
 checkpoint/handoff.
 
-## v1 slices (revised after round 3 — the gate moved)
+
+### Panel record — round 4 (the plan), adjudicated 2026-07-31
+
+Seats: **grok** (xAI) and **codex** (OpenAI), both cross-family. Scope: the slice
+plan only; the round-3 security boundary was declared settled and neither
+re-litigated it. Verdicts: grok — *"the ordering holds; no slice must move."*
+codex — *"not yet safe to execute."* **Both are right about different things**, and
+codex found three defects grok did not.
+
+#### UPHELD — critical
+
+**O1. `g4` was referenced in prose and does not exist.** I wrote "from g4 onward
+Canary gates itself" and never created the slice. Sequence: maintainer treats c1
+as implicitly self-gated → pin/required-check installation differs between the two
+repositories or is incomplete → driver development proceeds without the asserted
+gate → **ungated changes receive false legitimacy**. → **g4 added: bootstrap
+promotion and dogfood handover** — install and verify the exact full-SHA pin,
+required checks, OIDC policy, failure behaviour and the recorded bootstrap
+manifest **in both repositories**, before c1.
+
+**B1/P1 (convergent). A poisoned trust root is self-validating.** Both seats,
+independently: the suspect implementation defines both the evidence and its
+acceptance, so every later green is *consistent with the lie*, and no downstream
+slice can detect it. → Adopted, in ascending cost: (i) **progressive
+self-hosting** — once g0 registers a real required check, gate g1–g3 with g0's own
+F1 property, shrinking the unprotected window (grok); (ii) an **externally signed
+bootstrap release manifest** — all source and dependency digests, exported
+repository rules, OIDC expectations and fixture results — **approved by ≥2
+independent owners** (codex); (iii) optional **clean-room re-implementation of the
+inventory/payload verifier replaying the same fixture corpus**, for the bootstrap
+release only, never permanent machinery. The residual stays recorded: selective,
+time-delayed malice in the root is out of v1 scope.
+
+**M1. Trust-root evolution has no design.** Changing `canary-gate` after freeze
+means a candidate gate effectively reviews itself, or the old gate cannot
+understand the new one → bad release promoted → **all consumers inherit it**. →
+New slice **g5: trust-root change, shadow evaluation and promotion** (run
+candidate alongside incumbent, compare decisions over a fixture corpus and real
+history, promote only on agreement + human freeze).
+
+#### UPHELD — epistemics of the proofs (the strongest thread in this round)
+
+**g2 overclaims what a supervisor can know.** *"A supervisor can prove bytes were
+constructed and submitted, not that an opaque model received or considered them."*
+A provider that truncates or ignores content leaves the supervisor recording
+success while claimed coverage is false. → **Claim narrowed to exactly that:**
+*these bytes were submitted to this lane identity*. Coverage of the model's
+attention is **not claimable** and is now stated as a bound, alongside the round-3
+note that seeds catch gross not selective blindness.
+
+**O3. g2's proof crosses into g3.** g2 can record an internally consistent but
+incomplete payload; only g3's coverage decision would reject it, so g2 would be
+"proven" with no enforcing consumer. → **g2 must itself deterministically reject
+inventory ≠ payload.** (This also resolves the seat disagreement: grok called the
+g2/g3 seam interface-coupled-but-separable, codex called the proof coupled. Per
+doctrine, disagreement ⇒ specify the seam — enforcement in g2, issuance in g3.)
+
+**Unprovable-as-written claims, all rewritten** (this is the hollow-probe pattern
+in proof obligations — the same defect as yesterday's canaries):
+- **c7**: *"caught by a probe no diff-scoped reviewer would see"* — a claim about
+  **absent reviewers**, unprovable. → *the invariant fails on a fixture tree with a
+  missing tenant scope.*
+- **c8**: *"formulaic vs real survival is distinguishable"* — not decidable without
+  a second judge (regresses to model-grading-model), **and a known seed is
+  gameable** because the panel agent can recognise the fixture. → **blinded,
+  rotated controls scored outside the panel transcript**; the provable claim is
+  seed **detection rate**.
+- **c2**: *"untestable requirement cannot gate"* — untestability is not mechanically
+  decidable; a ceremonial test reference passes. → *every gating claim names an
+  executable oracle and its expected evidence.*
+- **c4**: *"a driver cannot narrow a label"* — unprovable without an explicit
+  **per-taxonomy partial order**; a driver substitutes a differently-shaped label
+  and incomparable values are accepted. → define the lattice, or the asymmetry is
+  decorative.
+- **c5**: one planted call site cannot prove **all** new sites fire (an unsupported
+  language construct evades the scanner). → scope to **enumerated syntactic classes
+  plus a maintained corpus**.
+- **g0**: F1 proves one check-name spoof only; mutable dependencies, untrusted
+  event fields and runner/network paths each need their own adversarial fixture.
+- **g2 (lossless)**: one lossy-adapter fixture cannot prove general losslessness. →
+  **schema-total parsing plus round-trip/property fixtures over every supported
+  variant.**
+
+#### UPHELD — sizing. Every trust-root slice was undersized.
+
+Adopted roughly at codex's numbers (grok concurred in direction): **g0** 2–3
+(workflow *plus* a hosted ruleset attack harness) · **g1** 2–3, split core object
+inventory from the LFS/collision/special-object matrix · **g2** 3–4, split payload
+binding from lane capture and normalization · **g3** 2–3, split the coverage state
+machine from Sigstore issuance · **c3** 2 (temporal fixtures for expiry) · **c4**
+2–3 · **c5** 3+ · **c6** 2 · **c7** 2–3. My 1–2 session budgets assumed slices that
+did not have to produce their own adversarial fixtures — the fixtures **are** the
+work.
+
+#### ADOPTED — the kill test, which both seats answered identically
+
+**c9 (self-tuning) is deleted from v1**, in both directions: it is the cheapest
+slice to drop for speed *and* the safest to drop, because it is **the only slice
+whose failure mode is removing or relaxing controls** — a mis-tuned pruner decays
+coverage, and the error budget can only ever loosen. It also needs ledger history
+that will not exist. → **Moved to v1.1**, gated on real history. **Mutation
+testing is extracted from it** and becomes its own slice **after c7** (it had two
+incompatible homes — "c2/c7 boundary" in prose, c9 in the table — which is exactly
+how a mechanism ends up owned by nobody), and it stays **advisory, never a gate**.
+
+#### Operational homes added (both seats; none existed)
+
+**g6** bad-pin rollback and break-glass (who may move an immutable SHA, dual
+control, reverting a pin that is wrong but *valid*) · **g7** Sigstore/OIDC identity
+lifecycle: issuer/subject/root rotation, revocation, outage and offline
+verification, plus the Enterprise-Cloud private-repo constraint from round 3 ·
+**g8** ruleset/CODEOWNERS drift detection and disaster recovery · **c10** freeze
+ceremony: a recorded human attestation that the frozen tree equals the reviewed
+tree · **c11** human-queue SLO (round-2 item I, which never became a slice) ·
+schema/attestation version migration and retention folded into g5.
+
+**Status: the plan is materially larger and materially safer than the one I wrote.
+Trust root is now g0–g8 with realistic budgets; v1 driver scope is c1–c8 plus
+mutation; self-tuning is deferred to v1.1. Ratification is the operator's call —
+this is round 4, the marginal return has fallen to operational detail, and the
+remaining risk is concentrated in a bootstrap window that is now explicitly
+bounded rather than hidden.**
+
+## v1 slices (revised after round 4 — see the panel record above for what changed and why)
 
 Round 3's F1 changed the shape: the pinned surface is a **protected supervisor in a
 second repository**, not a script in this one. That is a trust root, so it comes
