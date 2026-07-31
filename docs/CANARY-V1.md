@@ -165,6 +165,82 @@ residue.
 
 ---
 
+---
+
+## Defining "security" — anchored to public taxonomy, not to our vocabulary
+
+Panel round 1 exposed the real hole: *who decides a finding is security-class?*
+If the driver decides, asymmetric dismissal is bypassed by classifying-as-
+non-security. If we invent our own word list, it drifts and we maintain it.
+This problem is already solved outside; Canary should not re-solve it.
+
+**A finding is security-class iff it carries at least one of:**
+
+| Anchor | What it is | Mechanically checkable? |
+|---|---|---|
+| **CWE-###** | MITRE Common Weakness Enumeration — the standard catalogue of weakness *types* | Yes: the ID exists in the catalogue, and its category is in our in-scope set |
+| **OWASP ASVS Vx.y** | Application Security Verification Standard — *verifiable requirements* by chapter (V2 auth, V3 session, V4 access control, V5 validation, V6 crypto, V7 logging, V8 data protection, V9 comms, V12 files, V13 API, V14 config) | Yes: chapter/section exists |
+| **STRIDE category + named asset** | Spoofing · Tampering · Repudiation · Information disclosure · DoS · Elevation of privilege — for design-level hazards with no code site yet | Partially: category is enumerated; the asset must be named |
+
+Consequences, all deterministic:
+
+- **The reviewer emits the anchor; the harness validates it.** A security claim
+  without a valid anchor is malformed and is returned for re-labelling — it is
+  not silently downgraded to advice.
+- **The driver may WIDEN, never NARROW.** Adding an anchor is free; removing
+  one is a **human waiver**. This is what closes the laundering surface Plinth
+  spent three bounds on: the label is no longer the driver's to withdraw.
+- **CVSS scores the severity**, so "how bad" is also not our invention; the
+  human waiver threshold is a CVSS band, not an adjective.
+- **The deterministic lane speaks the same language.** Semgrep/CodeQL/OSV
+  already emit CWE and CVE identifiers, so scanner output and model findings
+  land in one namespace and dedupe against each other — a model finding that
+  duplicates a scanner CWE is not a second obligation.
+- **Coverage is expressible as a checklist.** ASVS chapters give the deny-skip
+  manifest a public referent: "this surface has no ASVS V4 coverage" is a
+  statement about a published standard, not about our taste.
+- **Supply chain** rides on the same rails: SLSA levels for provenance,
+  OSV/CVE for known-vulnerable dependencies.
+
+**Why not simply "whatever codex-security finds"?** Because it makes the
+definition vendor-coupled and unstable: the class changes silently when a
+vendor upgrades (measured: a CLI upgrade broke our loop mid-session), it cannot
+be checked mechanically, it dedupes against nothing, and it collapses to a
+single family — the exact independence loss the pre-mortem found. Vendor tools
+are *producers* of anchored findings, never the definition of the class.
+
+**Hazard classes** (which gate without a probe, per Principle 1) are therefore:
+security (CWE/ASVS/STRIDE-anchored, as above) · data-loss · concurrency/race ·
+authz · compliance-retention. The first is externally defined; the rest are
+short, enumerated, and each requires a named asset and a failure sequence.
+
+---
+
+## Panel discipline (amended after round 1)
+
+Round 1's seat prompt said "your only success criterion is dissent" and "do not
+soften." That is a **hallucination incentive**, and it produced at least two
+dutiful objections alongside the real ones. Amended rules:
+
+1. **A seat may find nothing.** "No dissent found on X — the strongest attack I
+   could construct is Y, and it fails because Z" is a **complete, successful**
+   result. Manufactured dissent is a defect, and a seat that never reports a
+   survival is not calibrated.
+2. **Every dissent is calibrated**: confidence (high/medium/low), severity if
+   right, and a concrete failure sequence (actor → action → consequence). An
+   uncalibrated objection is advice, not dissent.
+3. **Dissent is always advice.** It never gates. It is *specified* advice —
+   the driver must disposition it on the record, which is not the same as
+   obeying it.
+4. **The author defends or updates, explicitly.** For each dissent the author
+   states: *upheld* (and updates the design) or *defended* (and says why the
+   scenario does not obtain). Reflexive folding is as much a failure as
+   reflexive defence — the author is a participant, not a defendant.
+5. **Both directions are measured.** Track `dismissed-dissent-later-proven-
+   right` (was the 10th man heard?) **and** `author-defended-and-upheld`
+   (did the author cave to pressure?). Either rate drifting toward zero means
+   the panel has become theatre.
+
 ## Driver contract (one page — this is the whole thing)
 
 1. **Challenge requirements first.** Every requirement has an owner and a
@@ -173,9 +249,12 @@ residue.
    disposition, not a failure.
 2. **Delete before you fix.** Before debugging anything, ask whether the code
    survives the next architecture. A defect in deleted code is a free pass.
-3. **Probes gate; opinions advise.** Deterministic checks and failing probes
-   block. Model judgment — including yours — is advice. Every blocking claim
-   carries a reproducible probe, and the probe joins the suite.
+3. **Probes gate; hazards gate; everything else advises.** Deterministic checks
+   and failing probes block. A claim in a declared **hazard class** (security —
+   CWE/ASVS/STRIDE-anchored — data-loss, concurrency, authz,
+   compliance-retention) blocks **without** a probe, resolvable only by a fix, a
+   disproof, or a human waiver. Everything else is advice: recorded, counted,
+   never dropped, never blocking.
 4. **Judge on the record.** Every finding, deviation, dissent, and deleted
    requirement gets `fixed | dismissed | deferred` with a written reason. You
    may dismiss anything except a security finding (that opens `[BLOCKING]`
