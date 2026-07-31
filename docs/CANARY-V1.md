@@ -1,6 +1,7 @@
 # Canary v1 — charter
 
-**Status: DRAFT — under assigned-role panel review; not ratified.**
+**Status: DRAFT, panel-amended (round 1) — sections A–D redesigned; requires a second
+panel pass on those sections before ratification.**
 Successor to Plinth, built clean-sheet under the trusted-driver threat model,
 harvesting Plinth modules verbatim. Plinth goes maintenance-frozen; downstream
 repos migrate when Canary earns it.
@@ -220,9 +221,183 @@ Multi-repo orchestration · dashboards · malicious-driver hardening ·
 per-vendor hook porting · gauntlet as default (opt-in only) · migrating
 downstream repos before Canary has shipped itself with its own loop.
 
-## Panel record
+## Panel record — adjudicated 2026-07-31
 
-*To be filled by adjudication of the assigned-role panel review (10th-man:
-codex; pre-mortem: context-blind subagent; oracle: `advise --impactful`).
-Every finding will be dispositioned here with a reason. Ratification by the
-human follows adjudication.*
+Seats (all context-blind to the drafting session, assigned adversarial roles):
+**10th man** = codex, cross-family, instructed to argue the strong-form opposite
+of every principle with no praise permitted · **pre-mortem** = fresh Opus,
+"it failed six months out, write the post-mortem" · **oracle** =
+`advise --impactful`, architecture only.
+
+**Method note that changed the outcome:** the charter says disagreement marks
+underspecified sections. The panel produced something stronger —
+**independent convergence**. Three seats reached the same core defect by three
+different routes, which marks a section that is simply *wrong*. That
+distinction is now doctrine: convergence ⇒ redesign, divergence ⇒ specify.
+
+### CONVERGENT — redesigned (all three seats, independently)
+
+**A. The probe rule silenced credible unprobeable hazards. FIXED by redesign.**
+Oracle: contradiction between Principle 1 and the security floor — no probe
+exists for weak crypto or a logged token. Pre-mortem: a missing rate limit, an
+authz check that passed only because the fixture ran as admin, and a deploy
+hazard were all labeled advice and **left no ledger trace at all**; reviewers
+then drifted toward trivially-probeable nits. 10th man (hard dissent 3):
+"credible security, safety and concurrency concerns must block even before
+reproducibility exists."
+→ **Principle 1 replaced.** Two blocking classes: *probe-backed* (a failing
+probe, which joins the suite) and **`judgment-blocking`** — a claim in a
+declared hazard class (security · data-loss · concurrency · authz ·
+compliance/legal-retention) blocks **without** a probe and can only be resolved
+by a fix, a disproof, or a **human** waiver. Everything outside those classes
+with no probe is advice — and advice is now *recorded and counted*, never
+dropped, so the drift is measurable (metric: advice-to-probe ratio by severity).
+Reproducibility is no longer a licence to ignore a hazard.
+
+**B. Adjudication-completeness gated paperwork, not outcomes. FIXED.**
+10th man (hard dissent 2): "a recorded dismissal is not evidence of
+correctness, and reviewer output must not control repository availability" —
+plus a reviewer-driven DoS: hundreds of probe-backed variants of one weak claim
+force bulk dismissal. Pre-mortem: reason strings decayed to ~8 words in three
+weeks and `deferred: "tracked in queue"` became 60% of dispositions; also a
+mid-review push **cancelled** the lane, leaving no `findings.json` — zero
+findings, all dispositioned, **vacuously green**. Oracle: no positive lane
+canary.
+→ **The merge gate is now COVERAGE, not completeness**, and is deterministic:
+`findings.json` must exist, `reviewed_sha == merge_sha`, the security
+classifier's decision must be recorded *for that diff*, and the lane must be
+proven live by a **seeded-defect canary** (a known-buggy fixture must yield ≥1
+finding or the lane is declared broken). Stale, cancelled, or never-fired ⇒
+**red**, never green. Dispositions carry **expiry and provenance**: `deferred`
+turns the ledger red at its date; a "delete before you fix" dismissal requires
+the deletion to land within one train; findings must **earn standing** (deduped
+by class, capped per class per round) so a noisy reviewer cannot conscript
+availability.
+
+**C. Security coverage — the hole ships THROUGH the trigger list. FIXED.**
+Oracle: *who* classifies a finding as security? If the driver does, asymmetric
+dismissal is bypassed by classifying-as-non-security — Plinth's exact
+laundering surface, reopened. Pre-mortem: a new webhook file fell outside the
+allow-fire globs, so the specialist pass never ran and **no finding existed** —
+"the human key guards the exit door of a room nobody entered" — after which the
+driver narrowed the globs inside a feature commit, legal because trusted-driver
+deleted the tooling-edit class.
+→ **Trigger list inverted from allow-fire to DENY-SKIP**: any new file, new
+dependency, or new parse/auth/network call site outside a human-ratified
+known-safe manifest fires the specialist pass. **`triggers.json` and the
+known-safe manifest cannot change in the same PR as product code** (a
+deterministic check, not a policy). Hazard-class labels are emitted by the
+*reviewer* and may be widened by the driver, never narrowed — narrowing is a
+human waiver. Coverage, not just dismissal, is gated.
+
+**D. Trusted-driver deleted gate self-protection. PARTIALLY REVERSED.**
+10th man (hard dissent 1), and nobody else caught it: with no pinned copies, a
+PR can modify Canary's gate implementation, CI executes the modified source,
+"the altered driver suppresses scanners and emits valid-looking receipts — the
+same PR approves itself." I deleted pinning because its one-release latency bit
+us three times in one day; that threw out the property that makes a gate a gate.
+→ **Split the difference: pin the VERIFIER, not the instrument.** The
+deterministic gate (coverage check, ledger verifier, scanners, trigger
+evaluation) runs from an immutable pinned ref; everything else — planning,
+review lanes, canaries, driver tooling — runs from source. So instrument
+improvements land with zero latency, and no change can execute the gate that
+judges it. This is a *narrow* pin over a small verifier, not a vendored copy of
+the world.
+
+### ACCEPTED — amendments (single-seat, upheld)
+
+**E. Runtime-check the slice assumptions** (pre-mortem, new). A repriced vendor
+silently collapsed the cross-family seat to the builder's own family for six
+weeks — exit 0, green, independence gone. Slices list assumptions but nothing
+watched them. → Assumptions become **executable predicates**; the gate records
+distinct model-family count per gated PR and fails when a declared
+cross-family seat is not satisfied.
+
+**F. Mutation testing moves forward, and is scoped** (oracle order + 10th-man
+objection). Oracle: every slice mints probes that go unverified until c7.
+10th man: mutation testing brands meaningful tests hollow via equivalent
+mutants and drives implementation-coupled assertions. → Pulled to immediately
+after probe compilation, but **advisory only** and reported as a *ratio trend*,
+never a gate. Pre-mortem's warning is minuted: mutation measures line
+sensitivity, not hazard coverage — it can never certify hazard classes.
+
+**G. Self-pruning gets hard exclusions** (all three, mildest form). Rare-event
+defenses (dependency/security scanners) are **never** prunable; a check that
+has ever produced a true positive is never prunable; proposals are disqualified
+when dismissals come from a single author; and pruning requires **escape
+evidence**, not frequency. Pre-mortem's scenario — the driver's own dismissals
+deleting parser hardening, nine proposals ratified in one sitting — is why
+batch ratification is banned.
+
+**H. Error budget narrowed to a floor, not a dial** (10th man). "Historical
+averages relax scrutiny exactly when a singular high-impact change needs it."
+→ The budget may **never** relax hazard-class handling or the security floor;
+it only modulates *generalist* review depth on non-hazard diffs.
+
+**I. Human-queue latency budget** (oracle). Asymmetric dismissal routes more to
+the human; unbudgeted human gates are the fire-escape condition this charter
+opens by condemning. → Waivers carry an SLO; a breached SLO is a
+**planning-visible** signal (it changes slice sizing), never an auto-approval.
+
+### DISMISSED — with reasons on the record
+
+**J. "Delete `judge on the record` entirely; findings should earn standing"**
+(10th man §4). *Partially adopted, then dismissed as stated.* Standing is
+adopted (see B: dedupe, caps). Deleting the primitive is dismissed: it is the
+only mechanism that makes a wrong finding cost **one written sentence** instead
+of a review round, and the measured alternative is a 30-round loop that
+diverged. Removing it restores comply-or-grind.
+
+**K. "Async review is unsafe; risk-bearing review belongs before merge"**
+(10th man). *Dismissed as stated, with the risk conceded and mitigated.*
+Hazard-class diffs are already **synchronous** (deny-skip specialist pass
+blocks pre-merge), so the scenario named — a parser-level authz bypass — is now
+covered by C, not by async timing. Making *all* review synchronous reinstates
+per-merge model latency, the exact cost this design exists to remove. Residual
+risk accepted explicitly: a non-hazard defect can live on main until the sweep.
+
+**L. "Ship the smallest atomic change regardless of line count"** (10th man
+§6). *Adopted as an exception, dismissed as a rule.* The migration scenario is
+real — a split schema/writer/reader/backfill change is worse than one atomic
+900-line change. So the cap gains an **atomicity override with a recorded
+reason**, and stays the default, because diff growth manufacturing findings is
+measured, not hypothetical.
+
+**M. "Fail-loud must permit controlled bypass in emergencies"** (10th man §7).
+*Dismissed for gates, adopted for lanes.* An emergency patch may bypass an
+**advisory lane** (recorded); it may never bypass a deterministic gate or the
+security floor. The named damage — an exploitable bug live while a vendor is
+down — is answered by lane bypass alone.
+
+**N. "Plan-as-data forces premature structure; plans should be narratives"**
+(10th man). *Dismissed.* Concedes the discovery problem: `files` and `checks`
+become **optional-until-implementation**, and a `discovery` slice type carries
+objective + budget only. But prose plans produced an entire deferred-defect
+family of NLP classifiers here; structured-fiction risk is answered by making
+fields optional, not by returning to parsing prose.
+
+**O. "Gauntlet tournaments produce monoculture benchmark-gamers"**
+(10th man). *Dismissed — already opt-in and non-default*, and the objection
+argues against making it infrastructure, which the charter's Non-goals already
+forbid. Minuted: judge against **references and hazard cases**, not only
+compiled probes, precisely to avoid selecting the best probe-gamer.
+
+**P. "Permit judgment-based requirements to gate"** (10th man §1). *Adopted
+via A*, not as stated: compliance/legal-retention is now a declared hazard
+class, so such requirements gate through `judgment-blocking` with a named
+owner — rather than every untestable requirement gaining gate authority.
+
+### Net effect
+
+Four of seven driver-contract principles were rewritten by this panel, and one
+architectural decision (no pinned copies) was reversed in part. The charter that
+went in would have shipped the pre-mortem's authorization bypass; **I wrote it,
+and three assigned dissenters caught it in one round for a few dollars.** That
+is the strongest available argument for institutionalizing the 10th man — and
+for the rule that the author never grades their own work, which is the same
+defect that produced hollow canaries in the Plinth sessions.
+
+**Status: amended; requires a second panel pass on the redesigned sections
+(A–D) before ratification.** No dissent in the DISMISSED set is security-class,
+so none required a human key; the security-class findings in A and C were all
+adopted.
