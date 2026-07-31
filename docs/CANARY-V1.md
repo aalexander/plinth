@@ -383,6 +383,38 @@ dutiful objections alongside the real ones. Amended rules:
    (did the author cave to pressure?). Either rate drifting toward zero means
    the panel has become theatre.
 
+
+### Seat assignment — independence AND measured capability
+
+Two properties, both checkable, neither assumed:
+
+1. **Family independence from the author.** Context-blindness is not
+   independence — a fresh context in the same family carries correlated blind
+   spots. *Measured instance: panel rounds 1–2 ran three of four seats in the
+   author's own family, including the security seat, and nobody noticed until
+   the operator asked who the seat was.* The pre-mortem's finding E (silent
+   family collapse, exit 0, everything green) played out in the **process**, not
+   the product. Family independence is now a **recorded property of a panel
+   run**, and a run that cannot achieve it says so instead of proceeding quietly.
+2. **Domain capability.** Seats route to the model that is actually strongest at
+   the seat's job — security review to the strongest security model, breadth
+   seats to the strongest generalist — subject to (1). *Measured instance: the
+   security-practitioner seat was assigned by convenience rather than either
+   property.*
+
+**Reputation is a prior; seeded controls are the evidence.** The seeded panel
+controls adopted in round 2 double as **seat calibration**: seed known defects of
+a given class, measure which seats catch them. That converts "codex is good at
+security" from folklore into a number, and it re-measures automatically as models
+change — which they do on a scale of weeks, not releases.
+
+**The seat map is versioned config with rationale, never hardcoded.** Each entry
+records model, family, why it holds the seat, and when it was last calibrated.
+A model upgrade invalidates the calibration, not the seat. (Harvested from
+Plinth's `MODELS.md`, which already carried seat assignment, named fallbacks, and
+a "when models change (they will)" contingency — prior art from our own history,
+found by applying the prior-art rule inward.)
+
 ---
 
 ## Prior-art sweep — required before finalizing, never before generating
