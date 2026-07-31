@@ -165,6 +165,148 @@ residue.
 
 ---
 
+
+### Panel record — round 2, adjudicated 2026-07-31
+
+Seats: **dissent** (codex, cross-family) on the redesigned sections A–D and both
+amendments · **security practitioner** (fresh Opus) on the taxonomy scheme only.
+Recalibrated prompts: explicit licence to find nothing, mandatory
+confidence/severity/failure-sequence.
+
+**Calibration result, recorded because it is the point:** the practitioner seat
+reported **three explicit survivals**; the dissent seat reported **zero**. Same
+licence, opposite behaviour. Either A–D were genuinely all broken, or the dissent
+role still carries an incentive the licence did not remove. The seat itself
+predicted this and supplied the fix — adopted below as **seeded panel controls**.
+
+#### DISAGREEMENT — C (manifest laundering). Both right; section was underspecified.
+
+Dissent: a maintainer ratifies a broad directory in a tooling-only PR, a later
+product PR routes attacker input through it, deny-skip sees only manifested
+surfaces, specialist never runs. Practitioner: this **fails** — manifest edits
+cannot ride in a product PR, so the two-PR sequence *fires the specialist on the
+first PR*; "the strongest mechanism in the document."
+→ **Both hold, against different assumptions.** The practitioner is right *if*
+ratification is real; the dissent is right *if* it is rubber-stamped. Resolution:
+**a manifest-widening PR is itself hazard-class** — it moves the security coverage
+boundary, so it fires the specialist pass and requires human ratification with a
+stated rationale. Plus the dissent's hardening: manifest entries carry **narrow
+structural identity, owner, rationale, expiry**, and are **invalidated when
+dependencies, imports, callees, generated outputs or trust-boundary metadata
+change**. Per doctrine, disagreement ⇒ specify: the section now states which
+assumption it relies on.
+
+#### UPHELD — critical
+
+**D2. Pinning the verifier does not protect evidence PRODUCTION.** (dissent,
+critical) The unpinned instrument builds the payload, picks suppressions and
+classifies findings; a PR can modify the wrapper to omit one file while still
+submitting the seed and the correct SHA. "A verifier cannot recover facts never
+placed in its inputs."
+→ **Not resolved by pinning everything** (that reinstates measured latency).
+Third option: **the pinned verifier independently derives the file/diff inventory
+from git and compares it against what was actually reviewed**, attests which lanes
+ran, and re-runs the trigger evaluation itself. It verifies *inputs*, not
+*receipts about inputs*. This enlarges the pinned surface from "checks artifacts"
+to "derives ground truth and compares" — and that is the whole security boundary
+of the design.
+
+#### UPHELD — high
+
+**B2. `reviewed_sha == merge_sha` breaks merge queues.** Ephemeral merge-group
+commits mean the reviewed SHA can never equal the merge SHA without re-running per
+queue revision. → Bind to the **reviewed tree/diff content** (content digest of
+the payload actually examined), not SHA equality; the pinned verifier attests the
+payload. Goal (no stale review) upheld; mechanism was wrong — an update, not a fold.
+
+**B3. The seeded canary proves only a pulse.** A lane could submit the fixture and
+omit the PR diff: seed found, liveness green, unreviewed merge ships. → **Rotating
+seeds** plus **end-to-end payload-inclusion attestation** by the pinned verifier.
+
+**A2 + T1 (converged). Anchor validity ≠ class membership.** Dissent: hazard labels
+are weaponisable, and "disproof" is judgment. Practitioner: nearly any finding can
+carry *some* CWE. → **Anchor is a namespace, not a decision rule.** Every
+hazard-class claim now requires a **structured basis: adversary · authority
+boundary · security property violated · impact on a named asset.** Missing basis ⇒
+malformed, returned for re-labelling (never silently downgraded). Plus a **rapid
+human rejection path** for unsupported blocks, so a speculative hazard cannot hold
+merge availability hostage.
+
+**T2. Reject Pillar/Class CWEs.** CWE-20/-284/-664/-707 admit anything. Abstraction
+level is a field in the catalog → **only Base or Variant CWEs are valid anchors —
+`jq`, not judgment.** Kills the degenerate "some CWE fits" case.
+
+**T3. CVSS is the wrong instrument, and reopens laundering one layer down.** It is
+self-assessed by the party who benefits from a low score: we closed "reclassify as
+non-security" and left open "score it 5.9." Two models routinely score the same
+finding 4.3 and 8.8. → **Replace for first-party findings with a 5-bucket impact
+ladder keyed to the named asset** (credential/secret exposure · cross-tenant access
+· authn bypass · authz bypass · injection-into-interpreter/RCE · other),
+reviewer-emitted, **widenable never narrowable** — the same asymmetry as the class
+label. CVSS is retained **only in the dependency lane**, where it is native and
+third-party-assigned (with EPSS/KEV for prioritisation).
+
+**T4. "One namespace and dedupe" was false.** Semgrep often emits no CWE; CodeQL
+emits several at mixed abstraction; OSV emits CVE/GHSA. Worse, taint scanners
+report the **source** and models the **sink**. Dedupe on CWE alone **false-merges**
+two distinct XSS sinks (both CWE-79) — one real vulnerability marked handled. →
+Dedupe key: **normalized location (file + symbol, diff-mapped) primary, CWE
+equivalence-class secondary (walking ChildOf/CanAlsoBe), merge only when both
+agree. Never merge on CWE alone.**
+
+**T5. The human key degrades into a click.** 12 marginal CWE-20 labels per PR ⇒ 12
+`[BLOCKING]` items ⇒ SLO breach ⇒ batch approval; the same availability DoS as B,
+relocated to the human queue. → Answered by T2 (Base/Variant only) + T3 (only the
+top impact buckets need the key) + standing/dedupe caps from round 1.
+
+**T6. Anchors missing two whole classes.** (a) **Supply chain** has no anchor —
+add **CVE/GHSA/OSV id** and **SLSA level**. (b) **Agent-surface hazards** (prompt
+injection, tool-call confused deputy, model output reaching a shell or DB) are the
+pipeline's *own* highest-likelihood class and currently land in the weakest anchor
+— add **OWASP LLM Top 10** and **MITRE ATLAS** as first-class anchors.
+
+**T7. Detection gaps the labelling scheme cannot close.**
+- **Business-logic authz** needs the intended policy, which exists in no artifact →
+  slices touching authz **declare the policy as data (subject × resource × action)
+  and compile it to probes**. The highest-value application of "compile, don't prose."
+- **Multi-tenancy** defects are *absence of a clause* (a missing `WHERE tenant_id`);
+  no diff-scoped reviewer sees an absence → **repo-level invariant probe, written once.**
+- **Cross-slice emergent hazards**: each ≤500-line slice is individually safe, the
+  composition is not; diff-scoped review structurally cannot see it. → The weekly
+  whole-repo sweep's **hazard-class findings become blocking-by-adjudication**
+  (they were advisory). Residual risk minuted, not hidden.
+
+**T8. Version-pin the standards.** ASVS 5.0 renumbered chapters (our map is 4.0.3);
+CWE deprecates IDs on MITRE's schedule. → **Pin ASVS version + level (L2 default)
+and the CWE catalog version inside the pinned verifier**; claim coverage at
+**requirement** level (V8.1.2), never chapter level.
+
+**P2. The amended panel discipline has a symmetric cheap-answer incentive**
+(dissent, medium). Rewarding "no dissent found" without measuring attack quality
+invites formulaic survival reports. → **Seeded panel controls**: blind-seed known
+design defects into a fraction of panels and measure detection, so false negatives
+become visible. This mirrors the seeded-defect canary on the review lane — the same
+trick applied to the panel itself.
+
+#### DEFENDED — author holds position
+
+**T-anchor. Keep the public taxonomy as the namespace.** Upheld that it does not
+decide membership (see A2+T1). Defended that it still earns its place: it gives a
+**shared namespace with scanner output**, enables **dedupe** (with the corrected
+key), and makes the label **non-removable by the driver** — the property that
+closes Plinth's laundering surface. The practitioner independently agreed
+("anchoring to a public taxonomy rather than an in-house word list is correct" —
+no drift failure constructible). Retained, subordinated to the structured basis.
+
+**Author-defended-and-upheld: 1 of 15.** Recorded, per the discipline: a rate near
+zero would mean the author is folding under panel pressure rather than judging.
+
+**Status after round 2: sections A–D, the taxonomy scheme and the panel discipline
+are all amended again. Round 2 changed the security boundary itself (D2), so the
+pinned-verifier design needs one more targeted pass before ratification — but the
+charter is now materially stronger than any single seat, including me, would have
+produced alone.**
+
 ---
 
 ## Defining "security" — anchored to public taxonomy, not to our vocabulary
