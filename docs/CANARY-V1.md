@@ -307,6 +307,115 @@ pinned-verifier design needs one more targeted pass before ratification — but 
 charter is now materially stronger than any single seat, including me, would have
 produced alone.**
 
+
+### Panel record — round 3 (security boundary), adjudicated 2026-07-31
+
+Seats: **grok** (xAI) and **codex** (OpenAI) — **both cross-family from the author**,
+correcting the round-1/2 composition defect. Scope: items D and D2 only.
+Convergence here is worth more than round 1's, because no seat shares the author's
+family.
+
+**Verdicts:** grok — *"this holds"* given implementation musts. codex —
+*"conditionally sound, not yet ratifiable as written"* on the strength of F1 below.
+**codex is right**; the concept survives, my description of it did not.
+
+#### UPHELD — critical, and neither the author nor grok found it
+
+**F1. Pinning the executable is worthless if the PR controls the INVOCATION.**
+Sequence: PR author → edits the local workflow to skip the pinned binary while
+emitting the expected check name → branch protection sees green → unreviewed code
+merges. **Complete gate bypass.**
+→ The pinned surface is not "a verifier binary" but a **protected supervisor and
+gate**: required-check registration, an immutable entrypoint (a reusable workflow
+in a **separately protected repository**, referenced by full commit SHA), trusted
+event acquisition, fresh isolated execution, and the status identity itself — all
+outside PR control. *This is the same caller-control bound Plinth's own MANUAL
+documented as an honest limitation and never closed; Canary closes it or inherits
+it.*
+
+#### UPHELD — convergent across both seats
+
+**F2. Derivation must read git OBJECTS, never a checkout.** Strongest attack
+(both seats, independently): a PR-controlled earlier step writes malicious git
+config/`.gitattributes`, or the verifier shells out to filter-aware git on the
+worktree — evidence is rewritten while the path inventory still matches.
+→ Object traversal from trusted-origin commit/tree objects; **system/global/local
+git config, hooks, external diff and textconv disabled**; symlinks are mode-120000
+blobs and are **never followed**; submodules are mode-160000 gitlinks (a changed
+gitlink triggers review; recursing needs its own attested policy); **LFS pointers
+are not payloads** — fetch and hash or fail closed; **reject case-folding and
+Unicode-normalization path collisions** before any checkout; sparse checkout and
+`.gitignore` are irrelevant to object traversal.
+
+**R1. Bind CONTENT, not paths.** A path-only inventory leaves content substitution
+open. The payload manifest must carry **blob digests**, and the pin compares
+digests of what was reviewed against digests derived from git.
+
+**F3. Any parser that can DROP a finding belongs inside the pin.** Sequence: a
+vendor tightens its schema, or a PR edits a lossful adapter → the adapter emits
+valid-looking empty findings → the verifier attests invocation only → a security
+finding disappears **before** human-waiver enforcement → the vulnerability ships.
+→ Raw output preserved and digested; schema-valid response required; **zero
+findings distinguished from missing/invalid output**; lane identity/version
+recorded; unknown schema fails closed. And the strong form, adopted verbatim:
+**if no stable lossless protocol exists for a lane, that lane cannot support a
+security-completeness claim.**
+
+**Honest limit on the positive control** (codex): a rotating seed detects **gross
+blindness, not selective blindness**. It proves the lane is alive; it cannot prove
+the lane looked at the part that mattered. Recorded as a known bound, not papered
+over — content-digest binding (R1) is what covers selective omission.
+
+**Latency, both seats:** broad latency is *not* reintroduced — prompts, CLI
+releases, lanes, canaries and driver code all change immediately. Narrow latency
+remains, deliberately, on gate semantics, trigger policy and the lossless parser,
+"because those changes cannot judge themselves." grok's reframe is adopted as
+doctrine: **the measured thrice-daily failures were instrument/gate CONFLATION,
+not pinning per se; a small slow-moving pin restores self-protection without
+re-vendoring the world, and that residual is the definition of a gate.** When a
+vendor break needs a pinned-parser fix, the safe immediate outcome is **red or
+unknown — never fabricated green**.
+
+#### PRIOR ART — adopted as a SPLIT, per the sweep rule
+
+Both seats independently reached the same disposition, and it is more useful than
+either "build" or "adopt":
+
+- **in-toto cannot replace the compare.** Its link **materials are self-asserted by
+  the functionary** — an in-toto link of a PR-controlled payload step re-encodes D2
+  exactly ("receipts about inputs"). Closing it still requires a trusted step that
+  derives materials from git: the same small program in a different envelope.
+- **Adopt the envelope and the trust model, not the mechanism**: an **in-toto
+  Statement with a Canary-specific predicate** carrying `{base/head trees,
+  inventory digest, payload digest, lane identity/version, raw-output digest,
+  result}`; the **SLSA v1.2 trust model** (protected control plane produces
+  provenance; verifier compares against pinned expectations — SLSA deliberately
+  leaves the expectations to the adopter); **Sigstore / GitHub Artifact
+  Attestations** for signing identity from a protected reusable workflow.
+- **cosign proves signature identity, not input completeness. Reproducible builds
+  prove build determinism, not review coverage.** Neither substitutes.
+- **Recorded cost of adoption** (the sweep's question 4): GitHub/OIDC coupling,
+  workflow permissions, attestation storage, and **private repos require
+  Enterprise Cloud**. A full in-toto layout would add key/functionary/layout/link
+  lifecycle *without* removing tree derivation, trigger policy or dynamic PR
+  comparison.
+- **Disposition:** bespoke policy comparison; standard envelope, identity and
+  delivery. Recorded per the prior-art rule — this is what a bespoke mechanism
+  shipping with a named reason looks like.
+
+#### Residual, stated not hidden
+
+A **malicious trusted driver** that coerces genuinely empty findings while keeping
+seed and schema green is **out of v1 scope** (Non-goals: malicious-driver
+hardening). Mitigations are scanners, the human security key and the async sweep —
+**not** enlarging the pin. Recorded so the boundary's edge is explicit rather than
+implied.
+
+**Status: the security boundary is sound in concept and now specified. Pending
+before ratification — the protected-supervisor requirement (F1) rewrites the
+harvest list and slice c3, since "verifier" was scoped as a script and must become
+a protected workflow in a second repository.**
+
 ---
 
 ## Defining "security" — anchored to public taxonomy, not to our vocabulary
