@@ -175,6 +175,69 @@ reviewed.
 
 ---
 
+## The objective function — what reviews are actually scored against
+
+Shipping, security, correctness and completeness **genuinely compete**. A review that
+optimizes one of them is not rigorous, it is miscalibrated — and it will be
+counterproductive in exact proportion to how good it is at its proxy.
+
+Adversarial review is scored on *defects found*. That is a proxy for product quality,
+which is a proxy for value. Each hop drops the tradeoff, which is how four correct
+panel rounds turned a 7-slice plan into 20. **The fix is not to avoid pointing seats at
+cuts; it is to give them the right objective and let them argue within it.**
+
+### Every panel run declares its stage and weights
+
+| Stage | Ship | Security | Correctness | Completeness | What blocks |
+|---|---|---|---|---|---|
+| **Prototype** | ●●●● | ●●○○ | ●○○○ | ○○○○ | security floor only |
+| **Build-out** | ●●●○ | ●●●○ | ●●○○ | ●○○○ | + hazard-class findings |
+| **Harden** | ●●○○ | ●●●● | ●●●● | ●●○○ | + reproduced correctness defects |
+| **Mature / regulated** | ●○○○ | ●●●● | ●●●● | ●●●● | + coverage and compliance obligations |
+
+The **security floor never moves** — it is the one weight that does not vary, because a
+prototype that leaks credentials is not a cheap prototype, it is an incident. Everything
+else does.
+
+Stage is a **declared property of the product**, recorded in the ledger, and it is what
+a seat argues within. A finding that would be right at *Mature* and wrong at *Prototype*
+is not a good finding — it is a finding at the wrong stage, and the seat should say so.
+
+### Seats have a symmetric mandate
+
+**"This control costs more than it saves — delete it" is a first-class finding**,
+carrying the same calibration as "this is missing": confidence, severity, and a concrete
+sequence. A seat that has never proposed a deletion is not calibrated to the objective;
+it is calibrated to its proxy.
+
+This subsumes the "shipping seat" as a bias-corrector. A shipping perspective is still
+worth staffing on large panels, but as **one legitimate view among several** rather than
+a counterweight bolted on to cancel a bias we chose not to fix.
+
+### Seats are measured on net contribution, not output
+
+Two rates, both from the ledger, both required — either drifting to zero means the panel
+has become theatre in one direction or the other:
+
+| Metric | Detects |
+|---|---|
+| **dismissed-later-proven-right** | the panel was right and we ignored it |
+| **adopted-later-deleted** | the panel over-produced and we complied — mechanism adopted from a finding, then removed as not worth its cost |
+
+The second is the one this charter was missing, and it is the one that would have caught
+round 4 automatically. *Baseline recorded: of the mechanisms adopted across panel rounds
+1–4, roughly nine slices' worth were deleted within a day as wrong-threat-model or
+not-worth-cost. That is the number to beat.*
+
+### Consequence for when panels run
+
+A panel is worth its cost when the decision is **architectural, irreversible, or
+security-class** *and* the stage weights make the tradeoff non-obvious. At Prototype
+stage most design questions do not qualify: the cheapest way to evaluate a reversible
+decision is to build it and read the ledger.
+
+---
+
 ## Panel doctrine — for architectural, irreversible and security decisions only
 
 Cost is real and the bias is systematic. Use sparingly.
@@ -182,10 +245,12 @@ Cost is real and the bias is systematic. Use sparingly.
 - **Assigned roles**, not "critique this": dissent (argue delete/invert), pre-mortem
   ("it failed in six months — write the post-mortem"), oracle (architecture),
   practitioner (domain).
-- **A shipping seat is mandatory** whenever ≥2 other seats run. Its only job is to argue
-  against added mechanism and to name what each proposal costs in time-to-merge. Without
-  it a panel is structurally biased toward process — this charter's own drafting is the
-  proof.
+- **Every run declares stage and weights** (see The objective function). Seats argue
+  within the declared objective; a finding correct at another stage is labelled as such,
+  not adopted.
+- **Mandate is symmetric**: proposing a deletion is a first-class finding. Staff a
+  shipping perspective on large panels as one legitimate view — not as a counterweight
+  bolted on to cancel a bias we could have fixed at the source.
 - **Every finding is checked against the ratified threat model and Non-goals before
   adoption.** A correct finding about an actor we do not defend against is *recorded, not
   adopted*. This rule exists because its absence cost ~9 slices.
